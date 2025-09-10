@@ -1,0 +1,132 @@
+# Plan for performance-v1.html Development
+
+This document outlines the strategy for implementing new features and addressing bug fixes for the next iteration of the Orbital8 application. The focus is on enhancing user experience by reducing interaction fatigue, improving UI clarity, and ensuring core features like search and export are robust and intuitive.
+
+---
+
+### 1. Feature: "Quick Move" & Focus Mode Navigation (Anti-Fatigue Tapping)
+
+**Objective:** Introduce alternative single-tap navigation methods to supplement the existing swipe gestures, reducing user fatigue during long sessions.
+
+**1.1. Quick Move via Peripheral Tap Zones**
+
+*   **Change:**
+    1.  Create four new, invisible `<div>` elements within the `app-container`. These will be absolutely positioned to create 75px-wide/tall tap zones on the top, bottom, left, and right edges of the viewport.
+    2.  These zones will be enabled only in normal viewing mode (not focus mode, not when zoomed).
+    3.  Implement direct stack mapping for each tap zone, corresponding to the pill counter locations:
+        *   **Top Zone Tap:** Moves the current image to the `priority` stack.
+        *   **Bottom Zone Tap:** Moves the current image to the `trash` stack.
+        *   **Left Zone Tap:** Moves the current image to the `in` stack. If the image is already in the 'in' stack, this tap will move it to the back of the queue, mimicking a left-swipe.
+        *   **Right Zone Tap:** Moves the current image to the `out` stack.
+    4.  Each tap will trigger the existing `Core.moveToStack(targetStack)` logic, ensuring animations and state updates are handled consistently.
+
+*   **Impact:**
+    *   **UX:** Provides a "lightning-quick" alternative to swiping for sorting images. This significantly reduces swipe fatigue and allows for extremely rapid classification of images with single taps, directly corresponding to the on-screen pill counters.
+    *   **Technical:** Requires careful CSS layering (z-index) and `pointer-events` management to ensure these tap zones are active without interfering with the main swipe gesture detection area, the pill counters, or other UI elements. The implementation is straightforward as it hooks into the existing `moveToStack` function.
+
+**1.2. Focus Mode Tap Navigation**
+
+*   **Change:**
+    1.  Create three new, invisible vertical `<div>` elements that overlay the `#image-viewport`. These will only be active when `state.isFocusMode` is true.
+    2.  Layout will be:
+        *   **Left Zone (40% width):** A single tap triggers `Gestures.prevImage()`.
+        *   **Center Zone (20% width):** A single tap triggers `Gestures.toggleFocusMode()` to exit.
+        *   **Right Zone (40% width):** A single tap triggers `Gestures.nextImage()`.
+
+*   **Impact:**
+    *   **UX:** Offers a more comfortable, single-handed navigation method within focus mode, complementing the existing swipe controls.
+    *   **Technical:** These overlays must be programmatically added/removed or shown/hidden when entering/exiting focus mode to prevent conflicts with normal mode gestures.
+
+---
+
+### 2. Feature: Enhanced Tagging UI/UX
+
+**Objective:** Redesign the tag management interface to be more intuitive by clearly separating assigned tags, the input field, and suggested tags.
+
+*   **Change:**
+    1.  **CSS Update:** Target `.tag-item` and the tag input fields to use `#000000` (black) font color for better readability against the light modal background.
+    2.  **Layout Rework (Details & Bulk Modals):**
+        *   The existing `#detail-tags` container (and its equivalent in the bulk tag modal) will be restructured.
+        *   **Top Section:** "Assigned Tags". This area will display the tags currently assigned to the image(s). Each tag will be a chip with a small 'x' to remove it.
+        *   **Middle Section:** The `<input type="text">` for adding new tags.
+        *   **Bottom Section:** "Recently Used Tags". This area will display clickable tag chips for all unique tags used during the current session (from `state.tags`). Tapping one of these chips will add it to the "Assigned Tags" section for the current image.
+    3.  The logic for the bulk tagging `action-modal` will be updated to replicate this exact three-section layout and functionality.
+
+*   **Impact:**
+    *   **UX:** Dramatically improves the speed and clarity of tag management. Users can see what's assigned, type new tags, or quickly re-apply common tags with a single tap.
+    *   **Technical:** Requires significant changes to the HTML structure within the `Details.populateTagsTab` and `Modal.setupTagAction` functions and corresponding CSS adjustments. Event listeners will need to be managed for adding/removing tags from both sections.
+
+---
+
+### 3. Bug Fix: Search Consistency
+
+**Objective:** Resolve the issue where the same search term yields different result counts by ensuring the search always operates on the full, authoritative dataset for the selected stack.
+
+*   **Change:**
+    1.  Refactor the `Grid.performSearch` function. The search will *always* filter the master `state.stacks[state.grid.stack]` array.
+    2.  The result of this filter will be stored in `state.grid.filtered`.
+    3.  The lazy loading mechanism (`Grid.initializeLazyLoad`) will then be re-initialized using `state.grid.filtered` as its source array.
+    4.  The logic will be audited to ensure no part of the grid rendering or lazy loading accidentally truncates or modifies the source `state.stacks` array.
+
+*   **Impact:**
+    *   **Functionality:** Guarantees that search results are predictable and correct, making the feature reliable.
+    *   **Performance:** The search operation itself may be slightly slower on very large stacks as it iterates over the full array each time, but this is an acceptable trade-off for correctness. The UI will remain responsive due to the lazy loading of results.
+
+---
+
+### 4. UI/UX Polish and "Favorite" Feature
+
+**Objective:** Implement several small but high-impact UI improvements and add a new "Favorite" feature for quick marking and retrieval of images.
+
+**4.1. Notes Font Color**
+
+*   **Change:** Apply `color: #000000;` to the `#detail-notes` textarea element via CSS.
+*   **Impact:** Simple fix for improved readability.
+
+**4.2. Footer Removal & Filename Repositioning**
+
+*   **Change:**
+    1.  Remove the `<div class="app-footer">` element entirely from the HTML.
+    2.  Modify the CSS for `#filename-overlay`. It will be positioned at the bottom of the screen (e.g., `bottom: 10px;`).
+    3.  Remove the CSS rule that hides `#filename-overlay` when in focus mode (`.app-container.focus-mode .filename-overlay { display: none; }`).
+*   **Impact:** Cleans up the UI by removing redundant information and provides persistent filename visibility, which is useful in both modes.
+
+**4.3. Persistent "Favorite" Star**
+
+*   **Change:**
+    1.  **UI:** Add a new star icon button (`<button id="favorite-toggle">⭐</button>`) inside the `app-container`. Position it via CSS at the bottom center of the viewport, ensuring it's visible in both normal and focus modes. It will have an 'active' class for styling when a file is favorited.
+    2.  **Metadata:** Introduce a new metadata property, `favorite` (e.g., boolean `true`/`false`). This will be saved locally to IndexedDB and queued for cloud sync via `App.updateUserMetadata`.
+    3.  **Logic:**
+        *   The star's click handler will toggle the `favorite` property on the currently displayed image file.
+        *   The `displayCurrentImage` function will be updated to check the current file's `favorite` status and apply the 'active' class to the star icon accordingly.
+    4.  **Search Integration:** The `Grid.searchImages` function will be updated to recognize the special keyword `#favorite`. When this term is used, it will filter the current stack for images where `file.favorite === true`.
+
+*   **Impact:** Introduces a valuable, lightweight organization feature. Requires careful z-index management to coexist with the new bottom-positioned filename overlay and the trash pill counter.
+
+---
+
+### 5. Bug Fix: Bottom Swipe Gesture Interference
+
+**Objective:** Ensure the downward swipe-to-trash gesture functions correctly and is not blocked by other UI elements.
+
+*   **Change:**
+    1.  Conduct a full review of the z-index values for all elements positioned at the bottom of the viewport: `#pill-trash`, the new `#favorite-toggle`, `#filename-overlay`, and the new "Quick Move" bottom tap zone.
+    2.  The gesture detection layer (`#image-viewport`) must have a clear path to receive pointer events at the screen bottom.
+    3.  Adjust CSS `z-index` and `pointer-events` properties as necessary. The visible UI elements (pill, star, filename) should have a higher z-index to be visible, but the gesture-capture zones (Quick Move tap zone, viewport) must be layered appropriately to receive events without being obscured by non-interactive elements.
+
+*   **Impact:** Restores a core piece of the app's gesture navigation.
+
+---
+
+### 6. Feature: Simplified Export Process
+
+**Objective:** Streamline the user feedback during the bulk export process, making it less verbose and faster.
+
+*   **Change:**
+    1.  The `Modal.executeExport` function will be modified. The current implementation already uses local data, so that part is correct.
+    2.  The UI update portion will be changed. Instead of the auto-scrolling log (`#export-log`), the modal content will be replaced with a simple, large text display.
+    3.  This display will be updated in real-time with a running counter, e.g., `Exporting: 25 / 100 (Success: 24, Failed: 1)`.
+
+*   **Impact:**
+    *   **UX:** Provides a much cleaner and more professional-looking feedback mechanism that is easier to understand at a glance.
+    *   **Performance:** Reduces DOM manipulation significantly compared to appending log lines, which can make the UI more responsive during the export of very large selections.
