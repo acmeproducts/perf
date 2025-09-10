@@ -1,0 +1,49 @@
+# Plan for Sync Logic Enhancements in performance-v1
+
+This document details the strategy for improving the data synchronization system in the Orbital8 application. The goals are to increase efficiency by reducing redundant network requests and to improve reliability, particularly for providers like OneDrive that rely on separate metadata files.
+
+---
+
+### 1. Problem Analysis: Sync Inefficiency and Brittleness
+
+The current `SyncManager` is functional but has two primary weaknesses:
+
+1.  **Inefficiency with Rapid Updates:** Certain user actions, such as clicking a star rating multiple times or rapidly adding/removing tags, can trigger a separate sync operation for each individual change. This floods the IndexedDB queue and results in an excessive number of small, inefficient API calls, wasting both client-side resources and network bandwidth.
+
+2.  **Brittle OneDrive Metadata Handling:** The web worker's `syncOneDrive` function assumes a `.json` metadata file already exists in the `approot` for every image. If an image is processed for the first time and has metadata applied, the `PUT` request to update its non-existent metadata file will likely fail with a 404 Not Found error from the Microsoft Graph API, preventing the metadata from being saved.
+
+---
+
+### 2. Proposed Solutions
+
+To address these issues, the following enhancements will be implemented:
+
+**2.1. Client-Side Update Batching and Debouncing**
+
+*   **Change:**
+    1.  **Consolidate Operations in Worker:** The `SyncManager` web worker will be modified to first process the entire sync queue and group all operations by `fileId`. It will merge all the pending `updates` for a single file into one consolidated object. This ensures that even if ten rapid changes were queued for one file, only a single, efficient API call is made with the final, correct state.
+    2.  **Debounce UI-driven Updates:** A `debounce` utility will be created. The primary `App.updateUserMetadata` method will use this utility with a delay (e.g., 750ms). This prevents the UI from flooding the sync queue in the first place during rapid-fire user input (like typing in the notes field or clicking stars). Critical, single-shot actions like moving a file will bypass the debounce for immediate queueing.
+
+*   **Impact:**
+    *   **Performance:** Drastically reduces the number of writes to IndexedDB and the number of outgoing sync requests. This improves client-side performance and leads to a more efficient and reliable sync process.
+    *   **UX:** The application will feel more responsive as the background sync process is less taxed. The end result for the user is the same, but achieved with much less overhead.
+
+**2.2. Robust "Upsert" Logic for OneDrive Metadata**
+
+*   **Change:**
+    1.  The `syncOneDrive` function inside the `SyncManager` web worker will be fundamentally refactored.
+    2.  Instead of directly issuing a `PUT` request, the worker will now perform an "upsert" (update or insert) operation.
+    3.  **Step 1: Get Consolidated Updates:** The worker will use the merged updates from the new batching logic.
+    4.  **Step 2: Attempt to Fetch Existing Metadata:** The worker will make a `GET` request to `/me/drive/special/approot/<fileId>.json:/content` to see if a metadata file already exists.
+    5.  **Step 3: Conditional Update/Create:**
+        *   **If the `GET` request succeeds (200 OK):** The worker will merge the fetched metadata with the new updates, giving precedence to the new updates. It will then `PUT` the fully merged object back to the server.
+        *   **If the `GET` request fails with a 404 Not Found:** This indicates no metadata file exists. The worker will proceed to `PUT` the new metadata object, effectively creating the file for the first time.
+        *   **If the `GET` request fails with any other error:** The operation will fail and be scheduled for a retry, preserving the existing error-handling logic.
+
+*   **Impact:**
+    *   **Reliability:** This change makes the OneDrive sync process far more resilient. Metadata for new images will now be created reliably, eliminating a critical point of failure and potential data loss.
+    *   **Data Integrity:** By fetching and merging, we ensure that no metadata is accidentally overwritten if multiple clients are interacting with the same file. The latest change always wins, but it's applied to the most recent known state of the metadata file.
+
+---
+
+This two-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
