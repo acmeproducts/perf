@@ -1,0 +1,107 @@
+Lightning-Fast Performance Optimization Plan for Orbital8
+
+This document outlines a multi-faceted strategy to dramatically improve the perceived and actual performance of the Orbital8 application. The focus is on intelligent data caching, optimistic UI updates, and efficient background synchronization to provide a seamless, "lightning-fast" user experience.
+
+---
+
+### 1. Three-Tier Caching Strategy
+
+The foundation of our performance overhaul is a three-tier caching system that ensures data is always retrieved from the fastest available source.
+
+**Tier 1: In-Memory Cache (The "Hot" Cache)**
+- **Purpose:** Instant access to data the user is actively working with.
+- **Contents:**
+  - Full file list and all associated metadata for the **currently viewed folder**.
+  - A Least Recently Used (LRU) cache holding the data for the **last 2-3 visited folders**.
+- **Implementation:**
+  1. The existing global `state` object will serve as this tier.
+  2. Implement a formal LRU mechanism. When a 4th folder is loaded, the data for the least recently used folder is evicted from memory (it remains in Tier 2). This keeps the app's memory footprint lean.
+
+**Tier 2: IndexedDB (The "Warm" Cache)**
+- **Purpose:** Persistent local storage for offline functionality and instantaneous reloading of previously viewed folders.
+- **Contents:**
+  - File lists for **all previously visited folders**, keyed by `folderId`.
+  - All user-supplied metadata (stack assignments, tags, notes, ratings) for **every image ever viewed**, keyed by `fileId`. This ensures metadata persists across sessions and folder reloads.
+- **Implementation:**
+  1. **Write-Through Caching:** Every time user metadata is modified (e.g., swiping an image), the change is immediately written to the in-memory state (Tier 1) and asynchronously to IndexedDB (Tier 2). This guarantees data persistence even if the app is closed.
+  2. **Cache Complete State:** Store the fully processed file objects in IndexedDB, including the current stack assignment and all user metadata. This avoids having to re-process data on subsequent loads.
+
+**Tier 3: Cloud Provider API (The "Cold" Storage)**
+- **Purpose:** The ultimate source of truth. Access to this tier should be minimized and offloaded from the main UI thread whenever possible.
+- **Implementation:**
+  1. API calls should primarily be for the first-time load of a folder or for background synchronization.
+  2. Direct API calls that block the UI during navigation must be eliminated.
+
+---
+
+### 2. Instantaneous Folder Navigation
+
+Leveraging the three-tier cache to make all navigation, especially the "back" button, feel instantaneous.
+
+**Optimized Folder Loading Flow:**
+
+1.  **User selects a folder.**
+2.  **Check Tier 1 (In-Memory):** Is the folder's data in the LRU cache?
+    *   **YES:** Render the UI immediately. Navigation is complete from the user's perspective (<10ms).
+3.  **Check Tier 2 (IndexedDB):** If not in memory, is the folder's data in IndexedDB?
+    *   **YES:** Load data from IndexedDB and render the UI. This should feel nearly instant (<100ms).
+    *   **After UI renders**, silently trigger a background fetch to the Cloud API (Tier 3) to check for any changes (new or deleted files).
+    *   When the background fetch completes, calculate the difference ("diff") and apply it to the UI non-disruptively (e.g., fade in new images, remove deleted ones). Update IndexedDB with the fresh data.
+4.  **Fetch from Tier 3 (Cloud):** If the folder is not in memory or IndexedDB (first-time visit):
+    *   Show the loading screen.
+    *   Fetch the complete file list and metadata from the provider.
+    *   Upon completion, store the data in both Tier 2 (IndexedDB) and Tier 1 (In-Memory), then render the UI. All subsequent visits to this folder will now be instantaneous.
+
+---
+
+### 3. Incremental, Optimistic Updates & Background Sync
+
+Decouple user actions from network latency. The UI should never wait for an API call to complete.
+
+**Step-by-Step Flow for a User Action (e.g., Swiping an Image):**
+
+1.  **UI (Instant):** The user swipes. The image animates off-screen, and the relevant stack counters immediately update. The UI feels responsive and fast.
+2.  **In-Memory (Instant):** The file object's `stack` and `stackSequence` properties are updated in the `state` object.
+3.  **IndexedDB (Asynchronous, ~20-50ms):** The updated metadata for the file is saved to the `metadata` store in IndexedDB. This persists the user's action locally.
+4.  **Sync Queue (Asynchronous, ~20-50ms):** An operation (e.g., `{fileId: '...', updates: {stack: 'priority'}}`) is added to a dedicated "sync_queue" object store in IndexedDB. This marks the change as needing to be pushed to the cloud.
+
+**Unified Background Sync Worker:**
+
+- **Unified Queue:** The `MetadataSyncManager` will be enhanced to work for both Google Drive and OneDrive. It will read from the unified `sync_queue` in IndexedDB.
+- **Provider-Specific Logic:** The worker will be responsible for translating the generic update operations from the queue into provider-specific API calls.
+  - **For Google Drive:** It will batch updates into `PATCH` requests to update the `appProperties` for multiple files at once.
+  - **For OneDrive:** It will read the existing metadata JSON, apply the changes, and `PUT` the updated file back. This logic remains encapsulated within the worker.
+- **Robustness:** The worker will run periodically, on app startup, and when network connectivity is restored, ensuring that all local changes are eventually synchronized with the cloud provider without interfering with the user's experience. If a sync fails, the operation remains in the queue for a future attempt.
+
+---
+
+### 4. Efficient Metadata Management for Both Providers
+
+The core of the application's value is the user-supplied metadata (stack assignments, tags, ratings, notes). This is the *only* data that needs to be written back to the cloud. The original image files are never modified.
+
+**Google Drive:**
+- **Mechanism:** Utilize the `appProperties` field on the file object. This is a key-value store specifically for application-private data. It's lightweight and doesn't affect the file's content or modified date.
+- **Implementation:** The background sync worker will receive a list of updates from the queue (e.g., `{ fileId: '...', updates: { stack: 'out', tags: 'landscape,nature' } }`). It will translate these into a single `PATCH` request for that file, updating its `appProperties`. This is extremely efficient.
+- **Benefit:** No need to manage separate metadata files. The metadata lives with the image file itself, making it portable and robust.
+
+**OneDrive:**
+- **Mechanism:** Use a dedicated JSON file stored in the special `approot` folder. The JSON file is named after the image's `fileId` (e.g., `ABC123XYZ.json`).
+- **Implementation:** When a user modifies metadata for a OneDrive image, the background worker performs a "read-modify-write" cycle on the corresponding JSON file.
+  1.  **Read (if necessary):** Fetch the current JSON from `approot`. This is only needed if the worker doesn't have a recent local copy.
+  2.  **Modify:** Apply the queued changes (e.g., update the `stack` property) to the JSON object in memory.
+  3.  **Write:** `PUT` the entire updated JSON object back to the `approot` folder, overwriting the previous version.
+- **Benefit:** This approach works within OneDrive's API constraints while keeping the main UI completely decoupled. The sync worker handles the complexity, and the user experiences no delay.
+
+---
+
+### 5. Summary of Performance Gains ("Pay the Cost Once")
+
+This integrated strategy directly addresses the goal of paying the performance cost only once and handling all subsequent interactions with lightning speed.
+
+- **First Visit Cost:** The only significant "cost" is the initial download of a folder's file list. This is unavoidable but is now a one-time event per folder.
+- **Instant Subsequent Visits:** All subsequent visits to that folder, whether in the same session or days later, are served instantly from the local IndexedDB cache.
+- **Incremental Sync:** The only data sent back to the cloud are the small, incremental metadata changes. This is a tiny fraction of the data required to download the file list, making the app feel extremely light on network usage.
+- **Optimistic UI:** The user is never blocked by a network request. All sorting, tagging, and rating actions are reflected instantly in the UI, with the actual cloud synchronization happening invisibly in the background.
+- **Seamless Offline Experience:** Because all actions are first committed to the local IndexedDB, the user can fully use the app offline. The background worker will simply queue up all changes and sync them automatically the next time an internet connection is available.
+
+By implementing this three-tier caching and background sync architecture, Orbital8 will transform from an application that feels dependent on network speed to one that feels as responsive and fast as a native desktop application.
