@@ -1794,17 +1794,26 @@
             }
 
             initWorker() {
+                if (this.worker) {
+                    this.worker.terminate();
+                }
                 const workerCode = `
                     let config = {};
                     const MAX_RETRIES = 3;
 
                     self.onmessage = (e) => {
-                        const { command, payload } = e.data;
-                        if (command === 'SYNC') {
-                            config = payload.config;
-                            processQueue(payload.queue);
-                        } else if (command === 'UPDATE_CONFIG') {
-                            config = { ...config, ...payload.config };
+                        try {
+                            const { command, payload } = e.data;
+                            if (command === 'SYNC') {
+                                config = payload.config;
+                                processQueue(payload.queue);
+                            } else if (command === 'UPDATE_CONFIG') {
+                                config = { ...config, ...payload.config };
+                            }
+                        } catch (error) {
+                            console.error('Worker onmessage error:', error);
+                            // Unrecoverable state, let main thread handle re-init
+                            self.close();
                         }
                     };
 
@@ -1899,6 +1908,11 @@
                 const blob = new Blob([workerCode], { type: 'application/javascript' });
                 this.worker = new Worker(URL.createObjectURL(blob));
                 this.worker.onmessage = this.handleWorkerMessage.bind(this);
+                this.worker.onerror = (error) => {
+                    console.error('Sync worker encountered an unrecoverable error:', error);
+                    this.worker = null; // Mark worker as dead
+                    Utils.showToast('Background sync process failed and will restart.', 'error', true);
+                };
             }
 
             async handleWorkerMessage(e) {
@@ -1927,6 +1941,7 @@
                             if (op.retries >= 3) {
                                 await state.db.removeFromSyncQueue(payload.opId);
                                 console.error(`Sync failed permanently for op ${payload.opId}`, op);
+                                Utils.showToast(`A change for a file failed to sync after multiple retries.`, 'error');
                             } else {
                                 await state.db.updateSyncQueueItem(op);
                             }
@@ -1936,11 +1951,17 @@
                         this.isSyncing = false; // Allow retry
                         Utils.showToast('Session expired, refreshing...', 'info', true);
                         try {
-                            const newAccessToken = await state.provider.refreshAccessToken();
-                            this.worker.postMessage({ command: 'UPDATE_CONFIG', payload: { config: { accessToken: newAccessToken } } });
-                            this.triggerSync(); // Resume sync immediately
+                            if (state.providerType === 'googledrive') {
+                                const newAccessToken = await state.provider.refreshAccessToken();
+                                if (!this.worker) this.initWorker();
+                                this.worker.postMessage({ command: 'UPDATE_CONFIG', payload: { config: { accessToken: newAccessToken } } });
+                                this.triggerSync(); // Resume sync immediately
+                            } else if (state.providerType === 'onedrive') {
+                                Utils.showToast('OneDrive session expired. Sync will retry automatically.', 'info', true);
+                            }
                         } catch (error) {
-                            Utils.showToast('Could not refresh session. Sync paused.', 'error', true);
+                            Utils.showToast(`Could not refresh session: ${error.message}. Sync paused.`, 'error', true);
+                            console.error('Token refresh failed:', error);
                         }
                         break;
                 }
@@ -1984,6 +2005,14 @@
                        accessToken = await state.provider.getAccessToken();
                     }
                     
+                    if (!accessToken) {
+                        throw new Error('ACCESS_TOKEN_NULL');
+                    }
+                    
+                    if (!this.worker) {
+                        this.initWorker();
+                    }
+
                     const config = {
                         accessToken: accessToken,
                         gdrive: { apiBase: 'https://www.googleapis.com/drive/v3' },
@@ -1991,7 +2020,16 @@
                     };
                     this.worker.postMessage({ command: 'SYNC', payload: { queue, config }});
                 } catch (error) {
-                    Utils.showToast('Could not start sync. Are you online?', 'error', true);
+                    let message = 'Could not start sync. Please check your connection.';
+                    if (error.message === 'ACCESS_TOKEN_NULL') {
+                        message = 'Sync failed: authentication token is missing. Please try reconnecting your account.';
+                    } else if (error instanceof DOMException && error.name === 'DataCloneError') {
+                        message = 'Sync failed due to an internal data issue.';
+                        console.error("Sync DataCloneError:", error, queue);
+                    } else {
+                        console.error("Unknown sync trigger error:", error);
+                    }
+                    Utils.showToast(message, 'error', true);
                 }
             }
         }
