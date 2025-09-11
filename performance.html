@@ -51,7 +51,7 @@
         }
         .notes-textarea { min-height: 120px; font-family: inherit; resize: vertical; }
 
-        #action-modal .tag-input, #grid-modal .input {
+        #action-modal .tag-input, #grid-modal .input, #details-modal .tag-input {
             color: #1f2937; background: #f3f4f6; border-color: #d1d5db;
         }
         
@@ -768,14 +768,14 @@
     </div>
 
     <script>
-        // ===== ORBITAL8 Goji Version - App Root & Web Worker =====
+        // ===== ORBITAL8 Goji Version - High Performance Architecture =====
         
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'In', 'out': 'Out', 'priority': 'Priority', 'trash': 'Trash' };
         
         const state = {
             provider: null, providerType: null, db: null, metadataExtractor: null,
-            syncManager: null, // Manages background sync
+            syncManager: null,
             visualCues: null, haptic: null, export: null, currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
@@ -787,6 +787,8 @@
             folderMoveMode: { active: false, files: [] },
             syncDebounceTimer: null,
         };
+
+        let userHasInteracted = false;
 
         const Utils = {
             elements: {},
@@ -800,11 +802,9 @@
                     onedriveFolderScreen: document.getElementById('onedrive-folder-screen'),
                     loadingScreen: document.getElementById('loading-screen'),
                     appContainer: document.getElementById('app-container'),
-                    
                     googleDriveBtn: document.getElementById('google-drive-btn'),
                     onedriveBtn: document.getElementById('onedrive-btn'),
                     providerStatus: document.getElementById('provider-status'),
-                    
                     gdriveClientSecret: document.getElementById('gdrive-client-secret'),
                     gdriveAuthButton: document.getElementById('gdrive-auth-button'),
                     gdriveBackButton: document.getElementById('gdrive-back-button'),
@@ -813,7 +813,6 @@
                     gdriveRefreshFolders: document.getElementById('gdrive-refresh-folders'),
                     gdriveBackToProvider: document.getElementById('gdrive-back-to-provider'),
                     gdriveLogout: document.getElementById('gdrive-logout'),
-                    
                     onedriveAuthButton: document.getElementById('onedrive-auth-button'),
                     onedriveBackButton: document.getElementById('onedrive-back-button'),
                     onedriveAuthStatus: document.getElementById('onedrive-auth-status'),
@@ -822,7 +821,6 @@
                     onedriveRefreshFolders: document.getElementById('onedrive-refresh-folders'),
                     onedriveBackToProvider: document.getElementById('onedrive-back-to-provider'),
                     onedriveLogout: document.getElementById('onedrive-logout'),
-                    
                     backButton: document.getElementById('back-button'),
                     backButtonSpinner: document.getElementById('back-button-spinner'),
                     detailsButton: document.getElementById('details-button'),
@@ -833,27 +831,22 @@
                     selectAnotherFolderBtn: document.getElementById('select-another-folder-btn'),
                     toast: document.getElementById('toast'),
                     filenameOverlay: document.getElementById('filename-overlay'),
-                    
                     focusStackName: document.getElementById('focus-stack-name'),
                     focusImageCount: document.getElementById('focus-image-count'),
                     normalImageCount: document.getElementById('normal-image-count'),
                     focusDeleteBtn: document.getElementById('focus-delete-btn'),
-
                     loadingCounter: document.getElementById('loading-counter'),
                     loadingMessage: document.getElementById('loading-message'),
                     loadingProgressBar: document.getElementById('loading-progress-bar'),
                     cancelLoading: document.getElementById('cancel-loading'),
-                    
                     edgeTop: document.getElementById('edge-top'),
                     edgeBottom: document.getElementById('edge-bottom'),
                     edgeLeft: document.getElementById('edge-left'),
                     edgeRight: document.getElementById('edge-right'),
-                    
                     pillPriority: document.getElementById('pill-priority'),
                     pillTrash: document.getElementById('pill-trash'),
                     pillIn: document.getElementById('pill-in'),
                     pillOut: document.getElementById('pill-out'),
-                    
                     gridModal: document.getElementById('grid-modal'),
                     gridContent: document.getElementById('grid-content'),
                     gridTitle: document.getElementById('grid-title'),
@@ -864,22 +857,18 @@
                     closeGrid: document.getElementById('close-grid'),
                     gridSize: document.getElementById('grid-size'),
                     gridSizeValue: document.getElementById('grid-size-value'),
-                    
                     omniSearch: document.getElementById('omni-search'),
                     clearSearchBtn: document.getElementById('clear-search-btn'),
-                    
                     tagSelected: document.getElementById('tag-selected'),
                     moveSelected: document.getElementById('move-selected'),
                     deleteSelected: document.getElementById('delete-selected'),
                     exportSelected: document.getElementById('export-selected'),
                     folderSelected: document.getElementById('folder-selected'),
-                    
                     actionModal: document.getElementById('action-modal'),
                     actionTitle: document.getElementById('action-title'),
                     actionContent: document.getElementById('action-content'),
                     actionCancel: document.getElementById('action-cancel'),
                     actionConfirm: document.getElementById('action-confirm'),
-                    
                     detailsModal: document.getElementById('details-modal'),
                     detailsClose: document.getElementById('details-close'),
                     detailFilename: document.getElementById('detail-filename'),
@@ -913,7 +902,7 @@
                 if(this.toastTimeout) clearTimeout(this.toastTimeout);
                 this.toastTimeout = setTimeout(() => toast.classList.remove('show'), 3000);
                 
-                if (important && state.haptic) {
+                if (important && userHasInteracted && state.haptic) {
                     const hapticType = type === 'error' ? 'error' : 'buttonPress';
                     state.haptic.triggerFeedback(hapticType);
                 }
@@ -965,7 +954,7 @@
             },
             
             formatFileSize(bytes) {
-                if (bytes === 0) return '0 Bytes';
+                if (!bytes || bytes === 0) return '0 Bytes';
                 const k = 1024;
                 const sizes = ['Bytes', 'KB', 'MB', 'GB'];
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -983,15 +972,6 @@
                     const percentage = (current / total) * 100;
                     this.elements.loadingProgressBar.style.width = `${percentage}%`;
                 }
-            },
-
-            debounce(func, delay) {
-                let timeout;
-                return function(...args) {
-                    const context = this;
-                    clearTimeout(timeout);
-                    timeout = setTimeout(() => func.apply(context, args), delay);
-                };
             }
         };
 
@@ -1046,7 +1026,7 @@
             }
             
             triggerFeedback(type) {
-                if (!this.isEnabled || !this.isSupported) return;
+                if (!this.isEnabled || !this.isSupported || !userHasInteracted) return;
                 
                 const patterns = {
                     swipe: [20, 40],
@@ -1057,7 +1037,11 @@
                 
                 const pattern = patterns[type];
                 if (pattern && navigator.vibrate) {
-                    navigator.vibrate(pattern);
+                    try {
+                        navigator.vibrate(pattern);
+                    } catch (e) {
+                        // This can fail in some contexts, ignore it.
+                    }
                 }
             }
         }
@@ -1086,8 +1070,28 @@
                 });
             }
             
-            async getCachedFiles(folderId) { /* ... same as stable but slow ... */ }
-            async setCachedFiles(folderId, files) { /* ... same as stable but slow ... */ }
+            async getCachedFiles(folderId) {
+                if (!this.db) return null;
+                try {
+                    const tx = this.db.transaction(['files'], 'readonly');
+                    const store = tx.objectStore('files');
+                    const result = await new Promise((resolve, reject) => {
+                        const req = store.get(folderId);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => reject(req.error);
+                    });
+                    return result ? result.files : null;
+                } catch (error) { console.warn('Failed to get cached files:', error); return null; }
+            }
+
+            async setCachedFiles(folderId, files) {
+                if (!this.db) return;
+                try {
+                    const tx = this.db.transaction(['files'], 'readwrite');
+                    tx.objectStore('files').put({ folderId, files, cached: Date.now() });
+                    return tx.done;
+                } catch (error) { console.warn('Failed to cache files:', error); }
+            }
             
             async getMetadata(fileId) {
                 if (!this.db) return null;
@@ -1106,12 +1110,8 @@
                 if (!this.db) return;
                 try {
                     const tx = this.db.transaction(['metadata'], 'readwrite');
-                    const store = tx.objectStore('metadata');
-                    const req = store.put({ id: fileId, metadata });
-                    await new Promise((resolve, reject) => {
-                        req.onsuccess = resolve;
-                        req.onerror = () => reject(req.error);
-                    });
+                    tx.objectStore('metadata').put({ id: fileId, metadata });
+                    return tx.done;
                 } catch (error) { console.warn('Failed to set metadata:', error); }
             }
 
@@ -1125,33 +1125,129 @@
             async getSyncQueue() {
                 if (!this.db) return [];
                 const tx = this.db.transaction(['sync_queue'], 'readonly');
-                return await tx.objectStore('sync_queue').getAll();
+                return await new Promise(r => {
+                    const req = tx.objectStore('sync_queue').getAll();
+                    req.onsuccess = () => r(req.result);
+                });
             }
 
-            async removeFromSyncQueue(jobId) {
-                if (!this.db) return;
+            async removeFromSyncQueue(jobIds) {
+                if (!this.db || jobIds.length === 0) return;
                 const tx = this.db.transaction(['sync_queue'], 'readwrite');
-                tx.objectStore('sync_queue').delete(jobId);
+                const store = tx.objectStore('sync_queue');
+                jobIds.forEach(id => store.delete(id));
+                return tx.done;
+            }
+             
+            async clearCacheForFolder(folderId) {
+                if (!this.db) return;
+                const tx = this.db.transaction(['files'], 'readwrite');
+                tx.objectStore('files').delete(folderId);
                 return tx.done;
             }
         }
 
-        class MetadataExtractor { /* ... same as stable but slow ... */ }
+        class MetadataExtractor {
+            constructor() { this.abortController = null; }
+            abort() { if (this.abortController) this.abortController.abort(); }
+            
+            async extract(buffer) {
+                // ... same as stable but slow ...
+                return {};
+            }
+            
+            async fetchMetadata(file, isForExport = false) {
+                // ... same as stable but slow ...
+                return {};
+            }
+        }
 
         class BaseProvider {
             constructor() {}
+
+            async getAccessToken() { throw new Error("getAccessToken not implemented"); }
+            async getFolders() { throw new Error("getFolders not implemented"); }
+            async getFilesAndMetadata(folderId) { throw new Error("getFilesAndMetadata not implemented"); }
+            async moveFileToFolder(fileId, targetFolderId) { throw new Error("moveFileToFolder not implemented"); }
+            async disconnect() { throw new Error("disconnect not implemented"); }
+
             async getUserMetadata(fileId) {
                 return await state.db.getMetadata(fileId);
             }
         }
         
-        class GoogleDriveProvider extends BaseProvider { /* ... same as stable but slow, but with API write methods (updateFileProperties etc) removed or stubbed ... */ }
+        class GoogleDriveProvider extends BaseProvider {
+            constructor() {
+                super();
+                this.name = 'googledrive';
+                this.clientId = '567988062464-fa6c1ovesqeudqs5398vv4mbo6q068p9.apps.googleusercontent.com';
+                this.redirectUri = window.location.origin + window.location.pathname;
+                this.scope = 'https://www.googleapis.com/auth/drive';
+                this.apiBase = 'https://www.googleapis.com/drive/v3';
+                this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
+                this.isAuthenticated = false; this.onProgressCallback = null;
+                this.loadStoredCredentials();
+            }
+            
+            loadStoredCredentials() { /* ... same as stable but slow ... */ }
+            storeCredentials() { /* ... same as stable but slow ... */ }
+            clearStoredCredentials() { /* ... same as stable but slow ... */ }
+            
+            async getAccessToken() {
+                try {
+                    await this.makeApiCall('/files?pageSize=1');
+                    return this.accessToken;
+                } catch (e) {
+                    return await this.refreshAccessToken();
+                }
+            }
 
-        class OneDriveProvider extends BaseProvider { /* ... same as stable but slow, but with API write methods removed or stubbed ... */ }
+            async authenticate(clientSecret) { /* ... same as stable but slow ... */ }
+            buildAuthUrl() { /* ... same as stable but slow ... */ }
+            async exchangeCodeForTokens(code) { /* ... same as stable but slow ... */ }
+            async refreshAccessToken() { /* ... same as stable but slow ... */ }
+            async makeApiCall(endpoint, options = {}, isJson = true) { /* ... same as stable but slow ... */ }
+            async getFolders() { /* ... same as stable but slow ... */ }
+            async getFilesAndMetadata(folderId = 'root') { /* ... same as stable but slow ... */ }
+            async moveFileToFolder(fileId, targetFolderId) { /* ... same as stable but slow ... */ }
+            async disconnect() { /* ... same as stable but slow ... */ }
+        }
+
+        class OneDriveProvider extends BaseProvider {
+            constructor() {
+                super();
+                this.name = 'onedrive';
+                this.apiBase = 'https://graph.microsoft.com/v1.0';
+                this.isAuthenticated = false; this.activeAccount = null; this.msalInstance = null;
+                this.currentParentId = null; this.currentParentPath = ''; this.breadcrumb = [];
+                this.onProgressCallback = null; this.initMSAL();
+            }
+            
+            initMSAL() { /* ... same as stable but slow ... */ }
+            async authenticate() { /* ... same as stable but slow ... */ }
+            async getAccessToken() { /* ... same as stable but slow ... */ }
+            async makeApiCall(endpoint, options = {}) { /* ... same as stable but slow ... */ }
+            async getFilesAndMetadata(folderId = 'root') { /* ... same as stable but slow, but without metadata part ... */ 
+                const files = await this.getFilesFromFolder(folderId);
+                return { folders: [], files: files };
+            }
+            async getFilesFromFolder(folderId) { /* ... same as stable but slow ... */ }
+            async getDownloadsFolder() { /* ... same as stable but slow ... */ }
+            async getFolders() { /* ... same as stable but slow ... */ }
+            async loadFoldersInParent(parentId) { /* ... same as stable but slow ... */ }
+            async drillIntoFolder(folder) { /* ... same as stable but slow ... */ }
+            async navigateToParent() { /* ... same as stable but slow ... */ }
+            getCurrentPath() { return this.currentParentPath; }
+            canGoUp() { return this.breadcrumb.length > 1; }
+            async moveFileToFolder(fileId, targetFolderId) { /* ... same as stable but slow ... */ }
+            async disconnect() { /* ... same as stable but slow ... */ }
+        }
 
         class ExportSystem { /* ... same as stable but slow ... */ }
         
-        if (window.location.search.includes('code=') || window.location.search.includes('error=')) { /* ... same as stable but slow ... */ }
+        if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
+             /* ... same as stable but slow ... */
+        }
 
         const App = {
             selectGoogleDrive() {
@@ -1192,35 +1288,48 @@
                 state.providerType = null;
                 Utils.showScreen('provider-screen');
             },
+
+            async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
+                state.providerType = providerType;
+                state.provider = providerInstance;
+                state.currentFolder.id = folderId;
+                state.currentFolder.name = folderName;
+                if (!state.syncManager) {
+                    state.syncManager = new SyncManager(providerType);
+                }
+                await this.loadImages();
+            },
             
             async loadImages() {
                 Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, 0);
+                Utils.updateLoadingProgress(0, 0, 'Checking local cache...');
                 
                 try {
                     let files = await state.db.getCachedFiles(state.currentFolder.id);
-                    if (files) {
+                    if (files && files.length > 0) {
                          Utils.showToast('Loading from local cache', 'info');
                     } else {
                         Utils.showToast('Fetching from cloud', 'info');
                         state.provider.onProgressCallback = (count) => Utils.updateLoadingProgress(count, 0, `Found ${count} images...`);
                         const result = await state.provider.getFilesAndMetadata(state.currentFolder.id);
                         files = result.files || [];
-                        await state.db.setCachedFiles(state.currentFolder.id, files);
+                        if (files.length > 0) {
+                            await state.db.setCachedFiles(state.currentFolder.id, files);
+                        }
                     }
 
                     if (files.length === 0) {
-                        Utils.showToast('No images found in this folder', 'info', true);
+                        Utils.showToast('No images found in this folder.', 'info');
                         this.returnToFolderSelection();
                         return;
                     }
                     
-                    Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+                    Utils.updateLoadingProgress(0, files.length, 'Processing local metadata...');
                     
                     const processedFiles = [];
                     for(let i=0; i<files.length; i++) {
                         const file = files[i];
-                        Utils.updateLoadingProgress(i + 1, files.length, `Processing ${file.name}`);
+                        if (i % 20 === 0) Utils.updateLoadingProgress(i + 1, files.length);
                         processedFiles.push(await this.processFileWithMetadata(file));
                     }
                     state.imageFiles = processedFiles;
@@ -1239,15 +1348,23 @@
             },
             
             async processFileWithMetadata(file) {
-                const userMetadata = await state.provider.getUserMetadata(file.id);
+                const userMetadata = await state.db.getMetadata(file.id);
                 
-                return {
-                    id: file.id, name: file.name, mimeType: file.mimeType, size: file.size,
-                    createdTime: file.createdTime, modifiedTime: file.modifiedTime,
-                    thumbnails: file.thumbnails, downloadUrl: file.downloadUrl,
-                    appProperties: file.appProperties, extractedMetadata: {}, metadataStatus: 'pending',
-                    ...(userMetadata || { stack: 'in', tags: [], qualityRating: 0, contentRating: 0, notes: '', stackSequence: 0 })
-                };
+                const defaultMeta = { stack: 'in', tags: [], qualityRating: 0, contentRating: 0, notes: '', stackSequence: 0 };
+                const finalMeta = userMetadata || defaultMeta;
+
+                // For Google Drive, overlay appProperties on first load
+                if (state.providerType === 'googledrive' && file.appProperties && !userMetadata) {
+                    finalMeta.stack = file.appProperties.slideboxStack || defaultMeta.stack;
+                    finalMeta.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',') : defaultMeta.tags;
+                    finalMeta.qualityRating = parseInt(file.appProperties.qualityRating) || defaultMeta.qualityRating;
+                    finalMeta.contentRating = parseInt(file.appProperties.contentRating) || defaultMeta.contentRating;
+                    finalMeta.notes = file.appProperties.notes || defaultMeta.notes;
+                    finalMeta.stackSequence = parseInt(file.appProperties.stackSequence) || defaultMeta.stackSequence;
+                    await state.db.setMetadata(file.id, finalMeta);
+                }
+                
+                return { ...file, ...finalMeta, extractedMetadata: {}, metadataStatus: 'pending' };
             },
             
             returnToFolderSelection() {
@@ -1281,12 +1398,19 @@
                 if (state.syncManager) state.syncManager.triggerSync();
                 return true; 
             },
-            
-            // ... Other App methods from stable but slow, no major changes ...
         };
 
         const Core = {
-            /* ... most methods are same as stable but slow ... */
+            initializeStacks() { /* ... same as stable but slow ... */ },
+            sortFiles(files) { /* ... same as stable but slow ... */ },
+            updateStackCounts() { /* ... same as stable but slow ... */ },
+            initializeImageDisplay() { /* ... same as stable but slow ... */ },
+            displayTopImageFromStack(stackName) { /* ... same as stable but slow ... */ },
+            async displayCurrentImage() { /* ... same as stable but slow ... */ },
+            updateImageCounters() { /* ... same as stable but slow ... */ },
+            applyTransform() { /* ... same as stable but slow ... */ },
+            updateActiveProxTab() { /* ... same as stable but slow ... */ },
+            showEmptyState() { /* ... same as stable but slow ... */ },
             async moveToStack(targetStack) {
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) return;
@@ -1296,31 +1420,105 @@
 
                 const originalStackName = state.currentStack;
 
-                // Move to a different stack
-                const newSequence = Date.now();
-                await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
-
-                // Re-order locally
-                const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                item.stack = targetStack;
-                item.stackSequence = newSequence;
-                state.stacks[targetStack].unshift(item); // Add to top of new stack
-                state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                if (targetStack === originalStackName) {
+                    const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
+                    const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
+                    const newSequence = minSequence - 1;
+                    await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence });
+                    const [item] = currentStackArray.splice(state.currentStackPosition, 1);
+                    item.stackSequence = newSequence;
+                    currentStackArray.push(item);
+                } else {
+                    const newSequence = Date.now();
+                    await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
+                    const [item] = currentStackArray.splice(state.currentStackPosition, 1);
+                    item.stack = targetStack;
+                    item.stackSequence = newSequence;
+                    state.stacks[targetStack].unshift(item);
+                    state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                }
                 
                 this.updateStackCounts();
                 this.updateActiveProxTab();
-                
                 await this.displayCurrentImage();
             },
         }
 
-        const Grid = { /* ... same as stable but slow, ensuring calls point to App.updateUserMetadata ... */ }
-        const Details = { /* ... same as stable but slow, ensuring calls point to App.updateUserMetadata ... */ }
-        const Modal = { /* ... same as stable but slow, ensuring calls point to App.updateUserMetadata and App.deleteFile ... */ }
+        const Grid = { /* ... same as stable but slow, using App.updateUserMetadata ... */ 
+            open(stack) { /* same */ },
+            async close() { /* same */ },
+            handleIntersection(entries) { /* same */ },
+            initializeLazyLoad(stack) { /* same */ },
+            destroyLazyLoad() { /* same */ },
+            renderBatch() { /* same */ },
+            toggleSelection(e, fileId) { /* same */ },
+            updateSelectionUI() { /* same */ },
+            selectAll() { /* same */ },
+            deselectAll() { /* same */ },
+            performSearch() { /* same */ },
+            resetSearch() { /* same */ },
+            searchImages(query) { /* same */ },
+            async reorderStackOnClose() {
+                 const stackArray = state.stacks[state.grid.stack];
+                let topItems = [];
+                let bottomItems = [];
+
+                if (state.grid.filtered.length > 0) { // Search was active
+                    const filteredIds = new Set(state.grid.filtered.map(f => f.id));
+                    topItems = state.grid.filtered.sort((a, b) => a.name.localeCompare(b.name));
+                    bottomItems = stackArray.filter(f => !filteredIds.has(f.id));
+                } else if (state.grid.selected.length > 0) { // Manual selection
+                    const selectedIds = new Set(state.grid.selected);
+                    topItems = stackArray.filter(f => selectedIds.has(f.id)).sort((a,b) => a.name.localeCompare(b.name));
+                    bottomItems = stackArray.filter(f => !selectedIds.has(f.id));
+                } else {
+                    return; // No reordering needed
+                }
+                
+                const newStack = [...topItems, ...bottomItems];
+                const timestamp = Date.now();
+                
+                const updates = newStack.map((file, i) => {
+                    file.stackSequence = timestamp - i;
+                    return App.updateUserMetadata(file.id, { stackSequence: file.stackSequence });
+                });
+
+                await Promise.all(updates);
+
+                state.stacks[state.grid.stack] = newStack;
+                state.currentStackPosition = 0;
+
+                Utils.showToast('Stack order updated', 'info');
+            }
+        }
+        const Details = { /* ... same as stable but slow, using App.updateUserMetadata ... */ }
+        const Modal = { /* ... same as stable but slow, using App.updateUserMetadata and App.deleteFile ... */ }
         const Gestures = { /* ... same as stable but slow ... */ }
         const Folders = { /* ... same as stable but slow ... */ }
         const UI = { /* ... same as stable but slow ... */ }
-        const Events = { /* ... same as stable but slow ... */ }
+        const Events = { /* ... same as stable but slow, but add body click listener for haptics ... */ 
+             init() {
+                this.setupProviderSelection();
+                this.setupSettings();
+                this.setupGoogleDriveAuth();
+                this.setupOneDriveAuth();
+                this.setupFolderManagement();
+                this.setupLoadingScreen();
+                this.setupDetailsModal();
+                this.setupFocusMode();
+                this.setupTabs();
+                this.setupCopyButtons();
+                this.setupEmptyState();
+                this.setupPillCounters();
+                this.setupGridControls();
+                this.setupSearchFunctionality();
+                this.setupActionButtons();
+                this.setupKeyboardNavigation();
+                document.body.addEventListener('click', () => { userHasInteracted = true; }, { once: true });
+                document.body.addEventListener('touchstart', () => { userHasInteracted = true; }, { once: true });
+            },
+            // ... rest of event methods from stable but slow
+        }
         
         class SyncManager {
             constructor(providerType) {
@@ -1328,7 +1526,6 @@
                 this.worker = null;
                 this.isSyncing = false;
                 this.tokenRequestPending = false;
-                this.syncLoopDetection = new Map();
                 this.initWorker();
             }
 
@@ -1356,14 +1553,26 @@
                         const succeededIds = [];
                         const failedJobs = [];
 
+                        // Group and merge jobs by fileId
+                        const jobMap = new Map();
                         for (const job of jobs) {
+                            if (!jobMap.has(job.fileId)) {
+                                jobMap.set(job.fileId, { fileId: job.fileId, updates: {}, originalIds: [] });
+                            }
+                            Object.assign(jobMap.get(job.fileId).updates, job.updates);
+                            jobMap.get(job.fileId).originalIds.push(job.id);
+                        }
+
+                        const mergedJobs = Array.from(jobMap.values());
+
+                        for (const job of mergedJobs) {
                             try {
                                 await syncFile(job);
-                                succeededIds.push(job.id);
-                                self.postMessage({ status: 'JOB_SUCCESS', payload: { jobId: job.id } });
+                                succeededIds.push(...job.originalIds);
                             } catch (error) {
                                 if (error.message === 'TOKEN_EXPIRED') {
-                                    self.postMessage({ status: 'TOKEN_EXPIRED' });
+                                    self.postMessage({ status: 'TOKEN_EXPIRED', payload: { jobToRetry: job } });
+                                    // Pause execution for this job until a new token arrives.
                                     const resumed = await new Promise(resolve => {
                                         const listener = (event) => {
                                             if (event.data.status === 'RESUME_SYNC') {
@@ -1373,27 +1582,24 @@
                                         };
                                         self.addEventListener('message', listener);
                                     });
-
-                                    if(resumed) {
+                                    if (resumed) {
                                         try {
                                             await syncFile(job);
-                                            succeededIds.push(job.id);
+                                            succeededIds.push(...job.originalIds);
                                         } catch (retryError) {
-                                            if (retryError.status === 401) {
+                                            if (retryError.status === 401 || retryError.message === 'TOKEN_EXPIRED') {
                                                 self.postMessage({ status: 'REAUTH_REQUIRED' });
-                                                failedJobs.push(job);
-                                                break; 
                                             }
                                             failedJobs.push(job);
+                                            break;
                                         }
                                     }
                                 } else {
                                     failedJobs.push(job);
-                                    self.postMessage({ status: 'JOB_FAILURE', payload: { jobId: job.id, error: error.message } });
                                 }
                             }
                         }
-                        self.postMessage({ status: 'SYNC_COMPLETE', payload: { succeededIds, failedJobs } });
+                        self.postMessage({ status: 'SYNC_COMPLETE', payload: { succeededIds, failed: failedJobs.length > 0 } });
                     }
 
                     function syncFile(job) {
@@ -1409,12 +1615,13 @@
 
                     async function syncGoogleDrive(fileId, updates) {
                         const properties = {};
-                        if (updates.stack) properties.slideboxStack = updates.stack;
-                        if (updates.tags) properties.slideboxTags = updates.tags.join(',');
-                        if (updates.qualityRating !== undefined) properties.qualityRating = String(updates.qualityRating);
-                        if (updates.contentRating !== undefined) properties.contentRating = String(updates.contentRating);
-                        if (updates.notes !== undefined) properties.notes = updates.notes;
-                        if (updates.stackSequence !== undefined) properties.stackSequence = String(updates.stackSequence);
+                        Object.entries(updates).forEach(([key, value]) => {
+                            if (key === 'stack') properties.slideboxStack = value;
+                            else if (key === 'tags') properties.slideboxTags = value.join(',');
+                            else if (value !== undefined) properties[key] = String(value);
+                        });
+                        
+                        if (Object.keys(properties).length === 0) return;
 
                         await makeApiCall(\`\${gdriveApiBase}/files/\${fileId}\`, {
                             method: 'PATCH',
@@ -1424,10 +1631,23 @@
                     }
                     
                     async function syncOneDrive(fileId, updates) {
-                         await makeApiCall(\`\${onedriveApiBase}/me/drive/special/approot:/\${fileId}.json:/content\`, {
+                        let existingMeta = {};
+                        try {
+                            const response = await makeApiCall(\`\${onedriveApiBase}/me/drive/special/approot:/\${fileId}.json:/content\`);
+                            if (response.status !== 404) {
+                                existingMeta = await response.json();
+                            }
+                        } catch (e) {
+                             if (e.status !== 404 && e.message !== 'TOKEN_EXPIRED') throw e;
+                             if (e.message === 'TOKEN_EXPIRED') throw e;
+                        }
+
+                        const newMeta = { ...existingMeta, ...updates };
+
+                        await makeApiCall(\`\${onedriveApiBase}/me/drive/special/approot:/\${fileId}.json:/content\`, {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(updates)
+                            body: JSON.stringify(newMeta)
                         });
                     }
 
@@ -1435,16 +1655,13 @@
                         if (providerType === 'googledrive') {
                             await makeApiCall(\`\${gdriveApiBase}/files/\${fileId}\`, {
                                 method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ trashed: true })
                             });
                         } else if (providerType === 'onedrive') {
-                             await makeApiCall(\`\${onedriveApiBase}/me/drive/items/\${fileId}\`, {
-                                method: 'DELETE'
-                            });
+                             await makeApiCall(\`\${onedriveApiBase}/me/drive/items/\${fileId}\`, { method: 'DELETE' });
                             try {
-                                await makeApiCall(\`\${onedriveApiBase}/me/drive/special/approot:/\${fileId}.json\`, {
-                                    method: 'DELETE'
-                                });
+                                await makeApiCall(\`\${onedriveApiBase}/me/drive/special/approot:/\${fileId}.json\`, { method: 'DELETE' });
                             } catch(e) { /* Metadata may not exist, that's okay */ }
                         }
                     }
@@ -1458,9 +1675,11 @@
                             error.status = 401;
                             throw error;
                         }
-                        if (!response.ok) {
+                        if (!response.ok && response.status !== 404) {
                             const errorText = await response.text();
-                            throw new Error(\`\${response.status}: \${errorText}\`);
+                            const error = new Error(\`\${response.status}: \${errorText}\`);
+                            error.status = response.status;
+                            throw error;
                         }
                         return response;
                     }
@@ -1480,14 +1699,14 @@
                     case 'SYNC_COMPLETE':
                         this.isSyncing = false;
                         Utils.elements.backButtonSpinner.style.display = 'none';
-                        for (const id of payload.succeededIds) {
-                           await state.db.removeFromSyncQueue(id);
-                        }
-                        if (payload.failedJobs.length > 0) {
-                            Utils.showToast(`Sync complete. ${payload.failedJobs.length} item(s) failed and will be retried.`, 'error');
-                        } else {
-                            const queue = await state.db.getSyncQueue();
-                            if(queue.length === 0) Utils.showToast('All changes synced.', 'success');
+                        await state.db.removeFromSyncQueue(payload.succeededIds);
+                        
+                        const remainingJobs = await state.db.getSyncQueue();
+                        if (payload.failed) {
+                            Utils.showToast(`Sync complete. Some items failed and will be retried.`, 'error');
+                        } else if (remainingJobs.length === 0) {
+                            // Only show success if the queue is truly empty.
+                            Utils.showToast('All changes synced.', 'success');
                         }
                         break;
                     case 'TOKEN_EXPIRED':
@@ -1506,7 +1725,7 @@
                     case 'REAUTH_REQUIRED':
                         this.isSyncing = false;
                         Utils.elements.backButtonSpinner.style.display = 'none';
-                        Utils.showToast('Sync failed: Re-authentication is required. Please disconnect and reconnect your account.', 'error', true);
+                        Utils.showToast('Sync failed: Re-authentication is required.', 'error', true);
                         break;
                 }
             }
@@ -1523,7 +1742,7 @@
                         payload: { jobs, accessToken, providerType: this.providerType }
                     });
                 } catch (error) {
-                    Utils.showToast('Could not start sync. Are you online?', 'error', true);
+                    Utils.showToast('Could not start sync. Are you online?', 'error');
                 }
             }
             
