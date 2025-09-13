@@ -525,13 +525,6 @@
             .image-viewport { height: 100dvh; }
         }
     </style>
-<script type="importmap">
-{
-  "imports": {
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.19.0"
-  }
-}
-</script>
 </head>
 <body>
     <!-- Provider Selection Screen -->
@@ -874,7 +867,7 @@
         const STACK_NAMES = { 'in': 'In', 'out': 'Out', 'priority': 'Priority', 'trash': 'Trash' };
         
         const state = {
-            provider: null, providerType: null, dbManager: null, metadataExtractor: null,
+            provider: null, providerType: null, db: null, metadataExtractor: null,
             syncManager: null, visualCues: null, haptic: null, export: null, currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
@@ -1173,10 +1166,10 @@
             constructor() {
                 this.db = null;
             }
-        
+            
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 1);
+                    const request = indexedDB.open('Orbital8Cache', 4);
                     request.onerror = (event) => reject(event.target.error);
                     request.onsuccess = (event) => {
                         this.db = event.target.result;
@@ -1184,44 +1177,44 @@
                     };
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
-                        if (!db.objectStoreNames.contains('folderCache')) {
-                            db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                        if (!db.objectStoreNames.contains('folders')) {
+                            db.createObjectStore('folders', { keyPath: 'folderId' });
                         }
                         if (!db.objectStoreNames.contains('metadata')) {
                             db.createObjectStore('metadata', { keyPath: 'id' });
                         }
-                        if (!db.objectStoreNames.contains('syncQueue')) {
-                            db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+                        if (!db.objectStoreNames.contains('sync_queue')) {
+                            db.createObjectStore('sync_queue', { keyPath: 'id', autoIncrement: true });
                         }
                     };
                 });
             }
-        
-            async getFolderCache(folderId) {
+            
+            async getCachedFiles(folderId) {
                 if (!this.db) return null;
                 return new Promise((resolve) => {
-                    const transaction = this.db.transaction(['folderCache'], 'readonly');
-                    const store = transaction.objectStore('folderCache');
+                    const transaction = this.db.transaction(['folders'], 'readonly');
+                    const store = transaction.objectStore('folders');
                     const request = store.get(folderId);
                     request.onsuccess = () => resolve(request.result ? request.result.files : null);
                     request.onerror = () => resolve(null);
                 });
             }
-        
-            async saveFolderCache(folderId, files) {
+            
+            async setCachedFiles(folderId, files) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction(['folderCache'], 'readwrite');
-                    const store = transaction.objectStore('folderCache');
+                    const transaction = this.db.transaction(['folders'], 'readwrite');
+                    const store = transaction.objectStore('folders');
                     const request = store.put({ folderId, files, cached: Date.now() });
                     request.onsuccess = () => resolve();
                     request.onerror = (event) => reject(event.target.error);
                 });
             }
-        
+            
             async getMetadata(fileId) {
                 if (!this.db) return null;
-                return new Promise((resolve) => {
+                 return new Promise((resolve) => {
                     const transaction = this.db.transaction(['metadata'], 'readonly');
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
@@ -1229,35 +1222,53 @@
                     request.onerror = () => resolve(null);
                 });
             }
-        
-            async saveMetadata(fileId, metadata) {
+            
+            async setMetadata(fileId, metadata) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction(['metadata'], 'readwrite');
+                     const transaction = this.db.transaction(['metadata'], 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const request = store.put({ ...metadata, id: fileId, cached: Date.now() });
                     request.onsuccess = () => resolve();
                     request.onerror = (event) => reject(event.target.error);
                 });
             }
-        
+            
+            async clearCacheForFolder(folderId) {
+                if (!this.db) return;
+                 return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['folders'], 'readwrite');
+                    const store = transaction.objectStore('folders');
+                    const request = store.delete(folderId);
+                    request.onsuccess = () => resolve();
+                    request.onerror = (event) => reject(event.target.error);
+                });
+            }
+
             async addToSyncQueue(operation) {
                 if (!this.db) return;
-                const transaction = this.db.transaction(['syncQueue'], 'readwrite');
-                transaction.objectStore('syncQueue').add(operation);
+                const transaction = this.db.transaction(['sync_queue'], 'readwrite');
+                transaction.objectStore('sync_queue').add(operation);
                 return new Promise(r => transaction.oncomplete = r);
             }
-        
-            async readSyncQueue() {
+
+            async getSyncQueue() {
                 if (!this.db) return [];
-                const transaction = this.db.transaction(['syncQueue'], 'readonly');
-                return await new Promise(r => transaction.objectStore('syncQueue').getAll().onsuccess = e => r(e.target.result));
+                const transaction = this.db.transaction(['sync_queue'], 'readonly');
+                return await new Promise(r => transaction.objectStore('sync_queue').getAll().onsuccess = e => r(e.target.result));
             }
-        
-            async deleteFromSyncQueue(id) {
+
+            async removeFromSyncQueue(id) {
                 if (!this.db) return;
-                const transaction = this.db.transaction(['syncQueue'], 'readwrite');
-                transaction.objectStore('syncQueue').delete(id);
+                const transaction = this.db.transaction(['sync_queue'], 'readwrite');
+                transaction.objectStore('sync_queue').delete(id);
+                return new Promise(r => transaction.oncomplete = r);
+            }
+
+            async updateSyncQueueItem(item) {
+                if (!this.db) return;
+                const transaction = this.db.transaction(['sync_queue'], 'readwrite');
+                transaction.objectStore('sync_queue').put(item);
                 return new Promise(r => transaction.oncomplete = r);
             }
         }
@@ -1779,83 +1790,56 @@
                 this.isSyncing = false;
                 this.syncInterval = null;
                 this.debounceTimeout = null;
+                this.initWorker();
             }
-        
+
             initWorker() {
                 const workerCode = `
-                    let db = null;
                     let config = {};
-        
-                    function openDB() {
-                        return new Promise((resolve, reject) => {
-                            if (db) return resolve(db);
-                            const request = indexedDB.open('Orbital8-Goji-V1', 1);
-                            request.onerror = (event) => reject("Worker DB Error: " + event.target.error);
-                            request.onsuccess = (event) => {
-                                db = event.target.result;
-                                resolve(db);
-                            };
-                        });
-                    }
-        
-                    self.onmessage = async (e) => {
+                    const MAX_RETRIES = 3;
+
+                    self.onmessage = (e) => {
                         const { command, payload } = e.data;
                         if (command === 'SYNC') {
                             config = payload.config;
-                            await sync();
+                            processQueue(payload.queue);
                         } else if (command === 'UPDATE_CONFIG') {
                             config = { ...config, ...payload.config };
                         }
                     };
-        
-                    async function sync() {
-                        try {
-                            const db = await openDB();
-                            const transaction = db.transaction(['syncQueue'], 'readonly');
-                            const store = transaction.objectStore('syncQueue');
-                            const queue = await new Promise(r => store.getAll().onsuccess = e => r(e.target.result));
-        
-                            if (queue.length === 0) {
-                                self.postMessage({ status: 'SYNC_COMPLETE' });
-                                return;
+
+                    async function processQueue(queue) {
+                        self.postMessage({ status: 'SYNC_START', payload: { count: queue.length } });
+
+                        const updatesByFile = queue.reduce((acc, op) => {
+                            if (!acc[op.fileId]) {
+                                acc[op.fileId] = { updates: {}, opIds: [], provider: op.provider };
                             }
-        
-                            self.postMessage({ status: 'SYNC_START', payload: { count: queue.length } });
-        
-                            const updatesByFile = queue.reduce((acc, op) => {
-                                if (!acc[op.fileId]) {
-                                    acc[op.fileId] = { updates: {}, opIds: [], provider: op.provider };
+                            Object.assign(acc[op.fileId].updates, op.updates);
+                            acc[op.fileId].opIds.push(op.id);
+                            return acc;
+                        }, {});
+
+                        for (const [fileId, data] of Object.entries(updatesByFile)) {
+                            try {
+                                if (data.provider === 'googledrive') {
+                                    await syncGoogleDrive(fileId, data.updates);
+                                } else if (data.provider === 'onedrive') {
+                                    await syncOneDrive(fileId, data.updates);
                                 }
-                                Object.assign(acc[op.fileId].updates, op.updates);
-                                acc[op.fileId].opIds.push(op.id);
-                                return acc;
-                            }, {});
-        
-                            for (const [fileId, data] of Object.entries(updatesByFile)) {
-                                try {
-                                    if (data.provider === 'googledrive') {
-                                        await syncGoogleDrive(fileId, data.updates);
-                                    } else if (data.provider === 'onedrive') {
-                                        await syncOneDrive(fileId, data.updates);
-                                    }
-                                    const deleteTransaction = db.transaction(['syncQueue'], 'readwrite');
-                                    const deleteStore = deleteTransaction.objectStore('syncQueue');
-                                    data.opIds.forEach(id => deleteStore.delete(id));
-                                } catch (error) {
-                                     if (error.message === 'TOKEN_EXPIRED') {
-                                         self.postMessage({ status: 'REAUTH_REQUIRED' });
-                                         return;
-                                    }
-                                    console.error('Sync Worker Error for file ' + fileId + ':', error.message);
+                                data.opIds.forEach(id => self.postMessage({ status: 'OP_SUCCESS', payload: { opId: id } }));
+                            } catch (error) {
+                                if (error.message === 'TOKEN_EXPIRED') {
+                                     self.postMessage({ status: 'TOKEN_EXPIRED' });
+                                     return; // Stop processing this batch
                                 }
+                                console.error('Sync Worker Error:', fileId, error.message);
+                                data.opIds.forEach(id => self.postMessage({ status: 'OP_FAILURE', payload: { opId: id, error: error.message } }));
                             }
-                            self.postMessage({ status: 'SYNC_COMPLETE' });
-                        } catch (error) {
-                            console.error('Sync Worker main error:', error);
-                            self.postMessage({ status: 'SYNC_COMPLETE', payload: { error: error.message } });
                         }
+                        self.postMessage({ status: 'SYNC_COMPLETE' });
                     }
-        
+
                     async function syncGoogleDrive(fileId, updates) {
                         const properties = {};
                         if (updates.stack !== undefined) properties.slideboxStack = updates.stack;
@@ -1866,39 +1850,39 @@
                         if (updates.favorite !== undefined) properties.favorite = String(updates.favorite);
                         if (updates.stackSequence !== undefined) properties.stackSequence = String(updates.stackSequence);
                         
-                        await apiFetch(config.gdrive.apiBase + '/files/' + fileId, { 
+                        await makeApiCall(config.gdrive.apiBase + '/files/' + fileId, { 
                             method: 'PATCH', 
                             body: JSON.stringify({ appProperties: properties }) 
                         });
                     }
-        
+
                     async function syncOneDrive(fileId, updates) {
                          const currentMetadata = await getOneDriveMetadata(fileId) || {};
                          const newMetadata = { ...currentMetadata, ...updates };
-                         await apiFetch(config.onedrive.apiBase + '/me/drive/special/approot:/' + fileId + '.json:/content', { 
+                         await makeApiCall(config.onedrive.apiBase + '/me/drive/special/approot:/' + fileId + '.json:/content', { 
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(newMetadata) 
                         });
                     }
-        
+
                     async function getOneDriveMetadata(fileId) {
                         try {
-                            const response = await apiFetch(config.onedrive.apiBase + '/me/drive/special/approot:/' + fileId + '.json:/content');
-                            return await response;
+                            const response = await makeApiCall(config.onedrive.apiBase + '/me/drive/special/approot:/' + fileId + '.json:/content');
+                            return await response; // It's already parsed JSON
                         } catch (error) {
-                            if (error.message.includes('404')) return null;
+                            if (error.message.includes('404')) return null; // File not found is expected
                             throw error;
                         }
                     }
-        
-                    async function apiFetch(url, options = {}, parseJson = true) {
+
+                    async function makeApiCall(url, options = {}, parseJson = true) {
                         if (!config.accessToken) throw new Error('No access token in worker');
                         const headers = { 'Authorization': 'Bearer ' + config.accessToken, ...options.headers };
                          if (options.body && typeof options.body === 'string') {
                             if(!headers['Content-Type']) headers['Content-Type'] = 'application/json';
                         }
-        
+
                         const response = await fetch(url, { ...options, headers });
                         if (response.status === 401) throw new Error('TOKEN_EXPIRED');
                         
@@ -1916,54 +1900,88 @@
                 this.worker = new Worker(URL.createObjectURL(blob));
                 this.worker.onmessage = this.handleWorkerMessage.bind(this);
             }
-        
-            handleWorkerMessage(e) {
+
+            async handleWorkerMessage(e) {
                 const { status, payload } = e.data;
                 switch (status) {
                     case 'SYNC_START':
                         this.isSyncing = true;
                         Utils.elements.backButtonSpinner.style.display = 'inline-block';
+                        Utils.showToast(`Syncing ${payload.count} change(s)...`, 'info');
                         break;
                     case 'SYNC_COMPLETE':
                         this.isSyncing = false;
                         Utils.elements.backButtonSpinner.style.display = 'none';
-                        if (!payload?.error) {
-                           // Utils.showToast('Sync complete.', 'info');
+                        const remainingQueue = await state.db.getSyncQueue();
+                        if (remainingQueue.length === 0) {
+                            Utils.showToast('All changes synced.', 'success');
                         }
                         break;
-                    case 'REAUTH_REQUIRED':
-                        this.isSyncing = false;
-                        Utils.showToast('Session expired, please reconnect.', 'error', true);
-                        App.backToProviderSelection();
+                    case 'OP_SUCCESS':
+                        await state.db.removeFromSyncQueue(payload.opId);
+                        break;
+                    case 'OP_FAILURE':
+                        const op = await state.db.getSyncQueue().then(q => q.find(item => item.id === payload.opId));
+                        if(op) {
+                            op.retries = (op.retries || 0) + 1;
+                            if (op.retries >= 3) {
+                                await state.db.removeFromSyncQueue(payload.opId);
+                                console.error(`Sync failed permanently for op ${payload.opId}`, op);
+                            } else {
+                                await state.db.updateSyncQueueItem(op);
+                            }
+                        }
+                        break;
+                    case 'TOKEN_EXPIRED':
+                        this.isSyncing = false; // Allow retry
+                        Utils.showToast('Session expired, refreshing...', 'info', true);
+                        try {
+                            const newAccessToken = await state.provider.refreshAccessToken();
+                            this.worker.postMessage({ command: 'UPDATE_CONFIG', payload: { config: { accessToken: newAccessToken } } });
+                            this.triggerSync(); // Resume sync immediately
+                        } catch (error) {
+                            Utils.showToast('Could not refresh session. Sync paused.', 'error', true);
+                        }
                         break;
                 }
             }
-        
+
             start() {
                 this.stop();
-                if (!this.worker) this.initWorker();
-                this.syncInterval = setInterval(() => this.requestSync(), 30000); // 30 seconds
-                this.requestSync();
-                window.addEventListener('online', this.requestSync);
+                this.syncInterval = setInterval(() => this.triggerSync(), 30000);
+                this.triggerSync();
+                window.addEventListener('online', () => this.triggerSync());
             }
-        
+
             stop() {
                 if (this.syncInterval) clearInterval(this.syncInterval);
-                window.removeEventListener('online', this.requestSync);
                 if (this.worker) { this.worker.terminate(); this.worker = null; }
             }
-        
-            async requestSync() {
+
+            async queueUpdate(fileId, updates) {
+                await state.db.addToSyncQueue({
+                    provider: state.providerType,
+                    fileId,
+                    updates,
+                    timestamp: Date.now(),
+                    retries: 0
+                });
+                if (this.debounceTimeout) clearTimeout(this.debounceTimeout);
+                this.debounceTimeout = setTimeout(() => this.triggerSync(), 5000);
+            }
+
+            async triggerSync() {
                 if (this.isSyncing || !navigator.onLine || !state.provider?.isAuthenticated) return;
-        
+                
+                const queue = await state.db.getSyncQueue();
+                if (queue.length === 0) return;
+
                 try {
                     let accessToken;
                     if (state.providerType === 'googledrive') {
                        accessToken = state.provider.accessToken;
-                    } else if (state.providerType === 'onedrive') {
-                       accessToken = await state.provider.getAccessToken();
                     } else {
-                        return;
+                       accessToken = await state.provider.getAccessToken();
                     }
                     
                     const config = {
@@ -1971,11 +1989,9 @@
                         gdrive: { apiBase: 'https://www.googleapis.com/drive/v3' },
                         onedrive: { apiBase: 'https://graph.microsoft.com/v1.0' }
                     };
-                    if (!this.worker) this.initWorker();
-                    this.worker.postMessage({ command: 'SYNC', payload: { config }});
+                    this.worker.postMessage({ command: 'SYNC', payload: { queue, config }});
                 } catch (error) {
-                    // Could fail to get access token, for example.
-                    console.error("Could not start sync", error);
+                    Utils.showToast('Could not start sync. Are you online?', 'error', true);
                 }
             }
         }
@@ -2093,14 +2109,13 @@
 
             setProvider(provider) {
                 state.provider = provider;
-                if(state.syncManager) {
-                    state.syncManager.stop();
-                    state.syncManager.start();
-                }
+                if(state.syncManager) state.syncManager.stop();
+                state.syncManager = new SyncManager();
+                state.syncManager.start();
             },
             
             backToProviderSelection() {
-                if (state.syncManager) { state.syncManager.stop(); }
+                if (state.syncManager) { state.syncManager.stop(); state.syncManager = null; }
                 state.provider = null; state.providerType = null;
                 Utils.showScreen('provider-screen');
             },
@@ -2115,17 +2130,17 @@
                     state.imageFiles = state.folderCache.get(folderId);
                     this.updateMemoryCache(folderId, state.imageFiles, true); // Move to front of LRU
                     this.finishImageLoading();
-                    this.refreshFolderInBackground(folderId); // Non-blocking
+                    this.backgroundSyncFolder(folderId); // Non-blocking
                     return;
                 }
 
                 // Tier 2: IndexedDB Cache
-                const cachedFiles = await state.dbManager.getFolderCache(folderId);
+                const cachedFiles = await state.db.getCachedFiles(folderId);
                 if (cachedFiles) {
                     state.imageFiles = cachedFiles;
                     this.updateMemoryCache(folderId, cachedFiles);
                     this.finishImageLoading();
-                    this.refreshFolderInBackground(folderId); // Non-blocking
+                    this.backgroundSyncFolder(folderId); // Non-blocking
                     return;
                 }
 
@@ -2148,7 +2163,7 @@
                         return await this.processFileWithProviderMetadata(file);
                     }));
                     
-                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    await state.db.setCachedFiles(folderId, state.imageFiles);
                     this.updateMemoryCache(folderId, state.imageFiles);
 
                     this.finishImageLoading();
@@ -2183,7 +2198,7 @@
                 Utils.showScreen('app-container');
             },
             
-            async refreshFolderInBackground(folderId) {
+            async backgroundSyncFolder(folderId) {
                 if (state.currentFolder.id !== folderId) return; // User navigated away
                 Utils.elements.backButtonSpinner.style.display = 'inline-block';
                 try {
@@ -2215,7 +2230,7 @@
                         Core.initializeStacks();
                         Core.displayCurrentImage();
                         
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                        await state.db.setCachedFiles(folderId, state.imageFiles);
                         this.updateMemoryCache(folderId, state.imageFiles);
                         Utils.showToast('Folder updated with latest changes.', 'info');
                     }
@@ -2228,14 +2243,10 @@
 
             async processFileWithProviderMetadata(file) {
                 const providerUserMetadata = state.provider.getUserMetadata(file);
-                const localUserMetadata = await state.dbManager.getMetadata(file.id);
+                const localUserMetadata = await state.db.getMetadata(file.id) || {};
                 
-                const combinedMetadata = { ...providerUserMetadata, ...(localUserMetadata || {}) };
-            
-                if (!localUserMetadata) {
-                    await state.dbManager.saveMetadata(file.id, combinedMetadata);
-                }
-            
+                const combinedMetadata = { ...providerUserMetadata, ...localUserMetadata };
+
                 return {
                     id: file.id, name: file.name, mimeType: file.mimeType, size: file.size,
                     createdTime: file.createdTime, modifiedTime: file.modifiedTime,
@@ -2282,7 +2293,7 @@
             },
             
             returnToFolderSelection() {
-                if (state.syncManager) { state.syncManager.requestSync(); }
+                if (state.syncManager) { state.syncManager.triggerSync(); }
                 Utils.showScreen(state.providerType === 'googledrive' ? 'gdrive-folder-screen' : 'onedrive-folder-screen');
             },
             
@@ -2298,20 +2309,9 @@
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
 
-                // Tier 1: Update in-memory state
                 Object.assign(file, updates);
-                
-                // Tier 2: Save complete object to IndexedDB
-                await state.dbManager.saveMetadata(file.id, file);
-
-                // Tier 3: Add change to sync queue and trigger sync
-                await state.dbManager.addToSyncQueue({
-                    provider: state.providerType,
-                    fileId,
-                    updates,
-                    timestamp: Date.now()
-                });
-                state.syncManager.requestSync();
+                await state.db.setMetadata(fileId, file);
+                await state.syncManager.queueUpdate(fileId, updates);
 
                 if (!Utils.elements.detailsModal.classList.contains('hidden')) {
                     const currentFile = Core.getCurrentFile();
@@ -2323,8 +2323,8 @@
             
             async deleteFile(fileId) {
                 await state.provider.deleteFile(fileId);
-                await state.dbManager.deleteFromSyncQueue(fileId); // This might not be right... syncQueue has auto-incrementing ID
-                await state.dbManager.saveMetadata(fileId, { trashed: true }); // Mark as trashed locally
+                await state.db.removeFromSyncQueue(fileId);
+                await state.db.setMetadata(fileId, { trashed: true }); // Mark as trashed locally
             },
             
             async extractMetadataInBackground(pngFiles) {
@@ -3285,10 +3285,7 @@
                 App.backToProviderSelection();
             },
             async loadGoogleDriveFolders(forceRefresh = false) {
-                if (forceRefresh && state.currentFolder.id) {
-                    // This is a simple way to invalidate a folder list. A more robust system might use timestamps.
-                    await state.dbManager.saveFolderCache('folder_list_gdrive', null);
-                }
+                if (forceRefresh) await state.db.clearCacheForFolder(null); // special case for folder list
                 const listEl = Utils.elements.gdriveFolderList;
                 listEl.innerHTML = '<div class="spinner"></div>';
                 try {
@@ -3301,7 +3298,7 @@
                 App.backToProviderSelection();
             },
             async loadOneDriveFolders(forceRefresh = false) {
-                if (forceRefresh) await state.dbManager.saveFolderCache('folder_list_onedrive', null);
+                if (forceRefresh) await state.db.clearCacheForFolder(null);
                 const listEl = Utils.elements.onedriveFolderList;
                 listEl.innerHTML = '<div class="spinner"></div>';
                 try {
@@ -3389,9 +3386,7 @@
             Utils.init(); UI.init(); Gestures.init();
             
             try {
-                state.dbManager = new DBManager();
-                await state.dbManager.init();
-                state.syncManager = new SyncManager();
+                state.db = new DBManager(); await state.db.init();
                 state.metadataExtractor = new MetadataExtractor();
                 state.visualCues = new VisualCueManager();
                 state.haptic = new HapticFeedbackManager();
