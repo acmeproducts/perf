@@ -1,4 +1,4 @@
-<!-- orbital8-v17.1-features-final - 2025-09-13 04:30 PM -->
+<!-- orbital8-v17.2-features-final - 2025-09-13 05:15 PM -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -166,14 +166,14 @@
         .loading-progress-bar { height: 100%; background: linear-gradient(45deg, var(--accent), #d97706); border-radius: 3px; transition: width 0.3s ease; width: 0%; }
         
         .app-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); overflow: hidden; }
-        .nav-button {
-            position: absolute; top: 20px; background: var(--glass); backdrop-filter: blur(10px);
+        .nav-button, .ui-button {
+            position: absolute; background: var(--glass); backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 20px; padding: 8px 12px; font-size: 11px;
             color: white; cursor: pointer; transition: all 0.3s ease; z-index: 15; display: flex; align-items: center; gap: 6px; opacity: 0.7;
         }
-        .nav-button:hover { opacity: 1; background: rgba(255, 255, 255, 0.2); }
-        .nav-button.back { left: 20px; }
-        .nav-button.details { right: 20px; }
+        .nav-button:hover, .ui-button:hover { opacity: 1; background: rgba(255, 255, 255, 0.2); }
+        .nav-button.back { top: 20px; left: 20px; }
+        .nav-button.details { top: 20px; right: 20px; }
         
         .folder-tooltip {
             position: absolute; background: rgba(0,0,0,0.85); color: white;
@@ -356,8 +356,8 @@
         .bulk-actions { display: flex; align-items: center; gap: 8px; }
         .bulk-actions .btn { padding: 4px 10px; font-size: 13px; }
         
-        .grid-content { flex: 1; overflow-y: auto; padding: 16px; }
-        .grid-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
+        .grid-content { flex: 1; overflow-y: auto; padding: 8px; }
+        .grid-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
         
         .grid-item {
             position: relative; background-color: #f3f4f6; border-radius: 8px; cursor: pointer;
@@ -445,9 +445,9 @@
         #focus-stack-name { top: 20px; left: 20px; }
 
         #focus-image-count { bottom: 20px; left: 20px; }
-        #normal-image-count { bottom: 20px; left: 10px; font-weight: 400; color: #9ca3af; background: #000000;}
+        #normal-image-count { bottom: 20px; left: 20px; }
         #focus-delete-btn { bottom: 20px; right: 20px; width: 44px; height: 44px; padding: 0; border-radius: 50%; }
-        #trash-icon-btn { bottom: 20px; right: 20px; width: 44px; height: 44px; padding: 0; border-radius: 50%; background: #000000; display: flex;}
+        #trash-icon-btn { bottom: 20px; right: 20px; width: 44px; height: 44px; padding: 0; border-radius: 50%; display: flex;}
         
         #favorite-toggle { 
             position: absolute; z-index: 20; display: none;
@@ -1093,9 +1093,9 @@
         }
         class SyncManager {
             constructor() { this.worker = null; this.syncInterval = null; }
-            start() { /* Placeholder for Phase 2 */ }
-            stop() { /* Placeholder for Phase 2 */ }
-            requestSync() { /* Placeholder for Phase 2 */ }
+            start() { /* Placeholder */ }
+            stop() { /* Placeholder */ }
+            requestSync() { /* Placeholder */ }
         }
         class VisualCueManager {
             constructor() {
@@ -1318,7 +1318,7 @@
                     const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/')`;
                     let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,appProperties,parents),nextPageToken&pageSize=100`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
-                    const response = await this.makeApiCall(url, { signal: state.activeRequests.signal });
+                    const response = await this.makeApiCall(url);
                     const files = response.files.filter(file => file.mimeType && file.mimeType.startsWith('image/')).map(file => ({ id: file.id, name: file.name, type: 'file', mimeType: file.mimeType, size: file.size ? parseInt(file.size) : 0, createdTime: file.createdTime, modifiedTime: file.modifiedTime, thumbnailLink: file.thumbnailLink, downloadUrl: file.webContentLink, appProperties: file.appProperties || {}, parents: file.parents }));
                     allFiles.push(...files);
                     nextPageToken = response.nextPageToken;
@@ -1326,10 +1326,14 @@
                 } while (nextPageToken);
                 return { folders: [], files: allFiles };
             }
+            async moveFileToStack(fileId, targetStack, sequence) {
+                return this.updateUserMetadata(fileId, { stack: targetStack, stackSequence: sequence });
+            }
             async moveFileToFolder(fileId, targetFolderId) {
                 const file = await this.makeApiCall(`/files/${fileId}?fields=parents`);
                 const previousParents = file.parents.join(',');
                 await this.makeApiCall(`/files/${fileId}?addParents=${targetFolderId}&removeParents=${previousParents}&fields=id,parents`, { method: 'PATCH' });
+                await this.updateUserMetadata(fileId, { stack: 'in', stackSequence: Date.now() });
                 return true;
             }
             async updateFileProperties(fileId, properties) {
@@ -1674,7 +1678,7 @@
                         Object.assign(file, defaultMetadata);
                         await state.dbManager.saveMetadata(file.id, defaultMetadata);
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length); // FIX: Counter logic
+                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
@@ -1743,7 +1747,7 @@
                     state.syncManager.requestSync();
                 }
                 state.activeRequests.abort(); 
-                this.resetViewState(); // FIX: Clear the view before showing folder screen
+                this.resetViewState(); 
                 if (state.providerType === 'googledrive') {
                     Utils.showScreen('gdrive-folder-screen');
                 } else if (state.providerType === 'onedrive') {
@@ -1754,7 +1758,7 @@
             resetViewState() {
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
-                Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='; // Transparent pixel
+                Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
                 Core.updateStackCounts();
                 Core.showEmptyState();
                 Utils.elements.emptyState.classList.add('hidden');
@@ -1764,14 +1768,11 @@
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
                 Object.assign(file, updates);
-                // In Phase 1, we save directly to the local DB. Sync queue is for Phase 2.
                 await state.dbManager.saveMetadata(file.id, file);
-                // Also update the full folder cache
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
             },
             
             async deleteFile(fileId) {
-                // Tier 1: Update in-memory state
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
                 if (fileIndex > -1) {
                     const [file] = state.imageFiles.splice(fileIndex, 1);
@@ -1780,23 +1781,20 @@
                         state.stacks[file.stack].splice(stackIndex, 1);
                     }
                 }
-                
-                // Tier 2: Update local database
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
-                // We'll leave metadata in DB for now, sync can clean it up later.
-                
-                // Still call provider to perform the actual delete in the cloud.
-                // In full Phase 2, this would be queued.
-                return await state.provider.deleteFile(fileId);
+                try {
+                    await state.provider.deleteFile(fileId);
+                } catch (e) {
+                    Utils.showToast(`Failed to delete from cloud: ${e.message}`, 'error', true);
+                }
             },
             
             async extractMetadataInBackground(pngFiles) {
                 const BATCH_SIZE = 5;
                 for (let i = 0; i < pngFiles.length; i += BATCH_SIZE) {
-                    if (state.activeRequests.signal.aborted) return; // Check for abort
+                    if (state.activeRequests.signal.aborted) return;
                     const batch = pngFiles.slice(i, i + BATCH_SIZE);
                     const promises = batch.map(file => {
-                        // FIX: Only process files that are actually pending
                         if (file.metadataStatus === 'pending') {
                             return this.processFileMetadata(file);
                         }
@@ -2011,6 +2009,7 @@
             showEmptyState() {
                 state.currentImageLoadId = null;
                 Utils.elements.centerImage.style.opacity = '0';
+                Utils.elements.filenameOverlay.classList.remove('visible');
                 Utils.elements.detailsButton.style.display = 'none';
                 this.updateImageCounters();
                 setTimeout(() => {
@@ -2459,13 +2458,6 @@
                     });
                 });
             },
-            setupNotesAction() {
-                 this.show('notes', {
-                    title: 'Add Notes',
-                    content: `<div style="margin-bottom: 16px;"><label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Enter notes for ${state.grid.selected.length} items</label><textarea id="modal-notes-input" class="notes-textarea" placeholder="These notes will be appended to existing notes on each image."></textarea></div>`,
-                    confirmText: 'Apply Notes'
-                });
-            },
             setupDeleteAction() {
                 const selectedCount = state.grid.selected.length;
                 const providerName = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
@@ -2596,16 +2588,9 @@
                 Utils.elements.centerImage.addEventListener('wheel', this.handleWheel.bind(this), { passive: false });
             },
             setupFocusMode() {
-                let startX = 0; let isSwiping = false;
-                Utils.elements.imageViewport.addEventListener('touchstart', (e) => {
-                    if (!state.isFocusMode || e.touches.length > 1) return;
-                    startX = e.touches[0].clientX; isSwiping = true;
-                });
-                Utils.elements.imageViewport.addEventListener('touchend', (e) => {
-                    if (!isSwiping || !state.isFocusMode) return;
-                    isSwiping = false; const endX = e.changedTouches[0].clientX; const deltaX = endX - startX;
-                    if (Math.abs(deltaX) > 50) { if (deltaX < 0) { this.nextImage(); } else { this.prevImage(); } }
-                });
+                Utils.elements.focusTapLeft.addEventListener('click', () => this.prevImage());
+                Utils.elements.focusTapCenter.addEventListener('click', () => this.toggleFocusMode());
+                Utils.elements.focusTapRight.addEventListener('click', () => this.nextImage());
             },
             setupQuickTapZones() {
                 Utils.elements.tapZoneTop.addEventListener('click', () => this.executeFlick('priority'));
@@ -2875,6 +2860,7 @@
                 this.setupCopyButtons(); this.setupEmptyState(); this.setupPillCounters();
                 this.setupGridControls(); this.setupSearchFunctionality(); this.setupActionButtons();
                 this.setupKeyboardNavigation();
+                this.setupModalInteractions();
             },
             setupProviderSelection() {
                 Utils.elements.googleDriveBtn.addEventListener('click', () => App.selectGoogleDrive());
@@ -2944,10 +2930,32 @@
             setupDetailsModal() {
                 Utils.elements.detailsButton.addEventListener('click', () => { if (state.stacks[state.currentStack].length > 0) { Details.show(); } });
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
+                 document.getElementById('detail-tag-input').addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                        Details.addTag(currentFile, e.target.value.trim());
+                        e.target.value = '';
+                    }
+                });
             },
             setupFocusMode() {
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Gestures.deleteCurrentImage());
+                Utils.elements.favoriteToggle.addEventListener('click', () => {
+                    const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                    if(currentFile) {
+                        currentFile.isFavorite = !currentFile.isFavorite;
+                        const favoriteIcon = Utils.elements.favoriteToggle.querySelector('svg');
+                        if (currentFile.isFavorite) {
+                            favoriteIcon.setAttribute('fill', '#e53e3e');
+                            favoriteIcon.setAttribute('stroke', 'none');
+                        } else {
+                            favoriteIcon.setAttribute('fill', 'none');
+                            favoriteIcon.setAttribute('stroke', '#999999');
+                        }
+                        App.updateUserMetadata(currentFile.id, { isFavorite: currentFile.isFavorite });
+                    }
+                });
             },
             setupTabs() { document.querySelectorAll('.tab-button').forEach(btn => { btn.addEventListener('click', () => Details.switchTab(btn.dataset.tab)); }); },
             setupCopyButtons() {
@@ -2974,6 +2982,7 @@
                 Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => { App.returnToFolderSelection(); });
             },
             setupPillCounters() {
+                Utils.elements.trashIconBtn.addEventListener('click', () => Gestures.executeFlick('trash'));
                 STACKS.forEach(stackName => {
                     const pill = document.getElementById(`pill-${stackName}`);
                     if (pill) {
@@ -3003,6 +3012,7 @@
             setupActionButtons() {
                 Utils.elements.moveSelected.addEventListener('click', () => Modal.setupMoveAction());
                 Utils.elements.tagSelected.addEventListener('click', () => Modal.setupTagAction());
+                Utils.elements.notesSelected.addEventListener('click', () => Modal.setupNotesAction());
                 Utils.elements.deleteSelected.addEventListener('click', () => Modal.setupDeleteAction());
                 Utils.elements.exportSelected.addEventListener('click', () => Modal.setupExportAction());
                 Utils.elements.folderSelected.addEventListener('click', () => Modal.setupFolderMoveAction());
@@ -3010,6 +3020,7 @@
                 Utils.elements.actionConfirm.addEventListener('click', () => {
                     if (Modal.currentAction === 'move') { /* handled by buttons */
                     } else if (Modal.currentAction === 'tag') { Modal.executeTag();
+                    } else if (Modal.currentAction === 'notes') { Modal.executeNotes();
                     } else if (Modal.currentAction === 'delete') { Modal.executeDelete();
                     } else if (Modal.currentAction === 'export') { Modal.executeExport();
                     } else if (Modal.currentAction === 'folder-move') { Modal.executeFolderMove(); }
@@ -3037,6 +3048,76 @@
                     switch (e.key) {
                         case 'Tab': e.preventDefault(); UI.cycleThroughProxTabs(); break;
                         case 'Escape': App.returnToFolderSelection(); break;
+                    }
+                });
+            },
+             setupModalInteractions() {
+                let activeModal = null;
+                let isDragging = false;
+                let isResizing = false;
+                let initialX, initialY, initialMouseX, initialMouseY, initialWidth, initialHeight;
+
+                function startDrag(e, modal) {
+                    if (e.target.closest('.resize-handle')) return;
+                    isDragging = true;
+                    activeModal = modal;
+                    initialX = activeModal.offsetLeft;
+                    initialY = activeModal.offsetTop;
+                    initialMouseX = e.clientX;
+                    initialMouseY = e.clientY;
+                    document.addEventListener('mousemove', onDrag);
+                    document.addEventListener('mouseup', stopDrag);
+                }
+
+                function onDrag(e) {
+                    if (!isDragging || !activeModal) return;
+                    const dx = e.clientX - initialMouseX;
+                    const dy = e.clientY - initialMouseY;
+                    activeModal.style.left = `${initialX + dx}px`;
+                    activeModal.style.top = `${initialY + dy}px`;
+                }
+
+                function stopDrag() {
+                    isDragging = false;
+                    activeModal = null;
+                    document.removeEventListener('mousemove', onDrag);
+                    document.removeEventListener('mouseup', stopDrag);
+                }
+
+                function startResize(e, modal) {
+                    isResizing = true;
+                    activeModal = modal;
+                    initialWidth = activeModal.offsetWidth;
+                    initialHeight = activeModal.offsetHeight;
+                    initialMouseX = e.clientX;
+                    initialMouseY = e.clientY;
+                    document.addEventListener('mousemove', onResize);
+                    document.addEventListener('mouseup', stopResize);
+                }
+
+                function onResize(e) {
+                    if (!isResizing || !activeModal) return;
+                    const dx = e.clientX - initialMouseX;
+                    const dy = e.clientY - initialMouseY;
+                    activeModal.style.width = `${initialWidth + dx}px`;
+                    activeModal.style.height = `${initialHeight + dy}px`;
+                }
+
+                function stopResize() {
+                    isResizing = false;
+                    activeModal = null;
+                    document.removeEventListener('mousemove', onResize);
+                    document.removeEventListener('mouseup', stopResize);
+                }
+
+                [Utils.elements.gridModal, Utils.elements.detailsModal].forEach(modalEl => {
+                    const header = modalEl.querySelector('.modal-header');
+                    const content = modalEl.querySelector('.modal-content');
+                    const handle = modalEl.querySelector('.resize-handle');
+
+                    header.addEventListener('mousedown', (e) => startDrag(e, content));
+                    if (handle) {
+                        handle.addEventListener('mousedown', (e) => startResize(e, content));
                     }
                 });
             }
