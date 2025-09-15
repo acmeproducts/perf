@@ -1,4 +1,4 @@
-<!-- performance-v2.1-2025-09-14_2101_PM -->
+<!-- performance-v2.1-2025-09-14_2127_PM -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -348,6 +348,7 @@
         
         .tags-container { display: flex; flex-direction: column; gap: 16px; }
         .tags-section { border-bottom: 1px solid #e5e7eb; padding-bottom: 12px; }
+        .tags-section:last-child { border-bottom: none; }
         .tags-section-title { font-size: 12px; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 8px; }
         .tag-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 20px; }
         .tag-item { display: inline-flex; align-items: center; background: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 12px; font-size: 12px; gap: 6px; }
@@ -719,9 +720,14 @@
     <!-- Unified Action Modal -->
     <div id="action-modal" class="modal hidden">
         <div class="modal-content action-modal">
-            <h3 id="action-title" class="title" style="font-size: 18px; color: #1f2937; margin-bottom: 16px;">Action</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                 <h3 id="action-title" class="title" style="font-size: 18px; color: #1f2937; margin-bottom: 0;">Action</h3>
+                 <button id="action-close" class="close-btn" style="position: static;">
+                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                 </button>
+            </div>
             <div id="action-content"></div>
-            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+            <div id="action-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
                 <button id="action-cancel" class="btn btn-secondary">Cancel</button>
                 <button id="action-confirm" class="btn btn-primary">Confirm</button>
             </div>
@@ -1062,6 +1068,8 @@
                     actionModal: document.getElementById('action-modal'),
                     actionTitle: document.getElementById('action-title'),
                     actionContent: document.getElementById('action-content'),
+                    actionFooter: document.getElementById('action-footer'),
+                    actionClose: document.getElementById('action-close'),
                     actionCancel: document.getElementById('action-cancel'),
                     actionConfirm: document.getElementById('action-confirm'),
                     
@@ -1902,6 +1910,32 @@
                     Utils.showToast(`Failed to delete from cloud: ${e.message}`, 'error', true);
                 }
             },
+            async undoLastMove() {
+                if (!state.lastMove) {
+                    Utils.showToast("Nothing to undo", "info");
+                    return;
+                }
+                const { fileId, fromStack, toStack, fromIndex } = state.lastMove;
+                const fileToMove = state.stacks[toStack].find(f => f.id === fileId);
+                if (!fileToMove) {
+                    Utils.showToast("Cannot undo action", "error");
+                    state.lastMove = null;
+                    return;
+                }
+                const fromStackIndex = state.stacks[toStack].findIndex(f => f.id === fileId);
+                state.stacks[toStack].splice(fromStackIndex, 1);
+                state.stacks[fromStack].splice(fromIndex, 0, fileToMove);
+                fileToMove.stack = fromStack;
+                await App.updateUserMetadata(fileId, { stack: fromStack });
+                Core.updateStackCounts();
+                if (state.currentStack === toStack) {
+                    state.currentStack = fromStack;
+                    state.currentStackPosition = fromIndex;
+                }
+                Core.displayCurrentImage();
+                Utils.showToast(`Undo: Moved back to ${STACK_NAMES[fromStack]}`, "success", true);
+                state.lastMove = null;
+            },
             
             async extractMetadataInBackground(pngFiles) {
                 const BATCH_SIZE = 5;
@@ -2364,8 +2398,6 @@
             },
 
             async reorderStackOnClose() {
-                // This function is now mostly handled by drag and drop.
-                // It can still be used to apply search/selection ordering if needed.
                 const stackArray = state.stacks[state.grid.stack];
                 let topItems = []; let bottomItems = [];
 
@@ -2516,7 +2548,7 @@
             currentAction: null,
             show(type, options = {}) {
                 this.currentAction = type;
-                const { title, content, confirmText = 'Confirm', confirmClass = 'btn-primary' } = options;
+                const { title, content, confirmText = 'Confirm', confirmClass = 'btn-primary', hideFooter = false } = options;
                 Utils.elements.actionTitle.textContent = title || 'Action';
                 Utils.elements.actionContent.innerHTML = '';
                 if(typeof content === 'string') {
@@ -2524,6 +2556,7 @@
                 } else {
                     Utils.elements.actionContent.appendChild(content);
                 }
+                Utils.elements.actionFooter.style.display = hideFooter ? 'none' : 'flex';
                 Utils.elements.actionConfirm.textContent = confirmText;
                 Utils.elements.actionConfirm.className = `btn ${confirmClass}`;
                 Utils.elements.actionConfirm.disabled = false;
@@ -2550,7 +2583,7 @@
                 this.show('tag', {
                     title: `Tag ${state.grid.selected.length} Images`,
                     content: content,
-                    confirmText: 'Done'
+                    hideFooter: true
                 });
             },
             setupNotesAction() {
@@ -2738,7 +2771,7 @@
             },
             async executeFlick(targetStack, direction) {
                 if (state.stacks[state.currentStack].length === 0) return;
-                const animDirection = { 'in': 'left', 'out': 'right', 'priority': 'up', 'trash': 'down' }[targetStack];
+                
                 if (targetStack === state.currentStack) direction = 'same';
                 
                 UI.acknowledgePillCounter(targetStack);
@@ -3119,7 +3152,8 @@
                         pill.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (state.haptic) { state.haptic.triggerFeedback('pillTap'); }
-                            Grid.open(stackName);
+                            if (state.currentStack === stackName) { Grid.open(stackName); } 
+                            else { UI.switchToStack(stackName); }
                             UI.acknowledgePillCounter(stackName);
                         });
                         
@@ -3157,13 +3191,11 @@
                 Utils.elements.deleteSelected.addEventListener('click', () => Modal.setupDeleteAction());
                 Utils.elements.exportSelected.addEventListener('click', () => Modal.setupExportAction());
                 Utils.elements.folderSelected.addEventListener('click', () => Modal.setupFolderMoveAction());
+                Utils.elements.actionClose.addEventListener('click', () => Modal.hide());
                 Utils.elements.actionCancel.addEventListener('click', () => Modal.hide());
                 Utils.elements.actionConfirm.addEventListener('click', () => {
                     if (Modal.currentAction === 'move') { /* handled by buttons */
                     } else if (Modal.currentAction === 'tag') { 
-                        const tagInput = document.getElementById('modal-tag-input');
-                        const newTags = tagInput.value.split(',').map(t => t.trim()).filter(Boolean);
-                        Modal.executeTag(newTags);
                         Modal.hide();
                     } else if (Modal.currentAction === 'notes') { 
                         Modal.executeNotes();
