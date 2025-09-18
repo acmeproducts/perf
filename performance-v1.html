@@ -535,27 +535,6 @@
             display: block;
         }
 
-        /* Gesture and HUD styles */
-        .tri {
-            position: absolute;
-            inset: 0;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.25s ease-in-out;
-            z-index: 2;
-        }
-        .tri.up    { clip-path: polygon(0 0, 100% 0, 50% 50%); background: var(--up); }
-        .tri.right { clip-path: polygon(100% 0, 100% 100%, 50% 50%); background: var(--right); }
-        .tri.down  { clip-path: polygon(100% 100%, 0 100%, 50% 50%); background: var(--down); }
-        .tri.left  { clip-path: polygon(0 100%, 0 0, 50% 50%); background: var(--left); }
-
-        .tri.glow {
-            opacity: 0.2 !important;
-        }
-
-        .hud-hidden .hud-element {
-            display: none !important;
-        }
     </style>
 </head>
 <body>
@@ -638,12 +617,12 @@
     </div>
     
     <!-- Main App Container -->
-    <div class="app-container hidden hud-hidden" id="app-container">
-        <button class="ui-button hud-element" id="back-button">
+    <div class="app-container hidden" id="app-container">
+        <button class="ui-button" id="back-button">
             <span id="back-button-spinner" class="spinner" style="display: none; width: 14px; height: 14px; margin-right: 6px;"></span>
             Folders
         </button>
-        <button class="ui-button hud-element" id="details-button">Details</button>
+        <button class="ui-button" id="details-button">Details</button>
         
         <div class="image-viewport" id="image-viewport">
             <img class="center-image zoomable" id="center-image" alt="Select a folder to start" />
@@ -664,10 +643,10 @@
         <div class="edge-glow left" id="edge-left"></div>
         <div class="edge-glow right" id="edge-right"></div>
         
-        <div class="pill-counter top hud-element" id="pill-priority" data-stack="priority">0</div>
-        <div class="pill-counter bottom-center hud-element" id="pill-trash" data-stack="trash">0</div>
-        <div class="pill-counter left active hud-element" id="pill-in" data-stack="in">0</div>
-        <div class="pill-counter right hud-element" id="pill-out" data-stack="out">0</div>
+        <div class="pill-counter top" id="pill-priority" data-stack="priority">0</div>
+        <div class="pill-counter bottom-center" id="pill-trash" data-stack="trash">0</div>
+        <div class="pill-counter left active" id="pill-in" data-stack="in">0</div>
+        <div class="pill-counter right" id="pill-out" data-stack="out">0</div>
         
         <div class="empty-state hidden" id="empty-state">
             <div class="empty-message">No more images in this stack</div>
@@ -676,8 +655,8 @@
         </div>
         
         <!-- Center Stage UI -->
-        <div id="normal-image-count" class="ui-button hud-element"></div>
-        <button id="center-trash-btn" class="ui-button hud-element">
+        <div id="normal-image-count" class="ui-button"></div>
+        <button id="center-trash-btn" class="ui-button">
             <svg style="width: 20px; height: 20px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
             </svg>
@@ -1038,21 +1017,22 @@
             
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
-                    }
                     return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
                 } else { // OneDrive
+                    // Prefer 'large' thumbnail if available, otherwise fall back
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
                     }
+                    // Fallback to a generic content URL if no thumbnail
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
             },
 
             getFallbackImageUrl(file) {
-                 if (state.providerType === 'googledrive') {
-                    return file.downloadUrl || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+                // This is a last resort if the preferred URL fails.
+                // For Google Drive, it hits the media endpoint. For OneDrive, it's the same as preferred.
+                if (state.providerType === 'googledrive') {
+                    return `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3459,136 +3439,6 @@
             }
         }
         document.addEventListener('DOMContentLoaded', initApp);
-    </script>
-    <script>
-        const NewGestureUI = {
-            init() {
-                this.disableOldGestureSystem();
-                this.createGestureZones();
-                this.addEventListeners();
-            },
-
-            disableOldGestureSystem() {
-                // The new gesture system replaces the old system. This function
-                // ensures the old system's event handlers don't conflict.
-
-                // 1. Disable the old tap zones so they don't intercept clicks.
-                document.querySelectorAll('.quick-move-zone').forEach(zone => {
-                    zone.style.pointerEvents = 'none';
-                });
-
-                // 2. Overwrite the conflicting methods on the old Gestures object
-                //    to prevent double-tap and double-swipe conflicts.
-                if (typeof Gestures !== 'undefined' && Gestures.handleStart) {
-                    Gestures.handleStart = () => {};
-                    Gestures.handleMove = () => {};
-                    Gestures.handleEnd = () => {};
-                    Gestures.executeFlick = () => {};
-                    Gestures.toggleFocusMode = () => {};
-                }
-            },
-
-            createGestureZones() {
-                const appContainer = document.getElementById('app-container');
-                if (!appContainer) return;
-
-                const zones = ['up', 'down', 'left', 'right'];
-                zones.forEach(direction => {
-                    const zone = document.createElement('div');
-                    zone.id = `tri-${direction}`;
-                    zone.className = `tri ${direction}`;
-                    appContainer.appendChild(zone);
-                });
-            },
-
-            addEventListeners() {
-                const viewport = document.getElementById('image-viewport');
-                if (!viewport) return;
-
-                let startPos = { x: 0, y: 0 };
-                let isDragging = false;
-                let gestureStarted = false;
-
-                const handleStart = (e) => {
-                    if (e.touches && e.touches.length > 1) return;
-                    const point = e.touches ? e.touches[0] : e;
-                    startPos = { x: point.clientX, y: point.clientY };
-                    isDragging = true;
-                    gestureStarted = false;
-                };
-
-                const handleMove = (e) => {
-                    if (!isDragging) return;
-                    e.preventDefault();
-                    const point = e.touches ? e.touches[0] : e;
-                    const deltaX = point.clientX - startPos.x;
-                    const deltaY = point.clientY - startPos.y;
-
-                    if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) > 30) {
-                        gestureStarted = true;
-                        const direction = this.determineSwipeDirection(deltaX, deltaY);
-                        this.showGlow(direction);
-                    }
-                };
-
-                const handleEnd = (e) => {
-                    if (!isDragging) return;
-                    isDragging = false;
-                    this.hideGlow();
-
-                    const point = e.changedTouches ? e.changedTouches[0] : e;
-                    const deltaX = point.clientX - startPos.x;
-                    const deltaY = point.clientY - startPos.y;
-
-                    if (gestureStarted && Math.sqrt(deltaX * deltaX + deltaY * deltaY) > 80) {
-                        const direction = this.determineSwipeDirection(deltaX, deltaY);
-                        const stack = this.directionToStack(direction);
-                        if (stack && typeof Core !== 'undefined' && Core.moveToStack) {
-                            Core.moveToStack(stack);
-                        }
-                    } else if (!gestureStarted) {
-                        // This was a tap, toggle the HUD
-                        const appContainer = document.getElementById('app-container');
-                        appContainer.classList.toggle('hud-hidden');
-                    }
-                };
-
-                viewport.addEventListener('pointerdown', handleStart);
-                viewport.addEventListener('pointermove', handleMove);
-                viewport.addEventListener('pointerup', handleEnd);
-                viewport.addEventListener('pointercancel', handleEnd);
-            },
-
-            determineSwipeDirection(deltaX, deltaY) {
-                if (Math.abs(deltaX) > Math.abs(deltaY)) {
-                    return deltaX > 0 ? 'right' : 'left';
-                }
-                return deltaY > 0 ? 'down' : 'top';
-            },
-
-            directionToStack(direction) {
-                const mapping = { top: 'priority', bottom: 'trash', left: 'in', right: 'out' };
-                return mapping[direction];
-            },
-
-            showGlow(direction) {
-                this.hideGlow();
-                const zone = document.getElementById(`tri-${direction}`);
-                if (zone) zone.classList.add('glow');
-            },
-
-            hideGlow() {
-                document.querySelectorAll('.tri').forEach(z => z.classList.remove('glow'));
-            }
-        };
-
-        document.addEventListener('DOMContentLoaded', () => {
-            // We need to make sure the original app is initialized first
-            // A simple timeout will work for this isolated approach
-            setTimeout(() => {
-                NewGestureUI.init();
-            }, 500);
-        });
     </script>
 </body>
 </html>
