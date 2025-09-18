@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Single‑File Blob Worker Sync Demo (Data URL fix)</title>
+<style>
+  :root{--bg:#0f172a;--fg:#e5e7eb;--card:#111827;--muted:#9ca3af;--border:#1f2937;--accent:#22c55e;--warn:#f59e0b;--err:#ef4444}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto}
+  header{padding:14px 16px;border-bottom:1px solid var(--border);background:#0b1222} h1{margin:0;font-size:18px}
+  main{max-width:960px;margin:0 auto;padding:16px;display:grid;gap:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button{background:#1f2937;color:var(--fg);border:1px solid #374151;border-radius:8px;padding:8px 12px;cursor:pointer}
+  button.primary{background:#2563eb;border-color:#2563eb}
+  code,pre{background:#0b1222;border:1px solid var(--border);border-radius:8px}
+  code{padding:2px 6px} pre{padding:10px;max-height:220px;overflow:auto}
+  ul.kv{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}
+  .tag{display:inline-block;background:#0b1222;border:1px solid var(--border);border-radius:999px;color:var(--muted);padding:4px 8px;font-size:12px}
+  .ok{color:var(--accent)} .warn{color:var(--warn)} .err{color:var(--err)}
+  table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid var(--border);padding:8px 6px;text-align:left}
+</style>
+</head>
+<body>
+<header><h1>Single‑File HTML + Blob Web Worker • Incremental Sync (Data URL)</h1></header>
+
+<main>
+  <section class="card">
+    <div class="row"><span class="tag">Single file</span><span class="tag">Inline JS/CSS</span><span class="tag">Worker from Blob</span><span class="tag">Data URL fetch</span></div>
+    <p>This build fixes <code>Failed to fetch</code> by using a <strong>data:</strong> URL for the simulated cloud JSON (some environments block cross-context <code>blob:</code> fetches). Replace <code>makeCloudUrl()</code> with your HTTPS API for production.</p>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <button id="start" class="primary">Start worker</button>
+      <button id="stop">Stop worker</button>
+      <button id="bump">Simulate cloud update</button>
+      <button id="reset">Reset local DB</button>
+      <span id="status" class="tag">status: <span id="sText">stopped</span></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <ul class="kv">
+      <li>Cloud version: <code id="cloudV">-</code></li>
+      <li>Local version: <code id="localV">-</code></li>
+      <li>Last sync: <code id="lastSync">never</code></li>
+      <li>Interval: <code id="interval">2s</code></li>
+      <li>Fetch URL scheme: <code id="scheme">-</code></li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h3>Items (from IndexedDB)</h3>
+    <table id="itemsTbl">
+      <thead><tr><th>ID</th><th>Value</th></tr></thead>
+      <tbody id="itemsBody"><tr><td colspan="2"><em>empty</em></td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Event log</h3>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+// ---------- tiny DOM helpers ----------
+const $ = s => document.querySelector(s);
+const log = (m) => { const t = new Date().toLocaleTimeString(); const el = $('#log'); el.textContent += `[${t}] ${m}\n`; el.scrollTop = el.scrollHeight; };
+const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+// ---------- IndexedDB helpers ----------
+const DB_NAME='sfw-sync-demo', ST_DATA='data', ST_META='meta';
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore(ST_DATA, { keyPath: 'id' });
+      db.createObjectStore(ST_META, { keyPath: 'key' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function idbGetAll(db) {
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(ST_DATA, 'readonly').objectStore(ST_DATA).getAll();
+    tx.onsuccess = () => resolve(tx.result || []);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbApply(db, upserts, deletes) {
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction([ST_DATA, ST_META], 'readwrite');
+    const s = tx.objectStore(ST_DATA);
+    for (const x of upserts) s.put(x);
+    for (const id of deletes) s.delete(id);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbGetMeta(db, key) {
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(ST_META, 'readonly').objectStore(ST_META).get(key);
+    tx.onsuccess = () => resolve(tx.result ? tx.result.value : null);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbSetMeta(db, key, value) {
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(ST_META, 'readwrite').objectStore(ST_META).put({ key, value });
+    tx.onsuccess = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbReset() {
+  await new Promise((resolve,reject)=>{
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ---------- Simulated “cloud” JSON via DATA: URL (robust across contexts) ----------
+let cloud = { version: 1, items: [ {id:'a', value:'hello'}, {id:'b', value:'world'} ] };
+let cloudUrl = makeCloudUrl();
+function makeCloudUrl() {
+  const json = JSON.stringify(cloud);
+  // base64-encode ASCII-safe JSON
+  const b64 = btoa(unescape(encodeURIComponent(json)));
+  const url = 'data:application/json;base64,' + b64;
+  setTxt('scheme', url.slice(0, 4)); // 'data'
+  return url;
+}
+function bumpCloud() {
+  cloud = {
+    version: cloud.version + 1,
+    items: [ {id:'b', value:'world-'+cloud.version}, {id:'c', value:'new@'+cloud.version} ]
+  };
+  cloudUrl = makeCloudUrl();
+  setTxt('cloudV', String(cloud.version));
+  log('Cloud bumped to v'+cloud.version);
+  if (worker) worker.postMessage({ type:'cloud-url', url: cloudUrl });
+}
+
+// ---------- Worker (classic) built from Blob ----------
+const workerSrc = `
+  let cloudUrl = null;
+  let lastVersion = 0;
+  const INTERVAL = 2000;
+  let timer = null;
+
+  self.onmessage = async (e) => {
+    const m = e.data || {};
+    if (m.type === 'start') {
+      cloudUrl = m.url;
+      clear();
+      timer = setInterval(check, INTERVAL);
+      postMessage({ type:'status', status:'started', interval: INTERVAL });
+      await check();
+    } else if (m.type === 'stop') {
+      clear();
+      postMessage({ type:'status', status:'stopped' });
+    } else if (m.type === 'cloud-url') {
+      cloudUrl = m.url;
+      await check();
+    }
+  };
+
+  function clear(){ if (timer) { clearInterval(timer); timer=null; } }
+
+  async function check(){
+    try{
+      const r = await fetch(cloudUrl, { cache:'no-store' });
+      const remote = await r.json(); // {version, items}
+      if ((remote.version||0) > lastVersion) {
+        lastVersion = remote.version;
+        postMessage({ type:'snapshot', version: remote.version, items: remote.items||[] });
+      } else {
+        postMessage({ type:'noop', version: remote.version||0 });
+      }
+    } catch (err) {
+      postMessage({ type:'error', message: String(err) });
+    }
+  }
+`;
+const wUrl = URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' }));
+let worker = null;
+
+// ---------- Main orchestration ----------
+let db;
+(async function boot(){
+  db = await idbOpen();
+  const v = await idbGetMeta(db, 'version');
+  setTxt('localV', v == null ? '0' : String(v));
+  setTxt('cloudV', String(cloud.version));
+  setTxt('interval', '2s');
+  renderItems(await idbGetAll(db));
+  bindUI();
+  startWorker(); // autostart
+})().catch(e => { log('boot error: '+e); });
+
+function bindUI(){
+  $('#start').onclick = startWorker;
+  $('#stop').onclick = stopWorker;
+  $('#bump').onclick = bumpCloud;
+  $('#reset').onclick = async () => {
+    await idbReset(); db = await idbOpen(); setTxt('localV','0'); setTxt('lastSync','never'); renderItems([]); log('Local DB reset.');
+  };
+}
+function startWorker(){
+  if (worker) return;
+  worker = new Worker(wUrl); // classic worker
+  setTxt('sText','started');
+  worker.onmessage = async (e) => {
+    const m = e.data || {};
+    if (m.type === 'status') {
+      log('Worker '+m.status+(m.interval?` @ ${m.interval}ms`:''));
+    } else if (m.type === 'snapshot') {
+      const current = await idbGetAll(db);
+      const have = new Set(current.map(x=>x.id));
+      const want = new Set(m.items.map(x=>x.id));
+      const deletes = [...have].filter(id => !want.has(id));
+      await idbApply(db, m.items, deletes);
+      await idbSetMeta(db, 'version', m.version);
+      setTxt('localV', String(m.version));
+      setTxt('lastSync', new Date().toLocaleTimeString());
+      renderItems(await idbGetAll(db));
+      log(`Applied snapshot v${m.version}: upserts=${m.items.length}, deletes=${deletes.length}`);
+    } else if (m.type === 'noop') {
+      log('No change (remote v'+m.version+')');
+    } else if (m.type === 'error') {
+      log('Worker error: '+m.message);
+    }
+  };
+  worker.onerror = (e) => { log('Worker thrown error: '+e.message); };
+  worker.postMessage({ type:'start', url: cloudUrl });
+}
+function stopWorker(){
+  if (!worker) return;
+  worker.postMessage({ type:'stop' });
+  worker.terminate();
+  worker = null;
+  setTxt('sText','stopped');
+  log('Worker terminated.');
+}
+function renderItems(items){
+  const tb = $('#itemsBody');
+  if (!items || !items.length) { tb.innerHTML = '<tr><td colspan="2"><em>empty</em></td></tr>'; return; }
+  tb.innerHTML = items.map(it => `<tr><td>${it.id}</td><td>${it.value}</td></tr>`).join('');
+}
+</script>
+</body>
+</html>
