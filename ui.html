@@ -1,0 +1,384 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Triangular Touch Zones — Long-Press Hub Toggle (v6)</title>
+  <style>
+    :root{
+      --bg:#0f1115; --fg:#e8e8ea; --muted:#a0a0a7; --border:#1e2230;
+      --up:#2e8b57; --down:#8b2e2e; --left:#205db2; --right:#b28a20;
+      --baseOpacity:.18; --glowOpacity:.85;
+    }
+    *{box-sizing:border-box}
+    html,body{
+      height:100%; margin:0; background:var(--bg); color:var(--fg);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      overflow:hidden;
+    }
+    .app{height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr auto}header,footer{
+  background:#0b0d12; border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border); padding:10px 14px
+}
+header{border-top:none}
+.title{font-weight:700}
+.hint{color:var(--muted);font-size:12px}
+
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;
+  border:1px solid var(--border);border-radius:999px;background:#0b0d12;
+  color:var(--muted);font-size:12px
+}
+.count{color:var(--fg);font-weight:700}
+.btn{
+  appearance:none;border:1px solid var(--border);border-radius:10px;
+  background:#111520;color:var(--fg);padding:8px 12px;font-weight:600;cursor:pointer
+}
+
+/* Interactive stages */
+.stage{
+  position:relative;height:100%;user-select:none;-webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;touch-action:none;outline:none;overflow:hidden
+}
+.modeBanner{
+  position:absolute;top:8px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.35);border:1px solid var(--border);color:#fff;
+  padding:4px 10px;border-radius:999px;font-size:12px;z-index:6
+}
+
+/* Screen A: four triangles always visible */
+.tri{position:absolute;inset:0;pointer-events:none;opacity:var(--baseOpacity)}
+.tri.up    {clip-path:polygon(0% 0%, 100% 0%, 50% 50%); background:var(--up)}
+.tri.right {clip-path:polygon(100% 0%, 100% 100%, 50% 50%); background:var(--right)}
+.tri.down  {clip-path:polygon(0% 100%, 100% 100%, 50% 50%); background:var(--down)}
+.tri.left  {clip-path:polygon(0% 0%, 0% 100%, 50% 50%); background:var(--left)}
+.glow{
+  opacity:var(--glowOpacity)!important;
+  box-shadow:0 0 18px 6px rgba(255,255,255,0.18) inset, 0 0 12px rgba(255,255,255,0.15);
+  transition:opacity .12s ease-out
+}
+.deglow{opacity:var(--baseOpacity);transition:opacity .25s ease-in}
+
+/* Center hub (long-press to toggle) */
+.hub{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(14vw,14vh);height:min(14vw,14vh);border-radius:50%;
+  border:1px dashed #3a4359;background:rgba(255,255,255,.04);z-index:5;
+  display:grid;place-items:center;color:#9aa3b5;font-size:12px;pointer-events:none
+}
+
+/* Screen B: left/right halves always visible */
+.half{
+  position:absolute;top:10px;bottom:10px;border:1px solid var(--border);border-radius:10px;
+  pointer-events:none;opacity:var(--baseOpacity)
+}
+.half.left {left:10px;right:calc(50% + 5px);background:var(--left)}
+.half.right{left:calc(50% + 5px);right:10px;background:var(--right)}
+
+/* Comet trail (denser & longer) */
+.trail{
+  position:absolute;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;
+  background:radial-gradient(circle, rgba(255,255,255,.95), rgba(255,255,255,0) 72%);
+  pointer-events:none;z-index:7;opacity:.98;animation:fadeTrail .7s ease-out forwards;
+  mix-blend-mode:screen
+}
+@keyframes fadeTrail{to{opacity:0;transform:scale(1.8)}}
+
+/* Touch ripple */
+.ripple{
+  position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;
+  background:radial-gradient(circle, rgba(255,255,255,.55), rgba(255,255,255,0) 70%);
+  pointer-events:none;z-index:7;opacity:.85;animation:ripple .4s ease-out forwards;
+  mix-blend-mode:screen
+}
+@keyframes ripple{0%{transform:scale(.6);opacity:.95}100%{transform:scale(2.1);opacity:0}}
+
+/* Log */
+.log{
+  background:#0b0d12;border:1px solid var(--border);border-radius:10px;padding:10px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;
+  max-height:200px;overflow:auto;color:#d9d9df
+}
+.entry{padding:6px 8px;border-radius:8px;margin-bottom:6px}
+.entry.new{background:#1f2a3a;outline:1px solid #2c3a52}
+
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="title">Triangular Touch Zones — Long-Press Hub Toggle</div>
+      <div class="hint">
+        A: triangular tap zones (base on each edge, apex at center). B: left/right halves.
+        Panels always visible & glow on activation. <b>Comet trail: denser (8 ms) & longer (~0.7 s)</b>.
+        Long-press the center hub to toggle A ↔ B.
+      </div>
+    </header><!-- Screen A (triangles) -->
+<div id="screenA" class="stage" role="application" aria-label="Screen A. Triangles. Long-press center hub to switch to Screen B.">
+  <div class="modeBanner">Screen A — Triangles</div>
+  <div id="triUp"    class="tri up"></div>
+  <div id="triRight" class="tri right"></div>
+  <div id="triDown"  class="tri down"></div>
+  <div id="triLeft"  class="tri left"></div>
+  <div class="hub"><div>Long-press to toggle</div></div>
+</div>
+
+<!-- Screen B (halves) -->
+<div id="screenB" class="stage" role="application" aria-label="Screen B. Left/Right. Long-press center hub to return to Screen A." hidden>
+  <div class="modeBanner">Screen B — Left/Right</div>
+  <div id="halfLeft"  class="half left"></div>
+  <div id="halfRight" class="half right"></div>
+  <div class="hub"><div>Long-press to toggle</div></div>
+</div>
+
+<footer>
+  <div class="row">
+    <button id="toggle" class="btn" type="button">Toggle</button>
+    <button id="reset"  class="btn" type="button">Reset</button>
+    <span class="badge">Up: <span    id="cUp"    class="count">0</span></span>
+    <span class="badge">Down: <span  id="cDown"  class="count">0</span></span>
+    <span class="badge">Left: <span  id="cLeft"  class="count">0</span></span>
+    <span class="badge">Right: <span id="cRight" class="count">0</span></span>
+  </div>
+  <div id="log" class="log" aria-live="polite"></div>
+</footer>
+
+  </div>  <script>
+  (function(){
+    // Elements
+    const screenA = document.getElementById('screenA');
+    const screenB = document.getElementById('screenB');
+    const tri  = {
+      up:    document.getElementById('triUp'),
+      right: document.getElementById('triRight'),
+      down:  document.getElementById('triDown'),
+      left:  document.getElementById('triLeft')
+    };
+    const half = {
+      left:  document.getElementById('halfLeft'),
+      right: document.getElementById('halfRight')
+    };
+    const cUp    = document.getElementById('cUp');
+    const cDown  = document.getElementById('cDown');
+    const cLeft  = document.getElementById('cLeft');
+    const cRight = document.getElementById('cRight');
+    const logEl  = document.getElementById('log');
+
+    // State
+    let onScreenA = true;
+    let counts = { up:0, down:0, left:0, right:0 };
+
+    // Utils
+    function log(msg){
+      const t = new Date().toLocaleTimeString();
+      const div = document.createElement('div');
+      div.className = 'entry new';
+      div.textContent = `[${t}] ${msg}`;
+      const first = logEl.firstElementChild;
+      if (first) first.classList.remove('new');
+      logEl.insertBefore(div, logEl.firstChild);
+      logEl.scrollTop = 0;
+      while (logEl.childElementCount > 150) logEl.removeChild(logEl.lastElementChild);
+    }
+    function vibrate(p){ try{ if(navigator.vibrate) navigator.vibrate(p); }catch(_){} }
+    function glowOn(el){ if(el) el.classList.add('glow'); }
+    function glowOff(el){ if(el){ el.classList.remove('glow'); el.classList.add('deglow'); setTimeout(()=>el.classList.remove('deglow'), 260); } }
+    function inc(dir){
+      counts[dir]++; cUp.textContent=counts.up; cDown.textContent=counts.down; cLeft.textContent=counts.left; cRight.textContent=counts.right;
+    }
+    function highlightA(dir, src){
+      inc(dir); vibrate(10); log(`${dir.toUpperCase()} (${src})`);
+      const el = tri[dir]; glowOn(el); setTimeout(()=>glowOff(el), 220);
+    }
+    function highlightB(dir, src){
+      if(dir!=='left' && dir!=='right') return;
+      inc(dir); vibrate(10); log(`${dir.toUpperCase()} (${src}) [B]`);
+      const el = half[dir]; glowOn(el); setTimeout(()=>glowOff(el), 220);
+    }
+    function setScreen(a){
+      onScreenA = a; screenA.hidden = !a; screenB.hidden = a;
+      (a?screenA:screenB).focus({preventScroll:true});
+      log('Switched to ' + (a?'Screen A':'Screen B'));
+    }
+
+    // Geometry: barycentric point-in-triangle
+    function pointInTriangle(px,py, ax,ay, bx,by, cx,cy){
+      const v0x = cx-ax, v0y = cy-ay;
+      const v1x = bx-ax, v1y = by-ay;
+      const v2x = px-ax, v2y = py-ay;
+      const dot00 = v0x*v0x + v0y*v0y;
+      const dot01 = v0x*v1x + v0y*v1y;
+      const dot02 = v0x*v2x + v0y*v2y;
+      const dot11 = v1x*v1x + v1y*v1y;
+      const dot12 = v1x*v2x + v1y*v2y;
+      const invDen = 1 / (dot00*dot11 - dot01*dot01);
+      const u = (dot11*dot02 - dot01*dot12) * invDen;
+      const v = (dot00*dot12 - dot01*dot02) * invDen;
+      return (u >= 0) && (v >= 0) && (u + v <= 1);
+    }
+    function hitTriangle(stage, x, y){
+      const r = stage.getBoundingClientRect();
+      const fx = (x - r.left) / r.width;
+      const fy = (y - r.top)  / r.height;
+      const cx=0.5, cy=0.5;
+      const inUp    = pointInTriangle(fx,fy, 0,0, 1,0, cx,cy);
+      const inRight = pointInTriangle(fx,fy, 1,0, 1,1, cx,cy);
+      const inDown  = pointInTriangle(fx,fy, 0,1, 1,1, cx,cy);
+      const inLeft  = pointInTriangle(fx,fy, 0,0, 0,1, cx,cy);
+      if (inUp && !inRight && !inDown && !inLeft)  return 'up';
+      if (inRight && !inUp && !inDown && !inLeft)  return 'right';
+      if (inDown && !inUp && !inRight && !inLeft)  return 'down';
+      if (inLeft && !inUp && !inRight && !inDown)  return 'left';
+      if (inUp || inRight || inDown || inLeft){
+        // Tie/border: resolve by vector from center
+        const dx = fx - 0.5, dy = fy - 0.5;
+        if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+        return dy > 0 ? 'down' : 'up';
+      }
+      return null;
+    }
+
+    // Visuals: trail & ripple
+    const TRAIL_INTERVAL_MS = 8;    // denser emission
+    const TRAIL_LIFETIME_MS = 800;  // longer linger
+    let trailTimer = 0;
+
+    function dropTrail(stage, x, y){
+      const r = stage.getBoundingClientRect();
+      const dot = document.createElement('div');
+      dot.className = 'trail';
+      dot.style.left = (x - r.left) + 'px';
+      dot.style.top  = (y - r.top)  + 'px';
+      stage.appendChild(dot);
+      setTimeout(()=>dot.remove(), TRAIL_LIFETIME_MS);
+    }
+    function dropRipple(stage, x, y){
+      const r = stage.getBoundingClientRect();
+      const rp = document.createElement('div');
+      rp.className = 'ripple';
+      rp.style.left = (x - r.left) + 'px';
+      rp.style.top  = (y - r.top)  + 'px';
+      stage.appendChild(rp);
+      setTimeout(()=>rp.remove(), 420);
+    }
+
+    // Hub long-press to toggle (no double-tap)
+    const LONG_PRESS_MS = 550;
+    const LONG_PRESS_MOVE_CANCEL_PX = 10;
+    function inHub(stage, x, y){
+      const r = stage.getBoundingClientRect();
+      const cx = r.left + r.width/2, cy = r.top + r.height/2;
+      const radius = Math.min(r.width, r.height) * 0.08; // 8%
+      return Math.hypot(x-cx, y-cy) <= radius;
+    }
+
+    // Gesture thresholds
+    const TAP_MAX_DURATION_MS = 250;
+    const TAP_MAX_MOVE_PX     = 10;
+    const SWIPE_MIN_PX        = 56;
+    const AXIS_RATIO          = 1.25;
+
+    // Attach handlers per screen
+    function attachStageHandlers(stage, mode){
+      let pid = null, sx=0, sy=0, st=0, swiped=false, pressTimer=null;
+
+      stage.addEventListener('pointerdown', (e)=>{
+        if(pid!==null) return;
+        pid = e.pointerId; sx = e.clientX; sy = e.clientY; st = performance.now(); swiped=false;
+        dropRipple(stage, sx, sy);
+        dropTrail(stage, sx, sy);
+        // start long-press if inside hub
+        if (inHub(stage, sx, sy)){
+          pressTimer = setTimeout(()=>{
+            pressTimer = null;
+            setScreen(!onScreenA);
+            vibrate([8,40,8]);
+          }, LONG_PRESS_MS);
+        }
+      }, {passive:true});
+
+      stage.addEventListener('pointermove', (e)=>{
+        if(e.pointerId!==pid) return;
+        const dx = e.clientX - sx, dy = e.clientY - sy;
+        const ax = Math.abs(dx), ay = Math.abs(dy);
+
+        // Cancel long-press on movement
+        if (pressTimer && Math.hypot(dx,dy) > LONG_PRESS_MOVE_CANCEL_PX){
+          clearTimeout(pressTimer); pressTimer = null;
+        }
+
+        // Comet trail (throttled)
+        if (!trailTimer){
+          dropTrail(stage, e.clientX, e.clientY);
+          trailTimer = setTimeout(()=>trailTimer=0, TRAIL_INTERVAL_MS);
+        }
+
+        if (swiped) return;
+
+        if (mode==='B'){
+          if (ax > SWIPE_MIN_PX && ax > ay*AXIS_RATIO){
+            swiped = true;
+            highlightB(dx < 0 ? 'left' : 'right', 'swipe');
+          }
+          return;
+        }
+
+        // mode A: allow both horizontal and vertical
+        if (ax > SWIPE_MIN_PX && ax > ay*AXIS_RATIO){
+          swiped = true; highlightA(dx < 0 ? 'left' : 'right', 'swipe');
+        } else if (ay > SWIPE_MIN_PX && ay > ax*AXIS_RATIO){
+          swiped = true; highlightA(dy < 0 ? 'up'   : 'down',  'swipe');
+        }
+      }, {passive:true});
+
+      function handleTap(x,y){
+        dropRipple(stage, x, y);
+        if (mode==='B'){
+          const rect = stage.getBoundingClientRect();
+          const fx = (x - rect.left) / rect.width;
+          highlightB(fx < 0.5 ? 'left' : 'right', 'tap');
+        } else {
+          const dir = hitTriangle(stage, x, y);
+          if (dir) highlightA(dir, 'tap');
+          else log('Tap outside triangles (ignored)');
+        }
+      }
+
+      stage.addEventListener('pointerup', (e)=>{
+        if(e.pointerId!==pid) return;
+        if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
+        dropTrail(stage, (e.clientX??sx), (e.clientY??sy));
+        const dur = performance.now() - st;
+        const dx = (e.clientX??sx) - sx, dy = (e.clientY??sy) - sy;
+        if (!swiped && dur <= TAP_MAX_DURATION_MS && Math.hypot(dx,dy) <= TAP_MAX_MOVE_PX){
+          handleTap(e.clientX??sx, e.clientY??sy);
+        }
+        pid = null;
+      }, {passive:true});
+
+      stage.addEventListener('pointercancel', ()=>{
+        if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
+        pid = null;
+      }, {passive:true});
+    }
+
+    attachStageHandlers(screenA, 'A');
+    attachStageHandlers(screenB, 'B');
+
+    // Buttons
+    document.getElementById('toggle').addEventListener('click', ()=>setScreen(!onScreenA), {passive:true});
+    document.getElementById('reset').addEventListener('click', ()=>{
+      counts={up:0,down:0,left:0,right:0};
+      cUp.textContent=0; cDown.textContent=0; cLeft.textContent=0; cRight.textContent=0;
+      log('Counters reset');
+    }, {passive:true});
+
+    // Init
+    setScreen(true);
+    log('Ready. Triangular zones (A) / Left-Right halves (B). Hub long-press toggles modes. Denser comet trail + ripple enabled.');
+  })();
+  </script></body>
+</html>
