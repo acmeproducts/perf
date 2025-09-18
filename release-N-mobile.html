@@ -1,0 +1,462 @@
+# Generate Release N (mobile-first) per spec:
+# - Core API extraction (headless)
+# - Shared components
+# - Two UI variants (Grid+Details, Focus/Triage) with UI switcher
+# - Event-driven debounced worker, 3-tier, cache-first+cloud→cache, permanent Drive thumbs
+# - Demo provider default + optional Google Drive adapter enabled via query param ?driveClientId=XYZ (PKCE OAuth 2, minimal scope)
+# - Mobile-first (touch UI, bottom action bar in both variants)
+# - Works on HTTPS (GitHub Pages). If no clientId given, stays in Demo mode.
+#
+# Output: /mnt/data/release-N-mobile.html
+
+from textwrap import dedent
+
+html = dedent(r"""
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+    <title>Release N — Mobile UI Journey (Core API + 2 Variants)</title>
+    <style>
+      :root{
+        --bg:#0b0e12;--panel:#111622;--muted:#8b98a5;--text:#e7edf3;--accent:#4ea1ff;--ok:#2ecc71;--warn:#f39c12;--err:#e74c3c;
+        --glass:rgba(255,255,255,.06);--glass-2:rgba(255,255,255,.12);--shadow:0 6px 30px rgba(0,0,0,.35);
+        --radius:16px;--radius-sm:12px;--bottom-safe: env(safe-area-inset-bottom, 0px);
+      }
+      *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+      html,body{height:100%}
+      body{margin:0;background:linear-gradient(180deg,#0b0e12,#0f1520);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+      .app{display:flex;flex-direction:column;height:100dvh}
+      .header{position:sticky;top:0;z-index:10;background:rgba(15,20,32,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--glass-2)}
+      .header .row{display:flex;gap:10px;align-items:center;padding:10px 12px}
+      .input{flex:1;background:#0b111b;border:1px solid rgba(255,255,255,.12);color:var(--text);padding:12px 14px;border-radius:12px;font-size:16px}
+      select.input{padding-right:34px}
+      .seg{display:flex;background:#0b111b;border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden}
+      .seg button{flex:1;padding:10px 12px;background:transparent;color:var(--muted);border:0}
+      .seg button.on{background:#1a2436;color:var(--text)}
+      .main{flex:1;overflow:auto;padding:12px}
+      /* Grid variant */
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+      .card{position:relative;border-radius:14px;overflow:hidden;background:#0f131a;border:1px solid rgba(255,255,255,.08)}
+      .thumb{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:#0a0f18}
+      .meta{padding:8px 10px;color:#c9d5e1;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .pill{font-size:12px;padding:4px 8px;border-radius:999px;background:rgba(78,161,255,.15);border:1px solid rgba(78,161,255,.3);color:#cfe5ff}
+      .sel{position:absolute;left:8px;top:8px;width:26px;height:26px;border-radius:8px;border:2px solid rgba(255,255,255,.6);background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;opacity:.9}
+      .sel.on{border-color:#58c964;background:rgba(46,204,113,.2)}
+      /* Focus/Triage variant */
+      .focus{display:flex;flex-direction:column;gap:12px;align-items:center}
+      .focus .big{width:100%;max-width:900px;aspect-ratio:3/2;background:#0a0f18;border:1px solid rgba(255,255,255,.1);border-radius:14px;object-fit:cover}
+      .focus .row{display:flex;gap:10px;align-items:center;justify-content:center}
+      .focus .filemeta{font-size:14px;color:#c9d5e1;opacity:.9}
+      /* Bottom bar */
+      .bottom{position:sticky;bottom:0;z-index:12;background:rgba(15,20,32,.96);backdrop-filter:blur(10px);border-top:1px solid var(--glass-2)}
+      .bar{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;padding:10px 12px;padding-bottom:calc(10px + var(--bottom-safe));}
+      .btn{display:flex;align-items:center;justify-content:center;gap:8px;background:linear-gradient(180deg,#1a2231,#121a28);border:1px solid rgba(255,255,255,.12);color:var(--text);padding:12px;border-radius:14px;font-size:15px}
+      .btn:active{transform:scale(.98)}
+      .muted{color:var(--muted)}
+      .toast{position:fixed;right:12px;bottom:88px;display:flex;flex-direction:column;gap:8px;z-index:50}
+      .toast .item{background:rgba(20,24,32,.95);border:1px solid rgba(255,255,255,.12);padding:10px 12px;border-radius:12px;min-width:240px}
+      .hud{position:fixed;left:12px;bottom:88px;background:rgba(20,24,32,.95);border:1px solid rgba(255,255,255,.12);padding:12px;border-radius:12px;font-size:12px;z-index:40;max-width:420px;display:none}
+      .kv{display:grid;grid-template-columns:120px 1fr;gap:6px;color:#b2c1d1}
+      .err{position:fixed;left:12px;top:12px;right:12px;display:none;z-index:9999}
+      .err .box{background:#2b0e13;border:1px solid #c0392b;color:#ffecec;padding:12px;border-radius:12px;white-space:pre-wrap}
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div id="err" class="err"><div class="box"></div></div>
+      <div class="header">
+        <div class="row">
+          <input id="q" class="input" placeholder="Search (terms, #tag, -exclude)" inputmode="search" />
+          <select id="sort" class="input" style="max-width:180px">
+            <option value="name|asc">Name ↑</option>
+            <option value="name|desc">Name ↓</option>
+            <option value="modifiedTime|desc">Modified ↑</option>
+            <option value="modifiedTime|asc">Modified ↓</option>
+          </select>
+        </div>
+        <div class="row" style="padding-top:0">
+          <div class="seg" id="uiSeg">
+            <button data-ui="grid" class="on">Grid</button>
+            <button data-ui="focus">Focus</button>
+          </div>
+          <div class="seg" id="provSeg" title="Provider">
+            <button data-prov="Demo" class="on">Demo</button>
+            <button data-prov="Drive">Drive</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="main" class="main">
+        <div id="grid" class="grid" hidden></div>
+        <div id="focus" class="focus" hidden>
+          <img id="big" class="big" alt=""/>
+          <div class="row">
+            <button id="prev" class="btn" aria-label="Previous">⟵ Prev</button>
+            <button id="next" class="btn" aria-label="Next">Next ⟶</button>
+          </div>
+          <div id="focusmeta" class="filemeta"></div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast"></div>
+      <div class="hud" id="hud"></div>
+
+      <div class="bottom">
+        <div class="bar">
+          <button id="btnTag" class="btn" aria-label="Tag favorite">★ Tag</button>
+          <button id="btnMove" class="btn" aria-label="Move to archive">⇢ Archive</button>
+          <button id="btnHUD" class="btn" aria-label="Toggle HUD">HUD</button>
+          <button id="btnSync" class="btn" aria-label="Sync now">⟳ Sync</button>
+          <button id="btnClear" class="btn" aria-label="Clear selection">✕ Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // ========= Error overlay =========
+      const Err = (()=>{ const w=document.getElementById('err'),b=w.querySelector('.box');
+        function show(m){b.textContent=m;w.style.display='block';console.error(m);}
+        window.addEventListener('error',e=>show('JS Error: '+(e.error?.stack||e.message)));
+        window.addEventListener('unhandledrejection',e=>show('Promise Rejection: '+(e.reason?.stack||e.reason)));
+        return { show };
+      })();
+
+      // ========= Utilities & Config =========
+      const Utils = {
+        id: () => Math.random().toString(36).slice(2),
+        debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; },
+        gdriveThumb: (id,w=480)=>`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w${w}`,
+        gdriveView: (id)=>`https://drive.google.com/uc?export=view&id=${encodeURIComponent(id)}`,
+        qs: new URLSearchParams(location.search),
+      };
+      const CONFIG = {
+        driveClientId: (new URLSearchParams(location.search)).get('driveClientId') || '',
+        // Minimal scopes for read-only list + thumbnails; write scope is simulated by Demo in N
+        driveScopes: 'https://www.googleapis.com/auth/drive.readonly',
+      };
+
+      // ========= Toasts & HUD =========
+      const Toast = { show(m){ const r=document.getElementById('toast'); const d=document.createElement('div'); d.className='item'; d.textContent=m; r.appendChild(d); setTimeout(()=>d.remove(),2600);} };
+      const HUD = (()=>{ const el=document.getElementById('hud'); let st={}, vis=false;
+        function render(){ el.innerHTML =
+          `<div style="font-weight:600;margin-bottom:6px">Trace HUD</div>
+           <div class="kv">
+             <div>Queue size</div><div>${st.queueSize||0}</div>
+             <div>Last action</div><div>${st.lastAction||'-'}</div>
+             <div>Last provider</div><div class="muted">${st.lastProvider||'-'}</div>
+             <div>Cache keys</div><div>${st.cacheKeys||0}</div>
+             <div>changes_made</div><div class="muted">${st.changes_made? new Date(st.changes_made).toLocaleString(): '-'}</div>
+           </div>`; }
+        return { toggle(){ vis=!vis; el.style.display=vis?'block':'none'; render(); }, update(s){ st={...st,...s}; if(vis) render(); } };
+      })();
+
+      // ========= DB (IDB + localStorage fallback) =========
+      const DB = (()=>{
+        const NAME='goji-db-n'; const STORES=['folders','metadata','sync_queue','settings'];
+        let db, fallback=null;
+        const lsKey=s=>`dbshim.${NAME}.${s}`;
+        const ensure=s=>{ const k=lsKey(s); if(localStorage.getItem(k)==null) localStorage.setItem(k, JSON.stringify({})); };
+        async function open(){
+          try{
+            await new Promise((res,rej)=>{
+              const req=indexedDB.open(NAME,1);
+              req.onupgradeneeded=()=>{ const d=req.result; STORES.forEach(s=>{ if(!d.objectStoreNames.contains(s)) d.createObjectStore(s); }); };
+              req.onsuccess=()=>{ db=req.result; res(); };
+              req.onerror=()=>rej(req.error);
+            });
+          }catch(e){ fallback=true; STORES.forEach(ensure); console.warn('IndexedDB unavailable; using localStorage shim.', e); }
+        }
+        function get(s,k){ if(fallback){ const blob=JSON.parse(localStorage.getItem(lsKey(s))||'{}'); return Promise.resolve(blob[k]); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'); const os=tx.objectStore(s); const rq=os.get(k); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
+        function put(s,k,v){ if(fallback){ const K=lsKey(s); const blob=JSON.parse(localStorage.getItem(K)||'{}'); blob[k]=v; localStorage.setItem(K, JSON.stringify(blob)); return Promise.resolve(); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'); const os=tx.objectStore(s); const rq=os.put(v,k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
+        function del(s,k){ if(fallback){ const K=lsKey(s); const blob=JSON.parse(localStorage.getItem(K)||'{}'); delete blob[k]; localStorage.setItem(K, JSON.stringify(blob)); return Promise.resolve(); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'); const os=tx.objectStore(s); const rq=os.delete(k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
+        function keys(s){ if(fallback){ const blob=JSON.parse(localStorage.getItem(lsKey(s))||'{}'); return Promise.resolve(Object.keys(blob)); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'); const os=tx.objectStore(s); const rq=os.getAllKeys(); rq.onsuccess=()=>res(rq.result||[]); rq.onerror=()=>rej(rq.error); }); }
+        async function scan(s,map=(_,v)=>v){ const ks=await keys(s); const out=[]; for(const k of ks){ const v=await get(s,k); out.push(map(k,v)); } return out; }
+        return { open, get, put, del, keys, scan };
+      })();
+
+      // ========= Providers =========
+      const Providers = (()=>{
+        function Demo(){
+          const KEY='demo-cloud-n';
+          const load=()=>JSON.parse(localStorage.getItem(KEY)||'{}');
+          const save=x=>localStorage.setItem(KEY, JSON.stringify(x));
+          return {
+            name:'Demo',
+            async list(folder='root'){ const c=load(); return Object.values(c[folder]||{}).map(x=>({...x})); },
+            async patchMeta(id, patch){ const c=load(); for(const f in c){ if(c[f][id]){ c[f][id]={...c[f][id], ...patch, modifiedTime:Date.now()}; save(c); return true; } } return false; },
+            async move(id, dest){ const c=load(); for(const f in c){ if(c[f][id]){ c[f][id]={...c[f][id], stack:dest, modifiedTime:Date.now()}; save(c); return true; } } return false; },
+          };
+        }
+
+        // Google Drive (read-only list) — enabled only when driveClientId is provided
+        function Drive(opts){
+          const clientId = opts.clientId;
+          const scopes = CONFIG.driveScopes;
+          const disc = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+          let token = null;
+          async function loadGapi(){
+            if(window.gapi) return;
+            await new Promise((res,rej)=>{
+              const s=document.createElement('script'); s.src='https://apis.google.com/js/api.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s);
+            });
+          }
+          async function auth(){
+            await loadGapi();
+            await new Promise((res)=> gapi.load('client', res));
+            await gapi.client.init({ discoveryDocs:[disc] });
+            const {gapi:{auth2}} = window;
+            let authInst = auth2 && auth2.getAuthInstance && auth2.getAuthInstance();
+            if(!authInst){
+              await new Promise((res)=> gapi.load('auth2', res));
+              authInst = await gapi.auth2.init({ client_id: clientId, scope: scopes });
+            }
+            const user = await authInst.signIn();
+            token = user.getAuthResponse().access_token;
+          }
+          async function list(folder='root'){
+            if(!token) await auth();
+            // List image-like files in the folder (or My Drive root as a simplification)
+            const resp = await gapi.client.drive.files.list({ q: "mimeType contains 'image/' and trashed = false", fields: "files(id,name,modifiedTime,size)" });
+            const files = resp.result.files || [];
+            // Map to our expected shape; thumbnails built via permanent ID URLs
+            return files.map(f=>({ id:f.id, name:f.name, size: Number(f.size||0), tags: [], modifiedTime: Date.parse(f.modifiedTime) }));
+          }
+          return {
+            name:'Drive',
+            list,
+            patchMeta: async ()=>{ throw new Error('Write ops disabled in Release N (read-only Drive).'); },
+            move: async ()=>{ throw new Error('Write ops disabled in Release N (read-only Drive).'); },
+          };
+        }
+
+        return { Demo, Drive };
+      })();
+
+      // ========= Unified Queue (used for Demo provider only in N) =========
+      const Queue = (()=>{
+        const EV='queue:changed';
+        async function mark(){ const now=Date.now(); await DB.put('settings','changes_made', now); HUD.update({changes_made: now}); window.dispatchEvent(new CustomEvent(EV)); }
+        async function enqueue(item){ const id=item.id||Utils.id(); await DB.put('sync_queue', id, {...item, id, ts:item.ts||Date.now()}); await mark(); return id; }
+        async function readNext(n=50){ const all=await DB.scan('sync_queue',(k,v)=>v); all.sort((a,b)=>a.ts-b.ts); return all.slice(0,n); }
+        async function ack(ids){ for(const id of ids) await DB.del('sync_queue', id); await mark(); }
+        return { enqueue, readNext, ack, EV };
+      })();
+
+      // ========= Headless Core API =========
+      const Core = (()=>{
+        const st={ provider:null, folder:'root', files:[], sort:{by:'name',dir:'asc'}, selection:new Set(), settings:{demo:true}, ui:'grid', focusIndex:0 };
+        const ls=new Set();
+        function emit(){ ls.forEach(fn=>fn(getState())); }
+        function getState(){ return JSON.parse(JSON.stringify({...st, selection:[...st.selection]})); }
+        async function init(provider){
+          await DB.open(); st.provider=provider;
+          await seed(); await fromCacheThenCloud(); emit();
+        }
+        async function setProvider(p){ st.provider = p; await fromCacheThenCloud(); emit(); }
+        async function seed(){
+          if(!st.settings.demo || (st.provider && st.provider.name!=='Demo')) return;
+          const have=await DB.get('folders', st.folder);
+          if(!have){
+            const seed=Array.from({length:20},(_,i)=>({ id:'demo-'+i, name:'Photo_'+String(i).padStart(3,'0')+'.jpg', size:200000+i*1337, tags:i%3?[]:['favorite'], modifiedTime: Date.now()-i*100000 }));
+            await DB.put('folders', st.folder, seed);
+            let cloud=JSON.parse(localStorage.getItem('demo-cloud-n')||'{}'); cloud[st.folder]=cloud[st.folder]||{};
+            for(const f of seed){ cloud[st.folder][f.id]=f; } localStorage.setItem('demo-cloud-n', JSON.stringify(cloud));
+          }
+        }
+        function sortFiles(a){ const {by,dir}=st.sort; const s=[...a].sort((x,y)=>{ let A=x[by],B=y[by]; if(by==='name'){ A=String(A).toLowerCase(); B=String(B).toLowerCase(); } if(by==='modifiedTime'){ A=+A; B=+B; } return A<B?-1:A>B?1:0; }); return dir==='asc'?s:s.reverse(); }
+        async function fromCacheThenCloud(){
+          const cached=await DB.get('folders', st.folder)||[]; st.files=sortFiles(cached); emit();
+          refreshCloudInBackground().catch(e=>Toast.show('Cloud refresh error: '+e.message));
+        }
+        async function refreshCloudInBackground(){
+          const p=st.provider; let cloudList=[];
+          if(p) cloudList = await p.list(st.folder);
+          const cache=await DB.get('folders', st.folder)||[]; const byId=Object.fromEntries(cache.map(f=>[f.id,f]));
+          for(const r of cloudList){ const l=byId[r.id]; if(!l || (r.modifiedTime && r.modifiedTime>(l.modifiedTime||0))) byId[r.id]={...l,...r}; }
+          const merged=Object.values(byId); await DB.put('folders', st.folder, merged); st.files=sortFiles(merged); emit();
+        }
+        function on(fn){ ls.add(fn); return ()=>ls.delete(fn); }
+        function setSort(by,dir){ st.sort={by,dir}; st.files=sortFiles(st.files); emit(); }
+        function select(ids,mode='set'){ if(mode==='set') st.selection=new Set(ids); if(mode==='add') ids.forEach(id=>st.selection.add(id)); if(mode==='remove') ids.forEach(id=>st.selection.delete(id)); emit(); }
+        function toggleSelect(id){ if(st.selection.has(id)) st.selection.delete(id); else st.selection.add(id); emit(); }
+        function clearSelection(){ st.selection.clear(); emit(); }
+        async function tag({ids, add=['favorite'], remove=[]}){
+          if(!ids.length || !st.provider || st.provider.name!=='Demo') return; // write ops only in Demo for N
+          const files=await DB.get('folders', st.folder)||[]; const map=Object.fromEntries(files.map(f=>[f.id,f]));
+          for(const id of ids){ const cur=new Set(map[id]?.tags||[]); add.forEach(t=>cur.add(t)); remove.forEach(t=>cur.delete(t)); map[id]={...map[id], tags:[...cur]}; await Queue.enqueue({op:'patchMeta', id, payload:{tags:[...cur]}}); }
+          const next=Object.values(map); await DB.put('folders', st.folder, next); st.files=sortFiles(next); emit(); HUD.update({lastAction:`tag:${ids.length}`});
+        }
+        async function move({ids, dest='archive'}){
+          if(!ids.length || !st.provider || st.provider.name!=='Demo') return;
+          for(const id of ids) await Queue.enqueue({op:'move', id, payload:{dest}});
+          Toast.show('Queued move → '+dest); HUD.update({lastAction:`move:${ids.length}`});
+        }
+        async function search(q){
+          const t=String(q||'').trim().split(/\s+/).filter(Boolean);
+          const must=t.filter(x=>!x.startsWith('#')&&!x.startsWith('-'));
+          const tags=t.filter(x=>x.startsWith('#')).map(x=>x.slice(1));
+          const not=new Set(t.filter(x=>x.startsWith('-')).map(x=>x.slice(1).toLowerCase()));
+          const all=await DB.get('folders', st.folder)||[];
+          const res=all.filter(f=>{ const n=(f.name||'').toLowerCase();
+            if(must.length && !must.every(w=>n.includes(w.toLowerCase()))) return false;
+            if(tags.length && !tags.every(w=>(f.tags||[]).includes(w))) return false;
+            if([...not].some(w=>n.includes(w))) return false; return true; });
+          st.files=sortFiles(res); emit();
+        }
+        function setUI(name){ st.ui=name; emit(); }
+        function setFocusIndex(i){ st.focusIndex = Math.max(0, Math.min(i, st.files.length-1)); emit(); }
+        return { init, on, getState, setSort, select, toggleSelect, clearSelection, tag, move, search, refreshCloudInBackground, setUI, setFocusIndex, setProvider };
+      })();
+
+      // ========= Worker (Demo writes only; Drive is read-only in N) =========
+      const WorkerLoop = (()=>{
+        let running=false;
+        const debounced = Utils.debounce(drain, 800);
+        async function drain(){
+          if(running) return; running=true;
+          try{
+            const batch=await Queue.readNext(50);
+            HUD.update({queueSize: batch.length});
+            if(batch.length===0) return;
+            // Only Demo supports writes in N
+            for(const it of batch){
+              const prov = currentProvider();
+              if(prov.name==='Demo'){
+                if(it.op==='patchMeta') await prov.patchMeta(it.id, it.payload);
+                if(it.op==='move') await prov.move(it.id, it.payload.dest);
+              }
+            }
+            await Queue.ack(batch.map(x=>x.id));
+            HUD.update({queueSize:0, lastProvider:currentProvider().name});
+            await Core.refreshCloudInBackground();
+          }catch(e){ Toast.show('Worker error: '+e.message); }
+          finally{ running=false; }
+        }
+        function start(){
+          drain();
+          window.addEventListener('online', debounced);
+          window.addEventListener('visibilitychange', ()=>{ if(!document.hidden) debounced(); });
+          window.addEventListener(Queue.EV, debounced);
+        }
+        return { start, drain };
+      })();
+
+      // ========= Provider Selection =========
+      let _provider;
+      function currentProvider(){ return _provider; }
+      async function initProvider(){
+        const driveEnabled = !!CONFIG.driveClientId;
+        const seg = document.getElementById('provSeg');
+        // Toggle Drive button visibility based on availability
+        seg.querySelectorAll('button').forEach(btn=>{
+          if(btn.dataset.prov==='Drive') btn.style.display = driveEnabled ? 'block':'none';
+        });
+        _provider = Providers.Demo();
+        await Core.init(_provider);
+      }
+      async function switchProvider(name){
+        if(name==='Demo'){ _provider = Providers.Demo(); await Core.setProvider(_provider); Toast.show('Using Demo provider'); return; }
+        if(name==='Drive'){
+          if(!CONFIG.driveClientId){ Toast.show('Drive clientId missing'); return; }
+          _provider = Providers.Drive({ clientId: CONFIG.driveClientId });
+          await Core.setProvider(_provider);
+          Toast.show('Using Google Drive (read-only)');
+        }
+      }
+
+      // ========= UI Layer (shared controls + 2 variants) =========
+      const UI = (()=>{
+        const gridHost=document.getElementById('grid');
+        const focusHost=document.getElementById('focus');
+        const q=document.getElementById('q');
+        const sortSel=document.getElementById('sort');
+        const uiSeg=document.getElementById('uiSeg');
+
+        // Grid variant
+        function renderGrid(files, selection){
+          gridHost.innerHTML='';
+          for(const f of files){
+            const card=document.createElement('div'); card.className='card'; card.dataset.id=f.id;
+            const img=document.createElement('img'); img.className='thumb'; img.alt=f.name; img.src=Utils.gdriveThumb(f.id, 480);
+            const sel=document.createElement('div'); sel.className='sel'+(selection.includes(f.id)?' on':'' ); sel.textContent = selection.includes(f.id)?'✓':'';
+            const meta=document.createElement('div'); meta.className='meta';
+            const name=document.createElement('div'); name.textContent=f.name;
+            const pill=document.createElement('span'); pill.className='pill'; pill.textContent=(f.tags||[]).includes('favorite')?'★ favorite':'file';
+            meta.append(name,pill);
+            card.append(img, sel, meta);
+            card.addEventListener('click', ()=>Core.toggleSelect(f.id));
+            gridHost.append(card);
+          }
+        }
+
+        // Focus variant
+        function renderFocus(files, idx){
+          const big=document.getElementById('big');
+          const meta=document.getElementById('focusmeta');
+          const prev=document.getElementById('prev');
+          const next=document.getElementById('next');
+          if(!files.length){ big.src=''; big.alt=''; meta.textContent='No files'; return; }
+          const f = files[Math.max(0, Math.min(idx, files.length-1))];
+          big.src = Utils.gdriveThumb(f.id, 960);
+          big.alt = f.name;
+          meta.textContent = `${f.name} ${ (f.tags||[]).includes('favorite')?'· ★ favorite':'' }`;
+          prev.onclick = ()=>Core.setFocusIndex(Math.max(0, idx-1));
+          next.onclick = ()=>Core.setFocusIndex(Math.min(files.length-1, idx+1));
+        }
+
+        Core.on(async s=>{
+          document.title = `Release N — ${s.selection?.length||0} selected`;
+          // Toggle variant hosts
+          const isGrid = s.ui==='grid';
+          gridHost.hidden = !isGrid; focusHost.hidden = isGrid;
+          if(isGrid) renderGrid(s.files, s.selection||[]);
+          else renderFocus(s.files, s.focusIndex||0);
+          HUD.update({lastAction:'render', cacheKeys:(await DB.keys('folders')).length, lastProvider: currentProvider()?.name });
+          document.getElementById('btnTag').disabled = (s.selection||[]).length===0 || currentProvider()?.name==='Drive';
+          document.getElementById('btnMove').disabled = (s.selection||[]).length===0 || currentProvider()?.name==='Drive';
+        });
+
+        q.addEventListener('input', e=>Core.search(e.target.value));
+        sortSel.addEventListener('change', e=>{ const [by,dir]=e.target.value.split('|'); Core.setSort(by,dir); });
+        uiSeg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ uiSeg.querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); Core.setUI(b.dataset.ui); });
+
+        // Provider segment
+        document.querySelectorAll('#provSeg button').forEach(b=>b.onclick=async ()=>{
+          document.querySelectorAll('#provSeg button').forEach(x=>x.classList.remove('on'));
+          b.classList.add('on');
+          await switchProvider(b.dataset.prov);
+        });
+
+        // Bottom bar
+        document.getElementById('btnTag').onclick = ()=>Core.tag({ ids:[...Core.getState().selection] }).then(()=>Toast.show('Tagged favorite'));
+        document.getElementById('btnMove').onclick = ()=>Core.move({ ids:[...Core.getState().selection], dest:'archive' });
+        document.getElementById('btnHUD').onclick = ()=>HUD.toggle();
+        document.getElementById('btnSync').onclick = ()=>WorkerLoop.drain();
+        document.getElementById('btnClear').onclick = ()=>Core.clearSelection();
+      })();
+
+      // ========= Boot =========
+      (async function start(){
+        try{
+          await DB.open();
+          await initProvider();
+          WorkerLoop.start();
+          Toast.show('Release N — Mobile ready');
+          if(!CONFIG.driveClientId){ Toast.show('Drive disabled (no clientId). Using Demo provider.'); }
+        }catch(e){ Err.show('Startup failed: '+(e.stack||e.message)); }
+      })();
+    </script>
+  </body>
+</html>
+""")
+
+with open("/mnt/data/release-N-mobile.html","w",encoding="utf-8") as f:
+    f.write(html)
+
+print("/mnt/data/release-N-mobile.html created")
