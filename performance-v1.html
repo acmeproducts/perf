@@ -1,4 +1,4 @@
-<!-- Orbital8-J-2025-09-16 03:29 AM -->
+<!-- Orbital8-K-2025-09-18 02:08 AM -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -175,8 +175,6 @@
         .center-image.dragging { filter: brightness(0.9); cursor: grabbing; }
         .center-image.zoomable { pointer-events: auto; }
         
-        .filename-overlay { display: none !important; }
-
         .edge-glow { position: absolute; opacity: 0; transition: opacity 0.2s ease; z-index: 2; pointer-events: none; }
         .edge-glow.top { top: 0; left: 0; right: 0; height: 8px; background: linear-gradient(180deg, rgba(245, 158, 11, var(--glow)) 0%, transparent 100%); }
         .edge-glow.bottom { 
@@ -355,6 +353,25 @@
         .grid-image[data-src] { opacity: 0; }
         .grid-image.loaded { opacity: 1; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
+
+        .filename-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px;
+            font-size: 14px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .grid-item:hover .filename-overlay {
+            opacity: 1;
+        }
         
         .details-modal-content { 
             max-width: 800px; max-height: 95vh; height: 95vh; display: flex; flex-direction: column; 
@@ -552,7 +569,7 @@
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
-        <div class="app-footer">Orbital8-J-2025-09-16 03:29 AM</div>
+        <div class="app-footer">Orbital8-K-2025-09-18 02:08 AM</div>
     </div>
     
     <!-- Unified Auth Screen -->
@@ -567,7 +584,7 @@
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
             <div id="auth-status" class="status info"></div>
         </div>
-        <div class="app-footer">Orbital8-J-2025-09-16 03:29 AM</div>
+        <div class="app-footer">Orbital8-K-2025-09-18 02:08 AM</div>
     </div>
     
     <!-- Unified Folder Screen -->
@@ -582,7 +599,7 @@
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
         </div>
-        <div class="app-footer">Orbital8-J-2025-09-16 03:29 AM</div>
+        <div class="app-footer">Orbital8-K-2025-09-18 02:08 AM</div>
     </div>
     
     <!-- Loading Screen -->
@@ -596,7 +613,7 @@
             </div>
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
-        <div class="app-footer">Orbital8-J-2025-09-16 03:29 AM</div>
+        <div class="app-footer">Orbital8-K-2025-09-18 02:08 AM</div>
     </div>
     
     <!-- Main App Container -->
@@ -659,7 +676,7 @@
         </button>
         
         <div id="toast" class="toast"></div>
-        <div class="app-footer">Orbital8-J-2025-09-16 03:29 AM</div>
+        <div class="app-footer">Orbital8-K-2025-09-18 02:08 AM</div>
     </div>
     
     <!-- Enhanced Grid Modal -->
@@ -949,10 +966,12 @@
             },
             
             showScreen(screenId) {
-                const screens = ['provider-screen', 'gdrive-auth-screen', 'onedrive-auth-screen', 
-                               'gdrive-folder-screen', 'onedrive-folder-screen', 'loading-screen', 'app-container'];
+                const screens = ['provider-screen', 'auth-screen', 'folder-screen', 'loading-screen', 'app-container'];
                 screens.forEach(id => {
-                    document.getElementById(id).classList.toggle('hidden', id !== screenId);
+                    const screen = document.getElementById(id);
+                    if (screen) {
+                        screen.classList.toggle('hidden', id !== screenId);
+                    }
                 });
             },
             
@@ -1236,6 +1255,8 @@
             // Folder & File Reading
             async getFolders() { throw new Error("Method 'getFolders()' must be implemented."); }
             async getFilesAndMetadata(folderId) { throw new Error("Method 'getFilesAndMetadata(folderId)' must be implemented."); }
+            async drillIntoFolder(folder) { throw new Error("Method 'drillIntoFolder(folder)' must be implemented."); }
+            async navigateToParent() { throw new Error("Method 'navigateToParent()' must be implemented."); }
 
             // File Writing/Manipulation
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
@@ -1335,7 +1356,15 @@
             }
             async getFolders() {
                 const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
-                return response.files.map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdTime, modifiedTime: folder.modifiedTime }));
+                return response.files.map(folder => ({
+                    id: folder.id,
+                    name: folder.name,
+                    type: 'folder',
+                    createdTime: folder.createdTime,
+                    modifiedTime: folder.modifiedTime,
+                    itemCount: 0, // Google Drive API doesn't provide this in the list call
+                    hasChildren: false // Assume false to not show a non-functional 'Browse' button
+                }));
             }
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = []; let nextPageToken = null;
@@ -1351,6 +1380,14 @@
                 } while (nextPageToken);
                 return { folders: [], files: allFiles };
             }
+            async drillIntoFolder(folder) {
+                // Not applicable for Google Drive's flat folder structure, but fulfills the interface.
+                return Promise.resolve([]);
+            }
+            async navigateToParent() {
+                // Not applicable for Google Drive's flat folder structure, returns the root list.
+                return this.getFolders();
+            }
             async moveFileToFolder(fileId, targetFolderId) {
                 const file = await this.makeApiCall(`/files/${fileId}?fields=parents`);
                 const previousParents = file.parents.join(',');
@@ -1361,6 +1398,14 @@
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
                 return true;
             }
+            async updateUserMetadata(fileId, updates) {
+                const file = state.imageFiles.find(f => f.id === fileId);
+                if (!file) return;
+                Object.assign(file, updates);
+                await state.dbManager.saveMetadata(file.id, file);
+                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+            }
+
             async deleteFile(fileId) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ trashed: true }) });
                 return true;
@@ -1375,9 +1420,21 @@
                 super();
                 this.name = 'onedrive';
                 this.apiBase = 'https://graph.microsoft.com/v1.0';
-                this.isAuthenticated = false; this.activeAccount = null; this.msalInstance = null;
-                this.currentParentId = null; this.currentParentPath = ''; this.breadcrumb = [];
-                this.onProgressCallback = null; this.initMSAL();
+                this.isAuthenticated = false;
+                this.activeAccount = null;
+                this.msalInstance = null;
+                this.currentParentId = null;
+                this.currentParentPath = '';
+                this.breadcrumb = [];
+                this.onProgressCallback = null;
+                this.initMSAL();
+
+                const accounts = this.msalInstance.getAllAccounts();
+                if (accounts.length > 0) {
+                    this.msalInstance.setActiveAccount(accounts[0]);
+                    this.activeAccount = accounts[0];
+                    this.isAuthenticated = true;
+                }
             }
             initMSAL() {
                 const msalConfig = {
@@ -1568,26 +1625,25 @@
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
 
-                Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
-                Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
-                Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
-                Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
-                Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
-                Utils.elements.authStatus.className = 'status info';
+                state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
 
-                Utils.showScreen('auth-screen');
-
-                const provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
-                if (provider.isAuthenticated) {
-                    state.provider = provider;
+                if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
                     Folders.load();
+                } else {
+                    Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
+                    Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
+                    Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
+                    Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
+                    Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
+                    Utils.elements.authStatus.className = 'status info';
+                    Utils.showScreen('auth-screen');
                 }
             },
 
             async authenticateCurrentUser() {
                 const isGoogle = state.providerType === 'googledrive';
-                const provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
+                const provider = state.provider;
 
                 const { authButton, authStatus, gdriveClientSecret } = Utils.elements;
                 authButton.disabled = true;
@@ -1635,15 +1691,20 @@
             },
 
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
-                state.providerType = providerType;
-                state.provider = providerInstance;
-                state.currentFolder.id = folderId;
-                state.currentFolder.name = folderName;
-                state.activeRequests = new AbortController();
-                
-                await this.loadImages();
-                this.switchToCommonUI();
-                if(state.syncManager) state.syncManager.start();
+                try {
+                    state.providerType = providerType;
+                    state.provider = providerInstance;
+                    state.currentFolder.id = folderId;
+                    state.currentFolder.name = folderName;
+                    state.activeRequests = new AbortController();
+                    
+                    await this.loadImages();
+                    this.switchToCommonUI();
+                    if(state.syncManager) state.syncManager.start();
+                } catch (error) {
+                    Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
+                    this.returnToFolderSelection();
+                }
             },
 
             async loadImages() {
@@ -1732,13 +1793,17 @@
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
                  for (let i = 0; i < files.length; i++) {
                     const file = files[i];
-                    const metadata = await state.dbManager.getMetadata(file.id);
-                    if (metadata) {
-                        Object.assign(file, metadata);
-                    } else {
-                        const defaultMetadata = this.generateDefaultMetadata(file);
-                        Object.assign(file, defaultMetadata);
-                        await state.dbManager.saveMetadata(file.id, defaultMetadata);
+                    try {
+                        const metadata = await state.dbManager.getMetadata(file.id);
+                        if (metadata) {
+                            Object.assign(file, metadata);
+                        } else {
+                            const defaultMetadata = this.generateDefaultMetadata(file);
+                            Object.assign(file, defaultMetadata);
+                            await state.dbManager.saveMetadata(file.id, defaultMetadata);
+                        }
+                    } catch (error) {
+                        console.error(`Failed to process metadata for ${file.name}:`, error);
                     }
                     if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
@@ -1774,13 +1839,19 @@
                 Utils.showScreen('app-container');
             },
             
-            returnToFolderSelection() {
-                if (state.syncManager) {
-                    state.syncManager.requestSync();
+            async returnToFolderSelection() {
+                try {
+                    if (state.syncManager) {
+                        state.syncManager.requestSync();
+                    }
+                    state.activeRequests.abort(); 
+                    this.resetViewState();
+                    Utils.showScreen('folder-screen');
+                    await Folders.load();
+                } catch(error) {
+                    Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
+                    Utils.showScreen('folder-screen'); // Attempt to show screen anyway
                 }
-                state.activeRequests.abort(); 
-                this.resetViewState();
-                Utils.showScreen('folder-screen');
             },
 
             resetViewState() {
@@ -1793,13 +1864,17 @@
             },
             
             async updateUserMetadata(fileId, updates) {
-                const file = state.imageFiles.find(f => f.id === fileId);
-                if (!file) return;
-                Object.assign(file, updates);
-                await state.dbManager.saveMetadata(file.id, file);
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                try {
+                    const file = state.imageFiles.find(f => f.id === fileId);
+                    if (!file) return;
+                    Object.assign(file, updates);
+                    await state.dbManager.saveMetadata(file.id, file);
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                } catch (error) {
+                    Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
+                }
             },
-            
+
             async deleteFile(fileId) {
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
                 if (fileIndex > -1) {
@@ -1914,18 +1989,22 @@
             },
             
             async displayTopImageFromStack(stackName) {
-                const stack = state.stacks[stackName];
-                if (!stack || stack.length === 0) {
-                    this.showEmptyState();
-                    return;
+                try {
+                    const stack = state.stacks[stackName];
+                    if (!stack || stack.length === 0) {
+                        this.showEmptyState();
+                        return;
+                    }
+                    
+                    Utils.elements.emptyState.classList.add('hidden');
+                    state.currentStack = stackName;
+                    state.currentStackPosition = 0;
+                    
+                    await this.displayCurrentImage();
+                    this.updateActiveProxTab();
+                } catch (error) {
+                    Utils.showToast(`Error displaying stack: ${error.message}`, 'error', true);
                 }
-                
-                Utils.elements.emptyState.classList.add('hidden');
-                state.currentStack = stackName;
-                state.currentStackPosition = 0;
-                
-                await this.displayCurrentImage();
-                this.updateActiveProxTab();
             },
             
             async displayCurrentImage() {
@@ -1947,24 +2026,28 @@
                     this.showEmptyState();
                     return;
                 }
-
-                Utils.elements.detailsButton.style.display = 'flex';
-                await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
                 
-                const folderName = state.currentFolder.name;
-                const truncatedFolder = folderName.length > 20 ? folderName.substring(0, 20) + '...' : folderName;
-                Utils.elements.focusFilenameDisplay.textContent = `${truncatedFolder} / ${currentFile.name.replace(/\.[^/.]+$/, "")}`;
+                try {
+                    Utils.elements.detailsButton.style.display = 'flex';
+                    await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
+                    
+                    const folderName = state.currentFolder.name;
+                    const truncatedFolder = folderName.length > 20 ? folderName.substring(0, 20) + '...' : folderName;
+                    Utils.elements.focusFilenameDisplay.textContent = `${truncatedFolder} / ${currentFile.name.replace(/\.[^/.]+$/, "")}`;
 
-                state.currentScale = 1;
-                state.panOffset = { x: 0, y: 0 };
-                this.applyTransform();
+                    state.currentScale = 1;
+                    state.panOffset = { x: 0, y: 0 };
+                    this.applyTransform();
 
-                if (currentFile.metadataStatus === 'pending') {
-                    App.processFileMetadata(currentFile);
+                    if (currentFile.metadataStatus === 'pending') {
+                        App.processFileMetadata(currentFile);
+                    }
+                    
+                    this.updateImageCounters();
+                    this.updateFavoriteButton();
+                } catch (error) {
+                     Utils.showToast(`Error loading image: ${error.message}`, 'error', true);
                 }
-                
-                this.updateImageCounters();
-                this.updateFavoriteButton();
             },
 
             updateImageCounters() {
@@ -2005,28 +2088,32 @@
                 const currentImage = currentStackArray[state.currentStackPosition];
                 if (!currentImage) return;
 
-                const originalStackName = state.currentStack;
-                if (targetStack === originalStackName) {
-                    const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
-                    const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
-                    const newSequence = minSequence - 1;
-                    await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence });
-                    const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                    item.stackSequence = newSequence;
-                    currentStackArray.push(item);
-                } else {
-                    const newSequence = Date.now();
-                    await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
-                    const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                    item.stack = targetStack;
-                    item.stackSequence = newSequence;
-                    state.stacks[targetStack].unshift(item);
-                    state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                try {
+                    const originalStackName = state.currentStack;
+                    if (targetStack === originalStackName) {
+                        const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
+                        const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
+                        const newSequence = minSequence - 1;
+                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence });
+                        const [item] = currentStackArray.splice(state.currentStackPosition, 1);
+                        item.stackSequence = newSequence;
+                        currentStackArray.push(item);
+                    } else {
+                        const newSequence = Date.now();
+                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
+                        const [item] = currentStackArray.splice(state.currentStackPosition, 1);
+                        item.stack = targetStack;
+                        item.stackSequence = newSequence;
+                        state.stacks[targetStack].unshift(item);
+                        state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                    }
+                    
+                    this.updateStackCounts();
+                    this.updateActiveProxTab();
+                    await this.displayCurrentImage();
+                } catch (error) {
+                    Utils.showToast(`Error moving image: ${error.message}`, 'error', true);
                 }
-                
-                this.updateStackCounts();
-                this.updateActiveProxTab();
-                await this.displayCurrentImage();
             },
             
             showEmptyState() {
@@ -2059,20 +2146,24 @@
             },
             
             async close() {
-                if (state.grid.isDirty) {
-                    await this.reorderStackOnClose();
+                try {
+                    if (state.grid.isDirty) {
+                        await this.reorderStackOnClose();
+                    }
+                    Utils.hideModal('grid-modal');
+                    this.resetSearch(); this.destroyLazyLoad();
+                    const selectedImages = state.grid.selected;
+                    if (selectedImages.length === 1) {
+                        const selectedFileId = selectedImages[0];
+                        const stackArray = state.stacks[state.currentStack];
+                        const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
+                        if (selectedIndex !== -1) { state.currentStackPosition = selectedIndex; }
+                    }
+                    await Core.displayCurrentImage();
+                    state.grid.stack = null; state.grid.selected = [];
+                } catch (error) {
+                    Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
                 }
-                Utils.hideModal('grid-modal');
-                this.resetSearch(); this.destroyLazyLoad();
-                const selectedImages = state.grid.selected;
-                if (selectedImages.length === 1) {
-                    const selectedFileId = selectedImages[0];
-                    const stackArray = state.stacks[state.currentStack];
-                    const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
-                    if (selectedIndex !== -1) { state.currentStackPosition = selectedIndex; }
-                }
-                Core.displayCurrentImage();
-                state.grid.stack = null; state.grid.selected = [];
             },
 
             handleIntersection(entries) {
@@ -2122,7 +2213,12 @@
                         img.classList.add('loaded');
                     };
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
-                    div.appendChild(img); container.appendChild(div);
+                    const overlay = document.createElement('div');
+                    overlay.className = 'filename-overlay';
+                    overlay.textContent = file.name;
+                    div.appendChild(img);
+                    div.appendChild(overlay);
+                    container.appendChild(div);
                 });
                 container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
                 lazyState.renderedCount += filesToRender.length;
@@ -2291,15 +2387,19 @@
         const Details = {
             currentTab: 'info',
             async show() {
-                const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
-                if (!currentFile) return;
-                if (currentFile.metadataStatus !== 'loaded') {
-                    this.populateMetadataTab(currentFile);
-                    await App.processFileMetadata(currentFile);
+                try {
+                    const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                    if (!currentFile) return;
+                    if (currentFile.metadataStatus !== 'loaded') {
+                        this.populateMetadataTab(currentFile);
+                        await App.processFileMetadata(currentFile);
+                    }
+                    this.populateAllTabs(currentFile);
+                    Utils.showModal('details-modal');
+                    this.switchTab('info');
+                } catch (error) {
+                    Utils.showToast(`Error showing details: ${error.message}`, 'error', true);
                 }
-                this.populateAllTabs(currentFile);
-                Utils.showModal('details-modal');
-                this.switchTab('info');
             },
             hide() { Utils.hideModal('details-modal'); },
             switchTab(tabName) {
@@ -2578,54 +2678,84 @@
                     confirmText: 'Choose Destination Folder'
                 });
             },
-            async executeBulkAction(actionFn, successMessage, options = {}) {
-                const { refreshGrid = true, deselect = true } = options;
+            async executeBulkAction(options) {
+                const { action, successMessage, updateGridOnSuccess = true } = options;
                 const confirmBtn = Utils.elements.actionConfirm;
                 const originalText = confirmBtn.textContent;
-                confirmBtn.disabled = true; confirmBtn.textContent = 'Processing...';
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = 'Processing...';
+
                 try {
-                    const promises = state.grid.selected.map(fileId => actionFn(fileId));
+                    const promises = state.grid.selected.map(fileId => action(fileId));
                     await Promise.all(promises);
+
                     Utils.showToast(successMessage.replace('{count}', promises.length), 'success', true);
-                    if(!options.keepModalOpen) this.hide();
-                    if (refreshGrid) { Utils.elements.gridContainer.innerHTML = ''; Grid.initializeLazyLoad(state.grid.stack); }
-                    if (deselect) { Grid.deselectAll(); }
+                    this.hide();
                     Core.updateStackCounts();
-                } catch (error) { Utils.showToast(`Failed to process some images: ${error.message}`, 'error', true);
-                } finally { confirmBtn.disabled = false; confirmBtn.textContent = originalText; }
+
+                    if (updateGridOnSuccess) {
+                        Utils.elements.gridContainer.innerHTML = '';
+                        Grid.initializeLazyLoad(state.grid.stack);
+                    }
+                    Grid.deselectAll();
+                    return true;
+                } catch (error) {
+                    Utils.showToast(`Failed to process some images: ${error.message}`, 'error', true);
+                    return false;
+                } finally {
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = originalText;
+                }
             },
             async executeMove(targetStack) {
-                await this.executeBulkAction(async (fileId) => {
-                    const file = state.imageFiles.find(f => f.id === fileId);
-                    if (file) {
-                        const currentStack = file.stack; const newSequence = Date.now();
-                        await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
-                        const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
-                        if (currentStackIndex !== -1) { state.stacks[currentStack].splice(currentStackIndex, 1); }
-                        file.stackSequence = newSequence;
-                        state.stacks[targetStack].unshift(file);
-                        state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
-                    }
-                }, `Moved {count} images to ${targetStack}`);
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        if (file) {
+                            const currentStack = file.stack;
+                            const newSequence = Date.now();
+                            await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
+                            const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
+                            if (currentStackIndex !== -1) {
+                                state.stacks[currentStack].splice(currentStackIndex, 1);
+                            }
+                            file.stack = targetStack;
+                            file.stackSequence = newSequence;
+                            state.stacks[targetStack].unshift(file);
+                            state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
+                        }
+                    },
+                    successMessage: `Moved {count} images to ${STACK_NAMES[targetStack]}`
+                });
             },
             async executeTag() {
                 const tagsToAdd = Array.from(this.taggingState.tags);
-                if (tagsToAdd.length === 0) return;
+                if (tagsToAdd.length === 0) {
+                    this.hide();
+                    return;
+                }
                 
-                await this.executeBulkAction(async (fileId) => {
-                    const file = state.imageFiles.find(f => f.id === fileId);
-                    if (file) {
-                        const currentTags = file.tags || [];
-                        const newTags = [...new Set([...currentTags, ...tagsToAdd])];
-                        await App.updateUserMetadata(fileId, { tags: newTags });
-                        tagsToAdd.forEach(tag => state.tags.add(tag));
-                    }
-                }, `Tags added to {count} images`, { refreshGrid: false });
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        if (file) {
+                            const currentTags = file.tags || [];
+                            const newTags = [...new Set([...currentTags, ...tagsToAdd])];
+                            await App.updateUserMetadata(fileId, { tags: newTags });
+                            tagsToAdd.forEach(tag => state.tags.add(tag));
+                        }
+                    },
+                    successMessage: `Tags added to {count} images`,
+                    updateGridOnSuccess: false
+                });
             },
             async executeDelete() {
-                await this.executeBulkAction(async (fileId) => {
-                    await App.deleteFile(fileId);
-                }, `Moved {count} images to provider trash`);
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        await App.deleteFile(fileId);
+                    },
+                    successMessage: `Moved {count} images to provider trash`
+                });
             },
             async executeExport() {
                 const fileIds = [...state.grid.selected];
@@ -2716,10 +2846,14 @@
             },
             async executeFlick(targetStack) {
                 if (state.stacks[state.currentStack].length === 0) return;
-                UI.acknowledgePillCounter(targetStack);
-                if (state.haptic) { state.haptic.triggerFeedback('swipe'); }
-                await Core.moveToStack(targetStack);
-                this.hideAllEdgeGlows();
+                try {
+                    UI.acknowledgePillCounter(targetStack);
+                    if (state.haptic) { state.haptic.triggerFeedback('swipe'); }
+                    await Core.moveToStack(targetStack);
+                    this.hideAllEdgeGlows();
+                } catch(error) {
+                    Utils.showToast(`Flick failed: ${error.message}`, 'error', true);
+                }
             },
             handleStart(e) {
                 const currentTime = Date.now();
@@ -2873,12 +3007,16 @@
                 folders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
-                    const isOneDrive = state.providerType === 'onedrive';
+
                     let dateInfo = new Date(folder.modifiedTime).toLocaleDateString();
-                    if (isOneDrive) {
-                        dateInfo += ` • ${folder.itemCount} items ${folder.hasChildren ? ' • Has subfolders' : ''}`;
+                    if (folder.itemCount > 0) {
+                         dateInfo += ` • ${folder.itemCount} items`;
                     }
-                    const iconColor = isOneDrive && folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
+                    if (folder.hasChildren) {
+                        dateInfo += ` • Has subfolders`;
+                    }
+
+                    const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
 
                     div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                                      <div class="folder-info">
@@ -2886,7 +3024,7 @@
                                          <div class="folder-date">${dateInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${isOneDrive && folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
                     folderList.appendChild(div);
@@ -2899,12 +3037,14 @@
                 document.querySelectorAll('#folder-list .drill-btn').forEach(btn => {
                     btn.addEventListener('click', async (e) => {
                         e.stopPropagation();
-                        const { folderId, folderName } = e.target.dataset;
                         try {
+                            const { folderId, folderName } = e.target.dataset;
                             const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
                             this.display(subfolders);
                             this.updateNavigation();
-                        } catch (error) { Utils.showToast('Error loading subfolders', 'error', true); }
+                        } catch (error) {
+                             Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
+                        }
                     });
                 });
                 document.querySelectorAll('#folder-list .select-btn').forEach(btn => {
@@ -2922,10 +3062,16 @@
 
             updateNavigation() {
                 const { folderSubtitle, folderRefreshButton } = Utils.elements;
-                if (typeof state.provider.getCurrentPath !== 'function') return;
+                const provider = state.provider;
 
-                folderSubtitle.textContent = `Current: ${state.provider.getCurrentPath()}`;
-                if (state.provider.canGoUp()) {
+                if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
+                    folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
+                    folderSubtitle.classList.remove('hidden');
+                } else {
+                    folderSubtitle.classList.add('hidden');
+                }
+
+                if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
                     folderRefreshButton.textContent = '← Go Up';
                 } else {
                     folderRefreshButton.textContent = 'Refresh';
@@ -3095,22 +3241,29 @@
                 Utils.elements.backButton.addEventListener('click', () => App.returnToFolderSelection());
 
                 Utils.elements.folderBackButton.addEventListener('click', () => App.backToProviderSelection());
-                Utils.elements.folderLogoutButton.addEventListener('click', () => {
-                    if (state.provider) {
-                        state.provider.disconnect();
+                Utils.elements.folderLogoutButton.addEventListener('click', async () => {
+                    try {
+                        if (state.provider) {
+                            await state.provider.disconnect();
+                        }
+                        App.backToProviderSelection();
+                    } catch (error) {
+                        Utils.showToast(`Logout failed: ${error.message}`, 'error', true);
                     }
-                    App.backToProviderSelection();
                 });
 
-                Utils.elements.folderRefreshButton.addEventListener('click', () => {
-                    const provider = state.provider;
-                    if (state.providerType === 'onedrive' && typeof provider.canGoUp === 'function' && provider.canGoUp()) {
-                        provider.navigateToParent().then(folders => {
+                Utils.elements.folderRefreshButton.addEventListener('click', async () => {
+                    try {
+                        const provider = state.provider;
+                        if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
+                            const folders = await provider.navigateToParent();
                             Folders.display(folders);
                             Folders.updateNavigation();
-                        }).catch(error => Utils.showToast('Error navigating up', 'error', true));
-                    } else {
-                        Folders.load();
+                        } else {
+                            await Folders.load();
+                        }
+                    } catch (error) {
+                        Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
                 });
             },
@@ -3131,11 +3284,15 @@
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Gestures.deleteCurrentImage());
                 Utils.elements.focusFavoriteBtn.addEventListener('click', async () => {
-                    const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
-                    if (!currentFile) return;
-                    const isFavorite = !currentFile.favorite;
-                    await App.updateUserMetadata(currentFile.id, { favorite: isFavorite });
-                    Core.updateFavoriteButton();
+                    try {
+                        const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
+                        if (!currentFile) return;
+                        const isFavorite = !currentFile.favorite;
+                        await App.updateUserMetadata(currentFile.id, { favorite: isFavorite });
+                        Core.updateFavoriteButton();
+                    } catch (error) {
+                         Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
+                    }
                 });
             },
             setupTabs() { document.querySelectorAll('.tab-button').forEach(btn => { btn.addEventListener('click', () => Details.switchTab(btn.dataset.tab)); }); },
@@ -3210,36 +3367,48 @@
                 Utils.elements.exportSelected.addEventListener('click', () => Modal.setupExportAction());
                 Utils.elements.folderSelected.addEventListener('click', () => Modal.setupFolderMoveAction());
                 Utils.elements.actionCancel.addEventListener('click', () => Modal.hide());
-                Utils.elements.actionConfirm.addEventListener('click', () => {
-                    if (Modal.currentAction === 'move') { /* handled by buttons */
-                    } else if (Modal.currentAction === 'tag') { Modal.executeTag();
-                    } else if (Modal.currentAction === 'delete') { Modal.executeDelete();
-                    } else if (Modal.currentAction === 'export') { Modal.executeExport();
-                    } else if (Modal.currentAction === 'folder-move') { Modal.executeFolderMove(); }
+                Utils.elements.actionConfirm.addEventListener('click', async () => {
+                    try {
+                        if (Modal.currentAction === 'move') { /* handled by buttons */
+                        } else if (Modal.currentAction === 'tag') { await Modal.executeTag();
+                        } else if (Modal.currentAction === 'delete') { await Modal.executeDelete();
+                        } else if (Modal.currentAction === 'export') { await Modal.executeExport();
+                        } else if (Modal.currentAction === 'folder-move') { Modal.executeFolderMove(); }
+                    } catch (error) {
+                        Utils.showToast(`Action failed: ${error.message}`, 'error', true);
+                    }
                 });
             },
             setupKeyboardNavigation() {
-                document.addEventListener('keydown', (e) => {
+                document.addEventListener('keydown', async (e) => {
                     if (Utils.elements.appContainer.classList.contains('hidden')) return;
                     if (!Utils.elements.detailsModal.classList.contains('hidden')) { if (e.key === 'Escape') Details.hide(); return; }
                     if (!Utils.elements.gridModal.classList.contains('hidden')) { if (e.key === 'Escape') Grid.close(); return; }
                     if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
-                    if (state.isFocusMode) {
-                        if (e.key === 'ArrowRight') Gestures.nextImage();
-                        if (e.key === 'ArrowLeft') Gestures.prevImage();
-                        if (e.key === 'Escape') Gestures.toggleFocusMode();
-                        return;
-                    }
-                    const keyMap = { 'ArrowUp': 'priority', 'ArrowDown': 'trash', 'ArrowLeft': 'in', 'ArrowRight': 'out' };
-                    if (keyMap[e.key]) {
-                        e.preventDefault();
-                        const targetStack = keyMap[e.key];
-                        if (state.stacks[state.currentStack].length > 0) { UI.acknowledgePillCounter(targetStack); Core.moveToStack(targetStack); }
-                        return;
-                    }
-                    switch (e.key) {
-                        case 'Tab': e.preventDefault(); UI.cycleThroughPills(); break;
-                        case 'Escape': App.returnToFolderSelection(); break;
+                    
+                    try {
+                        if (state.isFocusMode) {
+                            if (e.key === 'ArrowRight') await Gestures.nextImage();
+                            if (e.key === 'ArrowLeft') await Gestures.prevImage();
+                            if (e.key === 'Escape') Gestures.toggleFocusMode();
+                            return;
+                        }
+                        const keyMap = { 'ArrowUp': 'priority', 'ArrowDown': 'trash', 'ArrowLeft': 'in', 'ArrowRight': 'out' };
+                        if (keyMap[e.key]) {
+                            e.preventDefault();
+                            const targetStack = keyMap[e.key];
+                            if (state.stacks[state.currentStack].length > 0) { 
+                                UI.acknowledgePillCounter(targetStack); 
+                                await Core.moveToStack(targetStack); 
+                            }
+                            return;
+                        }
+                        switch (e.key) {
+                            case 'Tab': e.preventDefault(); UI.cycleThroughPills(); break;
+                            case 'Escape': await App.returnToFolderSelection(); break;
+                        }
+                    } catch (error) {
+                        Utils.showToast(`Keyboard command failed: ${error.message}`, 'error', true);
                     }
                 });
             }
@@ -3259,10 +3428,17 @@
                 Gestures.init();
                 Core.updateActiveProxTab();
             } catch (error) {
-                Utils.showToast(`Failed to initialize app: ${error.message}`, 'error', true);
+                console.error("Fatal initialization error:", error);
+                const body = document.body;
+                body.innerHTML = `<div style="color: red; padding: 20px; font-family: sans-serif; text-align: center;">
+                                    <h1>Application Failed to Start</h1>
+                                    <p>A critical error occurred: ${error.message}</p>
+                                    <p>Please try refreshing the page or clearing application data.</p>
+                                  </div>`;
             }
         }
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 </body>
 </html>
+
