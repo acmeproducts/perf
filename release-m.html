@@ -1,0 +1,306 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Release M — Event-Driven 3-Tier + Worker + Device-B Merge</title>
+    <style>
+      :root{
+        --bg:#0b0e12;--panel:#121722;--muted:#8b98a5;--text:#e7edf3;--accent:#4ea1ff;--ok:#2ecc71;--warn:#f39c12;--err:#e74c3c;
+        --glass:rgba(255,255,255,.06);--glass-2:rgba(255,255,255,.10);--shadow:0 6px 30px rgba(0,0,0,.35);
+        --radius:16px;
+      }
+      *{box-sizing:border-box}html,body{height:100%}body{margin:0;background:linear-gradient(180deg,#0b0e12,#0e141d);color:var(--text);font:14px/1.4 ui-sans-serif,SF Pro Text,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+      .row{display:flex;gap:12px;align-items:center}.col{display:flex;flex-direction:column;gap:12px}
+      .panel{background:var(--glass);backdrop-filter:blur(10px);border:1px solid var(--glass-2);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+      .btn{background:var(--glass-2);border:1px solid rgba(255,255,255,.12);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer}
+      .btn:disabled{opacity:.5;cursor:not-allowed}
+      .input{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);color:var(--text);padding:10px 12px;border-radius:10px;width:100%}
+      .toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between}
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+      .card{position:relative;border-radius:12px;overflow:hidden;background:#0f131a;border:1px solid rgba(255,255,255,.08)}
+      .card img{display:block;width:100%;height:120px;object-fit:cover}
+      .card .meta{padding:8px;color:#c9d5e1;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .pill{font-size:12px;padding:4px 8px;border-radius:999px;background:rgba(78,161,255,.15);border:1px solid rgba(78,161,255,.3);color:#cfe5ff}
+      .toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:9999}
+      .toast .item{background:rgba(20,24,32,.95);border:1px solid rgba(255,255,255,.12);padding:10px 12px;border-radius:10px;min-width:260px}
+      .hud{position:fixed;left:16px;bottom:16px;background:rgba(20,24,32,.95);border:1px solid rgba(255,255,255,.12);padding:12px;border-radius:10px;font-size:12px;z-index:9998;max-width:420px}
+      .kv{display:grid;grid-template-columns:140px 1fr;gap:6px;font-size:12px;color:#b2c1d1}
+      .footer{opacity:.7;font-size:12px;margin-top:6px}
+      .muted{color:var(--muted)}
+      .err{position:fixed;left:16px;top:16px;right:16px;display:none;z-index:9999}
+      .err .box{background:#2b0e13;border:1px solid #c0392b;color:#ffecec;padding:12px;border-radius:10px;white-space:pre-wrap}
+    </style>
+  </head>
+  <body>
+    <div id="err" class="err"><div class="box"></div></div>
+    <div id="app" class="col" style="max-width:1080px;margin:24px auto;gap:12px;"></div>
+    <div class="toast" id="toast"></div>
+    <div class="hud" id="hud" style="display:none"></div>
+    <script>
+      // ===== Error overlay =====
+      const Err = (()=>{const w=document.getElementById('err'),b=w.querySelector('.box');
+        function show(m){b.textContent=m;w.style.display='block';console.error(m);}
+        window.addEventListener('error',e=>show('JS Error: '+(e.error?.stack||e.message)));
+        window.addEventListener('unhandledrejection',e=>show('Promise Rejection: '+(e.reason?.stack||e.reason)));
+        return { show };
+      })();
+
+      // ===== Utilities =====
+      const Utils = {
+        id: () => Math.random().toString(36).slice(2),
+        now: () => new Date().toISOString(),
+        fmtBytes: n => n<1024? n+' B' : n<1048576? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(1)+' MB',
+        // Permanent Google Drive thumbnail/view URLs (no thumbnailLink usage)
+        gdriveThumb: (fileId, w=256) => `https://drive.google.com/thumbnail?id=${encodeURIComponent(fileId)}&sz=w${w}`,
+        gdriveView: (fileId) => `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`,
+        debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; },
+      };
+
+      // ===== Toasts =====
+      const Toast = { show(m){ const r=document.getElementById('toast'); const d=document.createElement('div'); d.className='item'; d.textContent=m; r.appendChild(d); setTimeout(()=>d.remove(),2600); } };
+
+      // ===== HUD =====
+      const HUD = (()=>{ const el=document.getElementById('hud'); let vis=false, st={};
+        function render(){ el.innerHTML =
+          `<div style="font-weight:600;margin-bottom:6px">Trace HUD</div>
+           <div class="kv">
+             <div>Queue size</div><div>${st.queueSize||0}</div>
+             <div>Last action</div><div>${st.lastAction||'-'}</div>
+             <div>Last provider</div><div class="muted">${st.lastProvider||'-'}</div>
+             <div>Cache keys</div><div>${st.cacheKeys||0}</div>
+             <div>changes_made</div><div class="muted">${st.changes_made? new Date(st.changes_made).toLocaleString(): '-'}</div>
+           </div>`;}
+        return { toggle(){ vis=!vis; el.style.display=vis?'block':'none'; render(); },
+                 update(s){ st={...st,...s}; render(); } };
+      })();
+
+      // ===== IndexedDB with graceful file:// fallback =====
+      const DB = (()=> {
+        const NAME='goji-db-m', STORES=['folders','metadata','sync_queue','settings']; let db, fallback=null;
+        const lsKey = s => `dbshim.${NAME}.${s}`;
+        const ensure = s => { const k=lsKey(s); if(localStorage.getItem(k)==null) localStorage.setItem(k, JSON.stringify({})); };
+
+        async function open(){
+          try{
+            await new Promise((res,rej)=>{
+              const req=indexedDB.open(NAME,1);
+              req.onupgradeneeded=()=>{ const d=req.result; STORES.forEach(s=>{ if(!d.objectStoreNames.contains(s)) d.createObjectStore(s); }); };
+              req.onsuccess=()=>{ db=req.result; res(); };
+              req.onerror=()=>rej(req.error);
+            });
+          }catch(e){
+            fallback=true; STORES.forEach(ensure);
+            console.warn('IndexedDB unavailable, using localStorage shim:', e);
+          }
+        }
+        function get(s,k){ if(fallback){ const blob=JSON.parse(localStorage.getItem(lsKey(s))||'{}'); return Promise.resolve(blob[k]); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'); const os=tx.objectStore(s); const rq=os.get(k); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
+        function put(s,k,v){ if(fallback){ const K=lsKey(s); const blob=JSON.parse(localStorage.getItem(K)||'{}'); blob[k]=v; localStorage.setItem(K, JSON.stringify(blob)); return Promise.resolve(); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'); const os=tx.objectStore(s); const rq=os.put(v,k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
+        function del(s,k){ if(fallback){ const K=lsKey(s); const blob=JSON.parse(localStorage.getItem(K)||'{}'); delete blob[k]; localStorage.setItem(K, JSON.stringify(blob)); return Promise.resolve(); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'); const os=tx.objectStore(s); const rq=os.delete(k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
+        function keys(s){ if(fallback){ const blob=JSON.parse(localStorage.getItem(lsKey(s))||'{}'); return Promise.resolve(Object.keys(blob)); }
+          return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'); const os=tx.objectStore(s); const rq=os.getAllKeys(); rq.onsuccess=()=>res(rq.result||[]); rq.onerror=()=>rej(rq.error); }); }
+        async function scan(s,map=(_,v)=>v){ const ks=await keys(s); const out=[]; for(const k of ks){ const v=await get(s,k); out.push(map(k,v)); } return out; }
+        return { open, get, put, del, keys, scan };
+      })();
+
+      // ===== Providers (Tier 3) =====
+      const Providers = (()=> {
+        function Demo(){
+          const KEY='demo-cloud';
+          const load = ()=> JSON.parse(localStorage.getItem(KEY)||'{}');
+          const save = obj => localStorage.setItem(KEY, JSON.stringify(obj));
+          return {
+            name: 'Demo',
+            async list(folder='root'){ const c=load(); return Object.values(c[folder]||{}).map(x=>({...x})); },
+            async patchMeta(id, patch){
+              const c=load();
+              for(const f in c){ if(c[f][id]){ c[f][id]={...c[f][id], ...patch, modifiedTime:Date.now()}; save(c); return true; } }
+              return false;
+            },
+            async move(id, dest){
+              const c=load();
+              for(const f in c){ if(c[f][id]){ c[f][id]={...c[f][id], stack:dest, modifiedTime:Date.now()}; save(c); return true; } }
+              return false;
+            },
+          };
+        }
+        return { Demo };
+      })();
+
+      // ===== Queue =====
+      const Queue = (()=> {
+        const EV='queue:changed';
+        async function mark(){ const now=Date.now(); await DB.put('settings','changes_made', now); HUD.update({changes_made: now}); window.dispatchEvent(new CustomEvent(EV)); }
+        async function enqueue(item){ const id=item.id||Utils.id(); await DB.put('sync_queue', id, {...item, id, ts:item.ts||Date.now()}); await mark(); return id; }
+        async function readNext(n=50){ const all=await DB.scan('sync_queue',(k,v)=>v); all.sort((a,b)=>a.ts-b.ts); return all.slice(0,n); }
+        async function ack(ids){ for(const id of ids) await DB.del('sync_queue', id); await mark(); }
+        return { enqueue, readNext, ack, EV };
+      })();
+
+      // ===== Core (Tier 1) =====
+      const Core = (()=> {
+        const st={ provider:null, folder:'root', files:[], sort:{by:'name',dir:'asc'}, selection:new Set(), settings:{demo:true, ui:'grid'} };
+        const ls=new Set();
+        function emit(){ ls.forEach(fn=>fn(getState())); }
+        function getState(){ return JSON.parse(JSON.stringify({...st, selection:[...st.selection]})); }
+        async function init(provider){ await DB.open(); st.provider=provider; await seed(); await fromCacheThenCloud(); emit(); }
+        async function seed(){
+          if(!st.settings.demo) return;
+          const have = await DB.get('folders', st.folder);
+          if(!have){
+            const seed = Array.from({length:20},(_,i)=>({ id:'demo-'+i, name:'Photo_'+String(i).padStart(3,'0')+'.jpg', size:200000+i*1337, tags:i%3?[]:['favorite'], modifiedTime: Date.now()-i*100000 }));
+            await DB.put('folders', st.folder, seed);
+            let cloud = JSON.parse(localStorage.getItem('demo-cloud')||'{}'); cloud[st.folder]=cloud[st.folder]||{};
+            for(const f of seed){ cloud[st.folder][f.id]=f; }
+            localStorage.setItem('demo-cloud', JSON.stringify(cloud));
+          }
+        }
+        function sortFiles(a){ const {by,dir}=st.sort; const s=[...a].sort((x,y)=>{ let A=x[by], B=y[by]; if(by==='name'){ A=String(A).toLowerCase(); B=String(B).toLowerCase(); } if(by==='modifiedTime'){ A=+A; B=+B; } return A<B?-1:A>B?1:0; }); return dir==='asc'?s:s.reverse(); }
+        async function fromCacheThenCloud(){ const cached=await DB.get('folders', st.folder)||[]; st.files=sortFiles(cached); emit(); refreshCloudInBackground().catch(e=>Toast.show('Cloud refresh error: '+e.message)); }
+        async function refreshCloudInBackground(){
+          const prov=st.provider; let cloudList=[];
+          if(prov && prov.name==='Demo') cloudList = await prov.list(st.folder);
+          const cache=await DB.get('folders', st.folder)||[];
+          const byId=Object.fromEntries(cache.map(f=>[f.id,f]));
+          for(const remote of cloudList){
+            const local=byId[remote.id];
+            if(!local || (remote.modifiedTime && remote.modifiedTime>(local.modifiedTime||0))) byId[remote.id]={...local,...remote};
+          }
+          const merged=Object.values(byId);
+          await DB.put('folders', st.folder, merged);
+          st.files=sortFiles(merged); emit();
+        }
+        function on(fn){ ls.add(fn); return ()=>ls.delete(fn); }
+        function setSort(by,dir){ st.sort={by,dir}; st.files=sortFiles(st.files); emit(); }
+        function select(ids, mode='set'){ if(mode==='set') st.selection=new Set(ids); if(mode==='add') ids.forEach(id=>st.selection.add(id)); if(mode==='remove') ids.forEach(id=>st.selection.delete(id)); emit(); }
+        async function tag(ids, add=['favorite'], remove=[]){
+          if(!ids.length) return;
+          const files=await DB.get('folders', st.folder)||[]; const map=Object.fromEntries(files.map(f=>[f.id,f]));
+          for(const id of ids){ const cur=new Set(map[id]?.tags||[]); add.forEach(t=>cur.add(t)); remove.forEach(t=>cur.delete(t)); map[id]={...map[id], tags:[...cur]}; await Queue.enqueue({op:'patchMeta', id, payload:{tags:[...cur]}}); }
+          const next=Object.values(map); await DB.put('folders', st.folder, next); st.files=sortFiles(next); emit();
+          HUD.update({lastAction:`tag:${ids.length}`});
+        }
+        async function move(ids, dest='archive'){
+          if(!ids.length) return;
+          for(const id of ids) await Queue.enqueue({op:'move', id, payload:{dest}});
+          Toast.show('Queued move → '+dest); HUD.update({lastAction:`move:${ids.length}`});
+        }
+        async function search(q){
+          const t=String(q||'').trim().split(/\s+/).filter(Boolean);
+          const must=t.filter(x=>!x.startsWith('#')&&!x.startsWith('-'));
+          const tags=t.filter(x=>x.startsWith('#')).map(x=>x.slice(1));
+          const not=new Set(t.filter(x=>x.startsWith('-')).map(x=>x.slice(1).toLowerCase()));
+          const all=await DB.get('folders', st.folder)||[];
+          const res=all.filter(f=>{
+            const n=(f.name||'').toLowerCase();
+            if(must.length && !must.every(w=>n.includes(w.toLowerCase()))) return false;
+            if(tags.length && !tags.every(w=>(f.tags||[]).includes(w))) return false;
+            if([...not].some(w=>n.includes(w))) return false;
+            return true;
+          });
+          st.files=sortFiles(res); emit();
+        }
+        return { init, on, getState, setSort, select, tag, move, search, refreshCloudInBackground };
+      })();
+
+      // ===== WorkerLoop (event-driven, debounced) =====
+      const WorkerLoop = (()=> {
+        const prov=Providers.Demo();
+        const debounced=Utils.debounce(drain, 800);
+        let running=false;
+        async function drain(){
+          if(running) return; running=true;
+          try{
+            const batch=await Queue.readNext(50);
+            HUD.update({queueSize: batch.length});
+            if(batch.length===0) return;
+            for(const it of batch){
+              if(it.op==='patchMeta') await prov.patchMeta(it.id, it.payload);
+              if(it.op==='move') await prov.move(it.id, it.payload.dest);
+            }
+            await Queue.ack(batch.map(x=>x.id));
+            HUD.update({queueSize:0, lastProvider:prov.name});
+            await Core.refreshCloudInBackground(); // reflect applied changes
+          }catch(e){ Toast.show('Worker error: '+e.message); }
+          finally{ running=false; }
+        }
+        function start(){
+          drain(); // boot
+          window.addEventListener('online', debounced);
+          window.addEventListener('visibilitychange', ()=>{ if(!document.hidden) debounced(); });
+          window.addEventListener(Queue.EV, debounced);
+          window.addEventListener('keydown', e=>{ if(e.key==='w') debounced(); }); // manual kick
+        }
+        return { start, drain };
+      })();
+
+      // ===== UI (minimal, test-focused; no provider calls) =====
+      function renderApp(){
+        const root=document.getElementById('app'); root.innerHTML='';
+        const header=document.createElement('div'); header.className='panel toolbar';
+        const left=document.createElement('div'); left.className='row';
+        const right=document.createElement('div'); right.className='row';
+
+        const sortSel=document.createElement('select'); sortSel.className='input';
+        sortSel.innerHTML='<option value="name|asc">Name ↑</option><option value="name|desc">Name ↓</option><option value="modifiedTime|desc">Modified ↑</option><option value="modifiedTime|asc">Modified ↓</option>';
+        sortSel.onchange=e=>{ const [by,dir]=e.target.value.split('|'); Core.setSort(by,dir); };
+
+        const search=document.createElement('input'); search.placeholder='Search (terms, #tags, -exclude)'; search.className='input'; search.oninput=e=>Core.search(e.target.value);
+
+        const hudBtn=document.createElement('button'); hudBtn.className='btn'; hudBtn.textContent='HUD (h)'; hudBtn.onclick=()=>HUD.toggle();
+
+        left.append(sortSel,search); right.append(hudBtn); header.append(left,right); root.append(header);
+
+        const cont=document.createElement('div'); cont.className='panel'; root.append(cont);
+
+        function renderList(files){
+          cont.innerHTML='';
+          const grid=document.createElement('div'); grid.className='grid';
+          for(const f of files){
+            const card=document.createElement('div'); card.className='card';
+            const img=document.createElement('img'); img.loading='lazy'; img.alt=f.name; img.src=Utils.gdriveThumb(f.id,320);
+            const meta=document.createElement('div'); meta.className='meta';
+            const name=document.createElement('div'); name.textContent=f.name;
+            const pill=document.createElement('span'); pill.className='pill'; pill.textContent=(f.tags||[]).includes('favorite')?'★ favorite':'file';
+            meta.append(name,pill); card.append(img,meta); grid.append(card);
+            card.onclick=()=>Core.select([f.id],'set');
+          }
+          cont.append(grid);
+        }
+
+        Core.on(async s=>{ renderList(s.files); HUD.update({lastAction:'render', cacheKeys:(await DB.keys('folders')).length}); });
+
+        const footer=document.createElement('div'); footer.className='footer muted';
+        footer.textContent='Keys: t=tag favorite, m=move→archive, h=HUD, w=worker now';
+        root.append(footer);
+      }
+
+      // ===== Keyboard bindings =====
+      function bindKeys(){
+        window.addEventListener('keydown', async e=>{
+          const sel=new Set(Core.getState().selection||[]);
+          try{
+            if(e.key==='t'){ await Core.tag([...sel], ['favorite'], []); Toast.show(`Tagged favorite (${sel.size})`); }
+            if(e.key==='m'){ await Core.move([...sel], 'archive'); }
+            if(e.key==='h'){ HUD.toggle(); }
+          }catch(err){ Toast.show('Key error: '+err.message); }
+        });
+      }
+
+      // ===== Boot =====
+      (async function start(){
+        try{
+          await DB.open();
+          await Core.init(Providers.Demo());
+          renderApp();
+          bindKeys();
+          WorkerLoop.start();
+          Toast.show('Release M ready');
+        }catch(e){ Err.show('Startup failed: '+(e.stack||e.message)); }
+      })();
+    </script>
+  </body>
+</html>
