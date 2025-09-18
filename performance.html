@@ -949,10 +949,12 @@
             },
             
             showScreen(screenId) {
-                const screens = ['provider-screen', 'gdrive-auth-screen', 'onedrive-auth-screen', 
-                               'gdrive-folder-screen', 'onedrive-folder-screen', 'loading-screen', 'app-container'];
+                const screens = ['provider-screen', 'auth-screen', 'folder-screen', 'loading-screen', 'app-container'];
                 screens.forEach(id => {
-                    document.getElementById(id).classList.toggle('hidden', id !== screenId);
+                    const screen = document.getElementById(id);
+                    if (screen) {
+                        screen.classList.toggle('hidden', id !== screenId);
+                    }
                 });
             },
             
@@ -1236,6 +1238,8 @@
             // Folder & File Reading
             async getFolders() { throw new Error("Method 'getFolders()' must be implemented."); }
             async getFilesAndMetadata(folderId) { throw new Error("Method 'getFilesAndMetadata(folderId)' must be implemented."); }
+            async drillIntoFolder(folder) { throw new Error("Method 'drillIntoFolder(folder)' must be implemented."); }
+            async navigateToParent() { throw new Error("Method 'navigateToParent()' must be implemented."); }
 
             // File Writing/Manipulation
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
@@ -1335,7 +1339,15 @@
             }
             async getFolders() {
                 const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
-                return response.files.map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdTime, modifiedTime: folder.modifiedTime }));
+                return response.files.map(folder => ({
+                    id: folder.id,
+                    name: folder.name,
+                    type: 'folder',
+                    createdTime: folder.createdTime,
+                    modifiedTime: folder.modifiedTime,
+                    itemCount: 0, // Google Drive API doesn't provide this in the list call
+                    hasChildren: false // Assume false to not show a non-functional 'Browse' button
+                }));
             }
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = []; let nextPageToken = null;
@@ -1350,6 +1362,14 @@
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
                 } while (nextPageToken);
                 return { folders: [], files: allFiles };
+            }
+            async drillIntoFolder(folder) {
+                // Not applicable for Google Drive's flat folder structure, but fulfills the interface.
+                return Promise.resolve([]);
+            }
+            async navigateToParent() {
+                // Not applicable for Google Drive's flat folder structure, returns the root list.
+                return this.getFolders();
             }
             async moveFileToFolder(fileId, targetFolderId) {
                 const file = await this.makeApiCall(`/files/${fileId}?fields=parents`);
@@ -1375,9 +1395,21 @@
                 super();
                 this.name = 'onedrive';
                 this.apiBase = 'https://graph.microsoft.com/v1.0';
-                this.isAuthenticated = false; this.activeAccount = null; this.msalInstance = null;
-                this.currentParentId = null; this.currentParentPath = ''; this.breadcrumb = [];
-                this.onProgressCallback = null; this.initMSAL();
+                this.isAuthenticated = false;
+                this.activeAccount = null;
+                this.msalInstance = null;
+                this.currentParentId = null;
+                this.currentParentPath = '';
+                this.breadcrumb = [];
+                this.onProgressCallback = null;
+                this.initMSAL();
+
+                const accounts = this.msalInstance.getAllAccounts();
+                if (accounts.length > 0) {
+                    this.msalInstance.setActiveAccount(accounts[0]);
+                    this.activeAccount = accounts[0];
+                    this.isAuthenticated = true;
+                }
             }
             initMSAL() {
                 const msalConfig = {
@@ -1568,26 +1600,25 @@
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
 
-                Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
-                Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
-                Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
-                Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
-                Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
-                Utils.elements.authStatus.className = 'status info';
+                state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
 
-                Utils.showScreen('auth-screen');
-
-                const provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
-                if (provider.isAuthenticated) {
-                    state.provider = provider;
+                if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
                     Folders.load();
+                } else {
+                    Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
+                    Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
+                    Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
+                    Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
+                    Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
+                    Utils.elements.authStatus.className = 'status info';
+                    Utils.showScreen('auth-screen');
                 }
             },
 
             async authenticateCurrentUser() {
                 const isGoogle = state.providerType === 'googledrive';
-                const provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
+                const provider = state.provider;
 
                 const { authButton, authStatus, gdriveClientSecret } = Utils.elements;
                 authButton.disabled = true;
@@ -2873,12 +2904,16 @@
                 folders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
-                    const isOneDrive = state.providerType === 'onedrive';
+
                     let dateInfo = new Date(folder.modifiedTime).toLocaleDateString();
-                    if (isOneDrive) {
-                        dateInfo += ` • ${folder.itemCount} items ${folder.hasChildren ? ' • Has subfolders' : ''}`;
+                    if (folder.itemCount > 0) {
+                         dateInfo += ` • ${folder.itemCount} items`;
                     }
-                    const iconColor = isOneDrive && folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
+                    if (folder.hasChildren) {
+                        dateInfo += ` • Has subfolders`;
+                    }
+
+                    const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
 
                     div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                                      <div class="folder-info">
@@ -2886,7 +2921,7 @@
                                          <div class="folder-date">${dateInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${isOneDrive && folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
                     folderList.appendChild(div);
@@ -2900,11 +2935,9 @@
                     btn.addEventListener('click', async (e) => {
                         e.stopPropagation();
                         const { folderId, folderName } = e.target.dataset;
-                        try {
-                            const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
-                            this.display(subfolders);
-                            this.updateNavigation();
-                        } catch (error) { Utils.showToast('Error loading subfolders', 'error', true); }
+                        const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
+                        this.display(subfolders);
+                        this.updateNavigation();
                     });
                 });
                 document.querySelectorAll('#folder-list .select-btn').forEach(btn => {
@@ -2922,10 +2955,16 @@
 
             updateNavigation() {
                 const { folderSubtitle, folderRefreshButton } = Utils.elements;
-                if (typeof state.provider.getCurrentPath !== 'function') return;
+                const provider = state.provider;
 
-                folderSubtitle.textContent = `Current: ${state.provider.getCurrentPath()}`;
-                if (state.provider.canGoUp()) {
+                if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
+                    folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
+                    folderSubtitle.classList.remove('hidden');
+                } else {
+                    folderSubtitle.classList.add('hidden');
+                }
+
+                if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
                     folderRefreshButton.textContent = '← Go Up';
                 } else {
                     folderRefreshButton.textContent = 'Refresh';
@@ -3102,13 +3141,14 @@
                     App.backToProviderSelection();
                 });
 
-                Utils.elements.folderRefreshButton.addEventListener('click', () => {
+                Utils.elements.folderRefreshButton.addEventListener('click', async () => {
                     const provider = state.provider;
-                    if (state.providerType === 'onedrive' && typeof provider.canGoUp === 'function' && provider.canGoUp()) {
-                        provider.navigateToParent().then(folders => {
+                    if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
+                        try {
+                            const folders = await provider.navigateToParent();
                             Folders.display(folders);
                             Folders.updateNavigation();
-                        }).catch(error => Utils.showToast('Error navigating up', 'error', true));
+                        } catch (error) { Utils.showToast('Error navigating up', 'error', true); }
                     } else {
                         Folders.load();
                     }
