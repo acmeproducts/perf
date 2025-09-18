@@ -866,9 +866,20 @@
             folderMoveMode: { active: false, files: [] },
             activeRequests: new AbortController()
         };
+        /**
+         * A collection of utility functions for DOM manipulation, data formatting, and UI updates.
+         */
         const Utils = {
+            /**
+             * A cache of frequently accessed DOM elements.
+             * @type {Object<string, HTMLElement>}
+             */
             elements: {},
             
+            /**
+             * Caches all necessary DOM elements into the `elements` object.
+             * Should be called once when the application initializes.
+             */
             init() {
                 this.elements = {
                     providerScreen: document.getElementById('provider-screen'),
@@ -978,6 +989,10 @@
                 };
             },
             
+            /**
+             * Shows a specific screen and hides all others.
+             * @param {string} screenId The ID of the screen element to show.
+             */
             showScreen(screenId) {
                 const screens = ['provider-screen', 'gdrive-auth-screen', 'onedrive-auth-screen', 
                                'gdrive-folder-screen', 'onedrive-folder-screen', 'loading-screen', 'app-container'];
@@ -986,11 +1001,26 @@
                 });
             },
             
+            /**
+             * Shows a modal dialog.
+             * @param {string} id The ID of the modal element to show.
+             */
             showModal(id) { document.getElementById(id).classList.remove('hidden'); },
+
+            /**
+             * Hides a modal dialog.
+             * @param {string} id The ID of the modal element to hide.
+             */
             hideModal(id) { document.getElementById(id).classList.add('hidden'); },
             
+            /**
+             * Displays a short-lived notification message (toast).
+             * @param {string} message The message to display.
+             * @param {'success'|'info'|'error'} [type='success'] The type of toast, for styling.
+             * @param {boolean} [important=false] If true, the toast will always show and may trigger haptics.
+             */
             showToast(message, type = 'success', important = false) {
-                if (!important && Math.random() < 0.7) return;
+                if (!important && Math.random() < 0.7) return; // Reduce toast spam for non-critical info
                 const toast = this.elements.toast;
                 toast.textContent = message;
                 toast.className = `toast ${type} show`;
@@ -1001,20 +1031,26 @@
                 }
             },
             
+            /**
+             * Sets the source for an image element, with fallback logic.
+             * @param {HTMLImageElement} img The image element to update.
+             * @param {Object} file The file object containing image URLs.
+             * @returns {Promise<void>} A promise that resolves when the image has loaded or failed.
+             */
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
                 let imageUrl = this.getPreferredImageUrl(file);
                 return new Promise((resolve) => {
                     img.onload = () => {
-                        if (state.currentImageLoadId !== loadId) return;
+                        if (state.currentImageLoadId !== loadId) return; // A new image is already being loaded
                         resolve();
                     };
                     img.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
                         let fallbackUrl = this.getFallbackImageUrl(file);
                         
-                        img.onerror = () => {
+                        img.onerror = () => { // Final fallback
                             if (state.currentImageLoadId !== loadId) return;
                             img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
                             resolve();
@@ -1026,10 +1062,16 @@
                 });
             },
             
+            /**
+             * Gets the best-quality image URL available from a file object.
+             * @param {Object} file The file object.
+             * @returns {string} The preferred image URL.
+             * @private
+             */
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
+                        return file.thumbnailLink.replace('=s220', '=s1000'); // Request larger thumbnail
                     }
                     return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
                 } else { // OneDrive
@@ -1040,6 +1082,12 @@
                 }
             },
 
+            /**
+             * Gets a fallback image URL if the preferred one fails.
+             * @param {Object} file The file object.
+             * @returns {string} The fallback image URL.
+             * @private
+             */
             getFallbackImageUrl(file) {
                  if (state.providerType === 'googledrive') {
                     return file.downloadUrl || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
@@ -1048,6 +1096,11 @@
                 }
             },
             
+            /**
+             * Formats a file size in bytes into a human-readable string (KB, MB, GB).
+             * @param {number} bytes The file size in bytes.
+             * @returns {string} The formatted file size string.
+             */
             formatFileSize(bytes) {
                 if (bytes === 0) return '0 Bytes';
                 const k = 1024;
@@ -1056,6 +1109,12 @@
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             },
             
+            /**
+             * Updates the UI of the loading screen.
+             * @param {number} current The current number of items processed.
+             * @param {number} total The total number of items to process.
+             * @param {string} [message=''] An optional message to display.
+             */
             updateLoadingProgress(current, total, message = '') {
                 state.loadingProgress = { current, total };
                 this.elements.loadingCounter.textContent = current;
@@ -1069,8 +1128,23 @@
             }
         };
 
+        /**
+         * Manages the IndexedDB database for caching folder contents and file metadata.
+         * This allows for faster load times and offline access to previously viewed folders.
+         */
         class DBManager {
-            constructor() { this.db = null; }
+            /**
+             * Creates an instance of DBManager.
+             */
+            constructor() {
+                /** @type {IDBDatabase|null} */
+                this.db = null;
+            }
+
+            /**
+             * Initializes the IndexedDB database and creates object stores if they don't exist.
+             * @returns {Promise<void>} A promise that resolves when the database is successfully opened.
+             */
             async init() {
                 return new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 1);
@@ -1090,6 +1164,12 @@
                     request.onerror = (event) => reject(event.target.error);
                 });
             }
+
+            /**
+             * Retrieves the cached file list for a specific folder.
+             * @param {string} folderId The ID of the folder to retrieve from the cache.
+             * @returns {Promise<Array<Object>|null>} A promise that resolves with the array of file objects, or null if not found.
+             */
             async getFolderCache(folderId) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
@@ -1100,6 +1180,13 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+
+            /**
+             * Saves a list of files for a specific folder to the cache.
+             * @param {string} folderId The ID of the folder.
+             * @param {Array<Object>} files The array of file objects to cache.
+             * @returns {Promise<void>} A promise that resolves when the data is successfully saved.
+             */
             async saveFolderCache(folderId, files) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
@@ -1110,6 +1197,12 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+
+            /**
+             * Retrieves the cached metadata for a specific file.
+             * @param {string} fileId The ID of the file.
+             * @returns {Promise<Object|null>} A promise that resolves with the metadata object, or null if not found.
+             */
             async getMetadata(fileId) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
@@ -1120,6 +1213,13 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+
+            /**
+             * Saves metadata for a specific file to the cache.
+             * @param {string} fileId The ID of the file.
+             * @param {Object} metadata The metadata object to save.
+             * @returns {Promise<void>} A promise that resolves when the metadata is successfully saved.
+             */
             async saveMetadata(fileId, metadata) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
@@ -1130,21 +1230,67 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+
+            /**
+             * Adds an operation to the synchronization queue. (Placeholder for future implementation)
+             * @param {Object} operation The operation to queue.
+             * @returns {Promise<void>}
+             */
             async addToSyncQueue(operation) { return Promise.resolve(); }
+
+            /**
+             * Reads all operations from the synchronization queue. (Placeholder for future implementation)
+             * @returns {Promise<Array<Object>>}
+             */
             async readSyncQueue() { return Promise.resolve([]); }
+
+            /**
+             * Deletes an operation from the synchronization queue. (Placeholder for future implementation)
+             * @param {number} id The ID of the operation to delete.
+             * @returns {Promise<void>}
+             */
             async deleteFromSyncQueue(id) { return Promise.resolve(); }
         }
+        /**
+         * Manages background synchronization. (Currently a placeholder for future implementation).
+         * This class would be responsible for creating a web worker to handle data sync with the cloud provider
+         * without blocking the main UI thread.
+         */
         class SyncManager {
-            constructor() { this.worker = null; this.syncInterval = null; }
+            constructor() {
+                /** @type {Worker|null} */
+                this.worker = null;
+                /** @type {number|null} */
+                this.syncInterval = null;
+            }
+            /**
+             * Starts the background sync process.
+             */
             start() { /* Placeholder */ }
+            /**
+             * Stops the background sync process.
+             */
             stop() { /* Placeholder */ }
+            /**
+             * Requests an immediate, one-time sync.
+             */
             requestSync() { /* Placeholder */ }
         }
+        /**
+         * Manages the intensity of visual effects and cues throughout the application.
+         * Allows the user to select between low, medium, and high intensity levels.
+         */
         class VisualCueManager {
             constructor() {
+                /** @type {string} */
                 this.currentIntensity = localStorage.getItem('orbital8_visual_intensity') || 'medium';
                 this.applyIntensity(this.currentIntensity);
             }
+
+            /**
+             * Sets the visual intensity level for the application.
+             * @param {'low'|'medium'|'high'} level The desired intensity level.
+             */
             setIntensity(level) {
                 this.currentIntensity = level;
                 this.applyIntensity(level);
@@ -1153,6 +1299,12 @@
                     btn.classList.toggle('active', btn.dataset.level === level);
                 });
             }
+
+            /**
+             * Applies the CSS variables and classes based on the selected intensity level.
+             * @param {'low'|'medium'|'high'} level The intensity level to apply.
+             * @private
+             */
             applyIntensity(level) {
                 const settings = {
                     low: { glow: 0.3, ripple: 1000, extraEffects: false },
@@ -1166,17 +1318,32 @@
                 } else { document.body.classList.remove('high-intensity-mode'); }
             }
         }
+        /**
+         * Manages haptic feedback (vibration) for user interactions on supported mobile devices.
+         */
         class HapticFeedbackManager {
             constructor() {
+                /** @type {boolean} */
                 this.isEnabled = localStorage.getItem('orbital8_haptic_enabled') !== 'false';
+                /** @type {boolean} */
                 this.isSupported = 'vibrate' in navigator;
                 const checkbox = document.getElementById('haptic-enabled');
                 if (checkbox) checkbox.checked = this.isEnabled;
             }
+
+            /**
+             * Enables or disables haptic feedback.
+             * @param {boolean} enabled - True to enable, false to disable.
+             */
             setEnabled(enabled) {
                 this.isEnabled = enabled;
                 localStorage.setItem('orbital8_haptic_enabled', enabled);
             }
+
+            /**
+             * Triggers a specific haptic feedback pattern.
+             * @param {'swipe'|'pillTap'|'buttonPress'|'error'} type - The type of feedback to trigger.
+             */
             triggerFeedback(type) {
                 if (!this.isEnabled || !this.isSupported) return;
                 const patterns = { swipe: [20, 40], pillTap: [35], buttonPress: [25], error: [100, 50, 100] };
@@ -1184,20 +1351,39 @@
                 if (pattern && navigator.vibrate) { navigator.vibrate(pattern); }
             }
         }
+        /**
+         * Handles fetching and parsing metadata from PNG files.
+         * It can fetch a partial file from the cloud to read the metadata chunks without downloading the entire image.
+         */
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor() {
+                /** @type {AbortController|null} */
+                this.abortController = null;
+            }
+
+            /**
+             * Aborts any ongoing metadata fetch operation.
+             */
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
                     this.abortController = null;
                 }
             }
+
+            /**
+             * Extracts metadata from a PNG file's ArrayBuffer.
+             * Parses tEXt and IHDR chunks.
+             * @param {ArrayBuffer} buffer The ArrayBuffer of the PNG file (or its beginning part).
+             * @returns {Promise<Object>} A promise that resolves with an object containing the extracted metadata.
+             * @private
+             */
             async extract(buffer) {
                 if (!buffer) return {};
                 const metadata = {};
                 const view = new DataView(buffer);
                 if (buffer.byteLength < 8) return {};
-                let pos = 8;
+                let pos = 8; // Skip PNG signature
                 try {
                     while (pos < buffer.byteLength - 12) {
                         const chunkLength = view.getUint32(pos, false);
@@ -1220,16 +1406,30 @@
                             const width = view.getUint32(pos, false);
                             const height = view.getUint32(pos + 4, false);
                             metadata._dimensions = { width, height };
-                        } else if (chunkType === 'IEND') { break; }
-                        pos += chunkLength + 4;
-                        if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
+                        } else if (chunkType === 'IEND') {
+                            break; // End of image, no need to read further
+                        }
+                        pos += chunkLength + 4; // Skip chunk data and CRC
+                        if (chunkLength > buffer.byteLength || pos > buffer.byteLength) {
+                            break;
+                        }
                     }
-                } catch (error) { /* Return what we have so far */ }
+                } catch (error) {
+                    console.warn("Error during PNG metadata extraction:", error);
+                    /* Return what we have so far */
+                }
                 return metadata;
             }
+
+            /**
+             * Fetches the beginning of a PNG file from the cloud and extracts its metadata.
+             * @param {Object} file The file object.
+             * @param {boolean} [isForExport=false] - If true, treats the fetch as higher priority.
+             * @returns {Promise<Object>} A promise that resolves with the metadata object or an error object.
+             */
             async fetchMetadata(file, isForExport = false) {
                 if (file.mimeType !== 'image/png') {
-                    if (!isForExport) file.metadataStatus = 'loaded';
+                    if (!isForExport) file.metadataStatus = 'loaded'; // Mark as done for non-PNGs
                     return { error: 'Not a PNG file' };
                 }
                 try {
@@ -1240,7 +1440,7 @@
                     
                     if (state.providerType === 'googledrive') {
                         response = await state.provider.makeApiCall(`/files/${file.id}?alt=media`, { headers: { 'Range': 'bytes=0-65535' }, ...requestOptions }, false);
-                    } else {
+                    } else { // OneDrive
                         const accessToken = await state.provider.getAccessToken();
                         response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`, { headers: { 'Authorization': `Bearer ${accessToken}`, 'Range': 'bytes=0-65535' }, ...requestOptions });
                     }
@@ -1248,52 +1448,115 @@
                     const buffer = await response.arrayBuffer();
                     return await this.extract(buffer);
                 } catch (error) {
-                    if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
+                    if (error.name === 'AbortError') {
+                        return { error: 'Operation cancelled' };
+                    }
                     return { error: error.message };
                 }
             }
         }
+        /**
+         * A base class for cloud storage providers. Defines the common interface
+         * that all specific provider implementations should follow.
+         */
         class BaseProvider {
             constructor() {}
+
+            /**
+             * Updates user-defined metadata for a file in the cloud.
+             * (Note: Currently a placeholder for future cloud-sync implementation).
+             * @param {string} fileId - The ID of the file to update.
+             * @param {Object} updates - An object containing the metadata properties to update.
+             * @returns {Promise<void>}
+             */
             updateUserMetadata(fileId, updates) {
                  // All updates are now local-first, this method is for cloud sync only (Phase 2)
                  return Promise.resolve();
             }
         }
+
+        /**
+         * Handles all interactions with the Google Drive API.
+         * Manages authentication, fetching files/folders, and file operations.
+         * @extends BaseProvider
+         */
         class GoogleDriveProvider extends BaseProvider {
+            /**
+             * Creates an instance of GoogleDriveProvider.
+             */
             constructor() {
                 super();
+                /** @type {string} The name of the provider. */
                 this.name = 'googledrive';
+                /** @type {string} The Google Cloud client ID. */
                 this.clientId = '567988062464-fa6c1ovesqeudqs5398vv4mbo6q068p9.apps.googleusercontent.com';
+                /** @type {string} The OAuth redirect URI. */
                 this.redirectUri = window.location.origin + window.location.pathname;
+                /** @type {string} The required Google API scopes. */
                 this.scope = 'https://www.googleapis.com/auth/drive';
+                /** @type {string} The base URL for the Google Drive API. */
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
-                this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
-                this.isAuthenticated = false; this.onProgressCallback = null;
+                /** @type {string|null} The current access token. */
+                this.accessToken = null;
+                /** @type {string|null} The refresh token for obtaining new access tokens. */
+                this.refreshToken = null;
+                /** @type {string|null} The user-provided client secret. */
+                this.clientSecret = null;
+                /** @type {boolean} Indicates if the user is currently authenticated. */
+                this.isAuthenticated = false;
+                /** @type {Function|null} A callback function to report progress during file loading. */
+                this.onProgressCallback = null;
                 this.loadStoredCredentials();
             }
+
+            /**
+             * Loads stored credentials (tokens, client secret) from localStorage.
+             * @private
+             */
             loadStoredCredentials() {
                 this.accessToken = localStorage.getItem('google_access_token');
                 this.refreshToken = localStorage.getItem('google_refresh_token');
                 this.clientSecret = localStorage.getItem('google_client_secret');
                 this.isAuthenticated = !!(this.accessToken && this.refreshToken && this.clientSecret);
             }
+
+            /**
+             * Stores the current credentials to localStorage.
+             * @private
+             */
             storeCredentials() {
                 if (this.accessToken) localStorage.setItem('google_access_token', this.accessToken);
                 if (this.refreshToken) localStorage.setItem('google_refresh_token', this.refreshToken);
                 if (this.clientSecret) localStorage.setItem('google_client_secret', this.clientSecret);
             }
+
+            /**
+             * Clears all stored credentials from localStorage.
+             * @private
+             */
             clearStoredCredentials() {
                 localStorage.removeItem('google_access_token');
                 localStorage.removeItem('google_refresh_token');
                 localStorage.removeItem('google_client_secret');
             }
+
+            /**
+             * Initiates the Google Drive authentication flow.
+             * @param {string} clientSecret The user-provided Google Client Secret.
+             * @returns {Promise<boolean>} A promise that resolves to true on successful authentication.
+             */
             async authenticate(clientSecret) {
                 if (clientSecret) { this.clientSecret = clientSecret; this.storeCredentials(); }
                 if (!this.clientSecret) { throw new Error('Client secret is required for Google Drive authentication'); }
+                // Try to use existing tokens first
                 if (this.accessToken && this.refreshToken) {
-                    try { await this.makeApiCall('/files?pageSize=1'); this.isAuthenticated = true; return true; } catch (error) { /* continue */ }
+                    try {
+                        await this.makeApiCall('/files?pageSize=1');
+                        this.isAuthenticated = true;
+                        return true;
+                    } catch (error) { /* Token might be invalid, continue to full auth flow */ }
                 }
+                // Full OAuth flow with popup
                 return new Promise((resolve, reject) => {
                     const authUrl = this.buildAuthUrl();
                     const popup = window.open(authUrl, 'google-auth', 'width=500,height=600,scrollbars=yes,resizable=yes');
@@ -1303,18 +1566,35 @@
                         if (event.origin !== window.location.origin) return;
                         if (event.data.type === 'GOOGLE_AUTH_SUCCESS') {
                             clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close();
-                            try { await this.exchangeCodeForTokens(event.data.code); this.isAuthenticated = true; resolve(true); } catch (error) { reject(error); }
+                            try {
+                                await this.exchangeCodeForTokens(event.data.code);
+                                this.isAuthenticated = true;
+                                resolve(true);
+                            } catch (error) { reject(error); }
                         } else if (event.data.type === 'GOOGLE_AUTH_ERROR') {
-                            clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close(); reject(new Error(event.data.error));
+                            clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close();
+                            reject(new Error(event.data.error));
                         }
                     };
                     window.addEventListener('message', messageHandler);
                 });
             }
+
+            /**
+             * Builds the Google OAuth URL.
+             * @returns {string} The full authentication URL.
+             * @private
+             */
             buildAuthUrl() {
                 const params = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: 'code', scope: this.scope, access_type: 'offline', prompt: 'consent' });
                 return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
             }
+
+            /**
+             * Exchanges an authorization code for access and refresh tokens.
+             * @param {string} code The authorization code from the OAuth flow.
+             * @private
+             */
             async exchangeCodeForTokens(code) {
                 const response = await fetch('https://oauth2.googleapis.com/token', {
                     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1322,9 +1602,16 @@
                 });
                 if (!response.ok) { throw new Error('Token exchange failed'); }
                 const tokens = await response.json();
-                this.accessToken = tokens.access_token; this.refreshToken = tokens.refresh_token;
+                this.accessToken = tokens.access_token;
+                this.refreshToken = tokens.refresh_token;
                 this.storeCredentials();
             }
+
+            /**
+             * Uses the refresh token to get a new access token.
+             * @returns {Promise<string>} A promise that resolves with the new access token.
+             * @private
+             */
             async refreshAccessToken() {
                 if (!this.refreshToken || !this.clientSecret) { throw new Error('No refresh token or client secret available'); }
                 const response = await fetch('https://oauth2.googleapis.com/token', {
@@ -1332,8 +1619,20 @@
                     body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, refresh_token: this.refreshToken, grant_type: 'refresh_token' })
                 });
                 if (!response.ok) { throw new Error('Failed to refresh access token'); }
-                const tokens = await response.json(); this.accessToken = tokens.access_token; this.storeCredentials(); return this.accessToken;
+                const tokens = await response.json();
+                this.accessToken = tokens.access_token;
+                this.storeCredentials();
+                return this.accessToken;
             }
+
+            /**
+             * Makes a generic, authenticated call to the Google Drive API.
+             * Handles automatic token refresh on 401 errors.
+             * @param {string} endpoint The API endpoint to call (e.g., '/files').
+             * @param {Object} [options={}] Fetch options (method, body, etc.).
+             * @param {boolean} [isJson=true] Whether the response should be parsed as JSON.
+             * @returns {Promise<Object|Response>} The JSON response or the raw Response object.
+             */
             async makeApiCall(endpoint, options = {}, isJson = true) {
                 if (!this.accessToken) { throw new Error('Not authenticated'); }
                 const url = endpoint.startsWith('https://') ? endpoint : `${this.apiBase}${endpoint}`;
@@ -1345,16 +1644,32 @@
                         await this.refreshAccessToken();
                         headers['Authorization'] = `Bearer ${this.accessToken}`;
                         response = await fetch(url, { ...options, headers });
-                    } catch (refreshError) { this.isAuthenticated = false; this.clearStoredCredentials(); throw new Error('Authentication expired. Please reconnect.'); }
+                    } catch (refreshError) {
+                        this.isAuthenticated = false;
+                        this.clearStoredCredentials();
+                        throw new Error('Authentication expired. Please reconnect.');
+                    }
                 }
                 if (!response.ok) { const errorText = await response.text(); throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`); }
                 if (isJson) { return await response.json(); }
                 return response;
             }
+
+            /**
+             * Fetches a list of all folders from the user's Google Drive.
+             * @returns {Promise<Array<Object>>} A promise that resolves with an array of folder objects.
+             */
             async getFolders() {
                 const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
                 return response.files.map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdTime, modifiedTime: folder.modifiedTime }));
             }
+
+            /**
+             * Fetches all image files from a specific folder.
+             * Handles pagination to retrieve all files.
+             * @param {string} [folderId='root'] The ID of the folder to fetch from.
+             * @returns {Promise<{folders: Array, files: Array<Object>}>} A promise that resolves with an object containing files.
+             */
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = []; let nextPageToken = null;
                 do {
@@ -1369,34 +1684,83 @@
                 } while (nextPageToken);
                 return { folders: [], files: allFiles };
             }
+
+            /**
+             * Moves a file to a different folder in Google Drive.
+             * @param {string} fileId The ID of the file to move.
+             * @param {string} targetFolderId The ID of the destination folder.
+             * @returns {Promise<boolean>} A promise that resolves to true on success.
+             */
             async moveFileToFolder(fileId, targetFolderId) {
                 const file = await this.makeApiCall(`/files/${fileId}?fields=parents`);
                 const previousParents = file.parents.join(',');
                 await this.makeApiCall(`/files/${fileId}?addParents=${targetFolderId}&removeParents=${previousParents}&fields=id,parents`, { method: 'PATCH' });
                 return true;
             }
+
+            /**
+             * Updates custom properties on a file in Google Drive.
+             * @param {string} fileId The ID of the file to update.
+             * @param {Object} properties An object of key-value pairs to set as appProperties.
+             * @returns {Promise<boolean>} A promise that resolves to true on success.
+             */
             async updateFileProperties(fileId, properties) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: properties }) });
                 return true;
             }
+
+            /**
+             * Moves a file to the trash in Google Drive.
+             * @param {string} fileId The ID of the file to delete.
+             * @returns {Promise<boolean>} A promise that resolves to true on success.
+             */
             async deleteFile(fileId) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ trashed: true }) });
                 return true;
             }
+
+            /**
+             * Disconnects the provider and clears all stored credentials.
+             */
             async disconnect() {
                 this.isAuthenticated = false; this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.clearStoredCredentials();
             }
         }
+
+        /**
+         * Handles all interactions with the Microsoft OneDrive API using MSAL.
+         * Manages authentication, fetching files/folders, and file operations.
+         * @extends BaseProvider
+         */
         class OneDriveProvider extends BaseProvider {
             constructor() {
                 super();
+                /** @type {string} The name of the provider. */
                 this.name = 'onedrive';
+                /** @type {string} The base URL for the Microsoft Graph API. */
                 this.apiBase = 'https://graph.microsoft.com/v1.0';
-                this.isAuthenticated = false; this.activeAccount = null; this.msalInstance = null;
-                this.currentParentId = null; this.currentParentPath = ''; this.breadcrumb = [];
-                this.onProgressCallback = null; this.initMSAL();
+                /** @type {boolean} Indicates if the user is currently authenticated. */
+                this.isAuthenticated = false;
+                /** @type {import('@azure/msal-browser').AccountInfo|null} The active MSAL account. */
+                this.activeAccount = null;
+                /** @type {import('@azure/msal-browser').PublicClientApplication|null} The MSAL instance. */
+                this.msalInstance = null;
+                /** @type {string|null} The ID of the current folder being viewed. */
+                this.currentParentId = null;
+                /** @type {string} The path of the current folder being viewed. */
+                this.currentParentPath = '';
+                /** @type {Array<{id: string, name: string}>} A breadcrumb trail for folder navigation. */
+                this.breadcrumb = [];
+                /** @type {Function|null} A callback function to report progress during file loading. */
+                this.onProgressCallback = null;
+                this.initMSAL();
             }
+
+            /**
+             * Initializes the MSAL PublicClientApplication instance.
+             * @private
+             */
             initMSAL() {
                 const msalConfig = {
                     auth: { clientId: 'b407fd45-c551-4dbb-9da5-cab3a2c5a949', authority: 'https://login.microsoftonline.com/common', redirectUri: window.location.origin + window.location.pathname },
@@ -1404,16 +1768,35 @@
                 };
                 this.msalInstance = new msal.PublicClientApplication(msalConfig);
             }
+
+            /**
+             * Initiates the OneDrive authentication flow using MSAL.
+             * @returns {Promise<boolean>} A promise that resolves to true on successful authentication.
+             */
             async authenticate() {
                 try {
                     const accounts = this.msalInstance.getAllAccounts();
-                    if (accounts.length > 0) { this.msalInstance.setActiveAccount(accounts[0]); this.activeAccount = accounts[0]; }
-                    else { const loginResponse = await this.msalInstance.loginPopup({ scopes: ['Files.ReadWrite.AppFolder', 'User.Read'] });
-                        this.activeAccount = loginResponse.account; this.msalInstance.setActiveAccount(this.activeAccount);
+                    if (accounts.length > 0) {
+                        this.msalInstance.setActiveAccount(accounts[0]);
+                        this.activeAccount = accounts[0];
+                    } else {
+                        const loginResponse = await this.msalInstance.loginPopup({ scopes: ['Files.ReadWrite.AppFolder', 'User.Read'] });
+                        this.activeAccount = loginResponse.account;
+                        this.msalInstance.setActiveAccount(this.activeAccount);
                     }
-                    this.isAuthenticated = true; return true;
-                } catch (error) { this.isAuthenticated = false; throw new Error(`Authentication failed: ${error.message}`); }
+                    this.isAuthenticated = true;
+                    return true;
+                } catch (error) {
+                    this.isAuthenticated = false;
+                    throw new Error(`Authentication failed: ${error.message}`);
+                }
             }
+
+            /**
+             * Acquires an access token, silently if possible, or via popup if necessary.
+             * @returns {Promise<string>} A promise that resolves with the access token.
+             * @private
+             */
             async getAccessToken() {
                 if (!this.activeAccount) { throw new Error('No active account'); }
                 try {
@@ -1423,9 +1806,17 @@
                     if (silentError instanceof msal.InteractionRequiredAuthError) {
                         const response = await this.msalInstance.acquireTokenPopup({ scopes: ['Files.ReadWrite.AppFolder'], account: this.activeAccount });
                         return response.accessToken;
-                    } throw silentError;
+                    }
+                    throw silentError;
                 }
             }
+
+            /**
+             * Makes a generic, authenticated call to the Microsoft Graph API.
+             * @param {string} endpoint The API endpoint to call (e.g., '/me/drive/root/children').
+             * @param {Object} [options={}] Fetch options (method, body, etc.).
+             * @returns {Promise<Response>} The raw Response object.
+             */
             async makeApiCall(endpoint, options = {}) {
                 const accessToken = await this.getAccessToken();
                 const url = endpoint.startsWith('https://') ? endpoint : `${this.apiBase}${endpoint}`;
@@ -1435,6 +1826,13 @@
                 if (!response.ok) { const errorText = await response.text(); throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`); }
                 return response;
             }
+
+            /**
+             * Fetches all image files from a specific folder in OneDrive.
+             * Handles pagination to retrieve all files.
+             * @param {string} [folderId='root'] The ID of the folder to fetch from.
+             * @returns {Promise<{folders: Array, files: Array<Object>}>} A promise that resolves with an object containing files.
+             */
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = [];
                 let endpoint = folderId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${folderId}/children`;
@@ -1455,6 +1853,12 @@
                 }
                 return { folders: [], files: allFiles };
             }
+
+            /**
+             * Finds the user's "Downloads" folder, or defaults to the root.
+             * @returns {Promise<Object>} A promise resolving with the folder object.
+             * @private
+             */
             async getDownloadsFolder() {
                 try {
                     const response = await this.makeApiCall('/me/drive/root/children');
@@ -1464,6 +1868,11 @@
                     return { id: 'root', name: 'Root', folder: true };
                 } catch (error) { console.warn('Could not find Downloads folder, using root:', error); return { id: 'root', name: 'Root', folder: true }; }
             }
+
+            /**
+             * Gets the initial list of folders, starting from the Downloads folder.
+             * @returns {Promise<Array<Object>>} A promise that resolves with an array of folder objects.
+             */
             async getFolders() {
                 try {
                     const downloadsFolder = await this.getDownloadsFolder();
@@ -1472,6 +1881,13 @@
                     return await this.loadFoldersInParent(downloadsFolder.id);
                 } catch (error) { console.warn('Failed to load initial folders:', error); return []; }
             }
+
+            /**
+             * Loads the list of subfolders within a given parent folder.
+             * @param {string} parentId The ID of the parent folder.
+             * @returns {Promise<Array<Object>>} An array of folder objects.
+             * @private
+             */
             async loadFoldersInParent(parentId) {
                 try {
                     const folders = [];
@@ -1487,6 +1903,12 @@
                     return folders.sort((a, b) => a.name.localeCompare(b.name));
                 } catch (error) { console.warn('Failed to load folders:', error); return []; }
             }
+
+            /**
+             * Navigates into a subfolder and returns its contents.
+             * @param {Object} folder The folder object to drill into.
+             * @returns {Promise<Array<Object>>} An array of folder objects in the new directory.
+             */
             async drillIntoFolder(folder) {
                 try {
                     this.breadcrumb.push({ id: folder.id, name: folder.name });
@@ -1495,6 +1917,11 @@
                     return await this.loadFoldersInParent(folder.id);
                 } catch (error) { console.warn('Failed to drill into folder:', error); return []; }
             }
+
+            /**
+             * Navigates to the parent directory.
+             * @returns {Promise<Array<Object>>} An array of folder objects in the parent directory.
+             */
             async navigateToParent() {
                 if (this.breadcrumb.length <= 1) { return await this.getFolders(); }
                 this.breadcrumb.pop();
@@ -1503,16 +1930,43 @@
                 this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
                 return await this.loadFoldersInParent(parentFolder.id);
             }
+
+            /**
+             * Gets the current folder path as a string.
+             * @returns {string} The current path.
+             */
             getCurrentPath() { return this.currentParentPath; }
+
+            /**
+             * Checks if navigation to a parent folder is possible.
+             * @returns {boolean} True if it's possible to go up.
+             */
             canGoUp() { return this.breadcrumb.length > 1; }
+
+            /**
+             * Moves a file to a different folder in OneDrive.
+             * @param {string} fileId The ID of the file to move.
+             * @param {string} targetFolderId The ID of the destination folder.
+             * @returns {Promise<boolean>} A promise that resolves to true on success.
+             */
             async moveFileToFolder(fileId, targetFolderId) {
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'PATCH', body: JSON.stringify({ parentReference: { id: targetFolderId } }) });
                 return true;
             }
+
+            /**
+             * Deletes a file in OneDrive.
+             * @param {string} fileId The ID of the file to delete.
+             * @returns {Promise<boolean>} A promise that resolves to true on success.
+             */
             async deleteFile(fileId) {
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'DELETE' });
                 return true;
             }
+
+            /**
+             * Disconnects the provider by logging out the MSAL account.
+             */
             async disconnect() {
                 this.isAuthenticated = false; this.activeAccount = null;
                 if (this.msalInstance) {
@@ -1521,7 +1975,14 @@
                 }
             }
         }
+        /**
+         * Handles the exporting of image data and metadata to a CSV file.
+         */
         class ExportSystem {
+            /**
+             * Initiates the export process for a given set of images.
+             * @param {Array<Object>} imagesWithMetadata - An array of image file objects, each including its extracted metadata.
+             */
             async exportData(imagesWithMetadata) {
                 if (imagesWithMetadata.length === 0) {
                     Utils.showToast('No images to export', 'info', true);
@@ -1530,40 +1991,101 @@
                 const csvData = this.formatForCSV(imagesWithMetadata);
                 this.downloadCSV(csvData);
             }
+
+            /**
+             * Formats the image data into a 2D array suitable for CSV conversion.
+             * @param {Array<Object>} images - The array of image file objects.
+             * @returns {Array<Array<string>>} A 2D array with headers and data rows.
+             * @private
+             */
             formatForCSV(images) {
                 const headers = [ 'Filename', 'Direct Image URL', 'Prompt', 'Negative Prompt', 'Model', 'Width', 'Height', 'Steps', 'Seed', 'CFG Scale', 'Size', 'Created Date', 'Modified Date', 'Tags', 'Notes', 'Quality Rating', 'Content Rating', 'Provider', 'Metadata (JSON)' ];
                 const rows = images.map(image => {
                     const meta = image.extractedMetadata || {}; const dims = meta._dimensions || {};
-                    return [ image.name || '', this.getDirectImageURL(image), this.extractMetadataValue(meta, ['prompt', 'Prompt', 'parameters']), this.extractMetadataValue(meta, ['negative_prompt', 'Negative Prompt']), this.extractMetadataValue(meta, ['model', 'Model']), dims.width || '', dims.height || '', this.extractMetadataValue(meta, ['steps', 'Steps']), this.extractMetadataValue(meta, ['seed', 'Seed']), this.extractMetadataValue(meta, ['cfg_scale', 'CFG Scale']), Utils.formatFileSize(image.size), image.createdTime ? new Date(image.createdTime).toISOString() : '', image.modifiedTime ? new Date(image.modifiedTime).toISOString() : '', (image.tags || []).join('; '), image.notes || '', image.qualityRating || 0, image.contentRating || 0, state.providerType || 'unknown', JSON.stringify(meta) ];
+                    return [
+                        image.name || '',
+                        this.getDirectImageURL(image),
+                        this.extractMetadataValue(meta, ['prompt', 'Prompt', 'parameters']),
+                        this.extractMetadataValue(meta, ['negative_prompt', 'Negative Prompt']),
+                        this.extractMetadataValue(meta, ['model', 'Model']),
+                        dims.width || '',
+                        dims.height || '',
+                        this.extractMetadataValue(meta, ['steps', 'Steps']),
+                        this.extractMetadataValue(meta, ['seed', 'Seed']),
+                        this.extractMetadataValue(meta, ['cfg_scale', 'CFG Scale']),
+                        Utils.formatFileSize(image.size),
+                        image.createdTime ? new Date(image.createdTime).toISOString() : '',
+                        image.modifiedTime ? new Date(image.modifiedTime).toISOString() : '',
+                        (image.tags || []).join('; '),
+                        image.notes || '',
+                        image.qualityRating || 0,
+                        image.contentRating || 0,
+                        state.providerType || 'unknown',
+                        JSON.stringify(meta)
+                    ];
                 });
                 return [headers, ...rows];
             }
+
+            /**
+             * Extracts a value from the metadata object using a list of possible keys.
+             * Also handles special parsing for 'parameters' key.
+             * @param {Object} metadata - The metadata object.
+             * @param {Array<string>} keys - An array of possible keys to check for the value.
+             * @returns {string} The extracted value or an empty string if not found.
+             * @private
+             */
             extractMetadataValue(metadata, keys) {
                 for (const key of keys) {
                     if (metadata[key]) {
+                        // Special handling for A1111-style 'parameters' string
                         if (key === 'parameters') {
                             const promptMatch = metadata[key].match(/^(.*?)(Negative prompt:|$)/);
                             if (promptMatch && promptMatch[1]) return promptMatch[1].trim();
-                        } return metadata[key];
+                        }
+                        return metadata[key];
                     }
-                } return '';
-            }
-            getDirectImageURL(image) {
-                if (state.providerType === 'googledrive') { return `https://drive.google.com/uc?id=${image.id}&export=view`;
-                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
+                }
                 return '';
             }
+
+            /**
+             * Constructs a direct-view URL for an image based on the cloud provider.
+             * @param {Object} image - The image file object.
+             * @returns {string} The direct URL to the image.
+             * @private
+             */
+            getDirectImageURL(image) {
+                if (state.providerType === 'googledrive') {
+                    return `https://drive.google.com/uc?id=${image.id}&export=view`;
+                } else if (state.providerType === 'onedrive') {
+                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
+                }
+                return '';
+            }
+
+            /**
+             * Triggers the download of the generated CSV file.
+             * @param {Array<Array<string>>} data - The 2D array of data to be converted to CSV.
+             * @private
+             */
             downloadCSV(data) {
                 const folderName = state.currentFolder.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
                 const stackName = state.grid.stack;
                 const date = new Date().toISOString().split('T')[0];
                 const filename = `orbital8_${folderName}_${stackName}_${date}.csv`;
-                const csvContent = data.map(row => row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(',') ).join('\n');
+                const csvContent = data.map(row =>
+                    row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(',')
+                ).join('\n');
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url; a.download = filename; a.style.display = 'none';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                a.href = url;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             }
         }
@@ -1577,7 +2099,14 @@
             }
         }
 
+        /**
+         * The main application object, responsible for orchestrating the overall application flow.
+         * It handles provider selection, initialization, loading data, and high-level state changes.
+         */
         const App = {
+            /**
+             * Handles the selection of Google Drive as the storage provider.
+             */
             selectGoogleDrive() {
                 state.providerType = 'googledrive';
                 Utils.showScreen('gdrive-auth-screen');
@@ -1588,6 +2117,11 @@
                     Folders.loadGoogleDriveFolders();
                 }
             },
+
+            /**
+             * Handles the selection of OneDrive as the storage provider.
+             * Initiates authentication and, if successful, loads the folder view.
+             */
             async selectOneDrive() {
                 state.providerType = 'onedrive';
                 Utils.showScreen('onedrive-auth-screen');
@@ -1604,6 +2138,9 @@
                 }
             },
             
+            /**
+             * Returns the user to the initial provider selection screen.
+             */
             backToProviderSelection() {
                 if(state.syncManager) state.syncManager.stop();
                 state.provider = null;
@@ -1611,6 +2148,13 @@
                 Utils.showScreen('provider-screen');
             },
 
+            /**
+             * Initializes the main application view with a selected provider and folder.
+             * @param {string} providerType - The type of the provider ('googledrive' or 'onedrive').
+             * @param {string} folderId - The ID of the folder to load.
+             * @param {string} folderName - The name of the folder.
+             * @param {BaseProvider} providerInstance - The instantiated provider object.
+             */
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
                 state.providerType = providerType;
                 state.provider = providerInstance;
@@ -1623,6 +2167,9 @@
                 if(state.syncManager) state.syncManager.start();
             },
 
+            /**
+             * Loads images for the current folder, first from cache, then from the cloud.
+             */
             async loadImages() {
                 const cachedFiles = await state.dbManager.getFolderCache(state.currentFolder.id);
 
@@ -1664,6 +2211,9 @@
                 }
             },
 
+            /**
+             * Fetches the latest folder content from the cloud and merges it with the local cache.
+             */
             async refreshFolderInBackground() {
                 try {
                     const result = await state.provider.getFilesAndMetadata(state.currentFolder.id);
@@ -1674,6 +2224,7 @@
                     const localFileMap = new Map(localFiles.map(f => [f.id, f]));
                     let hasChanges = false;
             
+                    // Add new or updated files from cloud
                     for (const cloudFile of cloudFiles) {
                         const localFile = localFileMap.get(cloudFile.id);
                         if (!localFile || new Date(cloudFile.modifiedTime) > new Date(localFile.modifiedTime)) {
@@ -1682,6 +2233,7 @@
                         }
                     }
             
+                    // Remove deleted files
                     for (const localId of localFileMap.keys()) {
                         if (!cloudFileMap.has(localId)) {
                             hasChanges = true;
@@ -1705,6 +2257,11 @@
                 }
             },
             
+            /**
+             * Processes all files to ensure they have associated metadata, loading from cache or creating defaults.
+             * @param {Array<Object>} files - The list of file objects to process.
+             * @param {boolean} [isFirstLoad=false] - Indicates if this is the initial load, for UI purposes.
+             */
             async processAllMetadata(files, isFirstLoad = false) {
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
                  for (let i = 0; i < files.length; i++) {
@@ -1722,6 +2279,13 @@
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
 
+            /**
+             * Generates a default metadata object for a file.
+             * Tries to import legacy data from Google Drive appProperties if available.
+             * @param {Object} file - The file object.
+             * @returns {Object} The default metadata object.
+             * @private
+             */
             generateDefaultMetadata(file) {
                  const baseMetadata = { 
                     stack: 'in', 
@@ -1735,6 +2299,7 @@
                     metadataStatus: 'pending' 
                 };
 
+                 // Import legacy data from old app version if present
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
                     baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
@@ -1747,10 +2312,17 @@
                  return baseMetadata;
             },
             
+            /**
+             * Switches the UI to the main application container.
+             * @private
+             */
             switchToCommonUI() {
                 Utils.showScreen('app-container');
             },
             
+            /**
+             * Returns to the folder selection screen for the current provider.
+             */
             returnToFolderSelection() {
                 if (state.syncManager) {
                     state.syncManager.requestSync();
@@ -1764,6 +2336,10 @@
                 }
             },
 
+            /**
+             * Resets the main view state to its initial empty state.
+             * @private
+             */
             resetViewState() {
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
@@ -1773,6 +2349,11 @@
                 Utils.elements.emptyState.classList.add('hidden');
             },
             
+            /**
+             * Updates a file's metadata in the local state and persists it to IndexedDB.
+             * @param {string} fileId - The ID of the file to update.
+             * @param {Object} updates - An object containing the properties to update.
+             */
             async updateUserMetadata(fileId, updates) {
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
@@ -1781,7 +2362,12 @@
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
             },
             
+            /**
+             * Deletes a file from local state, IndexedDB, and the cloud provider.
+             * @param {string} fileId - The ID of the file to delete.
+             */
             async deleteFile(fileId) {
+                // Remove from local state
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
                 if (fileIndex > -1) {
                     const [file] = state.imageFiles.splice(fileIndex, 1);
@@ -1789,8 +2375,10 @@
                     if (stackIndex > -1) { state.stacks[file.stack].splice(stackIndex, 1); }
                 }
                 
+                // Persist local changes
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                 
+                // Perform cloud deletion
                 try {
                     await state.provider.deleteFile(fileId);
                 } catch (e) {
@@ -1798,6 +2386,11 @@
                 }
             },
             
+            /**
+             * Kicks off a batched background process to extract metadata from PNG files.
+             * @param {Array<Object>} pngFiles - A list of PNG file objects to process.
+             * @private
+             */
             async extractMetadataInBackground(pngFiles) {
                 const BATCH_SIZE = 5;
                 for (let i = 0; i < pngFiles.length; i += BATCH_SIZE) {
@@ -1813,6 +2406,11 @@
                 }
             },
             
+            /**
+             * Processes a single file to fetch and save its metadata.
+             * @param {Object} file - The file object to process.
+             * @private
+             */
             async processFileMetadata(file) {
                 if (file.metadataStatus === 'loaded' || file.metadataStatus === 'loading' || file.metadataStatus === 'error') return;
                 file.metadataStatus = 'loading';
@@ -1842,7 +2440,14 @@
                 }
             }
         };
+
+        /**
+         * Manages the core application logic related to image stacks, sorting, and display.
+         */
         const Core = {
+            /**
+             * Initializes the stacks (in, out, priority, trash) by distributing all loaded image files.
+             */
             initializeStacks() {
                 STACKS.forEach(stack => { state.stacks[stack] = []; });
                 state.imageFiles.forEach(file => {
@@ -1850,7 +2455,7 @@
                     if (STACKS.includes(stack)) {
                         state.stacks[stack].push(file);
                     } else {
-                        state.stacks.in.push(file);
+                        state.stacks.in.push(file); // Default to 'in' stack
                     }
                 });
                 STACKS.forEach(stack => {
@@ -1859,17 +2464,26 @@
                 this.updateStackCounts();
             },
             
+            /**
+             * Sorts an array of files based on their stack sequence number and then by name.
+             * @param {Array<Object>} files - The array of files to sort.
+             * @returns {Array<Object>} The sorted array of files.
+             * @private
+             */
             sortFiles(files) {
                 return [...files].sort((a, b) => {
                     const seqA = a.stackSequence || 0;
                     const seqB = b.stackSequence || 0;
                     if (seqB !== seqA) {
-                        return seqB - seqA;
+                        return seqB - seqA; // Higher sequence number first
                     }
                     return (a.name || '').localeCompare(b.name || '');
                 });
             },
             
+            /**
+             * Updates the count display on all the stack pills.
+             */
             updateStackCounts() {
                 STACKS.forEach(stack => {
                     const count = state.stacks[stack] ? state.stacks[stack].length : 0;
@@ -1881,6 +2495,9 @@
                 });
             },
             
+            /**
+             * Sets up the initial image display when a folder is first loaded.
+             */
             initializeImageDisplay() {
                 if (state.imageFiles.length === 0) {
                     this.showEmptyState();
@@ -1894,6 +2511,10 @@
                 this.updateStackCounts();
             },
             
+            /**
+             * Switches the view to display the top image from a specified stack.
+             * @param {string} stackName - The name of the stack to display.
+             */
             async displayTopImageFromStack(stackName) {
                 const stack = state.stacks[stackName];
                 if (!stack || stack.length === 0) {
@@ -1909,6 +2530,9 @@
                 this.updateActiveProxTab();
             },
             
+            /**
+             * Displays the image at the current position within the current stack.
+             */
             async displayCurrentImage() {
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) {
@@ -1916,6 +2540,7 @@
                     return;
                 }
                 
+                // Clamp position to be within bounds
                 if (state.currentStackPosition >= currentStackArray.length) {
                     state.currentStackPosition = currentStackArray.length - 1;
                 }
@@ -1936,10 +2561,12 @@
                 const truncatedFolder = folderName.length > 20 ? folderName.substring(0, 20) + '...' : folderName;
                 Utils.elements.focusFilenameDisplay.textContent = `${truncatedFolder} / ${currentFile.name.replace(/\.[^/.]+$/, "")}`;
 
+                // Reset zoom/pan
                 state.currentScale = 1;
                 state.panOffset = { x: 0, y: 0 };
                 this.applyTransform();
 
+                // Trigger metadata extraction if needed
                 if (currentFile.metadataStatus === 'pending') {
                     App.processFileMetadata(currentFile);
                 }
@@ -1948,6 +2575,10 @@
                 this.updateFavoriteButton();
             },
 
+            /**
+             * Updates the UI counters for the current image position and stack total.
+             * @private
+             */
             updateImageCounters() {
                 const stack = state.stacks[state.currentStack];
                 const total = stack ? stack.length : 0;
@@ -1958,17 +2589,29 @@
                 Utils.elements.focusStackName.textContent = STACK_NAMES[state.currentStack];
             },
 
+            /**
+             * Updates the visual state of the favorite button based on the current image's status.
+             * @private
+             */
             updateFavoriteButton() {
                 const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
                 if (!currentFile) return;
                 Utils.elements.focusFavoriteBtn.classList.toggle('favorited', !!currentFile.favorite);
             },
             
+            /**
+             * Applies the current scale and pan transformation to the main image.
+             * @private
+             */
             applyTransform() {
                 const transform = `scale(${state.currentScale}) translate(${state.panOffset.x}px, ${state.panOffset.y}px)`;
                 Utils.elements.centerImage.style.transform = transform;
             },
             
+            /**
+             * Updates the visual style of the stack pills to show which one is active.
+             * @private
+             */
             updateActiveProxTab() {
                 STACKS.forEach(stack => {
                     const pill = document.getElementById(`pill-${stack}`);
@@ -1979,6 +2622,10 @@
                 if (currentPill) currentPill.classList.add('active');
             },
             
+            /**
+             * Moves the current image to a specified target stack.
+             * @param {string} targetStack - The name of the destination stack.
+             */
             async moveToStack(targetStack) {
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) return;
@@ -1987,6 +2634,7 @@
                 if (!currentImage) return;
 
                 const originalStackName = state.currentStack;
+                // If moving within the same stack, send to the "bottom" by updating sequence
                 if (targetStack === originalStackName) {
                     const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
                     const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
@@ -1995,13 +2643,13 @@
                     const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                     item.stackSequence = newSequence;
                     currentStackArray.push(item);
-                } else {
+                } else { // Moving to a different stack
                     const newSequence = Date.now();
                     await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
                     const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                     item.stack = targetStack;
                     item.stackSequence = newSequence;
-                    state.stacks[targetStack].unshift(item);
+                    state.stacks[targetStack].unshift(item); // Add to top
                     state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
                 }
                 
@@ -2010,6 +2658,9 @@
                 await this.displayCurrentImage();
             },
             
+            /**
+             * Displays the "empty state" message when a stack runs out of images.
+             */
             showEmptyState() {
                 state.currentImageLoadId = null;
                 Utils.elements.centerImage.style.opacity = '0';
@@ -2024,7 +2675,15 @@
                 }, 200);
             }
         };
+
+        /**
+         * Manages the grid view modal, including lazy loading, selection, and searching.
+         */
         const Grid = {
+            /**
+             * Opens the grid view for a specific stack.
+             * @param {string} stack - The name of the stack to display in the grid.
+             */
             open(stack) {
                 Utils.showModal('grid-modal');
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
@@ -2039,12 +2698,17 @@
                 Core.updateStackCounts();
             },
             
+            /**
+             * Closes the grid view modal and returns to the main view.
+             * Reorders the stack if changes were made.
+             */
             async close() {
                 if (state.grid.isDirty) {
                     await this.reorderStackOnClose();
                 }
                 Utils.hideModal('grid-modal');
                 this.resetSearch(); this.destroyLazyLoad();
+                // If a single image was selected, jump to it in the main view
                 const selectedImages = state.grid.selected;
                 if (selectedImages.length === 1) {
                     const selectedFileId = selectedImages[0];
@@ -2056,10 +2720,20 @@
                 state.grid.stack = null; state.grid.selected = [];
             },
 
+            /**
+             * IntersectionObserver callback to handle lazy loading.
+             * @param {IntersectionObserverEntry[]} entries - The observer entries.
+             * @private
+             */
             handleIntersection(entries) {
                 if (entries[0].isIntersecting) { this.renderBatch(); }
             },
 
+            /**
+             * Initializes the lazy loading mechanism for the grid.
+             * @param {string} stack - The stack being displayed.
+             * @private
+             */
             initializeLazyLoad(stack) {
                 const lazyState = state.grid.lazyLoadState;
                 lazyState.allFiles = state.grid.filtered.length > 0 ? state.grid.filtered : state.stacks[stack];
@@ -2074,12 +2748,20 @@
                 if (sentinel) { lazyState.observer.observe(sentinel); }
             },
 
+            /**
+             * Cleans up the lazy loading observer.
+             * @private
+             */
             destroyLazyLoad() {
                 const lazyState = state.grid.lazyLoadState;
                 if (lazyState.observer) { lazyState.observer.disconnect(); lazyState.observer = null; }
                 lazyState.allFiles = []; lazyState.renderedCount = 0;
             },
 
+            /**
+             * Renders a batch of images into the grid.
+             * @private
+             */
             renderBatch() {
                 const lazyState = state.grid.lazyLoadState;
                 const container = Utils.elements.gridContainer;
@@ -2105,9 +2787,11 @@
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     div.appendChild(img); container.appendChild(div);
                 });
+                // Trigger loading for newly added images
                 container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
                 lazyState.renderedCount += filesToRender.length;
 
+                // Add a new sentinel if there are more images to load
                 if (lazyState.renderedCount < lazyState.allFiles.length) {
                     const sentinel = document.createElement('div');
                     sentinel.id = 'grid-sentinel';
@@ -2116,15 +2800,30 @@
                 }
             },
             
+            /**
+             * Toggles the selection state of a single grid item.
+             * @param {MouseEvent} e - The click event.
+             * @param {string} fileId - The ID of the file to toggle.
+             * @private
+             */
             toggleSelection(e, fileId) {
                 const gridItem = e.currentTarget;
                 const index = state.grid.selected.indexOf(fileId);
-                if (index === -1) { state.grid.selected.push(fileId); gridItem.classList.add('selected');
-                } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
+                if (index === -1) {
+                    state.grid.selected.push(fileId);
+                    gridItem.classList.add('selected');
+                } else {
+                    state.grid.selected.splice(index, 1);
+                    gridItem.classList.remove('selected');
+                }
                 state.grid.isDirty = true;
                 this.updateSelectionUI();
             },
             
+            /**
+             * Updates the UI elements related to selection (e.g., count, action buttons).
+             * @private
+             */
             updateSelectionUI() {
                 const count = state.grid.selected.length;
                 const buttons = [Utils.elements.tagSelected, Utils.elements.moveSelected, Utils.elements.deleteSelected, 
@@ -2133,6 +2832,9 @@
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
             
+            /**
+             * Selects all items currently displayed in the grid (respecting filters).
+             */
             selectAll() {
                 const filesToSelect = state.grid.lazyLoadState.allFiles;
                 state.grid.selected = filesToSelect.map(f => f.id);
@@ -2143,12 +2845,18 @@
                 this.updateSelectionUI();
             },
             
+            /**
+             * Deselects all currently selected items.
+             */
             deselectAll() {
                 document.querySelectorAll('#grid-container .grid-item.selected').forEach(item => item.classList.remove('selected') );
                 state.grid.selected = [];
                 this.updateSelectionUI();
             },
             
+            /**
+             * Performs a search/filter on the current stack and re-renders the grid.
+             */
             performSearch() {
                 const query = Utils.elements.omniSearch.value.trim();
                 Utils.elements.clearSearchBtn.style.display = query ? 'block' : 'none';
@@ -2169,6 +2877,9 @@
                 state.grid.isDirty = true;
             },
 
+            /**
+             * Resets the search filter and displays all items in the stack.
+             */
             resetSearch() {
                 Utils.elements.omniSearch.value = '';
                 Utils.elements.clearSearchBtn.style.display = 'none';
@@ -2180,6 +2891,13 @@
                 this.deselectAll();
             },
             
+            /**
+             * Filters images based on a search query.
+             * Supports inclusions, -exclusions, and #modifiers.
+             * @param {string} query - The search query.
+             * @returns {Array<Object>} The filtered array of image objects.
+             * @private
+             */
             searchImages(query) {
                 const lowerCaseQuery = query.toLowerCase();
                 const terms = lowerCaseQuery.split(/\s+/).filter(t => t);
@@ -2238,27 +2956,34 @@
                 return results;
             },
 
+            /**
+             * Reorders the items in the current stack based on grid selections or filtering before closing.
+             * Selected or filtered items are moved to the top of the stack.
+             * @private
+             */
             async reorderStackOnClose() {
                 const stackArray = state.stacks[state.grid.stack];
                 let topItems = []; let bottomItems = [];
 
-                if (state.grid.filtered.length > 0) {
+                if (state.grid.filtered.length > 0) { // If a search was active
                     const filteredIds = new Set(state.grid.filtered.map(f => f.id));
                     topItems = state.grid.filtered.sort((a, b) => a.name.localeCompare(b.name));
                     bottomItems = stackArray.filter(f => !filteredIds.has(f.id));
-                } else if (state.grid.selected.length > 0) {
+                } else if (state.grid.selected.length > 0) { // If items were selected
                     const selectedIds = new Set(state.grid.selected);
                     topItems = stackArray.filter(f => selectedIds.has(f.id)).sort((a,b) => a.name.localeCompare(b.name));
                     bottomItems = stackArray.filter(f => !selectedIds.has(f.id));
-                } else { return; }
+                } else { return; } // No changes to persist
                 
                 const newStack = [...topItems, ...bottomItems];
                 const timestamp = Date.now();
                 
+                // Update sequence numbers to reflect new order
                 newStack.forEach((file, i) => {
                     file.stackSequence = timestamp - i;
                 });
 
+                // Persist changes to DB
                 for(const file of newStack) {
                     await state.dbManager.saveMetadata(file.id, file);
                 }
@@ -2269,28 +2994,57 @@
                 Utils.showToast('Stack order updated', 'success');
             }
         };
+
+        /**
+         * Manages the details modal, including its tabs and data population.
+         */
         const Details = {
+            /** @type {string} The currently active tab. */
             currentTab: 'info',
+
+            /**
+             * Shows the details modal for the currently viewed image.
+             */
             async show() {
                 const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
                 if (!currentFile) return;
+                // If metadata hasn't been loaded, trigger it now
                 if (currentFile.metadataStatus !== 'loaded') {
-                    this.populateMetadataTab(currentFile);
+                    this.populateMetadataTab(currentFile); // Show a spinner
                     await App.processFileMetadata(currentFile);
                 }
                 this.populateAllTabs(currentFile);
                 Utils.showModal('details-modal');
                 this.switchTab('info');
             },
+
+            /** Hides the details modal. */
             hide() { Utils.hideModal('details-modal'); },
+
+            /**
+             * Switches to a specific tab within the details modal.
+             * @param {string} tabName - The name of the tab to switch to ('info', 'tags', etc.).
+             */
             switchTab(tabName) {
                 document.querySelectorAll('.tab-button').forEach(btn => { btn.classList.toggle('active', btn.dataset.tab === tabName); });
                 document.querySelectorAll('.tab-content').forEach(content => { content.classList.toggle('active', content.id === `tab-${tabName}`); });
                 this.currentTab = tabName;
             },
+
+            /**
+             * Populates all tabs with the data from the given file.
+             * @param {Object} file - The file object to display.
+             * @private
+             */
             populateAllTabs(file) {
                 this.populateInfoTab(file); this.populateTagsTab(file); this.populateNotesTab(file); this.populateMetadataTab(file);
             },
+
+            /**
+             * Populates the 'Info' tab with basic file details.
+             * @param {Object} file - The file object.
+             * @private
+             */
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
@@ -2302,6 +3056,12 @@
                 const size = file.size ? Utils.formatFileSize(file.size) : 'Unknown';
                 Utils.elements.detailSize.textContent = size;
             },
+
+            /**
+             * Populates the 'Tags' tab with the file's tags.
+             * @param {Object} file - The file object.
+             * @private
+             */
             populateTagsTab(file) {
                 const tags = file.tags || [];
                 Utils.elements.detailTags.innerHTML = '';
@@ -2322,6 +3082,11 @@
                     });
                 });
             },
+
+            /**
+             * Shows an input field for adding a new tag.
+             * @private
+             */
             showAddTagInput() {
                 const input = document.createElement('input');
                 input.type = 'text'; input.className = 'tag-input';
@@ -2345,14 +3110,28 @@
                 });
                 input.addEventListener('blur', () => { setTimeout(() => input.remove(), 100); });
             },
+
+            /**
+             * Removes a tag from a file.
+             * @param {Object} file - The file object.
+             * @param {string} tagToRemove - The tag to remove.
+             * @private
+             */
             removeTag(file, tagToRemove) {
                 const currentTags = file.tags || [];
                 const newTags = currentTags.filter(tag => tag !== tagToRemove);
                 App.updateUserMetadata(file.id, { tags: newTags });
                 this.populateTagsTab(file);
             },
+
+            /**
+             * Populates the 'Notes' tab with notes and ratings.
+             * @param {Object} file - The file object.
+             * @private
+             */
             populateNotesTab(file) {
                 Utils.elements.detailNotes.value = file.notes || '';
+                // Re-clone and replace to remove old event listeners
                 const newNotesTextarea = Utils.elements.detailNotes.cloneNode(true);
                 Utils.elements.detailNotes.parentNode.replaceChild(newNotesTextarea, Utils.elements.detailNotes);
                 Utils.elements.detailNotes = newNotesTextarea;
@@ -2365,6 +3144,13 @@
                 this.setupStarRating('quality', file.qualityRating || 0);
                 this.setupStarRating('content', file.contentRating || 0);
             },
+
+            /**
+             * Sets up the interactive star rating UI.
+             * @param {'quality'|'content'} type - The type of rating to set up.
+             * @param {number} currentRating - The file's current rating for this type.
+             * @private
+             */
             setupStarRating(type, currentRating) {
                 const container = Utils.elements[`${type}Rating`]; if (!container) return;
                 let rating = currentRating;
@@ -2375,7 +3161,7 @@
                     star.onmouseenter = () => updateVisuals(index + 1);
                     star.onclick = () => {
                         const newRating = index + 1;
-                        if (newRating === rating) { rating = 0; } else { rating = newRating; }
+                        if (newRating === rating) { rating = 0; } else { rating = newRating; } // Toggle off if same star clicked
                         updateVisuals(rating);
                         const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
                         if (!currentFile) return;
@@ -2386,6 +3172,12 @@
                 });
                 updateVisuals(rating);
             },
+
+            /**
+             * Populates the 'Metadata' tab with extracted PNG metadata.
+             * @param {Object} file - The file object.
+             * @private
+             */
             populateMetadataTab(file) {
                 Utils.elements.metadataTable.innerHTML = '';
                 if (file.metadataStatus !== 'loaded' && file.metadataStatus !== 'error') {
@@ -2418,6 +3210,14 @@
                 this.addMetadataRow('Modified', file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : 'Unknown', false);
                 this.addMetadataRow('Provider', state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive', false);
             },
+
+            /**
+             * Adds a single row to the metadata table.
+             * @param {string} key - The metadata key.
+             * @param {string} value - The metadata value.
+             * @param {boolean} [needsCopyButton=false] - If true, a copy button is added.
+             * @private
+             */
             addMetadataRow(key, value, needsCopyButton = false) {
                 const row = document.createElement('tr');
                 const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
@@ -2439,6 +3239,11 @@
                 row.appendChild(keyCell); row.appendChild(valueCell);
                 Utils.elements.metadataTable.appendChild(row);
             },
+
+            /**
+             * Copies a given text to the clipboard.
+             * @param {string} text - The text to copy.
+             */
             copyToClipboard(text) {
                 navigator.clipboard.writeText(text).then(() => { Utils.showToast('📋 Copied to clipboard', 'success', true);
                 }).catch(() => {
@@ -2451,11 +3256,27 @@
                 });
             }
         };
+
+        /**
+         * Manages the unified action modal for bulk operations like tagging, moving, and deleting.
+         */
         const Modal = {
+            /** @type {string|null} The type of the currently active action. */
             currentAction: null,
+            /** @type {{tags: Set<string>}} State for the tagging action. */
             taggingState: {
                 tags: new Set()
             },
+
+            /**
+             * Shows the action modal with a specific configuration.
+             * @param {string} type - The type of action (e.g., 'move', 'tag').
+             * @param {Object} [options={}] - Configuration for the modal.
+             * @param {string} [options.title] - The modal title.
+             * @param {string} [options.content] - The HTML content for the modal body.
+             * @param {string} [options.confirmText='Confirm'] - The text for the confirm button.
+             * @param {string} [options.confirmClass='btn-primary'] - The CSS class for the confirm button.
+             */
             show(type, options = {}) {
                 this.currentAction = type;
                 const { title, content, confirmText = 'Confirm', confirmClass = 'btn-primary' } = options;
@@ -2467,7 +3288,14 @@
                 Utils.elements.actionCancel.textContent = "Cancel";
                 Utils.showModal('action-modal');
             },
+
+            /** Hides the action modal. */
             hide() { Utils.hideModal('action-modal'); this.currentAction = null; },
+
+            /**
+             * Sets up the UI for the 'move to stack' action.
+             * @private
+             */
             setupMoveAction() {
                 this.show('move', {
                     title: 'Move to Stack',
@@ -2478,6 +3306,11 @@
                     option.addEventListener('click', () => { this.executeMove(option.dataset.stack); });
                 });
             },
+
+            /**
+             * Sets up the UI for the 'add tags' action.
+             * @private
+             */
             setupTagAction() {
                 this.taggingState.tags.clear();
                 this.show('tag', {
@@ -2507,6 +3340,12 @@
                     btn.addEventListener('click', () => this.addTagChip(btn.dataset.tag));
                 });
             },
+
+            /**
+             * Adds a tag to the staging area in the tag modal.
+             * @param {string} tag - The tag to add.
+             * @private
+             */
             addTagChip(tag) {
                 if (this.taggingState.tags.has(tag)) return;
                 this.taggingState.tags.add(tag);
@@ -2521,16 +3360,33 @@
                     this.removeTagChip(chip, tag);
                 });
             },
+
+            /**
+             * Removes a tag from the staging area in the tag modal.
+             * @param {HTMLElement} chipElement - The chip element to remove.
+             * @param {string} tag - The tag to remove.
+             * @private
+             */
             removeTagChip(chipElement, tag) {
                 this.taggingState.tags.delete(tag);
                 chipElement.remove();
             },
+
+            /**
+             * Sets up the UI for the 'delete' confirmation action.
+             * @private
+             */
             setupDeleteAction() {
                 const selectedCount = state.grid.selected.length;
                 const providerName = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
                 const message = `Are you sure you want to move ${selectedCount} image(s) to your ${providerName} trash? This can be recovered from the provider's website.`;
                 this.show('delete', { title: 'Confirm Delete', content: `<p style="color: #4b5563; margin-bottom: 16px;">${message}</p>`, confirmText: `Move to ${providerName} Trash`, confirmClass: 'btn-danger' });
             },
+
+            /**
+             * Sets up the UI for the 'export' action.
+             * @private
+             */
             setupExportAction() {
                 this.show('export', {
                     title: 'Export to Spreadsheet',
@@ -2538,6 +3394,11 @@
                     confirmText: 'Begin Export'
                 });
             },
+
+            /**
+             * Sets up the UI for switching stacks while in focus mode.
+             * @private
+             */
             setupFocusStackSwitch() {
                 const availableStacks = STACKS.filter(s => s !== state.currentStack && state.stacks[s].length > 0);
                 let content = `<div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">`;
@@ -2552,6 +3413,11 @@
                     });
                 });
             },
+
+            /**
+             * Sets up the UI for the 'move to folder' action.
+             * @private
+             */
             setupFolderMoveAction() {
                 this.show('folder-move', {
                     title: 'Move to Different Folder',
@@ -2559,6 +3425,14 @@
                     confirmText: 'Choose Destination Folder'
                 });
             },
+
+            /**
+             * A generic executor for performing an action on all selected files.
+             * @param {Function} actionFn - The async function to execute for each fileId.
+             * @param {string} successMessage - The message to show on success.
+             * @param {Object} [options={}] - Options for the execution.
+             * @private
+             */
             async executeBulkAction(actionFn, successMessage, options = {}) {
                 const { refreshGrid = true, deselect = true } = options;
                 const confirmBtn = Utils.elements.actionConfirm;
@@ -2575,6 +3449,11 @@
                 } catch (error) { Utils.showToast(`Failed to process some images: ${error.message}`, 'error', true);
                 } finally { confirmBtn.disabled = false; confirmBtn.textContent = originalText; }
             },
+
+            /**
+             * Executes the 'move to stack' action for all selected files.
+             * @param {string} targetStack - The destination stack.
+             */
             async executeMove(targetStack) {
                 await this.executeBulkAction(async (fileId) => {
                     const file = state.imageFiles.find(f => f.id === fileId);
@@ -2589,6 +3468,10 @@
                     }
                 }, `Moved {count} images to ${targetStack}`);
             },
+
+            /**
+             * Executes the 'add tags' action for all selected files.
+             */
             async executeTag() {
                 const tagsToAdd = Array.from(this.taggingState.tags);
                 if (tagsToAdd.length === 0) return;
@@ -2603,11 +3486,19 @@
                     }
                 }, `Tags added to {count} images`, { refreshGrid: false });
             },
+
+            /**
+             * Executes the 'delete' action for all selected files.
+             */
             async executeDelete() {
                 await this.executeBulkAction(async (fileId) => {
                     await App.deleteFile(fileId);
                 }, `Moved {count} images to provider trash`);
             },
+
+            /**
+             * Executes the 'export' action for all selected files.
+             */
             async executeExport() {
                 const fileIds = [...state.grid.selected];
                 const filesToExport = fileIds.map(id => state.imageFiles.find(f => f.id === id)).filter(f => f);
@@ -2643,18 +3534,44 @@
                 Utils.elements.actionTitle.textContent = `Export Complete`;
                 Utils.elements.actionConfirm.disabled = true; Utils.elements.actionCancel.textContent = "Close";
             },
+
+            /**
+             * Executes the 'move to folder' action.
+             */
             executeFolderMove() {
                 state.folderMoveMode = { active: true, files: [...state.grid.selected], };
                 this.hide(); Grid.close(); App.returnToFolderSelection();
                 Utils.showToast(`Select destination folder for ${state.folderMoveMode.files.length} images`, 'info', true);
             }
         };
+
+        /**
+         * Manages all user input gestures: swipe, tap, pinch-to-zoom, and mouse wheel.
+         */
         const Gestures = {
-            startPos: { x: 0, y: 0 }, currentPos: { x: 0, y: 0 }, gestureStarted: false, lastTapTime: 0, edgeElements: [],
+            /** @type {{x: number, y: number}} */
+            startPos: { x: 0, y: 0 },
+            /** @type {{x: number, y: number}} */
+            currentPos: { x: 0, y: 0 },
+            /** @type {boolean} */
+            gestureStarted: false,
+            /** @type {number} */
+            lastTapTime: 0,
+            /** @type {HTMLElement[]} */
+            edgeElements: [],
+
+            /**
+             * Initializes all gesture-related event listeners.
+             */
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
                 this.setupEventListeners(); this.setupPinchZoom(); this.setupTapZones();
             },
+
+            /**
+             * Sets up the main swipe gesture event listeners.
+             * @private
+             */
             setupEventListeners() {
                 Utils.elements.imageViewport.addEventListener('mousedown', this.handleStart.bind(this));
                 document.addEventListener('mousemove', this.handleMove.bind(this));
@@ -2663,12 +3580,22 @@
                 document.addEventListener('touchmove', this.handleMove.bind(this), { passive: false });
                 document.addEventListener('touchend', this.handleEnd.bind(this), { passive: false });
             },
+
+            /**
+             * Sets up pinch-to-zoom and mouse wheel zoom listeners.
+             * @private
+             */
             setupPinchZoom() {
                 Utils.elements.centerImage.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
                 Utils.elements.centerImage.addEventListener('touchmove', this.handleTouchMove.bind(this), { passive: false });
                 Utils.elements.centerImage.addEventListener('touchend', this.handleTouchEnd.bind(this), { passive: false });
                 Utils.elements.centerImage.addEventListener('wheel', this.handleWheel.bind(this), { passive: false });
             },
+
+            /**
+             * Sets up the invisible tap zones for navigation.
+             * @private
+             */
              setupTapZones() {
                 // Quick Move (Normal Mode) Taps
                 document.getElementById('quick-move-left').addEventListener('click', () => { if (!state.isFocusMode) this.executeFlick(this.directionToStack('left')); });
@@ -2681,20 +3608,49 @@
                 document.getElementById('focus-tap-right').addEventListener('click', () => { if (state.isFocusMode) this.nextImage(); });
                 document.getElementById('focus-tap-center').addEventListener('click', () => { if (state.isFocusMode) this.toggleFocusMode(); });
             },
+
+            /**
+             * Shows the glowing edge effect for a given swipe direction.
+             * @param {string} direction - 'top', 'bottom', 'left', or 'right'.
+             * @private
+             */
             showEdgeGlow(direction) {
                 this.edgeElements.forEach(edge => edge.classList.remove('active'));
                 if (Utils.elements[`edge${direction.charAt(0).toUpperCase() + direction.slice(1)}`]) {
                     Utils.elements[`edge${direction.charAt(0).toUpperCase() + direction.slice(1)}`].classList.add('active');
                 }
             },
+
+            /** Hides all edge glows. @private */
             hideAllEdgeGlows() { this.edgeElements.forEach(edge => edge.classList.remove('active')); },
+
+            /**
+             * Determines the primary swipe direction from coordinate deltas.
+             * @param {number} deltaX - The change in the X coordinate.
+             * @param {number} deltaY - The change in the Y coordinate.
+             * @returns {string} 'top', 'bottom', 'left', or 'right'.
+             * @private
+             */
             determineSwipeDirection(deltaX, deltaY) {
                 if (Math.abs(deltaX) > Math.abs(deltaY)) { return deltaX > 0 ? 'right' : 'left'; } else { return deltaY > 0 ? 'bottom' : 'top'; }
             },
+
+            /**
+             * Maps a swipe direction to a stack name.
+             * @param {string} direction - 'top', 'bottom', 'left', or 'right'.
+             * @returns {string} The corresponding stack name.
+             * @private
+             */
             directionToStack(direction) {
                 const mapping = { 'top': 'priority', 'bottom': 'trash', 'left': 'in', 'right': 'out' };
                 return mapping[direction];
             },
+
+            /**
+             * Executes the 'move to stack' action after a flick gesture.
+             * @param {string} targetStack - The destination stack.
+             * @private
+             */
             async executeFlick(targetStack) {
                 if (state.stacks[state.currentStack].length === 0) return;
                 UI.acknowledgePillCounter(targetStack);
@@ -2702,14 +3658,21 @@
                 await Core.moveToStack(targetStack);
                 this.hideAllEdgeGlows();
             },
+
+            /**
+             * Handles the start of a mouse or touch drag.
+             * @param {MouseEvent|TouchEvent} e - The event.
+             * @private
+             */
             handleStart(e) {
+                // Double tap to enter focus mode
                 const currentTime = Date.now();
                 if (currentTime - this.lastTapTime < 300) { e.preventDefault(); this.toggleFocusMode(); this.lastTapTime = 0; return; }
                 this.lastTapTime = currentTime;
                 
                 if (state.stacks[state.currentStack].length === 0) return;
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
-                if (state.currentScale > 1.1) return;
+                if (state.currentScale > 1.1) return; // Don't allow swipe when zoomed
                 const point = e.touches ? e.touches[0] : e;
                 this.startPos = { x: point.clientX, y: point.clientY };
                 this.currentPos = { x: point.clientX, y: point.clientY };
@@ -2717,10 +3680,16 @@
                 state.isDragging = true;
                 Utils.elements.centerImage.classList.add('dragging');
             },
+
+            /**
+             * Handles the movement during a mouse or touch drag.
+             * @param {MouseEvent|TouchEvent} e - The event.
+             * @private
+             */
             handleMove(e) {
                 if (!state.isDragging) return;
                 if (state.imageFiles.length === 0) return;
-                if (e.touches && e.touches.length > 1) {
+                if (e.touches && e.touches.length > 1) { // Pinch gesture started
                     state.isDragging = false; Utils.elements.centerImage.classList.remove('dragging');
                     this.hideAllEdgeGlows(); return;
                 }
@@ -2730,7 +3699,7 @@
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
                 const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-                if (distance > 30) {
+                if (distance > 30) { // Threshold to begin gesture
                     this.gestureStarted = true;
                     if(!state.isFocusMode) {
                         const direction = this.determineSwipeDirection(deltaX, deltaY);
@@ -2740,6 +3709,12 @@
                     if(!state.isFocusMode) this.hideAllEdgeGlows(); 
                 }
             },
+
+            /**
+             * Handles the end of a mouse or touch drag, executing the action if needed.
+             * @param {MouseEvent|TouchEvent} e - The event.
+             * @private
+             */
             handleEnd(e) {
                 if (!state.isDragging) return;
                 state.isDragging = false; Utils.elements.centerImage.classList.remove('dragging');
@@ -2749,7 +3724,7 @@
                 const deltaY = this.currentPos.y - this.startPos.y;
                 const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
                 
-                if (distance > 80) {
+                if (distance > 80) { // Threshold to commit action
                     if(state.isFocusMode){
                          if (deltaX < 0) { this.nextImage(); } 
                          else { this.prevImage(); }
@@ -2761,15 +3736,32 @@
                 }
                 this.hideAllEdgeGlows();
             },
+
+            /** Gets the distance between two touch points. @private */
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
+            /** Gets the center point between two touches. @private */
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
+
+            /**
+             * Handles the start of a touch event for pinch-to-zoom.
+             * @param {TouchEvent} e - The event.
+             * @private
+             */
             handleTouchStart(e) {
                 if (e.touches.length === 2) {
                     e.preventDefault(); state.isPinching = true;
                     state.initialDistance = this.getDistance(e.touches[0], e.touches[1]);
                     state.lastTouchPos = this.getCenter(e.touches[0], e.touches[1]);
-                } else if (e.touches.length === 1 && state.currentScale > 1) { state.lastTouchPos = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }
+                } else if (e.touches.length === 1 && state.currentScale > 1) {
+                    state.lastTouchPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                }
             },
+
+            /**
+             * Handles movement during a touch event for pinch-to-zoom and panning.
+             * @param {TouchEvent} e - The event.
+             * @private
+             */
             handleTouchMove(e) {
                 if (e.touches.length === 2 && state.isPinching) {
                     e.preventDefault();
@@ -2787,36 +3779,69 @@
                     state.lastTouchPos = { x: e.touches[0].clientX, y: e.touches[0].clientY }; Core.applyTransform();
                 }
             },
+
+            /**
+             * Handles the end of a touch event for pinch-to-zoom.
+             * @param {TouchEvent} e - The event.
+             * @private
+             */
             handleTouchEnd(e) {
                 if (e.touches.length < 2) { state.isPinching = false; }
-                if (state.currentScale < 1.1) { state.currentScale = 1; state.panOffset = { x: 0, y: 0 }; Core.applyTransform(); }
+                if (state.currentScale < 1.1) {
+                    state.currentScale = 1; state.panOffset = { x: 0, y: 0 }; Core.applyTransform();
+                }
             },
+
+            /**
+             * Handles mouse wheel events for zooming.
+             * @param {WheelEvent} e - The event.
+             * @private
+             */
             handleWheel(e) {
                 e.preventDefault();
                 const scaleChange = e.deltaY > 0 ? 0.9 : 1.1;
                 let newScale = state.currentScale * scaleChange;
                 newScale = Math.max(state.minScale, Math.min(state.maxScale, newScale));
                 state.currentScale = newScale;
-                if (state.currentScale <= 1.1) { state.currentScale = 1; state.panOffset = { x: 0, y: 0 }; }
+                if (state.currentScale <= 1.1) {
+                    state.currentScale = 1;
+                    state.panOffset = { x: 0, y: 0 };
+                }
                 Core.applyTransform();
             },
+
+            /**
+             * Toggles the application's focus mode on or off.
+             */
             toggleFocusMode() {
                 state.isFocusMode = !state.isFocusMode;
                 Utils.elements.appContainer.classList.toggle('focus-mode', state.isFocusMode);
                 Core.updateImageCounters();
             },
+
+            /**
+             * Navigates to the next image in the current stack (with wraparound).
+             */
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
                 await Core.displayCurrentImage();
             },
+
+            /**
+             * Navigates to the previous image in the current stack (with wraparound).
+             */
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
                 await Core.displayCurrentImage();
             },
+
+            /**
+             * Deletes the currently displayed image while in focus mode.
+             */
             async deleteCurrentImage() {
                 const currentStackArray = state.stacks[state.currentStack];
                 if (currentStackArray.length === 0) return;
@@ -2824,12 +3849,23 @@
                 try {
                     await App.deleteFile(fileToDelete.id);
                     Core.updateStackCounts();
-                    if (currentStackArray.length === 0) { this.toggleFocusMode(); Core.showEmptyState();
-                    } else { await Core.displayCurrentImage(); }
+                    if (currentStackArray.length === 0) {
+                        this.toggleFocusMode();
+                        Core.showEmptyState();
+                    } else {
+                        await Core.displayCurrentImage();
+                    }
                 } catch (error) { Utils.showToast(`Failed to delete ${fileToDelete.name}`, 'error', true); }
             }
         };
+
+        /**
+         * Manages the UI and logic for the folder selection screens.
+         */
         const Folders = {
+            /**
+             * Loads and displays the list of Google Drive folders.
+             */
             async loadGoogleDriveFolders() {
                 Utils.elements.gdriveFolderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 try {
@@ -2846,6 +3882,10 @@
                     });
                 } catch (error) { Utils.showToast(`Error loading folders: ${error.message}`, 'error', true); }
             },
+
+            /**
+             * Loads and displays the list of OneDrive folders.
+             */
             async loadOneDriveFolders() {
                 Utils.elements.onedriveFolderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 try {
@@ -2853,6 +3893,12 @@
                     this.displayOneDriveFolders(folders); this.updateOneDriveNavigation();
                 } catch (error) { Utils.showToast('Error loading folders', 'error', true); }
             },
+
+            /**
+             * Renders the list of OneDrive folders into the UI.
+             * @param {Array<Object>} folders - The array of folder objects to display.
+             * @private
+             */
             displayOneDriveFolders(folders) {
                 Utils.elements.onedriveFolderList.innerHTML = '';
                 if (folders.length === 0) { Utils.elements.onedriveFolderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found in this location</span></div>`; return; }
@@ -2881,6 +3927,13 @@
                     });
                 });
             },
+
+            /**
+             * Handles the final step of moving files to a selected destination folder.
+             * @param {string} folderId - The ID of the destination folder.
+             * @param {string} folderName - The name of the destination folder.
+             * @private
+             */
             async handleFolderMoveSelection(folderId, folderName) {
                 const filesToMove = state.folderMoveMode.files;
                 Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
@@ -2902,6 +3955,11 @@
                     Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
                 } catch (error) { Utils.showToast('Error moving files', 'error', true); App.returnToFolderSelection(); }
             },
+
+            /**
+             * Updates the navigation elements (path, up button) for the OneDrive folder view.
+             * @private
+             */
             updateOneDriveNavigation() {
                 const currentPath = state.provider.getCurrentPath();
                 const canGoUp = state.provider.canGoUp();
@@ -2921,23 +3979,45 @@
                 }
             }
         };
+
+        /**
+         * A collection of miscellaneous UI helper functions.
+         */
         const UI = {
+            /**
+             * Updates the visibility of buttons in the empty state view based on whether other stacks have images.
+             */
             updateEmptyStateButtons() {
                 const stacksWithImages = STACKS.filter(stack => state.stacks[stack].length > 0);
                 const hasOtherStacks = stacksWithImages.some(stack => stack !== state.currentStack);
                 Utils.elements.selectAnotherStackBtn.style.display = hasOtherStacks ? 'block' : 'none';
                 Utils.elements.selectAnotherFolderBtn.style.display = 'block';
             },
+
+            /**
+             * Triggers a visual animation on a stack pill to acknowledge an action.
+             * @param {string} stackName - The name of the stack whose pill should be animated.
+             */
             acknowledgePillCounter(stackName) {
                 const pill = document.getElementById(`pill-${stackName}`);
                 if (pill) {
                     pill.classList.remove('triple-ripple', 'glow-effect');
-                    pill.offsetHeight; pill.classList.add('triple-ripple');
+                    pill.offsetHeight; // Trigger reflow
+                    pill.classList.add('triple-ripple');
                     setTimeout(() => { pill.classList.add('glow-effect'); }, 100);
                     setTimeout(() => { pill.classList.remove('triple-ripple', 'glow-effect'); }, 3000);
                 }
             },
+
+            /**
+             * Switches the main view to a different stack.
+             * @param {string} stackName - The name of the stack to switch to.
+             */
             switchToStack(stackName) { Core.displayTopImageFromStack(stackName); },
+
+            /**
+             * Cycles through the available stacks in a predefined order.
+             */
             cycleThroughPills() {
                 const stackOrder = ['in', 'out', 'priority', 'trash'];
                 const currentIndex = stackOrder.indexOf(state.currentStack);
@@ -2946,7 +4026,16 @@
                 this.switchToStack(nextStack);
             }
         };
+
+        /**
+         * Adds dragging and resizing capabilities to modal dialogs.
+         */
         const DraggableResizable = {
+            /**
+             * Initializes dragging for a modal element.
+             * @param {HTMLElement} modal - The modal content element.
+             * @param {HTMLElement} header - The header element that acts as the drag handle.
+             */
             init(modal, header) {
                 let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
                 let isDragging = false;
@@ -2992,6 +4081,7 @@
                     document.onmousemove = null;
                 }
 
+                // Double-click to reset modal position/size
                 header.ondblclick = () => {
                      if (modal.id === 'details-modal') {
                         modal.style.top = '50%';
@@ -3012,7 +4102,13 @@
                 };
             }
         };
+        /**
+         * A collection of functions to set up all the event listeners for the application.
+         */
         const Events = {
+            /**
+             * Initializes all event listeners by calling the specific setup functions.
+             */
             init() {
                 this.setupProviderSelection(); this.setupSettings(); this.setupGoogleDriveAuth();
                 this.setupOneDriveAuth(); this.setupFolderManagement(); this.setupLoadingScreen();
@@ -3022,20 +4118,28 @@
                 this.setupKeyboardNavigation();
                 this.setupDraggables();
             },
+
+            /** Sets up dragging for modals. @private */
             setupDraggables() {
                 DraggableResizable.init(Utils.elements.detailsModal.querySelector('.modal-content'), Utils.elements.detailsModalHeader);
                 DraggableResizable.init(Utils.elements.gridModal.querySelector('.modal-content'), Utils.elements.gridModalHeaderMain);
             },
+
+            /** Sets up listeners for the initial provider selection screen. @private */
             setupProviderSelection() {
                 Utils.elements.googleDriveBtn.addEventListener('click', () => App.selectGoogleDrive());
                 Utils.elements.onedriveBtn.addEventListener('click', () => App.selectOneDrive());
             },
+
+            /** Sets up listeners for the settings controls (visuals, haptics). @private */
             setupSettings() {
                 document.querySelectorAll('.intensity-btn').forEach(btn => {
                     btn.addEventListener('click', () => { state.visualCues.setIntensity(btn.dataset.level); });
                 });
                 document.getElementById('haptic-enabled').addEventListener('change', (e) => { state.haptic.setEnabled(e.target.checked); });
             },
+
+            /** Sets up listeners for the Google Drive authentication screen. @private */
             setupGoogleDriveAuth() {
                 Utils.elements.gdriveAuthButton.addEventListener('click', async () => {
                     const clientSecret = Utils.elements.gdriveClientSecret.value.trim();
@@ -3057,6 +4161,8 @@
                 });
                 Utils.elements.gdriveBackButton.addEventListener('click', () => App.backToProviderSelection());
             },
+
+            /** Sets up listeners for the OneDrive authentication screen. @private */
             setupOneDriveAuth() {
                 Utils.elements.onedriveAuthButton.addEventListener('click', async () => {
                     Utils.elements.onedriveAuthButton.disabled = true; Utils.elements.onedriveAuthButton.textContent = 'Connecting...';
@@ -3075,6 +4181,8 @@
                 });
                 Utils.elements.onedriveBackButton.addEventListener('click', () => App.backToProviderSelection());
             },
+
+            /** Sets up listeners for the folder selection screens. @private */
             setupFolderManagement() {
                 Utils.elements.backButton.addEventListener('click', () => App.returnToFolderSelection());
                 Utils.elements.gdriveRefreshFolders.addEventListener('click', () => Folders.loadGoogleDriveFolders());
@@ -3084,6 +4192,8 @@
                 Utils.elements.onedriveBackToProvider.addEventListener('click', () => App.backToProviderSelection());
                 Utils.elements.onedriveLogout.addEventListener('click', () => { state.provider.disconnect(); App.backToProviderSelection(); });
             },
+
+            /** Sets up listeners for the loading screen. @private */
             setupLoadingScreen() {
                 Utils.elements.cancelLoading.addEventListener('click', () => {
                     if (state.metadataExtractor) { state.metadataExtractor.abort(); }
@@ -3092,10 +4202,14 @@
                     Utils.showToast('Loading cancelled', 'info', true);
                 });
             },
+
+            /** Sets up listeners for the details modal. @private */
             setupDetailsModal() {
                 Utils.elements.detailsButton.addEventListener('click', () => { if (state.stacks[state.currentStack].length > 0) { Details.show(); } });
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
             },
+
+            /** Sets up listeners for focus mode UI elements. @private */
             setupFocusMode() {
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.moveToStack('trash'));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
@@ -3108,7 +4222,11 @@
                     Core.updateFavoriteButton();
                 });
             },
+
+            /** Sets up listeners for the tabs in the details modal. @private */
             setupTabs() { document.querySelectorAll('.tab-button').forEach(btn => { btn.addEventListener('click', () => Details.switchTab(btn.dataset.tab)); }); },
+
+            /** Sets up a global listener for metadata copy buttons. @private */
             setupCopyButtons() {
                 document.addEventListener('click', (e) => {
                     if (e.target.classList.contains('copy-metadata')) {
@@ -3119,6 +4237,8 @@
                     }
                 });
             },
+
+            /** Sets up listeners for the buttons in the empty state view. @private */
             setupEmptyState() {
                 Utils.elements.selectAnotherStackBtn.addEventListener('click', () => {
                     const stacksWithImages = STACKS.filter(stack => state.stacks[stack].length > 0);
@@ -3132,6 +4252,8 @@
                 });
                 Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => { App.returnToFolderSelection(); });
             },
+
+            /** Sets up listeners for the stack pill counters. @private */
             setupPillCounters() {
                 STACKS.forEach(stackName => {
                     const pill = document.getElementById(`pill-${stackName}`);
@@ -3149,6 +4271,8 @@
                     }
                 });
             },
+
+            /** Sets up listeners for the controls in the grid view modal. @private */
             setupGridControls() {
                 Utils.elements.closeGrid.addEventListener('click', () => Grid.close());
                 Utils.elements.selectAllBtn.addEventListener('click', () => Grid.selectAll());
@@ -3159,6 +4283,8 @@
                     Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
                 });
             },
+
+            /** Sets up listeners for the search functionality in the grid view. @private */
             setupSearchFunctionality() {
                 Utils.elements.omniSearch.addEventListener('input', () => Grid.performSearch());
                 Utils.elements.clearSearchBtn.addEventListener('click', () => Grid.resetSearch());
@@ -3173,6 +4299,8 @@
                     });
                 });
             },
+
+            /** Sets up listeners for the bulk action buttons and the action modal. @private */
             setupActionButtons() {
                 Utils.elements.moveSelected.addEventListener('click', () => Modal.setupMoveAction());
                 Utils.elements.tagSelected.addEventListener('click', () => Modal.setupTagAction());
@@ -3188,18 +4316,22 @@
                     } else if (Modal.currentAction === 'folder-move') { Modal.executeFolderMove(); }
                 });
             },
+
+            /** Sets up global keyboard navigation listeners. @private */
             setupKeyboardNavigation() {
                 document.addEventListener('keydown', (e) => {
                     if (Utils.elements.appContainer.classList.contains('hidden')) return;
                     if (!Utils.elements.detailsModal.classList.contains('hidden')) { if (e.key === 'Escape') Details.hide(); return; }
                     if (!Utils.elements.gridModal.classList.contains('hidden')) { if (e.key === 'Escape') Grid.close(); return; }
                     if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+
                     if (state.isFocusMode) {
                         if (e.key === 'ArrowRight') Gestures.nextImage();
                         if (e.key === 'ArrowLeft') Gestures.prevImage();
                         if (e.key === 'Escape') Gestures.toggleFocusMode();
                         return;
                     }
+
                     const keyMap = { 'ArrowUp': 'priority', 'ArrowDown': 'trash', 'ArrowLeft': 'in', 'ArrowRight': 'out' };
                     if (keyMap[e.key]) {
                         e.preventDefault();
@@ -3214,6 +4346,11 @@
                 });
             }
         };
+
+        /**
+         * The main entry point for the application.
+         * Initializes all managers, UI elements, and event listeners.
+         */
         async function initApp() {
             try {
                 Utils.init();
