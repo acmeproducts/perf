@@ -4,6 +4,29 @@ favorites icon needs a transparent area over it much larger to toggle favorite
 trash stack counter is not clickable
 when swiping to trash stack (recycle) the visual queue of the edge glow is not visible
 
+Device B picking up device A changes:
+Root Cause: Local Cache Overrides Cloud appProperties
+The Problem: Device B prioritizes stale local cache over fresh Google Drive appProperties.
+Code Flow Analysis:
+Device A moves files → updateUserMetadata() → updateFileProperties() saves to Google Drive appProperties ✅
+Device B loads folder:getFilesAndMetadata() fetches files with appProperties from cloud ✅
+processAllMetadata() processes each file:
+javascript
+const metadata = await state.dbManager.getMetadata(file.id); if (metadata) { Object.assign(file, metadata); // ❌ USES STALE LOCAL CACHE } else { const defaultMetadata = this.generateDefaultMetadata(file); // ✅ Only called if NO cache Object.assign(file, defaultMetadata); }
+
+The Bug:
+If Device B has ANY cached metadata for a file, it uses that
+generateDefaultMetadata() (which reads appProperties) only runs when cache is empty
+Cloud appProperties are completely ignored if local cache exists
+
+Why It's Folder-Specific:
+Folders with no prior cache work (reads appProperties)
+Folders with stale cache fail (ignores appProperties)
+Fix: In processAllMetadata(), always merge cloud appProperties into cached metadata:
+javascript
+const defaultMetadata = this.generateDefaultMetadata(file);if (metadata) { // Merge cloud appProperties over cached metadata Object.assign(file, metadata, defaultMetadata);} else { Object.assign(file, defaultMetadata);}
+This ensures cloud appProperties always take precedence over stale local cache.
+
 
 Search Enhancements
 Exclusion Queries: Implemented the ability to prefix search terms with a hyphen (-) to exclude items matching that term from the results.
