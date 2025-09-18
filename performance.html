@@ -175,8 +175,6 @@
         .center-image.dragging { filter: brightness(0.9); cursor: grabbing; }
         .center-image.zoomable { pointer-events: auto; }
         
-        .filename-overlay { display: none !important; }
-
         .edge-glow { position: absolute; opacity: 0; transition: opacity 0.2s ease; z-index: 2; pointer-events: none; }
         .edge-glow.top { top: 0; left: 0; right: 0; height: 8px; background: linear-gradient(180deg, rgba(245, 158, 11, var(--glow)) 0%, transparent 100%); }
         .edge-glow.bottom { 
@@ -355,6 +353,25 @@
         .grid-image[data-src] { opacity: 0; }
         .grid-image.loaded { opacity: 1; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
+
+        .filename-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px;
+            font-size: 14px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .grid-item:hover .filename-overlay {
+            opacity: 1;
+        }
         
         .details-modal-content { 
             max-width: 800px; max-height: 95vh; height: 95vh; display: flex; flex-direction: column; 
@@ -1381,6 +1398,14 @@
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
                 return true;
             }
+            async updateUserMetadata(fileId, updates) {
+                const file = state.imageFiles.find(f => f.id === fileId);
+                if (!file) return;
+                Object.assign(file, updates);
+                await state.dbManager.saveMetadata(file.id, file);
+                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+            },
+
             async deleteFile(fileId) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ trashed: true }) });
                 return true;
@@ -1829,8 +1854,10 @@
                 Object.assign(file, updates);
                 await state.dbManager.saveMetadata(file.id, file);
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                // Note: The remote update is now handled by the provider's `updateFileMetadata` method,
+                // which should be called separately by a sync process.
             },
-            
+
             async deleteFile(fileId) {
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
                 if (fileIndex > -1) {
@@ -2153,7 +2180,12 @@
                         img.classList.add('loaded');
                     };
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
-                    div.appendChild(img); container.appendChild(div);
+                    const overlay = document.createElement('div');
+                    overlay.className = 'filename-overlay';
+                    overlay.textContent = file.name;
+                    div.appendChild(img);
+                    div.appendChild(overlay);
+                    container.appendChild(div);
                 });
                 container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
                 lazyState.renderedCount += filesToRender.length;
@@ -2609,54 +2641,84 @@
                     confirmText: 'Choose Destination Folder'
                 });
             },
-            async executeBulkAction(actionFn, successMessage, options = {}) {
-                const { refreshGrid = true, deselect = true } = options;
+            async executeBulkAction(options) {
+                const { action, successMessage, updateGridOnSuccess = true } = options;
                 const confirmBtn = Utils.elements.actionConfirm;
                 const originalText = confirmBtn.textContent;
-                confirmBtn.disabled = true; confirmBtn.textContent = 'Processing...';
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = 'Processing...';
+
                 try {
-                    const promises = state.grid.selected.map(fileId => actionFn(fileId));
+                    const promises = state.grid.selected.map(fileId => action(fileId));
                     await Promise.all(promises);
+
                     Utils.showToast(successMessage.replace('{count}', promises.length), 'success', true);
-                    if(!options.keepModalOpen) this.hide();
-                    if (refreshGrid) { Utils.elements.gridContainer.innerHTML = ''; Grid.initializeLazyLoad(state.grid.stack); }
-                    if (deselect) { Grid.deselectAll(); }
+                    this.hide();
                     Core.updateStackCounts();
-                } catch (error) { Utils.showToast(`Failed to process some images: ${error.message}`, 'error', true);
-                } finally { confirmBtn.disabled = false; confirmBtn.textContent = originalText; }
+
+                    if (updateGridOnSuccess) {
+                        Utils.elements.gridContainer.innerHTML = '';
+                        Grid.initializeLazyLoad(state.grid.stack);
+                    }
+                    Grid.deselectAll();
+                    return true;
+                } catch (error) {
+                    Utils.showToast(`Failed to process some images: ${error.message}`, 'error', true);
+                    return false;
+                } finally {
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = originalText;
+                }
             },
             async executeMove(targetStack) {
-                await this.executeBulkAction(async (fileId) => {
-                    const file = state.imageFiles.find(f => f.id === fileId);
-                    if (file) {
-                        const currentStack = file.stack; const newSequence = Date.now();
-                        await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
-                        const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
-                        if (currentStackIndex !== -1) { state.stacks[currentStack].splice(currentStackIndex, 1); }
-                        file.stackSequence = newSequence;
-                        state.stacks[targetStack].unshift(file);
-                        state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
-                    }
-                }, `Moved {count} images to ${targetStack}`);
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        if (file) {
+                            const currentStack = file.stack;
+                            const newSequence = Date.now();
+                            await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
+                            const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
+                            if (currentStackIndex !== -1) {
+                                state.stacks[currentStack].splice(currentStackIndex, 1);
+                            }
+                            file.stack = targetStack;
+                            file.stackSequence = newSequence;
+                            state.stacks[targetStack].unshift(file);
+                            state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
+                        }
+                    },
+                    successMessage: `Moved {count} images to ${STACK_NAMES[targetStack]}`
+                });
             },
             async executeTag() {
                 const tagsToAdd = Array.from(this.taggingState.tags);
-                if (tagsToAdd.length === 0) return;
+                if (tagsToAdd.length === 0) {
+                    this.hide();
+                    return;
+                }
                 
-                await this.executeBulkAction(async (fileId) => {
-                    const file = state.imageFiles.find(f => f.id === fileId);
-                    if (file) {
-                        const currentTags = file.tags || [];
-                        const newTags = [...new Set([...currentTags, ...tagsToAdd])];
-                        await App.updateUserMetadata(fileId, { tags: newTags });
-                        tagsToAdd.forEach(tag => state.tags.add(tag));
-                    }
-                }, `Tags added to {count} images`, { refreshGrid: false });
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        if (file) {
+                            const currentTags = file.tags || [];
+                            const newTags = [...new Set([...currentTags, ...tagsToAdd])];
+                            await App.updateUserMetadata(fileId, { tags: newTags });
+                            tagsToAdd.forEach(tag => state.tags.add(tag));
+                        }
+                    },
+                    successMessage: `Tags added to {count} images`,
+                    updateGridOnSuccess: false
+                });
             },
             async executeDelete() {
-                await this.executeBulkAction(async (fileId) => {
-                    await App.deleteFile(fileId);
-                }, `Moved {count} images to provider trash`);
+                await this.executeBulkAction({
+                    action: async (fileId) => {
+                        await App.deleteFile(fileId);
+                    },
+                    successMessage: `Moved {count} images to provider trash`
+                });
             },
             async executeExport() {
                 const fileIds = [...state.grid.selected];
