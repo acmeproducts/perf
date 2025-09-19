@@ -2,15 +2,13 @@
 <!DOCTYPE html>
 
 <!--
-Release M — Delivered / To Test
-[✓] 3-tier: Core(headless)/Provider(existing)/IndexedDB cache
-[✓] Event-driven SyncManager (boot, online, visibilitychange, queue:changed) — debounced
-[✓] Queue (idempotent-ish) with IndexedDB syncQueue + localStorage 'changes_made' timestamp
-[✓] Cache-first + background cloud→cache merge by modifiedTime (existing function verified)
-[✓] Permanent Google Drive thumbnails via https://drive.google.com/thumbnail?id={FILE_ID}&sz=w1000
-[✓] Favorite button toggles — persists + enqueues patchMeta
-[✓] Providers unchanged (Google Drive + OneDrive), auth and folder UI untouched
-Build timestamp: 2025-09-19 00:50:31
+Release M — HOTFIX build
+[✓] 3-tier intact; providers/UI/auth untouched
+[✓] Event-driven SyncManager (boot/online/visibilitychange/queue:changed), debounced
+[✓] Queue + 'changes_made' and idempotency guard
+[✓] Permanent Drive thumbnails (constructed by ID)
+[✓] Cache-first + cloud→cache merge by modifiedTime
+Build timestamp: 2025-09-19 02:59:18
 -->
 
 <html lang="en">
@@ -1031,8 +1029,8 @@ Build timestamp: 2025-09-19 00:50:31
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     
-        // RELEASE M: permanent Drive thumbnails (ignore expiring thumbnailLink)
-        return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+        // RELEASE M HOTFIX: permanent Drive thumbnails (no thumbnailLink)
+        return 'https://drive.google.com/thumbnail?id=' + file.id + '&sz=w1000';
     } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1136,15 +1134,17 @@ Build timestamp: 2025-09-19 00:50:31
             async deleteFromSyncQueue(id) { return Promise.resolve(); }
         }
         
-/* === RELEASE M: Event-driven SyncManager (no polling) === */
-function debounce(fn, wait){ let t=null; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
+/* === RELEASE M HOTFIX: Event-driven SyncManager (no polling) === */
+function __debounce(fn, wait){ var t=null; return function(){ var a=arguments; clearTimeout(t); t=setTimeout(function(){ fn.apply(null,a); }, wait); }; }
 
 class SyncManager {
   constructor(){
-    this._debouncedDrain = debounce(()=>this.drain().catch(console.warn), 350);
-    this._boundOnline = ()=>this._debouncedDrain();
-    this._boundVisibility = ()=>{ if (!document.hidden) this._debouncedDrain(); };
-    this._boundQueueChanged = ()=>this._debouncedDrain();
+    var self=this;
+    this._drain = this.drain.bind(this);
+    this._debouncedDrain = __debounce(this._drain, 350);
+    this._boundOnline = function(){ self._debouncedDrain(); };
+    this._boundVisibility = function(){ if (!document.hidden) self._debouncedDrain(); };
+    this._boundQueueChanged = function(){ self._debouncedDrain(); };
     this.started = false;
   }
   start(){
@@ -1154,7 +1154,7 @@ class SyncManager {
       window.addEventListener('online', this._boundOnline);
       document.addEventListener('visibilitychange', this._boundVisibility);
       window.addEventListener('queue:changed', this._boundQueueChanged);
-    }catch(_){}
+    }catch(e){}
     this._debouncedDrain();
   }
   stop(){
@@ -1164,21 +1164,22 @@ class SyncManager {
       window.removeEventListener('online', this._boundOnline);
       document.removeEventListener('visibilitychange', this._boundVisibility);
       window.removeEventListener('queue:changed', this._boundQueueChanged);
-    }catch(_){}
+    }catch(e){}
   }
   async drain(){
     if (!state || !state.dbManager || !state.provider) return;
-    const ops = await state.dbManager.getAllSyncOps();
-    for (const op of ops){
+    var ops = await state.dbManager.getAllSyncOps();
+    for (var i=0;i<ops.length;i++){
+      var op = ops[i];
       try{
         if (op.type==='patchMeta'){
-          await state.provider.updateFileMetadata(op.fileId, op.updates||{});
+          await state.provider.updateFileMetadata(op.fileId, op.updates || {});
         } else if (op.type==='move' && op.targetFolderId){
           await state.provider.moveFileToFolder(op.fileId, op.targetFolderId);
         }
         await state.dbManager.deleteSyncOp(op.id);
       }catch(err){
-        console.warn('Sync op failed, will retry later:', op, err?.message||err);
+        console.warn('Sync op failed, will retry later:', op, (err && (err.message||err)) );
       }
     }
   }
@@ -1211,42 +1212,60 @@ class VisualCueManager {
             }
         }
         
-/* === RELEASE M Additions: Queue + Traceability === */
+/* === RELEASE M HOTFIX: Queue + Traceability === */
 DBManager.prototype.enqueueSyncOp = function(op){
-  return new Promise((resolve,reject)=>{
-    if (!this.db) return resolve();
-    const tx = this.db.transaction('syncQueue','readwrite');
-    const st = tx.objectStore('syncQueue');
-    // Idempotency: simple de-dup by opKey
-    const opKey = JSON.stringify([op.type, op.fileId, op.targetFolderId||null, op.updates||null]);
-    const getAllReq = st.getAll();
-    getAllReq.onsuccess = ()=>{
-      const exists = (getAllReq.result||[]).some(x => JSON.stringify([x.type,x.fileId,x.targetFolderId||null,x.updates||null])===opKey);
-      if (!exists) { st.add(Object.assign({createdAt: Date.now()}, op)); }
-      try{ localStorage.setItem('changes_made', String(Date.now())); }catch(_){}
-      resolve();
-    };
-    getAllReq.onerror = ()=>reject(getAllReq.error);
+  var self=this;
+  return new Promise(function(resolve, reject){
+    if (!self.db) return resolve();
+    try {
+      var tx = self.db.transaction('syncQueue','readwrite');
+      var st = tx.objectStore('syncQueue');
+      var key = JSON.stringify([op.type, op.fileId, op.targetFolderId ? op.targetFolderId : null, op.updates ? op.updates : null]);
+      var req = st.getAll();
+      req.onsuccess = function(){
+        var arr = req.result || [];
+        var exists = false;
+        for (var i=0;i<arr.length;i++){
+          var k = JSON.stringify([arr[i].type, arr[i].fileId, arr[i].targetFolderId ? arr[i].targetFolderId : null, arr[i].updates ? arr[i].updates : null]);
+          if (k===key){ exists=true; break; }
+        }
+        if (!exists){
+          var rec = { createdAt: Date.now(), type: op.type, fileId: op.fileId };
+          if (op.updates) rec.updates = op.updates;
+          if (op.targetFolderId) rec.targetFolderId = op.targetFolderId;
+          try{ st.add(rec); }catch(e){}
+        }
+        try{ localStorage.setItem('changes_made', String(Date.now())); }catch(e2){}
+        resolve();
+      };
+      req.onerror = function(){ reject(req.error); };
+    } catch(e){ reject(e); }
   });
 };
 DBManager.prototype.getAllSyncOps = function(){
-  return new Promise((resolve,reject)=>{
-    if (!this.db) return resolve([]);
-    const tx = this.db.transaction('syncQueue','readonly');
-    const st = tx.objectStore('syncQueue');
-    const req = st.getAll();
-    req.onsuccess = ()=>resolve(req.result||[]);
-    req.onerror = ()=>reject(req.error);
+  var self=this;
+  return new Promise(function(resolve, reject){
+    if (!self.db) return resolve([]);
+    try {
+      var tx = self.db.transaction('syncQueue','readonly');
+      var st = tx.objectStore('syncQueue');
+      var req = st.getAll();
+      req.onsuccess = function(){ resolve(req.result || []); };
+      req.onerror  = function(){ reject(req.error); };
+    } catch(e){ resolve([]); }
   });
 };
 DBManager.prototype.deleteSyncOp = function(id){
-  return new Promise((resolve,reject)=>{
-    if (!this.db) return resolve();
-    const tx = this.db.transaction('syncQueue','readwrite');
-    const st = tx.objectStore('syncQueue');
-    const req = st.delete(id);
-    req.onsuccess = ()=>resolve();
-    req.onerror = ()=>reject(req.error);
+  var self=this;
+  return new Promise(function(resolve, reject){
+    if (!self.db) return resolve();
+    try {
+      var tx = self.db.transaction('syncQueue','readwrite');
+      var st = tx.objectStore('syncQueue');
+      var req = st.delete(id);
+      req.onsuccess = function(){ resolve(); };
+      req.onerror  = function(){ reject(req.error); };
+    } catch(e){ resolve(); }
   });
 };
 class HapticFeedbackManager {
@@ -1493,13 +1512,13 @@ class HapticFeedbackManager {
                 return true;
             }
             async updateUserMetadata(fileId, updates) {
-                const file = state.imageFiles.find(f => f.id === fileId);
+                var file = state.imageFiles.find(function(f){ return f.id === fileId; });
                 if (!file) return;
                 Object.assign(file, updates);
                 await state.dbManager.saveMetadata(file.id, file);
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
-                await state.dbManager.enqueueSyncOp({ type:'patchMeta', fileId, updates });
-                try{ window.dispatchEvent(new Event('queue:changed')); }catch(_){}
+                await state.dbManager.enqueueSyncOp({ type:'patchMeta', fileId: fileId, updates: updates });
+                try{ window.dispatchEvent(new Event('queue:changed')); }catch(e){}
             },
 
             async deleteFile(fileId) {
