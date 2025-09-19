@@ -1,17 +1,4 @@
-# Generate Release N (mobile-first) per spec:
-# - Core API extraction (headless)
-# - Shared components
-# - Two UI variants (Grid+Details, Focus/Triage) with UI switcher
-# - Event-driven debounced worker, 3-tier, cache-first+cloud→cache, permanent Drive thumbs
-# - Demo provider default + optional Google Drive adapter enabled via query param ?driveClientId=XYZ (PKCE OAuth 2, minimal scope)
-# - Mobile-first (touch UI, bottom action bar in both variants)
-# - Works on HTTPS (GitHub Pages). If no clientId given, stays in Demo mode.
-#
-# Output: /mnt/data/release-N-mobile.html
 
-from textwrap import dedent
-
-html = dedent(r"""
 <!doctype html>
 <html>
   <head>
@@ -77,7 +64,7 @@ html = dedent(r"""
           </select>
         </div>
         <div class="row" style="padding-top:0">
-          <div class="seg" id="uiSeg">
+          <div class="seg" id="uiSeg" title="UI Variant">
             <button data-ui="grid" class="on">Grid</button>
             <button data-ui="focus">Focus</button>
           </div>
@@ -129,11 +116,9 @@ html = dedent(r"""
         debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; },
         gdriveThumb: (id,w=480)=>`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w${w}`,
         gdriveView: (id)=>`https://drive.google.com/uc?export=view&id=${encodeURIComponent(id)}`,
-        qs: new URLSearchParams(location.search),
       };
       const CONFIG = {
         driveClientId: (new URLSearchParams(location.search)).get('driveClientId') || '',
-        // Minimal scopes for read-only list + thumbnails; write scope is simulated by Demo in N
         driveScopes: 'https://www.googleapis.com/auth/drive.readonly',
       };
 
@@ -194,55 +179,51 @@ html = dedent(r"""
           };
         }
 
-        // Google Drive (read-only list) — enabled only when driveClientId is provided
+        // Google Drive (read-only) via Google Identity Services token client
         function Drive(opts){
           const clientId = opts.clientId;
-          const scopes = CONFIG.driveScopes;
-          const disc = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+          const scopes = 'https://www.googleapis.com/auth/drive.readonly';
           let token = null;
-          async function loadGapi(){
-            if(window.gapi) return;
+          async function loadGIS(){
+            if(window.google && window.google.accounts && window.google.accounts.oauth2) return;
             await new Promise((res,rej)=>{
-              const s=document.createElement('script'); s.src='https://apis.google.com/js/api.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s);
+              const s=document.createElement('script'); s.src='https://accounts.google.com/gsi/client'; s.onload=res; s.onerror=rej; document.head.appendChild(s);
             });
           }
-          async function auth(){
-            await loadGapi();
-            await new Promise((res)=> gapi.load('client', res));
-            await gapi.client.init({ discoveryDocs:[disc] });
-            const {gapi:{auth2}} = window;
-            let authInst = auth2 && auth2.getAuthInstance && auth2.getAuthInstance();
-            if(!authInst){
-              await new Promise((res)=> gapi.load('auth2', res));
-              authInst = await gapi.auth2.init({ client_id: clientId, scope: scopes });
-            }
-            const user = await authInst.signIn();
-            token = user.getAuthResponse().access_token;
+          async function ensureToken(){
+            if(token) return;
+            await loadGIS();
+            token = await new Promise((res,rej)=>{
+              try{
+                const client = google.accounts.oauth2.initTokenClient({
+                  client_id: clientId, scope: scopes,
+                  callback: (resp)=>{ if(resp && resp.access_token){ res(resp.access_token); } else { rej(new Error('Token error')); } }
+                });
+                client.requestAccessToken();
+              }catch(e){ rej(e); }
+            });
           }
           async function list(folder='root'){
-            if(!token) await auth();
-            // List image-like files in the folder (or My Drive root as a simplification)
-            const resp = await gapi.client.drive.files.list({ q: "mimeType contains 'image/' and trashed = false", fields: "files(id,name,modifiedTime,size)" });
-            const files = resp.result.files || [];
-            // Map to our expected shape; thumbnails built via permanent ID URLs
-            return files.map(f=>({ id:f.id, name:f.name, size: Number(f.size||0), tags: [], modifiedTime: Date.parse(f.modifiedTime) }));
+            await ensureToken();
+            const q = encodeURIComponent("mimeType contains 'image/' and trashed = false");
+            const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)`;
+            const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+            if(!resp.ok){ throw new Error('Drive list failed: '+resp.status); }
+            const data = await resp.json();
+            const files = data.files||[];
+            return files.map(f=>({ id:f.id, name:f.name, size:Number(f.size||0), tags:[], modifiedTime: Date.parse(f.modifiedTime) }));
           }
-          return {
-            name:'Drive',
-            list,
-            patchMeta: async ()=>{ throw new Error('Write ops disabled in Release N (read-only Drive).'); },
-            move: async ()=>{ throw new Error('Write ops disabled in Release N (read-only Drive).'); },
-          };
+          return { name:'Drive', list, patchMeta: async()=>{ throw new Error('Write ops disabled in N (read-only)'); }, move: async()=>{ throw new Error('Write ops disabled in N (read-only)'); } };
         }
 
         return { Demo, Drive };
       })();
 
-      // ========= Unified Queue (used for Demo provider only in N) =========
+      // ========= Queue (Demo writes only in N) =========
       const Queue = (()=>{
         const EV='queue:changed';
         async function mark(){ const now=Date.now(); await DB.put('settings','changes_made', now); HUD.update({changes_made: now}); window.dispatchEvent(new CustomEvent(EV)); }
-        async function enqueue(item){ const id=item.id||Utils.id(); await DB.put('sync_queue', id, {...item, id, ts:item.ts||Date.now()}); await mark(); return id; }
+        async function enqueue(item){ const id=item.id||Math.random().toString(36).slice(2); await DB.put('sync_queue', id, {...item, id, ts:item.ts||Date.now()}); await mark(); return id; }
         async function readNext(n=50){ const all=await DB.scan('sync_queue',(k,v)=>v); all.sort((a,b)=>a.ts-b.ts); return all.slice(0,n); }
         async function ack(ids){ for(const id of ids) await DB.del('sync_queue', id); await mark(); }
         return { enqueue, readNext, ack, EV };
@@ -255,10 +236,9 @@ html = dedent(r"""
         function emit(){ ls.forEach(fn=>fn(getState())); }
         function getState(){ return JSON.parse(JSON.stringify({...st, selection:[...st.selection]})); }
         async function init(provider){
-          await DB.open(); st.provider=provider;
-          await seed(); await fromCacheThenCloud(); emit();
+          await DB.open(); st.provider=provider; await seed(); await fromCacheThenCloud(); emit();
         }
-        async function setProvider(p){ st.provider = p; await fromCacheThenCloud(); emit(); }
+        async function setProvider(p){ st.provider=p; await fromCacheThenCloud(); emit(); }
         async function seed(){
           if(!st.settings.demo || (st.provider && st.provider.name!=='Demo')) return;
           const have=await DB.get('folders', st.folder);
@@ -270,10 +250,7 @@ html = dedent(r"""
           }
         }
         function sortFiles(a){ const {by,dir}=st.sort; const s=[...a].sort((x,y)=>{ let A=x[by],B=y[by]; if(by==='name'){ A=String(A).toLowerCase(); B=String(B).toLowerCase(); } if(by==='modifiedTime'){ A=+A; B=+B; } return A<B?-1:A>B?1:0; }); return dir==='asc'?s:s.reverse(); }
-        async function fromCacheThenCloud(){
-          const cached=await DB.get('folders', st.folder)||[]; st.files=sortFiles(cached); emit();
-          refreshCloudInBackground().catch(e=>Toast.show('Cloud refresh error: '+e.message));
-        }
+        async function fromCacheThenCloud(){ const cached=await DB.get('folders', st.folder)||[]; st.files=sortFiles(cached); emit(); refreshCloudInBackground().catch(e=>Toast.show('Cloud refresh error: '+e.message)); }
         async function refreshCloudInBackground(){
           const p=st.provider; let cloudList=[];
           if(p) cloudList = await p.list(st.folder);
@@ -287,7 +264,7 @@ html = dedent(r"""
         function toggleSelect(id){ if(st.selection.has(id)) st.selection.delete(id); else st.selection.add(id); emit(); }
         function clearSelection(){ st.selection.clear(); emit(); }
         async function tag({ids, add=['favorite'], remove=[]}){
-          if(!ids.length || !st.provider || st.provider.name!=='Demo') return; // write ops only in Demo for N
+          if(!ids.length || !st.provider || st.provider.name!=='Demo') return;
           const files=await DB.get('folders', st.folder)||[]; const map=Object.fromEntries(files.map(f=>[f.id,f]));
           for(const id of ids){ const cur=new Set(map[id]?.tags||[]); add.forEach(t=>cur.add(t)); remove.forEach(t=>cur.delete(t)); map[id]={...map[id], tags:[...cur]}; await Queue.enqueue({op:'patchMeta', id, payload:{tags:[...cur]}}); }
           const next=Object.values(map); await DB.put('folders', st.folder, next); st.files=sortFiles(next); emit(); HUD.update({lastAction:`tag:${ids.length}`});
@@ -324,16 +301,15 @@ html = dedent(r"""
             const batch=await Queue.readNext(50);
             HUD.update({queueSize: batch.length});
             if(batch.length===0) return;
-            // Only Demo supports writes in N
+            const prov = currentProvider();
             for(const it of batch){
-              const prov = currentProvider();
-              if(prov.name==='Demo'){
+              if(prov && prov.name==='Demo'){
                 if(it.op==='patchMeta') await prov.patchMeta(it.id, it.payload);
                 if(it.op==='move') await prov.move(it.id, it.payload.dest);
               }
             }
             await Queue.ack(batch.map(x=>x.id));
-            HUD.update({queueSize:0, lastProvider:currentProvider().name});
+            HUD.update({queueSize:0, lastProvider:prov?prov.name:'-'});
             await Core.refreshCloudInBackground();
           }catch(e){ Toast.show('Worker error: '+e.message); }
           finally{ running=false; }
@@ -347,15 +323,14 @@ html = dedent(r"""
         return { start, drain };
       })();
 
-      // ========= Provider Selection =========
+      // ========= Provider selection =========
       let _provider;
       function currentProvider(){ return _provider; }
       async function initProvider(){
-        const driveEnabled = !!CONFIG.driveClientId;
         const seg = document.getElementById('provSeg');
-        // Toggle Drive button visibility based on availability
+        const hasDrive = !!CONFIG.driveClientId;
         seg.querySelectorAll('button').forEach(btn=>{
-          if(btn.dataset.prov==='Drive') btn.style.display = driveEnabled ? 'block':'none';
+          if(btn.dataset.prov==='Drive'){ btn.style.display = hasDrive ? 'block' : 'none'; }
         });
         _provider = Providers.Demo();
         await Core.init(_provider);
@@ -371,14 +346,13 @@ html = dedent(r"""
       }
 
       // ========= UI Layer (shared controls + 2 variants) =========
-      const UI = (()=>{
+      (function UI(){
         const gridHost=document.getElementById('grid');
         const focusHost=document.getElementById('focus');
         const q=document.getElementById('q');
         const sortSel=document.getElementById('sort');
         const uiSeg=document.getElementById('uiSeg');
 
-        // Grid variant
         function renderGrid(files, selection){
           gridHost.innerHTML='';
           for(const f of files){
@@ -395,7 +369,6 @@ html = dedent(r"""
           }
         }
 
-        // Focus variant
         function renderFocus(files, idx){
           const big=document.getElementById('big');
           const meta=document.getElementById('focusmeta');
@@ -405,14 +378,13 @@ html = dedent(r"""
           const f = files[Math.max(0, Math.min(idx, files.length-1))];
           big.src = Utils.gdriveThumb(f.id, 960);
           big.alt = f.name;
-          meta.textContent = `${f.name} ${ (f.tags||[]).includes('favorite')?'· ★ favorite':'' }`;
+          meta.textContent = `${f.name} ${(f.tags||[]).includes('favorite')?'· ★ favorite':''}`;
           prev.onclick = ()=>Core.setFocusIndex(Math.max(0, idx-1));
           next.onclick = ()=>Core.setFocusIndex(Math.min(files.length-1, idx+1));
         }
 
         Core.on(async s=>{
           document.title = `Release N — ${s.selection?.length||0} selected`;
-          // Toggle variant hosts
           const isGrid = s.ui==='grid';
           gridHost.hidden = !isGrid; focusHost.hidden = isGrid;
           if(isGrid) renderGrid(s.files, s.selection||[]);
@@ -426,14 +398,12 @@ html = dedent(r"""
         sortSel.addEventListener('change', e=>{ const [by,dir]=e.target.value.split('|'); Core.setSort(by,dir); });
         uiSeg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ uiSeg.querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); Core.setUI(b.dataset.ui); });
 
-        // Provider segment
         document.querySelectorAll('#provSeg button').forEach(b=>b.onclick=async ()=>{
           document.querySelectorAll('#provSeg button').forEach(x=>x.classList.remove('on'));
           b.classList.add('on');
           await switchProvider(b.dataset.prov);
         });
 
-        // Bottom bar
         document.getElementById('btnTag').onclick = ()=>Core.tag({ ids:[...Core.getState().selection] }).then(()=>Toast.show('Tagged favorite'));
         document.getElementById('btnMove').onclick = ()=>Core.move({ ids:[...Core.getState().selection], dest:'archive' });
         document.getElementById('btnHUD').onclick = ()=>HUD.toggle();
@@ -447,16 +417,10 @@ html = dedent(r"""
           await DB.open();
           await initProvider();
           WorkerLoop.start();
-          Toast.show('Release N — Mobile ready');
           if(!CONFIG.driveClientId){ Toast.show('Drive disabled (no clientId). Using Demo provider.'); }
+          else { Toast.show('Drive available. Switch provider to use it.'); }
         }catch(e){ Err.show('Startup failed: '+(e.stack||e.message)); }
       })();
     </script>
   </body>
 </html>
-""")
-
-with open("/mnt/data/release-N-mobile.html","w",encoding="utf-8") as f:
-    f.write(html)
-
-print("/mnt/data/release-N-mobile.html created")
