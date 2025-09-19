@@ -949,7 +949,8 @@
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
-            activeRequests: new AbortController()
+            activeRequests: new AbortController(),
+            sessionVisitedFolders: new Set()
         };
         const Utils = {
             elements: {},
@@ -1218,6 +1219,16 @@
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const request = store.put({ id: fileId, metadata });
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async deleteMetadata(fileId) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readwrite');
+                    const store = transaction.objectStore('metadata');
+                    const request = store.delete(fileId);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
                 });
@@ -1793,38 +1804,111 @@
                 }
             },
             async loadImages() {
-                const cachedFiles = await state.dbManager.getFolderCache(state.currentFolder.id);
+                const folderId = state.currentFolder.id;
+                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
+                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
 
-                if (cachedFiles) {
-                    Utils.showScreen('app-container');
-                    state.imageFiles = cachedFiles;
-                    await this.processAllMetadata(state.imageFiles);
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
-                    this.refreshFolderInBackground();
+                if (isFirstSessionVisit || cachedFiles.length === 0) {
+                    await this.syncFolderFromCloud(cachedFiles, sessionKey);
                     return;
                 }
 
+                state.imageFiles = cachedFiles;
+                Utils.showScreen('app-container');
+                Core.initializeStacks();
+                Core.initializeImageDisplay();
+                const pendingPngs = state.imageFiles.filter(file => file.mimeType === 'image/png' && file.metadataStatus === 'pending');
+                if (pendingPngs.length > 0) {
+                    this.extractMetadataInBackground(pendingPngs);
+                }
+            },
+            mergeCloudWithCache(cloudFiles, cachedFiles) {
+                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
+                const merged = [];
+                const newIds = [];
+                const updatedIds = [];
+                const removedIds = [];
+
+                for (const cloudFile of cloudFiles) {
+                    const cached = cachedMap.get(cloudFile.id);
+                    if (!cached) {
+                        merged.push({ ...cloudFile });
+                        newIds.push(cloudFile.id);
+                    } else {
+                        const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
+                        const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
+                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
+                            merged.push({ ...cached, ...cloudFile });
+                            updatedIds.push(cloudFile.id);
+                        } else {
+                            merged.push(cached);
+                        }
+                        cachedMap.delete(cloudFile.id);
+                    }
+                }
+
+                for (const removedId of cachedMap.keys()) {
+                    removedIds.push(removedId);
+                }
+
+                return {
+                    mergedFiles: merged,
+                    newIds,
+                    updatedIds,
+                    removedIds,
+                    hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
+                };
+            },
+            async syncFolderFromCloud(cachedFiles, sessionKey) {
+                const folderId = state.currentFolder.id;
+                const hadCached = cachedFiles.length > 0;
                 Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, 0, 'Fetching from cloud...');
-                
+                Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+
                 try {
-                    const result = await state.provider.getFilesAndMetadata(state.currentFolder.id);
-                    const files = result.files || [];
-                    
-                    if (files.length === 0) {
+                    const result = await state.provider.getFilesAndMetadata(folderId);
+                    const cloudFiles = result.files || [];
+                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+
+                    if (mergedFiles.length === 0) {
+                        await state.dbManager.saveFolderCache(folderId, []);
+                        state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
                         this.returnToFolderSelection();
                         return;
                     }
-                    
-                    state.imageFiles = files;
-                    await this.processAllMetadata(state.imageFiles, true);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
-                    
+
+                    for (const updatedId of updatedIds) {
+                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
+                        if (updatedFile) {
+                            await state.dbManager.saveMetadata(updatedId, updatedFile);
+                        }
+                    }
+                    if (removedIds.length > 0) {
+                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
+                    }
+
+                    state.imageFiles = mergedFiles;
+                    await this.processAllMetadata(state.imageFiles, !hadCached);
+                    if (hasChanges || !hadCached) {
+                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    }
+
+                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                    state.sessionVisitedFolders.add(key);
+                    this.switchToCommonUI();
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
-                    
+
+                    if (hadCached && hasChanges) {
+                        const diffSummary = [];
+                        if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
+                        if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
+                        if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
+                        const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
+                        Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
+                    }
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
@@ -1834,39 +1918,34 @@
             },
             async refreshFolderInBackground() {
                 try {
-                    const result = await state.provider.getFilesAndMetadata(state.currentFolder.id);
+                    const folderId = state.currentFolder.id;
+                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
-                    const localFiles = await state.dbManager.getFolderCache(state.currentFolder.id) || [];
-                    const cloudFileMap = new Map(cloudFiles.map(f => [f.id, f]));
-                    const localFileMap = new Map(localFiles.map(f => [f.id, f]));
-                    let hasChanges = false;
-            
-                    for (const cloudFile of cloudFiles) {
-                        const localFile = localFileMap.get(cloudFile.id);
-                        if (!localFile || new Date(cloudFile.modifiedTime) > new Date(localFile.modifiedTime)) {
-                            hasChanges = true;
-                            localFileMap.set(cloudFile.id, cloudFile);
+                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+
+                    if (!hasChanges) {
+                        return;
+                    }
+
+                    for (const updatedId of updatedIds) {
+                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
+                        if (updatedFile) {
+                            await state.dbManager.saveMetadata(updatedId, updatedFile);
                         }
                     }
-            
-                    for (const localId of localFileMap.keys()) {
-                        if (!cloudFileMap.has(localId)) {
-                            hasChanges = true;
-                            localFileMap.delete(localId);
-                        }
+                    if (removedIds.length > 0) {
+                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
-            
-                    if (hasChanges) {
-                        const newMergedFiles = Array.from(localFileMap.values());
-                        await this.processAllMetadata(newMergedFiles);
-                        await state.dbManager.saveFolderCache(state.currentFolder.id, newMergedFiles);
-                        state.imageFiles = newMergedFiles;
-                        Core.initializeStacks();
-                        Core.updateStackCounts();
-                        if(state.imageFiles.length > 0) Core.displayCurrentImage();
-                        else Core.showEmptyState();
-                        Utils.showToast('Folder updated in background', 'info');
-                    }
+
+                    await this.processAllMetadata(mergedFiles);
+                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
+                    state.imageFiles = mergedFiles;
+                    Core.initializeStacks();
+                    Core.updateStackCounts();
+                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
+                    else Core.showEmptyState();
+                    Utils.showToast('Folder updated in background', 'info');
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
                 }
