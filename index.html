@@ -7,7 +7,74 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Orbital8 Goji Version</title>
-    <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js"></script>
+    <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js">
+// FIX: Permanent GDrive thumbnail URL builder (Release M)
+function getPermanentThumbnailUrl(fileId, size) {
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}`;
+}
+
+
+// FIX: Favorite toggle handler (Release M)
+function toggleFavorite(file) {
+    file.favorite = !file.favorite;
+    state.queue.enqueue({type:'patchMeta', id:file.id, updates:{favorite:file.favorite}});
+    state.changes_made = Date.now();
+    App.refreshHUD && App.refreshHUD();
+}
+
+
+// FIX: Event-driven Sync Worker and Queue (Release M)
+class SyncWorker {
+  constructor(state) {
+    this.state = state;
+    this.debounced = null;
+  }
+  requestSync() {
+    clearTimeout(this.debounced);
+    this.debounced = setTimeout(() => this.run(), 500);
+  }
+  async run() {
+    try {
+      console.log('[Worker] Sync start', new Date().toISOString());
+      if (this.state && this.state.provider) {
+        const items = await this.state.provider.list(this.state.currentFolder?.id || 'root');
+        if (items) {
+          for (const item of items) {
+            const cached = this.state.imageFiles.find(f => f.id === item.id);
+            if (!cached || new Date(item.modifiedTime) > new Date(cached.modifiedTime)) {
+              if (cached) Object.assign(cached, item);
+              else this.state.imageFiles.push(item);
+            }
+          }
+        }
+      }
+      console.log('[Worker] Sync complete');
+    } catch (e) { console.error('Worker error', e); }
+  }
+}
+
+class Queue {
+  constructor() { this.items = []; }
+  enqueue(op) {
+    if (!op || !op.type) return;
+    if (!this.items.find(x => JSON.stringify(x) === JSON.stringify(op))) {
+      this.items.push(op);
+      document.dispatchEvent(new Event('queue:changed'));
+    }
+  }
+  drain() { const q = [...this.items]; this.items = []; return q; }
+}
+
+state.queue = new Queue();
+state.syncWorker = new SyncWorker(state);
+state.changes_made = 0;
+
+window.addEventListener('online', ()=> state.syncWorker.requestSync());
+document.addEventListener('visibilitychange', ()=> { if(!document.hidden) state.syncWorker.requestSync(); });
+document.addEventListener('queue:changed', ()=> state.syncWorker.requestSync());
+window.addEventListener('load', ()=> state.syncWorker.requestSync());
+
+</script>
     <style>
         :root {
             --accent: #f59e0b;
@@ -578,7 +645,7 @@
             <h1 class="title" id="auth-title">Provider</h1>
             <p class="subtitle" id="auth-subtitle">Connect to your account</p>
             <div id="gdrive-secret-container" class="hidden" style="margin-bottom: 16px;">
-                <form id="gdrive-cred-form" onsubmit="return false;"><input type="password" id="gdrive-client-secret" class="input" placeholder="Enter Google Client Secret" style="margin-bottom: 0;"></form>
+                <input type="password" id="gdrive-client-secret" class="input" placeholder="Enter Google Client Secret" style="margin-bottom: 0;">
             </div>
             <button class="button" id="auth-button">Connect</button>
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
@@ -1015,7 +1082,13 @@
                 });
             },
             
-            getPreferredImageUrl(file){ if(state.providerType==='googledrive'){ return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`; } else { // OneDrive
+            getPreferredImageUrl(file) {
+                if (state.providerType === 'googledrive') {
+                    if (file.thumbnailLink) {
+                        return file.thumbnailLink.replace('=s220', '=s1000');
+                    }
+                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
                     }
@@ -2750,7 +2823,7 @@
                 Utils.elements.actionConfirm.disabled = true; Utils.elements.actionCancel.textContent = "Close";
             },
             executeFolderMove() {
-                state.folderMoveMode = { active: true, files: [...state.grid.selected]\1;
+                state.folderMoveMode = { active: true, files: [...state.grid.selected], };
                 this.hide(); Grid.close(); App.returnToFolderSelection();
                 Utils.showToast(`Select destination folder for ${state.folderMoveMode.files.length} images`, 'info', true);
             }
@@ -3361,117 +3434,8 @@
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 
-<!-- Release M Core Bundle (inlined) — Build 2025-09-19 05:17:03Z
-     Notes: Fixed previous syntax errors (trailing commas) and added SyncManager shim.
--->
 <script>
-(function (global) { 'use strict';
-  // ===== Utils =====
-  const Utils = {
-    id: () => Math.random().toString(36).slice(2),
-    debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; },
-    now: () => Date.now(),
-    gdriveThumb: (id, w) => 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(id) + '&sz=w' + (w||480)
-  };
-
-  const EVENTS = { QUEUE_CHANGED: 'queue:changed' };
-
-  // ===== DB (IndexedDB + shim) =====
-  const DB = (()=>{
-    let db=null, shim=false; const NAME='ReleaseM-DB'; const STORES=['queue','settings'];
-    function open(){ return new Promise((res)=>{ try{ const r=indexedDB.open(NAME,1);
-      r.onupgradeneeded=()=>{ const d=r.result; for (const s of STORES) if(!d.objectStoreNames.contains(s)) d.createObjectStore(s); };
-      r.onsuccess=()=>{ db=r.result; res(); }; r.onerror=()=>{ shim=true; res(); }; }catch(_e){ shim=true; res(); } }); }
-    function get(s,k){ if(shim) return Promise.resolve(null); return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'), os=tx.objectStore(s), rq=os.get(k); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
-    function put(s,k,v){ if(shim) return Promise.resolve(); return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'), os=tx.objectStore(s), rq=os.put(v,k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
-    function del(s,k){ if(shim) return Promise.resolve(); return new Promise((res,rej)=>{ const tx=db.transaction(s,'readwrite'), os=tx.objectStore(s), rq=os.delete(k); rq.onsuccess=()=>res(); rq.onerror=()=>rej(rq.error); }); }
-    async function all(s){ if(shim) return []; return new Promise((res,rej)=>{ const tx=db.transaction(s,'readonly'), os=tx.objectStore(s), rq=os.getAll(); rq.onsuccess=()=>res(rq.result||[]); rq.onerror=()=>rej(rq.error); }); }
-    return { open, get, put, del, all };
-  })();
-
-  // ===== Queue (idempotent) =====
-  const Queue = (()=>{
-    function keyOf(it){ return it.op + ':' + it.id; }
-    async function enqueue(it){ await DB.open(); const k=keyOf(it); if(!await DB.get('queue',k)) await DB.put('queue',k,{op:it.op,id:it.id,payload:it.payload,key:k,ts:Utils.now()});
-      await DB.put('settings','changes_made',Utils.now());
-      try{ window.dispatchEvent(new CustomEvent(EVENTS.QUEUE_CHANGED,{detail:{reason:'enqueue'}})); }catch(_){
-      }
-      return k;
-    }
-    async function readNext(n){ await DB.open(); const arr=await DB.all('queue'); arr.sort((a,b)=>a.ts-b.ts); return arr.slice(0, n||50); }
-    async function ack(keys){ await DB.open(); for(const k of keys) await DB.del('queue',k); await DB.put('settings','changes_made',Utils.now()); }
-    return { enqueue, readNext, ack };
-  })();
-
-  // ===== Core (headless) — UI unchanged =====
-  const Core = (()=>{
-    const st = { provider:null };
-    async function init(provider){ st.provider=provider; }
-    async function toggleFavorite(ids){ for(const id of ids) await Queue.enqueue({op:'patchMeta',id:id,payload:{toggleTag:'favorite'}}); }
-    async function move(ids,dest){ const d = dest||'archive'; for(const id of ids) await Queue.enqueue({op:'patchMeta',id:id,payload:{stack:d}}); }
-    return { init, toggleFavorite, move, get state(){return st;} };
-  })();
-
-  // ===== Worker (event-driven, debounced) =====
-  const WorkerLoop = (()=>{
-    let running=false; const debounced=Utils.debounce(drain,800);
-    async function apply(it,prov){ if(it.op==='patchMeta'){ if(it.payload && it.payload.toggleTag){ // favorite toggle
-          try{ await prov.updateFileMetadata(it.id, { appProperties: { favorite: 'toggle' } }); }catch(_){
-          }
-        }
-        if(it.payload && it.payload.stack){ try{ await prov.updateFileMetadata(it.id, { appProperties: { stack: it.payload.stack, stackSequence: Date.now() } }); }catch(_){
-        }
-        }
-      }
-    }
-    async function drain(){ if(running) return; running=true; try{ const prov=Core.state.provider; if(!prov) return;
-        const batch=await Queue.readNext(50); if(batch.length){ for(const it of batch) await apply(it,prov); await Queue.ack(batch.map(x=>x.key));
-          try{ if(window.App && App.refreshFolderInBackground) await App.refreshFolderInBackground(); }catch(_){
-          }
-        }
-      }catch(e){ console.error('[ReleaseM] worker error', e); } finally{ running=false; } }
-    function start(){ drain(); window.addEventListener('online',debounced); document.addEventListener('visibilitychange',()=>{ if(!document.hidden) debounced(); }); window.addEventListener('queue:changed',debounced); }
-    return { start, drain };
-  })();
-
-  // ===== SyncManager shim (preserve UI contract) =====
-  (function ensureSyncManager(){
-    const kick = Utils.debounce(()=>WorkerLoop.drain(), 0);
-    const api = { requestSync: function(reason){ try{ window.dispatchEvent(new CustomEvent('queue:changed',{detail:{reason:reason||'ui'}})); }catch(_){
-      } kick(); } };
-    if(!global.state) global.state={};
-    if(!global.state.syncManager) global.state.syncManager = api;
-    else if(typeof global.state.syncManager.requestSync!=='function') global.state.syncManager.requestSync = api.requestSync;
-  })();
-
-  // ===== Footer timestamp helper =====
-  function updateFooterTimestamp(sel){ var el=document.querySelector(sel||'footer .build-timestamp'); if(el) el.textContent='Last build: 2025-09-19 05:17:03Z'; }
-
-  async function initWithProvider(provider){ await DB.open(); await Core.init(provider); WorkerLoop.start(); updateFooterTimestamp(); }
-
-  global.ReleaseM = { Utils:Utils, Queue:Queue, Core:Core, WorkerLoop:WorkerLoop, initWithProvider:initWithProvider, updateFooterTimestamp:updateFooterTimestamp };
-})(window);
-</script>
-
-
-<script>
-// Release M: hook provider readiness → init Core/Worker
-(function(){
-  var inited=false;
-  async function tryInit(){
-    if(inited) return;
-    if(window.ReleaseM && window.state && window.state.provider){
-      inited = true;
-      try{ await ReleaseM.initWithProvider(window.state.provider); }catch(e){ console.error('ReleaseM init failed', e); }
-    }
-  }
-  document.addEventListener('DOMContentLoaded', tryInit);
-  document.addEventListener('click', function(e){
-    var id=(e.target.id||'').toLowerCase();
-    if(id.includes('google')||id.includes('onedrive')||id.includes('login')) setTimeout(tryInit, 1500);
-  }, true);
-  var t=setInterval(function(){ if(!inited) tryInit(); else clearInterval(t); }, 1200);
-})();
+(function(){try{var el=document.querySelector('footer .build-timestamp'); if(el) el.textContent='Last build: 2025-09-19 07:31:46Z';}catch(_e){}})();
 </script>
 
 </body>
