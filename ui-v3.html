@@ -2021,10 +2021,11 @@
 
                 if (hasCached) {
                     state.imageFiles = cachedFiles;
+                    await this.hydrateFilesWithMetadata(state.imageFiles);
                     Utils.showScreen('app-container');
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
-                    const pendingPngs = cachedFiles.filter(file => file.mimeType === 'image/png' && file.metadataStatus === 'pending');
+                    const pendingPngs = state.imageFiles.filter(file => file.mimeType === 'image/png' && file.metadataStatus === 'pending');
                     if (pendingPngs.length > 0) {
                         this.extractMetadataInBackground(pendingPngs);
                     }
@@ -2220,8 +2221,9 @@
                     console.warn('Background refresh failed:', error.message);
                 }
             },
-            async processAllMetadata(files, isFirstLoad = false) {
-                 if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+            async hydrateFilesWithMetadata(files, options = {}) {
+                const { showProgress = false, progressMessage = 'Processing files...' } = options;
+                if (showProgress) { Utils.updateLoadingProgress(0, files.length, progressMessage); }
                 for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     try {
@@ -2238,8 +2240,11 @@
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (showProgress) { Utils.updateLoadingProgress(i + 1, files.length); }
                 }
+            },
+            async processAllMetadata(files, isFirstLoad = false) {
+                await this.hydrateFilesWithMetadata(files, { showProgress: isFirstLoad, progressMessage: 'Processing files...' });
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
             generateDefaultMetadata(file) {
@@ -2435,6 +2440,7 @@
             async processFileMetadata(file) {
                 if (file.metadataStatus === 'loaded' || file.metadataStatus === 'loading' || file.metadataStatus === 'error') return;
                 file.metadataStatus = 'loading';
+                let shouldPersistFolderCache = false;
                 try {
                     const metadata = await state.metadataExtractor.fetchMetadata(file);
                     let finalMetadata = { ...file };
@@ -2448,6 +2454,7 @@
                     }
                     await state.dbManager.saveMetadata(file.id, finalMetadata);
                     Object.assign(file, finalMetadata);
+                    shouldPersistFolderCache = file.metadataStatus === 'loaded' || file.metadataStatus === 'error';
                 } catch (error) {
                     if (error.name === 'AbortError') return;
                     console.warn(`Background metadata extraction failed for ${file.name}: ${error.message}`);
@@ -2455,6 +2462,15 @@
                     file.extractedMetadata = { 'Error': error.message };
                     file.prompt = `Metadata Error: ${error.message}`;
                     await state.dbManager.saveMetadata(file.id, file);
+                    shouldPersistFolderCache = true;
+                } finally {
+                    if (shouldPersistFolderCache && state.currentFolder && state.currentFolder.id) {
+                        try {
+                            await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                        } catch (cacheError) {
+                            console.warn(`Failed to persist metadata status for ${file.name}: ${cacheError.message}`);
+                        }
+                    }
                 }
             }
         };
