@@ -1985,6 +1985,43 @@
                 const updatedIds = [];
                 const removedIds = [];
 
+                const getProviderMetadataPayload = (file) => {
+                    if (!file) return null;
+                    if (state.providerType === 'googledrive') {
+                        return file.appProperties || {};
+                    }
+                    if (state.providerType === 'onedrive') {
+                        return file.metadataExtension || {};
+                    }
+                    return null;
+                };
+
+                const normalizeForComparison = (value) => {
+                    if (value === null || typeof value !== 'object') {
+                        return value;
+                    }
+                    if (Array.isArray(value)) {
+                        return value.map(normalizeForComparison);
+                    }
+                    return Object.keys(value).sort().reduce((acc, key) => {
+                        acc[key] = normalizeForComparison(value[key]);
+                        return acc;
+                    }, {});
+                };
+
+                const getMetadataSignature = (file) => {
+                    const payload = getProviderMetadataPayload(file);
+                    if (payload === null || payload === undefined) {
+                        return '';
+                    }
+                    try {
+                        return JSON.stringify(normalizeForComparison(payload));
+                    } catch (error) {
+                        console.warn('Failed to serialize provider metadata for comparison', error);
+                        return '';
+                    }
+                };
+
                 for (const cloudFile of cloudFiles) {
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
@@ -1993,8 +2030,19 @@
                     } else {
                         const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
                         const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const metadataChanged = getMetadataSignature(cloudFile) !== getMetadataSignature(cached);
+                        if ((!isNaN(cloudModified) && cloudModified > cachedModified) || metadataChanged) {
+                            const mergedFile = { ...cached, ...cloudFile };
+                            if (metadataChanged) {
+                                if (state.providerType === 'googledrive') {
+                                    mergedFile.appProperties = cloudFile.appProperties ? { ...cloudFile.appProperties } : {};
+                                } else if (state.providerType === 'onedrive') {
+                                    mergedFile.metadataExtension = cloudFile.metadataExtension
+                                        ? { ...cloudFile.metadataExtension }
+                                        : null;
+                                }
+                            }
+                            merged.push(mergedFile);
                             updatedIds.push(cloudFile.id);
                         } else {
                             merged.push(cached);
