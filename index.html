@@ -16,6 +16,7 @@
             --dark: linear-gradient(135deg, #0f0f0f 0%, #1a1a1a 100%);
             --glow: 0.6;
             --ripple: 1500ms;
+            --app-height: 100vh;
         }
 
         * { box-sizing: border-box; }
@@ -165,11 +166,11 @@
         .loading-progress { width: 100%; height: 6px; background: rgba(255, 255, 255, 0.2); border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
         .loading-progress-bar { height: 100%; background: linear-gradient(45deg, var(--accent), #d97706); border-radius: 3px; transition: width 0.3s ease; width: 0%; }
         
-        .app-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); overflow: hidden; }
+        .app-container { position: relative; width: 100vw; height: var(--app-height); background: var(--dark); overflow: hidden; }
         
         .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; }
         .center-image {
-            max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; user-select: none; pointer-events: none;
+            max-width: 100vw; max-height: var(--app-height); width: auto; height: auto; object-fit: contain; user-select: none; pointer-events: none;
             transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.2s ease; transform-origin: center center; cursor: grab;
         }
         .center-image.dragging { filter: brightness(0.9); cursor: grabbing; }
@@ -515,7 +516,7 @@
         .hidden { display: none !important; }
         
         @supports (height: 100dvh) {
-            .app-container, .image-viewport { height: 100dvh; }
+            :root { --app-height: 100dvh; }
         }
 
         /* Gesture overlay inspired by ui.html */
@@ -563,19 +564,6 @@
             right: 12px;
             border-radius: 16px;
             background: transparent;
-        }
-        .gesture-layer .hub {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: min(18vw, 18vh);
-            height: min(18vw, 18vh);
-            border-radius: 50%;
-            border: 1px solid transparent;
-            background: transparent;
-            pointer-events: none;
-            z-index: 40;
         }
         .gesture-layer .glow {
             opacity: 0 !important;
@@ -716,18 +704,16 @@
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
         <div class="gesture-layer" id="gesture-layer">
             <div id="gesture-screen-a" class="stage" role="application"
-                 aria-label="Sort mode. Triangular flick zones. Double-tap center hub to enter focus mode.">
+                 aria-label="Sort mode. Triangular flick zones. Tap the item counter to enter focus mode.">
                 <div id="gesture-tri-up" class="tri up"></div>
                 <div id="gesture-tri-right" class="tri right"></div>
                 <div id="gesture-tri-down" class="tri down"></div>
                 <div id="gesture-tri-left" class="tri left"></div>
-                <div class="hub" id="gesture-hub-a"></div>
             </div>
             <div id="gesture-screen-b" class="stage" role="application"
-                 aria-label="Focus mode. Left/right review halves. Double-tap center hub to return to sort mode." hidden>
+                 aria-label="Focus mode. Left/right review halves. Tap the item counter to return to sort mode." hidden>
                 <div id="gesture-half-left" class="half left"></div>
                 <div id="gesture-half-right" class="half right"></div>
-                <div class="hub" id="gesture-hub-b"></div>
             </div>
         </div>
         
@@ -952,6 +938,29 @@
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set()
         };
+        (function setupAppHeight() {
+            const root = document.documentElement;
+            if (!root) return;
+            const supportsDynamicViewport = window.CSS && CSS.supports('height: 100dvh');
+            if (supportsDynamicViewport) {
+                root.style.setProperty('--app-height', '100dvh');
+                return;
+            }
+            const update = () => {
+                const viewport = window.visualViewport;
+                const height = viewport ? viewport.height : window.innerHeight;
+                if (height) {
+                    root.style.setProperty('--app-height', `${Math.round(height)}px`);
+                }
+            };
+            update();
+            window.addEventListener('resize', update);
+            window.addEventListener('orientationchange', update);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', update);
+                window.visualViewport.addEventListener('scroll', update);
+            }
+        })();
         const Utils = {
             elements: {},
             
@@ -2204,8 +2213,12 @@
                 const current = total > 0 ? state.currentStackPosition + 1 : 0;
                 const counterText = total > 0 ? `Item ${current} / ${total}` : 'No items';
                 if (Utils.elements.normalImageCount) {
+                    const modeAction = state.isFocusMode ? 'Return to sort mode' : 'Enter focus mode';
                     Utils.elements.normalImageCount.textContent = counterText;
-                    Utils.elements.normalImageCount.setAttribute('aria-label', counterText);
+                    Utils.elements.normalImageCount.setAttribute('aria-label', `${counterText}. ${modeAction}.`);
+                    Utils.elements.normalImageCount.setAttribute('data-mode-action', modeAction);
+                    Utils.elements.normalImageCount.setAttribute('title', modeAction);
+                    Utils.elements.normalImageCount.setAttribute('aria-pressed', state.isFocusMode ? 'true' : 'false');
                 }
                 if (Utils.elements.focusImageCount) {
                     Utils.elements.focusImageCount.textContent = counterText;
@@ -2958,11 +2971,7 @@
             startTimestamp: 0,
             gestureStarted: false,
             edgeElements: [],
-            hubPressActive: false,
             overlay: null,
-            lastHubTap: { time: 0, x: 0, y: 0 },
-            DOUBLE_TAP_MAX_INTERVAL: 320,
-            DOUBLE_TAP_MAX_DISTANCE: 28,
             TAP_DISTANCE_THRESHOLD: 26,
             TAP_DURATION_THRESHOLD: 260,
             TRAIL_INTERVAL_MS: 12,
@@ -3064,16 +3073,6 @@
                     this.overlay.screenB.setAttribute('aria-hidden', focus ? 'false' : 'true');
                 }
             },
-            isInHub(clientX, clientY) {
-                const viewport = Utils.elements.imageViewport;
-                if (!viewport) return false;
-                const rect = viewport.getBoundingClientRect();
-                if (!rect.width || !rect.height) return false;
-                const cx = rect.left + rect.width / 2;
-                const cy = rect.top + rect.height / 2;
-                const radius = Math.min(rect.width, rect.height) * 0.12;
-                return Math.hypot(clientX - cx, clientY - cy) <= radius;
-            },
             pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
                 const v0x = cx - ax, v0y = cy - ay;
                 const v1x = bx - ax, v1y = by - ay;
@@ -3164,17 +3163,13 @@
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
                 if (state.currentScale > 1.1) return;
                 const point = e.touches ? e.touches[0] : e;
-                const hubInteraction = this.isInHub(point.clientX, point.clientY);
-                if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
+                if (state.stacks[state.currentStack].length === 0) return;
                 this.startPos = { x: point.clientX, y: point.clientY };
                 this.currentPos = { x: point.clientX, y: point.clientY };
                 this.startTimestamp = performance.now();
                 this.gestureStarted = false;
                 state.isDragging = true;
-                this.hubPressActive = hubInteraction;
-                if (!hubInteraction) {
-                    Utils.elements.centerImage.classList.add('dragging');
-                }
+                Utils.elements.centerImage.classList.add('dragging');
                 this.spawnRipple(point.clientX, point.clientY);
                 this.queueTrail(point.clientX, point.clientY);
             },
@@ -3188,7 +3183,6 @@
                 const point = e.touches ? e.touches[0] : e;
                 this.currentPos = { x: point.clientX, y: point.clientY };
                 this.queueTrail(point.clientX, point.clientY);
-                if (this.hubPressActive) { return; }
                 if (state.imageFiles.length === 0) return;
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
@@ -3217,30 +3211,6 @@
                 const duration = now - this.startTimestamp;
                 const isTap = distance < this.TAP_DISTANCE_THRESHOLD && duration < this.TAP_DURATION_THRESHOLD;
 
-                if (this.hubPressActive) {
-                    if (isTap) {
-                        if (this.lastHubTap.time && (now - this.lastHubTap.time) <= this.DOUBLE_TAP_MAX_INTERVAL) {
-                            const tapDistance = Math.hypot(this.lastHubTap.x - this.currentPos.x, this.lastHubTap.y - this.currentPos.y);
-                            if (tapDistance <= this.DOUBLE_TAP_MAX_DISTANCE) {
-                                this.spawnRipple(this.currentPos.x, this.currentPos.y);
-                                this.toggleFocusMode();
-                                if (state.haptic) { state.haptic.triggerFeedback('buttonPress'); }
-                                this.lastHubTap = { time: 0, x: 0, y: 0 };
-                            } else {
-                                this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y };
-                            }
-                        } else {
-                            this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y };
-                        }
-                    } else {
-                        this.lastHubTap = { time: 0, x: 0, y: 0 };
-                    }
-                    this.hideAllEdgeGlows();
-                    this.hubPressActive = false;
-                    this.gestureStarted = false;
-                    return;
-                }
-
                 if (distance > 80) {
                     if (state.isFocusMode) {
                         const direction = deltaX < 0 ? 'right' : 'left';
@@ -3261,7 +3231,6 @@
                     this.handleTap(this.currentPos.x, this.currentPos.y);
                 }
                 this.hideAllEdgeGlows();
-                this.hubPressActive = false;
                 this.gestureStarted = false;
             },
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
@@ -3308,7 +3277,6 @@
                 Utils.elements.appContainer.classList.toggle('focus-mode', state.isFocusMode);
                 this.updateGestureOverlayMode();
                 Core.updateImageCounters();
-                this.lastHubTap = { time: 0, x: 0, y: 0 };
             },
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
@@ -3552,13 +3520,13 @@
                         modal.style.left = '50%';
                         modal.style.transform = 'translate(-50%, -50%)';
                         modal.style.width = '800px';
-                        modal.style.height = '95vh';
+                        modal.style.height = 'calc(var(--app-height) * 0.95)';
                     } else if (modal.id === 'grid-modal') {
                         modal.style.top = '0px';
                         modal.style.left = '0px';
                         modal.style.width = '100%';
                         modal.style.height = '100%';
-                        modal.style.maxHeight = '100vh';
+                        modal.style.maxHeight = 'var(--app-height)';
                         modal.style.maxWidth = '100vw';
                         modal.style.transform = 'none';
                         Utils.elements.gridContent.scrollTop = 0;
@@ -3640,6 +3608,19 @@
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.moveToStack('trash'));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Gestures.deleteCurrentImage());
+                if (Utils.elements.normalImageCount) {
+                    const toggleFocus = () => { if (state.stacks[state.currentStack].length > 0) { Gestures.toggleFocusMode(); } };
+                    Utils.elements.normalImageCount.addEventListener('click', toggleFocus);
+                    Utils.elements.normalImageCount.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            toggleFocus();
+                        }
+                    });
+                    Utils.elements.normalImageCount.setAttribute('tabindex', '0');
+                    Utils.elements.normalImageCount.setAttribute('role', 'button');
+                    Utils.elements.normalImageCount.setAttribute('aria-pressed', 'false');
+                }
                 Utils.elements.focusFavoriteBtn.addEventListener('click', async () => {
                     try {
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];

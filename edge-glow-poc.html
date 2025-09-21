@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gesture Edge Glow POC</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --app-height: 100vh;
+        --glow-strength: 0.75;
+        --glow-duration: 220ms;
+        --ripple-duration: 360ms;
+        --edge-size: 18vh;
+        --card-size: min(72vmin, 380px);
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background-color: #05070b;
+      }
+
+      @supports (height: 100dvh) {
+        :root {
+          --app-height: 100dvh;
+        }
+      }
+
+      body {
+        margin: 0;
+        height: var(--app-height);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at top, rgba(80, 120, 255, 0.18), transparent 60%),
+          radial-gradient(circle at bottom, rgba(255, 110, 90, 0.16), transparent 65%),
+          #03040a;
+        overflow: hidden;
+      }
+
+      main {
+        position: relative;
+        width: min(100vw, 420px);
+        height: var(--app-height);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      .card-stack {
+        position: relative;
+        width: var(--card-size);
+        aspect-ratio: 9 / 16;
+        background: linear-gradient(155deg, rgba(41, 121, 255, 0.25), rgba(69, 24, 163, 0.5));
+        border-radius: 28px;
+        box-shadow: 0 18px 45px rgba(13, 20, 40, 0.5);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        color: rgba(255, 255, 255, 0.85);
+        text-align: center;
+      }
+
+      .card-stack::before {
+        content: "Swipe anywhere";
+        font-size: clamp(16px, 3.3vw, 20px);
+        letter-spacing: 0.02em;
+        opacity: 0.75;
+      }
+
+      .card-stack::after {
+        content: "";
+        position: absolute;
+        inset: -40%;
+        background: radial-gradient(circle, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 65%);
+        opacity: 0;
+        transform: scale(0.25);
+        pointer-events: none;
+      }
+
+      .card-stack[data-ripple-direction]::after {
+        animation: ripple var(--ripple-duration) ease-out forwards;
+      }
+
+      @keyframes ripple {
+        0% {
+          opacity: 0.55;
+          transform: scale(0.25);
+        }
+        45% {
+          opacity: 0.35;
+          transform: scale(0.95);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1.35);
+        }
+      }
+
+      .edge-glow {
+        position: absolute;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity var(--glow-duration) ease-out;
+        mix-blend-mode: screen;
+      }
+
+      .edge-glow.active {
+        opacity: var(--glow-strength);
+      }
+
+      .edge-glow::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 32px;
+        filter: blur(22px);
+      }
+
+      .edge-top,
+      .edge-bottom {
+        left: 50%;
+        translate: -50% 0;
+        width: 72%;
+        height: var(--edge-size);
+      }
+
+      .edge-top {
+        top: 0;
+        transform-origin: top;
+      }
+
+      .edge-top::after {
+        background: linear-gradient(180deg, rgba(120, 180, 255, 0.9), rgba(0, 0, 0, 0));
+      }
+
+      .edge-bottom {
+        bottom: 0;
+        transform-origin: bottom;
+      }
+
+      .edge-bottom::after {
+        background: linear-gradient(0deg, rgba(255, 130, 100, 0.95), rgba(0, 0, 0, 0));
+      }
+
+      .edge-left,
+      .edge-right {
+        top: 50%;
+        translate: 0 -50%;
+        width: var(--edge-size);
+        height: 72%;
+      }
+
+      .edge-left {
+        left: 0;
+      }
+
+      .edge-left::after {
+        background: linear-gradient(90deg, rgba(130, 255, 210, 0.9), rgba(0, 0, 0, 0));
+      }
+
+      .edge-right {
+        right: 0;
+      }
+
+      .edge-right::after {
+        background: linear-gradient(270deg, rgba(230, 160, 255, 0.9), rgba(0, 0, 0, 0));
+      }
+
+      .direction-indicator {
+        position: absolute;
+        bottom: 32px;
+        left: 50%;
+        translate: -50% 0;
+        padding: 12px 18px;
+        border-radius: 20px;
+        background: rgba(10, 14, 26, 0.65);
+        border: 1px solid rgba(160, 180, 255, 0.25);
+        box-shadow: 0 10px 22px rgba(5, 10, 30, 0.35);
+        font-size: 14px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(220, 230, 255, 0.85);
+        transition: opacity 160ms ease-out, transform 220ms ease-out;
+        pointer-events: none;
+      }
+
+      .direction-indicator.hidden {
+        opacity: 0;
+        transform: translate(-50%, 12px);
+      }
+
+      .hud {
+        position: absolute;
+        top: clamp(28px, 6vh, 40px);
+        left: 50%;
+        translate: -50% 0;
+        display: flex;
+        gap: 12px;
+      }
+
+      .hud span {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(9, 14, 25, 0.65);
+        border: 1px solid rgba(90, 130, 255, 0.25);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        font-size: 13px;
+        letter-spacing: 0.03em;
+        color: rgba(220, 230, 255, 0.78);
+      }
+
+      .hud svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      @media (max-width: 520px) {
+        :root {
+          --edge-size: 22vh;
+        }
+
+        .direction-indicator {
+          bottom: 24px;
+          font-size: 13px;
+        }
+
+        .hud span {
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="stage" aria-label="Prototype gesture surface">
+      <div class="card-stack" role="presentation"></div>
+
+      <div class="edge-glow edge-top" aria-hidden="true"></div>
+      <div class="edge-glow edge-right" aria-hidden="true"></div>
+      <div class="edge-glow edge-bottom" aria-hidden="true"></div>
+      <div class="edge-glow edge-left" aria-hidden="true"></div>
+
+      <div class="hud" aria-hidden="true">
+        <span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+          </svg>
+          Swipe to light an edge
+        </span>
+        <span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 12.5c4-.5 5.5-6.5 8-6.5s4 10 8 10" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Release to ripple
+        </span>
+      </div>
+
+      <div class="direction-indicator hidden" id="directionIndicator">Waiting for swipe…</div>
+    </main>
+
+    <script>
+      // Keep CSS height in sync with the visual viewport to avoid 100vh issues on mobile.
+      (function setupAppHeight() {
+        const root = document.documentElement;
+        const supportsDynamicViewport = window.matchMedia("(min-height: 0dvh)").matches;
+
+        function update() {
+          const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+          root.style.setProperty("--app-height", `${height}px`);
+        }
+
+        update();
+        window.addEventListener("resize", update);
+
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", update);
+          window.visualViewport.addEventListener("scroll", update);
+        } else if (supportsDynamicViewport) {
+          root.style.setProperty("--app-height", "100dvh");
+        }
+      })();
+
+      const stage = document.getElementById("stage");
+      const cardStack = document.querySelector(".card-stack");
+      const glows = {
+        up: document.querySelector(".edge-top"),
+        right: document.querySelector(".edge-right"),
+        down: document.querySelector(".edge-bottom"),
+        left: document.querySelector(".edge-left"),
+      };
+      const indicator = document.getElementById("directionIndicator");
+
+      const indicatorMessages = {
+        idle: "Waiting for swipe…",
+        up: "Swipe up – top glow",
+        down: "Swipe down – bottom glow",
+        left: "Swipe left – left glow",
+        right: "Swipe right – right glow",
+        released: direction => `Released ${direction} – ripple triggered`,
+      };
+
+      let pointerStart = null;
+      let activeDirection = null;
+      let pointerId = null;
+      const threshold = 18; // px
+
+      function resetGlows() {
+        Object.values(glows).forEach(glow => glow.classList.remove("active"));
+      }
+
+      function setDirection(direction) {
+        if (direction === activeDirection) {
+          return;
+        }
+
+        activeDirection = direction;
+        resetGlows();
+
+        if (direction && glows[direction]) {
+          glows[direction].classList.add("active");
+          indicator.textContent = indicatorMessages[direction];
+          indicator.classList.remove("hidden");
+        } else {
+          indicator.textContent = indicatorMessages.idle;
+          indicator.classList.remove("hidden");
+        }
+      }
+
+      function triggerRipple(direction) {
+        if (!direction) {
+          return;
+        }
+
+        cardStack.dataset.rippleDirection = direction;
+        // Restart the animation by forcing a reflow on the pseudo element.
+        void cardStack.offsetWidth;
+        indicator.textContent = indicatorMessages.released(direction);
+        indicator.classList.remove("hidden");
+
+        setTimeout(() => {
+          delete cardStack.dataset.rippleDirection;
+        }, 380);
+      }
+
+      function handlePointerDown(event) {
+        if (pointerId !== null) {
+          return;
+        }
+
+        pointerId = event.pointerId;
+        stage.setPointerCapture(pointerId);
+        pointerStart = { x: event.clientX, y: event.clientY };
+        activeDirection = null;
+        setDirection(null);
+        indicator.classList.add("hidden");
+      }
+
+      function handlePointerMove(event) {
+        if (pointerId !== event.pointerId || !pointerStart) {
+          return;
+        }
+
+        const dx = event.clientX - pointerStart.x;
+        const dy = event.clientY - pointerStart.y;
+
+        if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) {
+          setDirection(null);
+          return;
+        }
+
+        if (Math.abs(dx) > Math.abs(dy)) {
+          setDirection(dx > 0 ? "right" : "left");
+        } else {
+          setDirection(dy > 0 ? "down" : "up");
+        }
+      }
+
+      function handlePointerUp(event) {
+        if (pointerId !== event.pointerId) {
+          return;
+        }
+
+        triggerRipple(activeDirection);
+        resetGlows();
+        pointerStart = null;
+        pointerId = null;
+        activeDirection = null;
+      }
+
+      stage.addEventListener("pointerdown", handlePointerDown);
+      stage.addEventListener("pointermove", handlePointerMove);
+      stage.addEventListener("pointerup", handlePointerUp);
+      stage.addEventListener("pointercancel", handlePointerUp);
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+          pointerStart = null;
+          pointerId = null;
+          activeDirection = null;
+          resetGlows();
+          indicator.textContent = indicatorMessages.idle;
+          indicator.classList.add("hidden");
+          delete cardStack.dataset.rippleDirection;
+        }
+      });
+    </script>
+  </body>
+</html>
