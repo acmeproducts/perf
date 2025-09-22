@@ -69,6 +69,14 @@ To address these issues, the following enhancements will be implemented:
 
 To keep the local data footprint bounded without dropping unsent work, the background `SyncManager` worker will enforce a documented eviction policy across the three IndexedDB stores it owns:
 
+#### 3.1 zTXt decompression helper for PNG text cache
+
+*   **Gap:** The existing worker bundle does not expose a deflate helper that can inflate the compressed text payloads inside PNG `zTXt` chunks. We cannot rely on a placeholder utility here; without an explicit decompressor the `pngText` store will only ever cache uncompressed `tEXt` entries.
+*   **Change:** Add a dedicated `inflateZtxtChunk(compressed: Uint8Array): Promise<string>` helper to the PNG parsing module that runs inside the worker (`src/workers/png-text-extractor.ts`). If the file does not yet exist, create it alongside the rest of the worker code so the extractor can import it directly.
+    *   The helper should wrap the browser's `DecompressionStream('deflate')` API (falling back to `pako.inflate` if we later decide to bundle that dependency) to produce a `Uint8Array` of decompressed bytes.
+    *   After decompression, decode the bytes with `TextDecoder('utf-8')` before handing the string back to the caller.
+*   **Integration:** Update the upcoming `parsePngTextChunks` routine to call `inflateZtxtChunk` whenever it encounters a `zTXt` chunk so that the resulting UTF-8 string can be stored in the `pngText` IndexedDB store alongside the existing eviction metrics.
+
 *   **Tracked metrics:**
     *   Maintain a per-folder `lastAccessed` timestamp that is updated whenever a folder is rendered in the UI, when previews/text are read for metadata lookups, or when sync reconciliation requires the folder contents. These updates come from the existing render and lookup flows so we avoid additional cloud traffic.
     *   Track rolling totals for the number of cached folders and the estimated disk usage in megabytes, recalculated after each maintenance pass.
