@@ -315,21 +315,49 @@
         #clear-search-btn:hover { color: #6b7280; }
         
         /* NEW: Search Helper */
-        .search-helper { position: relative; }
-        .search-helper-icon { color: #9ca3af; cursor: pointer; display: flex; align-items: center; }
-        .search-helper-icon:hover { color: #6b7280; }
+        .search-helper { position: relative; display: flex; align-items: center; }
+        .search-helper-icon {
+            color: #9ca3af; cursor: pointer; display: flex; align-items: center; justify-content: center;
+            background: transparent; border: none; padding: 4px; border-radius: 9999px;
+        }
+        .search-helper-icon:hover, .search-helper-icon:focus-visible { color: #6b7280; }
+        .search-helper-icon:focus-visible {
+            outline: 2px solid #3b82f6; outline-offset: 2px;
+        }
         .search-helper-popup {
             display: none; position: absolute; right: 0; top: 100%; margin-top: 8px;
             background: white; border: 1px solid #e5e7eb; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            padding: 8px; width: 220px; z-index: 20;
+            padding: 8px; width: 240px; z-index: 20;
         }
-        .search-helper:hover .search-helper-popup { display: block; }
-        .search-helper-popup h4 { font-size: 13px; font-weight: 600; color: #374151; margin: 4px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #f3f4f6; }
+        .search-helper.is-open .search-helper-popup { display: block; }
+        .search-helper-header {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            margin-bottom: 8px;
+        }
+        .search-helper-popup h4 {
+            font-size: 13px; font-weight: 600; color: #374151; margin: 0; padding-bottom: 4px; border-bottom: 1px solid #f3f4f6;
+            flex: 1;
+        }
+        .search-helper-close {
+            background: none; border: none; color: #9ca3af; cursor: pointer; padding: 2px; border-radius: 4px;
+        }
+        .search-helper-close:hover, .search-helper-close:focus-visible { color: #6b7280; }
+        .search-helper-close:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+        .search-helper-recent {
+            display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
+        }
+        .search-helper-recent.hidden { display: none; }
+        .modifier-pill {
+            background: #e5e7eb; border: none; border-radius: 9999px; padding: 4px 10px; font-size: 12px; color: #374151;
+            cursor: pointer;
+        }
+        .modifier-pill:hover, .modifier-pill:focus-visible { background: #d1d5db; }
+        .modifier-pill:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
         .search-helper-popup a {
             display: block; font-size: 12px; color: #3b82f6; text-decoration: none; padding: 4px 8px;
             border-radius: 4px; cursor: pointer;
         }
-        .search-helper-popup a:hover { background: #f3f4f6; }
+        .search-helper-popup a:hover, .search-helper-popup a:focus-visible { background: #f3f4f6; }
 
 
         .grid-row-4 {
@@ -805,12 +833,18 @@
                 
                 <div class="grid-row-3">
                     <input type="text" id="omni-search" class="input" placeholder="Search with terms, -exclusions, #modifiers..." style="margin-bottom: 0;">
-                    <div class="search-helper">
-                        <div class="search-helper-icon">
+                    <div class="search-helper" id="search-helper">
+                        <button type="button" class="search-helper-icon" id="search-helper-icon" aria-label="Search modifiers" aria-haspopup="true" aria-expanded="false">
                             <svg style="width: 20px; height: 20px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        </div>
-                        <div class="search-helper-popup">
-                            <h4>Special Modifiers</h4>
+                        </button>
+                        <div class="search-helper-popup" id="search-helper-popup" aria-hidden="true">
+                            <div class="search-helper-header">
+                                <h4>Special Modifiers</h4>
+                                <button type="button" class="search-helper-close" id="search-helper-close" aria-label="Close modifier helper">
+                                    <svg style="width: 14px; height: 14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                </button>
+                            </div>
+                            <div class="search-helper-recent hidden" id="search-helper-recent"></div>
                             <a class="modifier-link" data-modifier="#favorite">#favorite</a>
                             <a class="modifier-link" data-modifier="#quality:5">#quality:1-5</a>
                             <a class="modifier-link" data-modifier="#content:5">#content:1-5</a>
@@ -1040,6 +1074,11 @@
                     
                     omniSearch: document.getElementById('omni-search'),
                     clearSearchBtn: document.getElementById('clear-search-btn'),
+                    searchHelper: document.getElementById('search-helper'),
+                    searchHelperIcon: document.getElementById('search-helper-icon'),
+                    searchHelperPopup: document.getElementById('search-helper-popup'),
+                    searchHelperClose: document.getElementById('search-helper-close'),
+                    searchHelperRecent: document.getElementById('search-helper-recent'),
                     
                     tagSelected: document.getElementById('tag-selected'),
                     moveSelected: document.getElementById('move-selected'),
@@ -2340,11 +2379,14 @@
                 if (entries[0].isIntersecting) { this.renderBatch(); }
             },
 
-            initializeLazyLoad(stack) {
+            initializeLazyLoad(stack, filesOverride = null) {
                 const lazyState = state.grid.lazyLoadState;
-                lazyState.allFiles = state.grid.filtered.length > 0 ? state.grid.filtered : state.stacks[stack];
+                const sourceFiles = Array.isArray(filesOverride)
+                    ? filesOverride
+                    : (state.grid.filtered.length > 0 ? state.grid.filtered : state.stacks[stack]);
+                lazyState.allFiles = sourceFiles;
                 lazyState.renderedCount = 0;
-                Utils.elements.selectAllBtn.textContent = lazyState.allFiles.length;
+                Utils.elements.selectAllBtn.textContent = sourceFiles.length;
                 this.renderBatch();
                 if (lazyState.observer) lazyState.observer.disconnect();
                 lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), { 
@@ -2435,21 +2477,23 @@
             },
             
             performSearch() {
-                const query = Utils.elements.omniSearch.value.trim();
+                const searchInput = Utils.elements.omniSearch;
+                const query = searchInput.value.trim();
                 Utils.elements.clearSearchBtn.style.display = query ? 'block' : 'none';
                 state.grid.selected = [];
                 if (!query) { this.resetSearch(); return; }
-                state.grid.filtered = this.searchImages(query);
-                
+
+                const results = this.searchImages(query);
+                state.grid.filtered = results;
+
                 Utils.elements.gridContainer.innerHTML = '';
-                if (state.grid.filtered.length === 0) {
+                if (results.length === 0) {
                     Utils.elements.gridEmptyState.classList.remove('hidden');
-                    Utils.elements.selectAllBtn.textContent = '0';
                 } else {
                     Utils.elements.gridEmptyState.classList.add('hidden');
                 }
 
-                this.initializeLazyLoad(state.grid.stack);
+                this.initializeLazyLoad(state.grid.stack, results);
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
@@ -2464,7 +2508,46 @@
                 Core.updateStackCounts();
                 this.deselectAll();
             },
-            
+
+            collectMetadataTokens(metadata, tokens) {
+                if (metadata === null || metadata === undefined) return;
+                if (typeof metadata === 'string' || typeof metadata === 'number' || typeof metadata === 'boolean') {
+                    const value = String(metadata).trim();
+                    if (value) tokens.push(value);
+                    return;
+                }
+                if (Array.isArray(metadata)) {
+                    metadata.forEach(item => this.collectMetadataTokens(item, tokens));
+                    return;
+                }
+                if (typeof metadata === 'object') {
+                    Object.entries(metadata).forEach(([key, value]) => {
+                        const label = String(key).trim();
+                        if (label) tokens.push(label);
+                        this.collectMetadataTokens(value, tokens);
+                    });
+                }
+            },
+
+            buildSearchIndex(file) {
+                const tokens = [];
+                if (file.name) tokens.push(file.name);
+                if (Array.isArray(file.tags) && file.tags.length > 0) {
+                    tokens.push(...file.tags);
+                }
+                if (file.notes) tokens.push(file.notes);
+                this.collectMetadataTokens(file.extractedMetadata, tokens);
+
+                const normalized = tokens
+                    .map(token => typeof token === 'string' ? token : String(token))
+                    .join(' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+
+                return normalized;
+            },
+
             searchImages(query) {
                 const lowerCaseQuery = query.toLowerCase();
                 const terms = lowerCaseQuery.split(/\s+/).filter(t => t);
@@ -2474,6 +2557,14 @@
                 const inclusions = terms.filter(t => !t.startsWith('#') && !t.startsWith('-'));
 
                 let results = [...state.stacks[state.grid.stack]];
+
+                const searchIndexCache = new WeakMap();
+                const getSearchableText = (file) => {
+                    if (!searchIndexCache.has(file)) {
+                        searchIndexCache.set(file, this.buildSearchIndex(file));
+                    }
+                    return searchIndexCache.get(file);
+                };
 
                 // 1. Pass: Modifiers
                 modifiers.forEach(mod => {
@@ -2494,30 +2585,12 @@
 
                 // 2. Pass: Inclusions
                 inclusions.forEach(term => {
-                    results = results.filter(file => {
-                        const searchableText = [
-                            file.name || '',
-                            file.tags?.join(' ') || '',
-                            file.notes || '',
-                            file.createdTime ? new Date(file.createdTime).toISOString().split('T')[0] : '',
-                            JSON.stringify(file.extractedMetadata || {})
-                        ].join(' ').toLowerCase();
-                        return searchableText.includes(term);
-                    });
+                    results = results.filter(file => getSearchableText(file).includes(term));
                 });
 
                 // 3. Pass: Exclusions
                 exclusions.forEach(term => {
-                    results = results.filter(file => {
-                        const searchableText = [
-                            file.name || '',
-                            file.tags?.join(' ') || '',
-                            file.notes || '',
-                            file.createdTime ? new Date(file.createdTime).toISOString().split('T')[0] : '',
-                            JSON.stringify(file.extractedMetadata || {})
-                        ].join(' ').toLowerCase();
-                        return !searchableText.includes(term);
-                    });
+                    results = results.filter(file => !getSearchableText(file).includes(term));
                 });
 
                 return results;
@@ -3704,18 +3777,144 @@
                 });
             },
             setupSearchFunctionality() {
-                Utils.elements.omniSearch.addEventListener('input', () => Grid.performSearch());
-                Utils.elements.clearSearchBtn.addEventListener('click', () => Grid.resetSearch());
-                document.querySelectorAll('.modifier-link').forEach(link => {
-                    link.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        const modifier = e.target.dataset.modifier;
-                        const searchInput = Utils.elements.omniSearch;
-                        searchInput.value += ` ${modifier} `;
-                        searchInput.focus();
-                        Grid.performSearch();
+                const searchInput = Utils.elements.omniSearch;
+                const clearBtn = Utils.elements.clearSearchBtn;
+                if (searchInput) {
+                    searchInput.addEventListener('input', () => Grid.performSearch());
+                }
+                if (clearBtn) {
+                    clearBtn.addEventListener('click', () => Grid.resetSearch());
+                }
+
+                const {
+                    searchHelper,
+                    searchHelperIcon,
+                    searchHelperPopup,
+                    searchHelperClose,
+                    searchHelperRecent
+                } = Utils.elements;
+
+                const modifierLinks = document.querySelectorAll('.modifier-link');
+                const appendModifierToInput = (modifier) => {
+                    if (!searchInput) return;
+                    const baseValue = searchInput.value.replace(/\s+$/, '');
+                    const newValue = baseValue ? `${baseValue} ${modifier} ` : `${modifier} `;
+                    searchInput.value = newValue;
+                    searchInput.focus();
+                    Grid.performSearch();
+                };
+
+                if (!searchHelper || !searchHelperIcon || !searchHelperPopup) {
+                    modifierLinks.forEach(link => {
+                        link.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            const modifier = link.dataset.modifier;
+                            if (!modifier) return;
+                            appendModifierToInput(modifier);
+                        });
+                    });
+                    return;
+                }
+
+                const hoverMedia = window.matchMedia('(hover: hover)');
+                const setHelperState = (isOpen) => {
+                    const open = Boolean(isOpen);
+                    searchHelper.classList.toggle('is-open', open);
+                    searchHelperPopup.setAttribute('aria-hidden', String(!open));
+                    searchHelperIcon.setAttribute('aria-expanded', String(open));
+                };
+                const resetRecentModifier = () => {
+                    if (!searchHelperRecent) return;
+                    searchHelperRecent.innerHTML = '';
+                    searchHelperRecent.classList.add('hidden');
+                };
+                const closeHelper = (focusIcon = false) => {
+                    setHelperState(false);
+                    resetRecentModifier();
+                    if (focusIcon && searchHelperIcon) {
+                        searchHelperIcon.focus();
+                    }
+                };
+                const openHelper = () => setHelperState(true);
+
+                if (hoverMedia.matches) {
+                    searchHelper.addEventListener('mouseenter', openHelper);
+                    searchHelperIcon.addEventListener('focus', openHelper);
+                    searchHelperIcon.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        openHelper();
+                    });
+                } else {
+                    searchHelperIcon.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        if (searchHelper.classList.contains('is-open')) {
+                            closeHelper();
+                        } else {
+                            openHelper();
+                        }
+                    });
+                }
+
+                if (searchHelperClose) {
+                    searchHelperClose.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        closeHelper(true);
+                    });
+                }
+
+                const showRecentModifier = (modifier) => {
+                    if (!searchHelperRecent) return;
+                    const pill = document.createElement('button');
+                    pill.type = 'button';
+                    pill.className = 'modifier-pill';
+                    pill.textContent = modifier;
+                    pill.addEventListener('click', () => {
+                        closeHelper(true);
+                    });
+                    searchHelperRecent.innerHTML = '';
+                    searchHelperRecent.appendChild(pill);
+                    searchHelperRecent.classList.remove('hidden');
+                };
+
+                const handleModifierSelection = (modifier) => {
+                    appendModifierToInput(modifier);
+                    if (hoverMedia.matches) {
+                        showRecentModifier(modifier);
+                        openHelper();
+                    } else {
+                        closeHelper();
+                    }
+                };
+
+                modifierLinks.forEach(link => {
+                    link.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        const modifier = link.dataset.modifier;
+                        if (!modifier) return;
+                        handleModifierSelection(modifier);
                     });
                 });
+
+                document.addEventListener('click', (event) => {
+                    if (!searchHelper.contains(event.target)) {
+                        closeHelper();
+                    }
+                });
+
+                const handleEscape = (event) => {
+                    if (event.key === 'Escape') {
+                        closeHelper(true);
+                    }
+                };
+                searchHelperIcon.addEventListener('keydown', handleEscape);
+                searchHelperPopup.addEventListener('keydown', handleEscape);
+
+                const handleMediaChange = () => closeHelper();
+                if (typeof hoverMedia.addEventListener === 'function') {
+                    hoverMedia.addEventListener('change', handleMediaChange);
+                } else if (typeof hoverMedia.addListener === 'function') {
+                    hoverMedia.addListener(handleMediaChange);
+                }
             },
             setupActionButtons() {
                 Utils.elements.moveSelected.addEventListener('click', () => Modal.setupMoveAction());
