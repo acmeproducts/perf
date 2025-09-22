@@ -953,9 +953,100 @@
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set()
         };
+        const SYNC_WORKER_FLAG_KEYS = [
+            'syncWorker',
+            'sync-worker',
+            'sync_worker',
+            'syncWorkerEnabled',
+            'sync-worker-enabled',
+            'sync_worker_enabled',
+            'enableSyncWorker',
+            'enable-sync-worker',
+            'enable_sync_worker'
+        ];
+        function parseFeatureFlagValue(value) {
+            if (typeof value === 'string') {
+                const normalized = value.trim().toLowerCase();
+                return ['1', 'true', 'on', 'yes', 'enabled'].includes(normalized);
+            }
+            return Boolean(value);
+        }
+        function resolveFlagFromSource(source) {
+            if (!source || typeof source !== 'object') return undefined;
+            for (const key of SYNC_WORKER_FLAG_KEYS) {
+                if (Object.prototype.hasOwnProperty.call(source, key)) {
+                    return parseFeatureFlagValue(source[key]);
+                }
+                const camelKey = key.replace(/[-_]([a-z])/g, (_, char) => char.toUpperCase());
+                if (Object.prototype.hasOwnProperty.call(source, camelKey)) {
+                    return parseFeatureFlagValue(source[camelKey]);
+                }
+                const kebabKey = key.replace(/([A-Z])/g, '-$1').toLowerCase();
+                if (Object.prototype.hasOwnProperty.call(source, kebabKey)) {
+                    return parseFeatureFlagValue(source[kebabKey]);
+                }
+            }
+            return undefined;
+        }
+        function isSyncWorkerFeatureEnabled() {
+            if (typeof window === 'undefined') return false;
+            const sources = [
+                window.__ORB8_FLAGS__,
+                window.__ORBITAL_FLAGS__,
+                window.__APP_FLAGS__,
+                window.__FEATURE_FLAGS__,
+                window.__FLAGS__
+            ];
+            if (typeof document !== 'undefined' && document.body) {
+                sources.push(document.body.dataset || null);
+            }
+            for (const source of sources) {
+                const resolved = resolveFlagFromSource(source);
+                if (typeof resolved === 'boolean') return resolved;
+            }
+            try {
+                const stored = localStorage.getItem('orbital8_feature_flags');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    const resolved = resolveFlagFromSource(parsed);
+                    if (typeof resolved === 'boolean') return resolved;
+                }
+            } catch (error) { /* ignore malformed storage */ }
+            try {
+                const params = new URLSearchParams(window.location.search);
+                for (const key of SYNC_WORKER_FLAG_KEYS) {
+                    const raw = params.get(key) ?? params.get(key.replace(/([A-Z])/g, '-$1').toLowerCase());
+                    if (raw !== null) {
+                        return parseFeatureFlagValue(raw);
+                    }
+                }
+            } catch (error) { /* ignore URL parsing issues */ }
+            return false;
+        }
+        async function bootstrapSyncWorker() {
+            if (!state.syncManager || !isSyncWorkerFeatureEnabled()) return null;
+            if (state.syncManager.worker) {
+                if (!state.syncManager.isRunning) {
+                    state.syncManager.start();
+                    await state.syncManager.requestSync();
+                }
+                return state.syncManager.worker;
+            }
+            if (typeof Worker === 'undefined') return null;
+            try {
+                const worker = new Worker('sync-worker.js', { type: 'module' });
+                state.syncManager.attachWorker(worker);
+                state.syncManager.start();
+                await state.syncManager.requestSync();
+                return worker;
+            } catch (error) {
+                console.error('[SyncManager] Failed to initialize sync worker:', error);
+                return null;
+            }
+        }
         const Utils = {
             elements: {},
-            
+
             init() {
                 this.elements = {
                     providerScreen: document.getElementById('provider-screen'),
@@ -1898,7 +1989,9 @@
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
-                    
+
+                    await bootstrapSyncWorker();
+
                     await this.loadImages();
                     this.switchToCommonUI();
                     if(state.syncManager) state.syncManager.start();
@@ -2100,9 +2193,15 @@
             async returnToFolderSelection() {
                 try {
                     if (state.syncManager) {
-                        state.syncManager.requestSync();
+                        try {
+                            await state.syncManager.requestSync();
+                        } catch (syncError) {
+                            console.warn('[SyncManager] requestSync before teardown failed:', syncError);
+                        } finally {
+                            state.syncManager.stop();
+                        }
                     }
-                    state.activeRequests.abort(); 
+                    state.activeRequests.abort();
                     this.resetViewState();
                     Utils.showScreen('folder-screen');
                     await Folders.load();
@@ -3929,6 +4028,7 @@
                 await state.dbManager.init();
                 state.queueManager = new SyncQueueManager(state.dbManager);
                 state.syncManager = new SyncManager(state.queueManager);
+                await bootstrapSyncWorker();
                 state.metadataExtractor = new MetadataExtractor();
                 Utils.showScreen('provider-screen');
                 Events.init();
