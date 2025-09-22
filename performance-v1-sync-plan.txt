@@ -44,6 +44,22 @@ To address these issues, the following enhancements will be implemented:
     *   **Reliability:** This change makes the OneDrive sync process far more resilient. Metadata for new images will now be created reliably, eliminating a critical point of failure and potential data loss.
     *   **Data Integrity:** By fetching and merging, we ensure that no metadata is accidentally overwritten if multiple clients are interacting with the same file. The latest change always wins, but it's applied to the most recent known state of the metadata file.
 
+### 3. Cache Eviction and Access Tracking
+
+To keep the local data footprint bounded without dropping unsent work, the background `SyncManager` worker will enforce a documented eviction policy across the three IndexedDB stores it owns:
+
+*   **Tracked metrics:**
+    *   Maintain a per-folder `lastAccessed` timestamp that is updated whenever a folder is rendered in the UI, when previews/text are read for metadata lookups, or when sync reconciliation requires the folder contents. These updates come from the existing render and lookup flows so we avoid additional cloud traffic.
+    *   Track rolling totals for the number of cached folders and the estimated disk usage in megabytes, recalculated after each maintenance pass.
+    *   Persist per-store maximums (e.g., 1,000 folders or 500 MB for the aggregate cache) so the worker can compare live metrics to limits each time it runs.
+*   **Stores subject to eviction:**
+    *   `folderCache` entries (thumbnails and manifest snippets) may be removed when they belong to fully-synced folders whose `lastAccessed` falls outside the retention window.
+    *   `pngText` blobs follow the same policy, keyed by folder, so text overlays remain available for recently-touched folders.
+    *   `changeQueue` items are *never* evicted while unsent; only folders with zero pending queue items qualify for eviction to guarantee outbound changes are preserved.
+*   **Eviction flow:**
+    *   During its scheduled maintenance sweep, the worker sorts eligible folders by `lastAccessed`, removes the coldest entries until the cache falls below both the folder-count and megabyte thresholds, and records each deletion (store, folderId, reclaimed bytes) in the worker log for auditability.
+    *   Because guardrails restrict eviction to folders with no queued mutations, any deletion implicitly targets fully-synced data; the log makes these actions observable to diagnostics and QA.
+
 ---
 
-This two-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
+Together, these enhancements will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
