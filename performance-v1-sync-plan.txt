@@ -46,4 +46,29 @@ To address these issues, the following enhancements will be implemented:
 
 ---
 
-This two-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
+**2.3. Bootstrapping PNG Metadata on First Sync**
+
+*   **Change:**
+    1.  When a file is seen for the first time, the worker issues a sanctioned `Range: bytes=0-65535` request against the provider's `/content` endpoint immediately after the metadata-listing call. This range is small enough to be treated as part of the initial fetch budget but large enough to contain the PNG signature, IHDR chunk, and all expected text chunks that we use for user annotations.
+    2.  If the provider response includes an `ETag`, it is stored alongside the queued metadata record so that subsequent retries re-use the same conditional request headers.
+    3.  If a previous desktop session seeded a local cache entry, the worker first checks that cache and skips the range request entirely when the cache entry is newer than the provider `lastModifiedDateTime`.
+
+*   **Impact:**
+    *   **Cold-start reliability:** The first-sync flow now guarantees that the bytes needed for metadata extraction are available without waiting for a background thumbnailing pass or a full-image download.
+    *   **Bandwidth discipline:** Leveraging a capped range request keeps us within the provider's guidelines while still counting as part of the initial metadata fetch.
+
+### 3. PNG Metadata Extraction & Caching
+
+**3.1. `PNGMetadataExtractor` implementation guide**
+
+*   The extractor operates on an `ArrayBuffer` returned from the range request (or cache). It wraps the buffer in a `DataView` and iterates chunk-by-chunk, following the PNG specification: read the 8-byte signature, then loop over `{length, type, data, crc}` tuples.
+*   Only textual chunks are material to sync: `tEXt`, `zTXt`, and (for forward compatibility) `iTXt`. For `tEXt` the extractor decodes the byte payload directly as UTF-8. For `zTXt` it inflates the compressed portion using the already-bundled compression helper. `iTXt` is parsed by honoring the UTF-8 flag but ignoring language/translated keywords we do not store.
+*   The parser stops immediately after all supported textual chunks have been processed or when it encounters non-text chunks beyond the initial 64 KiB window, avoiding full image decoding.
+*   The parsed key/value pairs are normalized into our metadata schema and persisted exclusively to IndexedDB via the existing `metadataStore.put` helper. The extractor never writes to `localStorage`, `sessionStorage`, or the network layer, ensuring a single source of truth.
+
+**3.2. Metadata cache keying**
+
+*   Cached entries are keyed by `{ fileId, pngMetaVersion }`. The `fileId` identifies the provider asset, while `pngMetaVersion` advances whenever we change the parsing rules or stored schema.
+*   On subsequent openings, the worker queries IndexedDB with that composite key. If a hit is returned, the metadata is reused as-is without issuing any provider requests. A cache miss (or version mismatch) triggers a new range fetch followed by extraction, after which the updated entry is written back under the new `pngMetaVersion`.
+
+This three-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
