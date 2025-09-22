@@ -16,6 +16,18 @@ The current `SyncManager` is functional but has two primary weaknesses:
 
 ### 2. Proposed Solutions
 
+#### Lifecycle-triggered flush handoff
+
+The UI thread will request a final queue flush from the `SyncManager` worker whenever the page is about to leave the foreground. The handoff works as follows:
+
+* **Events:** The app listens for `visibilitychange`, `pagehide`, and `beforeunload`. Any of these events indicate the user may be navigating away or the tab may be suspended, so the UI posts a `flushRequest` message to the worker.
+* **Acknowledgement:** The UI blocks subsequent teardown logic until it receives a `flushAccepted` acknowledgement from the worker confirming that the flush job has started. The worker only sends the acknowledgement after it has taken a snapshot of the IndexedDB queue and scheduled the cloud writes.
+* **Completion signal:** When the worker completes all writes (or determines it cannot finish), it emits a `flushComplete` (or `flushFailed`) message so the UI can log telemetry and proceed with dismissal.
+
+If the worker detects that it cannot finish before the page unloads (for example, due to network back-pressure or the page hiding too quickly), it marks the active queue entry in IndexedDB with a `pendingFlush` flag. On the next session start, the worker immediately resumes the flagged items before processing any fresh UI updates.
+
+We retain the dedicated worker architecture and do not escalate to a `SharedWorker` or Service Worker for this iteration. As a last resort, if the worker cannot issue the network calls in time, it packages the pending payload and asks the UI to dispatch it with `navigator.sendBeacon`. The UI is responsible only for relaying the worker-supplied blob, never for crafting or sending direct cloud writes on its own.
+
 To address these issues, the following enhancements will be implemented:
 
 **2.1. Client-Side Update Batching and Debouncing**
@@ -44,31 +56,22 @@ To address these issues, the following enhancements will be implemented:
     *   **Reliability:** This change makes the OneDrive sync process far more resilient. Metadata for new images will now be created reliably, eliminating a critical point of failure and potential data loss.
     *   **Data Integrity:** By fetching and merging, we ensure that no metadata is accidentally overwritten if multiple clients are interacting with the same file. The latest change always wins, but it's applied to the most recent known state of the metadata file.
 
+### 3. Cache Eviction and Access Tracking
+
+To keep the local data footprint bounded without dropping unsent work, the background `SyncManager` worker will enforce a documented eviction policy across the three IndexedDB stores it owns:
+
+*   **Tracked metrics:**
+    *   Maintain a per-folder `lastAccessed` timestamp that is updated whenever a folder is rendered in the UI, when previews/text are read for metadata lookups, or when sync reconciliation requires the folder contents. These updates come from the existing render and lookup flows so we avoid additional cloud traffic.
+    *   Track rolling totals for the number of cached folders and the estimated disk usage in megabytes, recalculated after each maintenance pass.
+    *   Persist per-store maximums (e.g., 1,000 folders or 500 MB for the aggregate cache) so the worker can compare live metrics to limits each time it runs.
+*   **Stores subject to eviction:**
+    *   `folderCache` entries (thumbnails and manifest snippets) may be removed when they belong to fully-synced folders whose `lastAccessed` falls outside the retention window.
+    *   `pngText` blobs follow the same policy, keyed by folder, so text overlays remain available for recently-touched folders.
+    *   `changeQueue` items are *never* evicted while unsent; only folders with zero pending queue items qualify for eviction to guarantee outbound changes are preserved.
+*   **Eviction flow:**
+    *   During its scheduled maintenance sweep, the worker sorts eligible folders by `lastAccessed`, removes the coldest entries until the cache falls below both the folder-count and megabyte thresholds, and records each deletion (store, folderId, reclaimed bytes) in the worker log for auditability.
+    *   Because guardrails restrict eviction to folders with no queued mutations, any deletion implicitly targets fully-synced data; the log makes these actions observable to diagnostics and QA.
+
 ---
 
-**2.3. Bootstrapping PNG Metadata on First Sync**
 
-*   **Change:**
-    1.  When a file is seen for the first time, the worker issues a sanctioned `Range: bytes=0-65535` request against the provider's `/content` endpoint immediately after the metadata-listing call. This range is small enough to be treated as part of the initial fetch budget but large enough to contain the PNG signature, IHDR chunk, and all expected text chunks that we use for user annotations.
-    2.  If the provider response includes an `ETag`, it is stored alongside the queued metadata record so that subsequent retries re-use the same conditional request headers.
-    3.  If a previous desktop session seeded a local cache entry, the worker first checks that cache and skips the range request entirely when the cache entry is newer than the provider `lastModifiedDateTime`.
-
-*   **Impact:**
-    *   **Cold-start reliability:** The first-sync flow now guarantees that the bytes needed for metadata extraction are available without waiting for a background thumbnailing pass or a full-image download.
-    *   **Bandwidth discipline:** Leveraging a capped range request keeps us within the provider's guidelines while still counting as part of the initial metadata fetch.
-
-### 3. PNG Metadata Extraction & Caching
-
-**3.1. `PNGMetadataExtractor` implementation guide**
-
-*   The extractor operates on an `ArrayBuffer` returned from the range request (or cache). It wraps the buffer in a `DataView` and iterates chunk-by-chunk, following the PNG specification: read the 8-byte signature, then loop over `{length, type, data, crc}` tuples.
-*   Only textual chunks are material to sync: `tEXt`, `zTXt`, and (for forward compatibility) `iTXt`. For `tEXt` the extractor decodes the byte payload directly as UTF-8. For `zTXt` it inflates the compressed portion using the already-bundled compression helper. `iTXt` is parsed by honoring the UTF-8 flag but ignoring language/translated keywords we do not store.
-*   The parser stops immediately after all supported textual chunks have been processed or when it encounters non-text chunks beyond the initial 64 KiB window, avoiding full image decoding.
-*   The parsed key/value pairs are normalized into our metadata schema and persisted exclusively to IndexedDB via the existing `metadataStore.put` helper. The extractor never writes to `localStorage`, `sessionStorage`, or the network layer, ensuring a single source of truth.
-
-**3.2. Metadata cache keying**
-
-*   Cached entries are keyed by `{ fileId, pngMetaVersion }`. The `fileId` identifies the provider asset, while `pngMetaVersion` advances whenever we change the parsing rules or stored schema.
-*   On subsequent openings, the worker queries IndexedDB with that composite key. If a hit is returned, the metadata is reused as-is without issuing any provider requests. A cache miss (or version mismatch) triggers a new range fetch followed by extraction, after which the updated entry is written back under the new `pngMetaVersion`.
-
-This three-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
