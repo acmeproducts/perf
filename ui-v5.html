@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orbital8 UI V5 – Sync-Aware Notes</title>
+  <style>
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 32px;
+      background: #0f172a;
+      color: #f8fafc;
+      line-height: 1.6;
+    }
+
+    h1, h2, h3 {
+      color: #38bdf8;
+    }
+
+    section {
+      margin-bottom: 32px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 12px 40px rgba(8, 47, 73, 0.35);
+    }
+
+    ul {
+      padding-left: 24px;
+    }
+
+    code {
+      background: rgba(148, 163, 184, 0.18);
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #fcd34d;
+    }
+
+    strong {
+      color: #fcd34d;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>UI V5 – IndexedDB-first Sync Contract</h1>
+    <p>
+      These UI notes mirror <code>performance-v1-sync-plan.txt</code> so the front-end keeps
+      the same invariants as the worker. Every interaction must prefer local state and
+      defer cloud writes to the background worker.
+    </p>
+  </header>
+
+  <section>
+    <h2>Cold Folder Bootstrap</h2>
+    <ul>
+      <li>Kick off one provider listing to collect app properties and <code>&lt;fileId&gt;.json</code> blobs.</li>
+      <li>Write all received metadata into IndexedDB before rendering thumbnails or notes.</li>
+      <li>Stream the PNG range response (or cached bytes) through <code>PNGMetadataExtractor</code> and keep the parsed text-only payload exclusively in IndexedDB.</li>
+      <li>Persist <strong>cloud_last_updated_date_time</strong>, <strong>local_last_updated_date_time</strong>, and the folder name as soon as the bootstrap completes.</li>
+      <li>Create an empty, timestamp-stamped queue entry for future add/change/delete operations.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Foreground Editing</h2>
+    <ul>
+      <li>All sliders, note editors, and stack pickers write directly to IndexedDB; the UI never sends network requests.</li>
+      <li>Append the corresponding queue entry (<em>add</em>, <em>change</em>, or <em>delete</em>) and trigger the debounced inline-blob worker wake-up.</li>
+      <li>Keep the worker off the critical path: it batches queue items, pushes compact payloads to app data and <code>file-id.json</code>, then rechecks the queue before sleeping.</li>
+      <li>Flush the queue when the tab unloads or the folder view closes so no local edits linger.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Device Scenarios</h2>
+    <ol>
+      <li><strong>First open on any device</strong>: run the full bootstrap once, persist timestamps, and leave the worker idle until a genuine change arrives.</li>
+      <li><strong>Reopen after edits on the same device</strong>: hydrate the view from IndexedDB, apply queued deltas, and update the local timestamp without any provider calls.</li>
+      <li><strong>First open on a second device</strong>: perform a single download, copy the pending-change list, and reuse that data for subsequent renders.</li>
+      <li><strong>Later opens on that device</strong>: compare <code>cloud_last_updated_date_time</code> against the last drained change. If current, render immediately; otherwise fetch only the missing change payloads and merge them.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Guardrails</h2>
+    <ul>
+      <li><strong>No extra provider traffic</strong>: the UI must not emit redundant fetches; background sync is the only network actor.</li>
+      <li><strong>No fingerprinting</strong>: never hash file lists or metadata to guess freshness.</li>
+      <li><strong>LRU-bounded IndexedDB</strong>: trim least-recently-used folder caches and queues so storage does not expand forever.</li>
+      <li><strong>PNG metadata cache key</strong>: always reference the <code>{ fileId, pngMetaVersion }</code> composite key before fetching new bytes.</li>
+    </ul>
+  </section>
+</body>
+</html>

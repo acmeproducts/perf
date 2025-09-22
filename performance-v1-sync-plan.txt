@@ -46,4 +46,56 @@ To address these issues, the following enhancements will be implemented:
 
 ---
 
-This two-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
+**2.3. Bootstrapping PNG Metadata on First Sync**
+
+*   **Change:**
+    1.  When a file is seen for the first time, the worker issues a sanctioned `Range: bytes=0-65535` request against the provider's `/content` endpoint immediately after the metadata-listing call. This range is small enough to be treated as part of the initial fetch budget but large enough to contain the PNG signature, IHDR chunk, and all expected text chunks that we use for user annotations.
+    2.  If the provider response includes an `ETag`, it is stored alongside the queued metadata record so that subsequent retries re-use the same conditional request headers.
+    3.  If a previous desktop session seeded a local cache entry, the worker first checks that cache and skips the range request entirely when the cache entry is newer than the provider `lastModifiedDateTime`.
+
+*   **Impact:**
+    *   **Cold-start reliability:** The first-sync flow now guarantees that the bytes needed for metadata extraction are available without waiting for a background thumbnailing pass or a full-image download.
+    *   **Bandwidth discipline:** Leveraging a capped range request keeps us within the provider's guidelines while still counting as part of the initial metadata fetch.
+
+### 3. Folder Bootstrap & IndexedDB State
+
+The first open of any folder establishes a complete local snapshot without bouncing back to the provider:
+
+1.  Read the user-authored metadata from the provider (app properties and `<fileId>.json`) alongside the directory listing. Write the records into IndexedDB so the UI can resolve stacks, notes, and ratings without additional network chatter.
+2.  For each PNG in the folder, stream the bytes from the sanctioned range request (or from a cache hit) into `PNGMetadataExtractor`. Only the textual payload is persisted, and it remains local—there is never a follow-up write of the parsed text back to the cloud.
+3.  Record the folder name and the provider's completion timestamp as `cloud_last_updated_date_time`. Once the local bootstrap completes, capture the matching `local_last_updated_date_time`. Both timestamps live in IndexedDB next to the folder entry so later sessions can reason about freshness.
+4.  Seed an empty change queue object in IndexedDB, annotated with the same timestamps, to guarantee that every device begins with a synchronized baseline.
+
+#### 3.1. `PNGMetadataExtractor` implementation guide
+
+*   The extractor operates on an `ArrayBuffer` returned from the range request (or cache). It wraps the buffer in a `DataView` and iterates chunk-by-chunk, following the PNG specification: read the 8-byte signature, then loop over `{length, type, data, crc}` tuples.
+*   Only textual chunks are material to sync: `tEXt`, `zTXt`, and (for forward compatibility) `iTXt`. For `tEXt` the extractor decodes the byte payload directly as UTF-8. For `zTXt` it inflates the compressed portion using the already-bundled compression helper. `iTXt` is parsed by honoring the UTF-8 flag but ignoring language/translated keywords we do not store.
+*   The parser stops immediately after all supported textual chunks have been processed or when it encounters non-text chunks beyond the initial 64 KiB window, avoiding full image decoding.
+*   The parsed key/value pairs are normalized into our metadata schema and persisted exclusively to IndexedDB via the existing `metadataStore.put` helper. The extractor never writes to `localStorage`, `sessionStorage`, or the network layer, ensuring a single source of truth.
+
+#### 3.2. Metadata cache keying
+
+*   Cached entries are keyed by `{ fileId, pngMetaVersion }`. The `fileId` identifies the provider asset, while `pngMetaVersion` advances whenever we change the parsing rules or stored schema.
+*   On subsequent openings, the worker queries IndexedDB with that composite key. If a hit is returned, the metadata is reused as-is without issuing any provider requests. A cache miss (or version mismatch) triggers a new range fetch followed by extraction, after which the updated entry is written back under the new `pngMetaVersion`.
+
+### 4. Worker-Managed Change Propagation
+
+*   UI interactions modify only IndexedDB: ratings, notes, and stack assignments are written immediately to the local stores.
+*   Each write appends an `add`, `change`, or `delete` entry to the folder's queued transaction list and then debounces a wake-up of the sync worker (packaged as an inline Blob so it can be spawned without a network fetch).
+*   When the debounce timer expires, the worker drains the queue in compact batches, merging updates per `fileId` before sending them to the provider's app data endpoints and `file-id.json` artifacts. Once a batch is pushed, the worker looks for additional entries and repeats until empty.
+*   The worker never blocks rendering; it yields between batches and sleeps whenever the queue is clear. When the user navigates away or closes the tab, the remaining queue is flushed synchronously so no local edits are lost.
+
+### 5. Usage Scenarios
+
+1.  **Case 1 – first open on any device:** Perform one initial network fetch to build the local snapshot, write the `cloud_last_updated_date_time`, set `local_last_updated_date_time`, and seed the empty change queue. No additional network calls occur until a real change is detected; the worker sleeps once the queue is clear.
+2.  **Case 2 – reopen after edits on the same device:** Replay the queued add/change/delete payloads already stored in IndexedDB, update the folder's `local_last_updated_date_time`, and render immediately without touching the network. Only the drained deltas mutate the snapshot.
+3.  **Case 3 – first open on another device:** With no cache present, perform a single full download, persist the timestamps, and copy down any pending-change list so future opens remain incremental. The provider is not contacted again during that initial view.
+4.  **Case 4 – subsequent opens on that other device:** Compare the stored `cloud_last_updated_date_time` against the most recent locally drained change. If synchronized, render with zero network usage; otherwise, fetch only the queued change payloads logged after the stored timestamp and merge just those entries.
+
+### 6. Operational Imperatives
+
+*   **No unneeded network calls:** The initial full sync executes only once per device. All future refreshes are driven by the locally recorded change list; any superfluous provider request is treated as a failure.
+*   **No fingerprinting:** Hashing or otherwise fingerprinting file inventories or metadata is forbidden anywhere in the pipeline.
+*   **LRU-bounded storage:** Apply an eviction policy that trims the least-recently-used folder caches and queues so IndexedDB cannot grow without bound.
+
+This expanded plan provides deterministic bootstrapping, disciplined background propagation, and guardrails that keep the sync loop efficient and privacy-preserving across devices.
