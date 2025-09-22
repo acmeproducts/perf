@@ -16,6 +16,18 @@ The current `SyncManager` is functional but has two primary weaknesses:
 
 ### 2. Proposed Solutions
 
+#### Lifecycle-triggered flush handoff
+
+The UI thread will request a final queue flush from the `SyncManager` worker whenever the page is about to leave the foreground. The handoff works as follows:
+
+* **Events:** The app listens for `visibilitychange`, `pagehide`, and `beforeunload`. Any of these events indicate the user may be navigating away or the tab may be suspended, so the UI posts a `flushRequest` message to the worker.
+* **Acknowledgement:** The UI blocks subsequent teardown logic until it receives a `flushAccepted` acknowledgement from the worker confirming that the flush job has started. The worker only sends the acknowledgement after it has taken a snapshot of the IndexedDB queue and scheduled the cloud writes.
+* **Completion signal:** When the worker completes all writes (or determines it cannot finish), it emits a `flushComplete` (or `flushFailed`) message so the UI can log telemetry and proceed with dismissal.
+
+If the worker detects that it cannot finish before the page unloads (for example, due to network back-pressure or the page hiding too quickly), it marks the active queue entry in IndexedDB with a `pendingFlush` flag. On the next session start, the worker immediately resumes the flagged items before processing any fresh UI updates.
+
+We retain the dedicated worker architecture and do not escalate to a `SharedWorker` or Service Worker for this iteration. As a last resort, if the worker cannot issue the network calls in time, it packages the pending payload and asks the UI to dispatch it with `navigator.sendBeacon`. The UI is responsible only for relaying the worker-supplied blob, never for crafting or sending direct cloud writes on its own.
+
 To address these issues, the following enhancements will be implemented:
 
 **2.1. Client-Side Update Batching and Debouncing**
