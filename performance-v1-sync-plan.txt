@@ -47,3 +47,79 @@ To address these issues, the following enhancements will be implemented:
 ---
 
 This two-pronged approach will create a more professional, robust, and efficient synchronization system, directly improving the application's core reliability and performance.
+
+---
+
+### 3. File-Centric Change Journal Structure (`<fileId>.json`)
+
+Every asset managed by the sync pipeline will have a companion journal stored at `approot/<fileId>.json`. The file is append-only aside from garbage collection that trims acknowledged entries. Its schema is intentionally explicit so the worker, the UI, and any debugging tooling can reason about the device's state without additional remote calls.
+
+```
+{
+  "version": 1,
+  "fileId": "<cloud provider id>",
+  "deviceId": "<stable client guid>",
+  "changes": [
+    {
+      "id": "chg-20240202T153045Z-k3j4",
+      "timestamp": 1706887845000,
+      "op": "update|move|delete|tag",  // normalized verb that the provider adapter understands
+      "payload": { ... }                 // provider-specific payload, e.g. { updates: { stars: 4 } }
+    }
+  ],
+  "lastAppliedChangeId": "chg-20240129T091530Z-mn12",    // highest id that the cloud has confirmed for this device
+  "lastUploadedChangeId": "chg-20240202T153045Z-k3j4",    // most recent entry written by this client
+  "lastAckAt": 1706887846000,                              // ms since epoch of the most recent acknowledgement
+  "cloudCursor": {
+    "deltaToken": "<onedrive delta token / google pageToken>",
+    "etag": "<last metadata etag>",
+    "lastWriterDeviceId": "<device guid that produced last cloud mutation>"
+  },
+  "retry": {
+    "nextUploadNotBefore": 1706887900000,                  // persisted throttle window used after failures
+    "attempts": 3                                          // number of consecutive attempts for the tail entry
+  }
+}
+```
+
+*   **`changes[]`:** Ordered chronologically by `timestamp` and monotonically by `id`. The worker appends new entries to the tail only. Entries remain until `lastAppliedChangeId` advances beyond the entry's `id`, at which point they are eligible for compaction.
+*   **`lastAppliedChangeId`:** Persisted acknowledgement pointer. The worker never rewinds this value; any stale journal that reports an older acknowledgement is ignored, preventing out-of-order overwrites.
+*   **`lastUploadedChangeId`:** A debugging aid that lets the UI detect whether local edits have been staged but not yet confirmed.
+*   **`cloudCursor`:** Provider-specific information (delta token, ETag, last writer) that allows the worker to resume delta queries or skip unnecessary metadata GETs after restarts.
+*   **`retry`:** Records backoff state so exponential delays survive page reloads and web worker restarts.
+
+---
+
+### 4. Journal-Oriented Worker Flow in `ui-v5.html`
+
+`ui-v5.html` replaces the ad-hoc queue in earlier builds with a journal-driven worker. The worker is solely responsible for mutating the JSON document above and for determining which entries must be retransmitted to the provider.
+
+#### 4.1 Appending new entries
+
+1.  The UI posts `queue-change` messages that contain the normalized operation (`op`), the provider payload, and a proposed timestamp.
+2.  The worker loads (or lazily caches) the `fileId.json` document, generates a lexicographically sortable `id` (`<ISO8601>-<4 char entropy>`), and appends the new object to `changes[]`.
+3.  The worker updates `lastUploadedChangeId` and resets `retry.attempts` because the tail entry is brand new.
+4.  A write-back is issued only if the appended entry changes the serialized document. The worker batches multiple appends within a single microtask to minimize PUT traffic.
+
+#### 4.2 Determining which entries to re-send
+
+*   On startup (and before each outbound batch) the worker filters `changes[]` to the subset whose `id` is lexicographically greater than `lastAppliedChangeId`. Only those entries are candidates for upload.
+*   If an entry exists with the same `id` as `lastUploadedChangeId` but with an older `timestamp` (e.g., due to a crashed write) the worker replays it as well, ensuring idempotency.
+*   The worker reuses `cloudCursor` to avoid redundant metadata fetches: if the cursor's `etag` matches the cached metadata object, no new `GET` is sent prior to a `PUT`.
+*   When the worker is restarted it rehydrates `retry.nextUploadNotBefore`; the worker will not attempt to upload changes until the persisted throttle window expires, preventing flurries of PUTs after repeated crashes.
+
+#### 4.3 Advancing the acknowledgement pointer
+
+*   After the provider confirms a write (successful `PATCH`/`PUT` or journal merge), the worker sets `lastAppliedChangeId` to the acknowledged entry's `id` and updates `lastAckAt`.
+*   The worker then drops every `changes[]` entry whose `id` is less than or equal to `lastAppliedChangeId` and compacts the array before persisting the JSON document.
+*   If the provider acks multiple entries at once (e.g., batched OneDrive upload), the worker raises the pointer directly to the highest acknowledged `id`. The pointer never moves backwards.
+*   When acknowledgement is delayed or fails, the worker leaves `lastAppliedChangeId` untouched and increments `retry.attempts`, adjusting the persisted `retry.nextUploadNotBefore` per the exponential backoff rules below.
+
+---
+
+### 5. Retry, Backoff, and Restart Semantics
+
+*   **Exponential worker backoff:** The worker calculates `retryDelay = min(DEFAULT_RETRY_DELAY * 2^(attempts-1), MAX_RETRY_DELAY)` (5s → 10s → 20s → … capped at 60s) before the next upload attempt. The resulting delay is written to `retry.nextUploadNotBefore` so it survives UI reloads or browser restarts.
+*   **Queue-level throttling:** The UI's IndexedDB-backed `syncQueue` persists `retryAfter` values for every record. `getPending()` ignores entries whose cooldown window has not elapsed, so repeated worker restarts will not spam the provider with the same failing request.
+*   **Provider fetch hygiene:** The worker consults `cloudCursor.deltaToken`/`etag` and `lastAckAt` before issuing metadata reads. If neither the local journal nor the provider cursor has changed since the last poll, the worker skips the network call altogether, honoring the "no unneeded network calls" mandate.
+*   **Crash-safe scheduling:** `retry.attempts` and `retry.nextUploadNotBefore` reset only after a successful acknowledgement. Any failure path leaves the persisted values untouched, ensuring that even after a forced reload the worker resumes with the same throttle horizon.
