@@ -58,6 +58,15 @@ To address these issues, the following enhancements will be implemented:
 
 ### 3. Cache Eviction and Access Tracking
 
+#### 3.1 Metadata extractor ingestion updates
+
+1.  When the worker-side extractor parses a provider's metadata payload, normalize it into `MetadataUpdate` records keyed by the Orbital8 `fileId` so they can share the same persistence path as UI-originated edits.
+2.  Preserve the timestamps supplied by the extractor (or stamp a new `localUpdatedAt`) so downstream reconciliation can distinguish fresh entries from older cache hits.
+3.  Stage the normalized records in the worker's batching queue, keeping the structure compatible with the existing `dbManager` helpers (`{ id, metadata, localUpdatedAt }`).
+4.  Persist the normalized entries by calling the shared IndexedDB helper—`dbManager.saveMetadataBatch(entries)` when batching is available, or `dbManager.saveMetadata(id, metadata)` for single records. The helper lives on the shared `DBManager` module and writes into the `'metadata'` object store of the `'Orbital8-Goji-V1'` database, so the extractor must route its output through it instead of a nonexistent `metadataStore.put`.
+
+#### 3.2 Eviction policy
+
 To keep the local data footprint bounded without dropping unsent work, the background `SyncManager` worker will enforce a documented eviction policy across the three IndexedDB stores it owns:
 
 *   **Tracked metrics:**
