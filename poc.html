@@ -1,5 +1,5 @@
 
-<!-- Orbital8-O-2025-09-18 05:30 AM -->
+<!-- Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -656,7 +656,7 @@
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates</div>
     </div>
     
     <!-- Unified Auth Screen -->
@@ -671,7 +671,7 @@
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
             <div id="auth-status" class="status info"></div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates</div>
     </div>
     
     <!-- Unified Folder Screen -->
@@ -686,7 +686,7 @@
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates</div>
     </div>
     
     <!-- Loading Screen -->
@@ -700,7 +700,7 @@
             </div>
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates</div>
     </div>
     
     <!-- Main App Container -->
@@ -770,7 +770,7 @@
         </button>
         
         <div id="toast" class="toast"></div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-23 01:04 UTC :: Sync queue + worker overhaul with PNG cache updates</div>
     </div>
     
     <!-- Enhanced Grid Modal -->
@@ -1149,6 +1149,40 @@
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             },
+
+            debounce(fn, delay = 250) {
+                let timer = null;
+                let pendingPromise = null;
+                return function debounced(...args) {
+                    if (timer) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    if (pendingPromise) {
+                        pendingPromise.resolve();
+                        pendingPromise = null;
+                    }
+                    return new Promise((resolve, reject) => {
+                        timer = setTimeout(() => {
+                            timer = null;
+                            pendingPromise = null;
+                            Promise.resolve(fn.apply(this, args)).then(resolve).catch(reject);
+                        }, delay);
+                        pendingPromise = { resolve, reject };
+                    });
+                };
+            },
+
+            uuid() {
+                if (crypto && typeof crypto.randomUUID === 'function') {
+                    return crypto.randomUUID();
+                }
+                return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = Math.random() * 16 | 0;
+                    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+            },
             
             updateLoadingProgress(current, total, message = '') {
                 state.loadingProgress = { current, total };
@@ -1164,51 +1198,166 @@
         };
 
         class DBManager {
-            constructor() { this.db = null; }
+            constructor() {
+                this.db = null;
+                this.DB_NAME = 'Orbital8-Goji-V1';
+                this.DB_VERSION = 4;
+                this.defaultLimits = { maxFolders: 1000, maxMegabytes: 500 };
+            }
+
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 2);
+                    const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
+                        const upgradeTransaction = event.target.transaction;
 
-                        if (oldVersion < 1 && !db.objectStoreNames.contains('folderCache')) {
-                            db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                        if (oldVersion < 1) {
+                            if (!db.objectStoreNames.contains('folderCache')) {
+                                const folderStore = db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                                folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
                         }
 
                         if (oldVersion < 2) {
                             if (!db.objectStoreNames.contains('metadata')) {
-                                db.createObjectStore('metadata', { keyPath: 'id' });
+                                const metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
+                                metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
                             }
                             if (!db.objectStoreNames.contains('syncQueue')) {
-                                db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+                                const queueStore = db.createObjectStore('syncQueue', { keyPath: 'fileId' });
+                                queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+                                queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+                                queueStore.createIndex('folderId', 'folderId', { unique: false });
                             }
+                        }
+
+                        if (oldVersion < 3) {
+                            if (db.objectStoreNames.contains('syncQueue')) {
+                                db.deleteObjectStore('syncQueue');
+                                const queueStore = db.createObjectStore('syncQueue', { keyPath: 'fileId' });
+                                queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+                                queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+                                queueStore.createIndex('folderId', 'folderId', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('pngText')) {
+                                const pngStore = db.createObjectStore('pngText', { keyPath: 'id' });
+                                pngStore.createIndex('folderId', 'folderId', { unique: false });
+                                pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                        }
+
+                        if (oldVersion < 4) {
+                            if (!db.objectStoreNames.contains('syncMeta')) {
+                                db.createObjectStore('syncMeta', { keyPath: 'id' });
+                            }
+                            if (!db.objectStoreNames.contains('metadata')) {
+                                const metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
+                                metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('folderCache')) {
+                                const folderStore = db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                                folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('pngText')) {
+                                const pngStore = db.createObjectStore('pngText', { keyPath: 'id' });
+                                pngStore.createIndex('folderId', 'folderId', { unique: false });
+                                pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                        }
+
+                        if (upgradeTransaction && upgradeTransaction.objectStoreNames.contains('folderCache')) {
+                            try {
+                                const folderStore = upgradeTransaction.objectStore('folderCache');
+                                if (!folderStore.indexNames.contains('lastAccessed')) {
+                                    folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                                }
+                            } catch (error) { /* index already exists */ }
                         }
                     };
                     request.onsuccess = (event) => { this.db = event.target.result; resolve(); };
                     request.onerror = (event) => reject(event.target.error);
                 });
             }
-            async getFolderCache(folderId) {
+
+            _approximateBytes(value) {
+                try {
+                    const encoder = new TextEncoder();
+                    return encoder.encode(JSON.stringify(value)).length;
+                } catch (error) {
+                    return 0;
+                }
+            }
+
+            async getFolderCache(folderId, options = { updateAccess: true }) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderCache', 'readonly');
+                    const transaction = this.db.transaction('folderCache', options.updateAccess ? 'readwrite' : 'readonly');
                     const store = transaction.objectStore('folderCache');
                     const request = store.get(folderId);
-                    request.onsuccess = () => resolve(request.result ? request.result.files : null);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record && options.updateAccess) {
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                        resolve(record ? record.files : null);
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveFolderCache(folderId, files) {
+
+            async saveFolderCache(folderId, files, options = {}) {
+                if (!this.db) return;
+                const estimatedBytes = this._approximateBytes(files);
+                const record = {
+                    folderId,
+                    files,
+                    timestamp: Date.now(),
+                    lastAccessed: Date.now(),
+                    estimatedBytes,
+                    pendingOps: Boolean(options.pendingOps)
+                };
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderCache', 'readwrite');
+                    const store = transaction.objectStore('folderCache');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save folder cache'));
+                    store.put(record);
+                });
+            }
+
+            async markFolderPendingOps(folderId, pending = true) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    const getRequest = store.get(folderId);
+                    getRequest.onsuccess = () => {
+                        const record = getRequest.result;
+                        if (record) {
+                            record.pendingOps = pending;
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark folder pending state'));
                 });
             }
+
+            async deleteFolderCache(folderId) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderCache', 'readwrite');
+                    const store = transaction.objectStore('folderCache');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to delete folder cache'));
+                    store.delete(folderId);
+                });
+            }
+
             async getMetadata(fileId) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
@@ -1219,35 +1368,1094 @@
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveMetadata(fileId, metadata) {
+
+            async saveMetadata(fileId, metadata, extras = {}) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const request = store.put({ id: fileId, metadata });
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    const getRequest = store.get(fileId);
+                    getRequest.onsuccess = () => {
+                        const existing = getRequest.result || {};
+                        const record = {
+                            id: fileId,
+                            metadata,
+                            provider: extras.provider ?? existing.provider ?? null,
+                            localUpdatedAt: extras.localUpdatedAt ?? Date.now(),
+                            lastSyncedAt: extras.lastSyncedAt ?? existing.lastSyncedAt ?? null,
+                            pendingOps: extras.pendingOps ?? existing.pendingOps ?? false
+                        };
+                        const putRequest = store.put(record);
+                        putRequest.onsuccess = () => resolve();
+                        putRequest.onerror = () => reject(putRequest.error);
+                    };
+                    getRequest.onerror = () => reject(getRequest.error);
                 });
             }
+
+            async saveMetadataBatch(entries = []) {
+                if (!this.db || !entries.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readwrite');
+                    const store = transaction.objectStore('metadata');
+                    for (const entry of entries) {
+                        const record = {
+                            id: entry.id,
+                            metadata: entry.metadata,
+                            provider: entry.provider ?? null,
+                            localUpdatedAt: entry.localUpdatedAt ?? Date.now(),
+                            lastSyncedAt: entry.lastSyncedAt ?? null,
+                            pendingOps: entry.pendingOps ?? false
+                        };
+                        store.put(record);
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save metadata batch'));
+                });
+            }
+
             async deleteMetadata(fileId) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const request = store.delete(fileId);
-                    request.onsuccess = () => resolve();
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to delete metadata'));
+                    store.delete(fileId);
+                });
+            }
+
+            _mergeOperations(existingOps = [], operation, timestamp = Date.now()) {
+                const merged = Array.isArray(existingOps) ? existingOps.slice() : [];
+                if (!operation) return merged;
+                const op = { ...operation, queuedAt: timestamp };
+                if (op.type === 'metadata') {
+                    const existing = merged.find(item => item.type === 'metadata');
+                    if (existing) {
+                        existing.payload = { ...existing.payload, ...op.payload };
+                        existing.queuedAt = timestamp;
+                    } else {
+                        merged.push({ type: 'metadata', payload: { ...op.payload }, queuedAt: timestamp });
+                    }
+                } else {
+                    merged.push(op);
+                }
+                return merged;
+            }
+
+            async enqueueFileOperation(fileId, provider, operation, options = {}) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['syncQueue', 'metadata', 'folderCache'], 'readwrite');
+                    const queueStore = transaction.objectStore('syncQueue');
+                    const metadataStore = transaction.objectStore('metadata');
+                    const folderStore = transaction.objectStore('folderCache');
+
+                    const queueRequest = queueStore.get(fileId);
+                    queueRequest.onsuccess = () => {
+                        const existing = queueRequest.result || {};
+                        const timestamp = Date.now();
+                        const operations = this._mergeOperations(existing.operations, operation, timestamp);
+                        const record = {
+                            fileId,
+                            provider,
+                            folderId: options.folderId ?? existing.folderId ?? null,
+                            operations,
+                            pendingFlush: existing.pendingFlush ?? false,
+                            inFlightFlushId: existing.inFlightFlushId ?? null,
+                            lastMergedAt: timestamp,
+                            retryCount: existing.retryCount ?? 0
+                        };
+                        queueStore.put(record);
+                    };
+                    queueRequest.onerror = () => transaction.abort();
+
+                    if (options.folderId) {
+                        const folderRequest = folderStore.get(options.folderId);
+                        folderRequest.onsuccess = () => {
+                            const folderRecord = folderRequest.result;
+                            if (folderRecord) {
+                                folderRecord.pendingOps = true;
+                                folderRecord.lastAccessed = Date.now();
+                                folderStore.put(folderRecord);
+                            }
+                        };
+                    }
+
+                    const metadataRequest = metadataStore.get(fileId);
+                    metadataRequest.onsuccess = () => {
+                        const record = metadataRequest.result;
+                        if (record) {
+                            record.pendingOps = true;
+                            record.localUpdatedAt = Date.now();
+                            record.provider = provider;
+                            metadataStore.put(record);
+                        }
+                    };
+
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to enqueue file operation'));
+                });
+            }
+
+            async getSyncQueueSnapshot() {
+                if (!this.db) return [];
+                const records = await this._collectStoreRecords('syncQueue');
+                return records.sort((a, b) => (a.lastMergedAt || 0) - (b.lastMergedAt || 0));
+            }
+
+            async markQueueInFlight(fileIds = [], flushId = null) {
+                if (!this.db || !fileIds.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const fileId of fileIds) {
+                        const request = store.get(fileId);
+                        request.onsuccess = () => {
+                            const record = request.result;
+                            if (record) {
+                                record.inFlightFlushId = flushId;
+                                record.pendingFlush = Boolean(flushId);
+                                store.put(record);
+                            }
+                        };
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark queue entries in flight'));
+                });
+            }
+
+            async clearQueueEntries(fileIds = []) {
+                if (!this.db || !fileIds.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const fileId of fileIds) {
+                        store.delete(fileId);
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to clear queue entries'));
+                });
+            }
+
+            async resetPendingFlushMarkers() {
+                if (!this.db) return;
+                const records = await this.getSyncQueueSnapshot();
+                if (!records.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const record of records) {
+                        if (record.pendingFlush || record.inFlightFlushId) {
+                            record.pendingFlush = false;
+                            record.inFlightFlushId = null;
+                            store.put(record);
+                        }
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to reset pending flush markers'));
+                });
+            }
+
+            async markMetadataSynced(fileId, timestamp = Date.now()) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readwrite');
+                    const store = transaction.objectStore('metadata');
+                    const request = store.get(fileId);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record) {
+                            record.lastSyncedAt = timestamp;
+                            record.pendingOps = false;
+                            store.put(record);
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark metadata synced'));
+                });
+            }
+
+            async savePngText(fileId, folderId, payload) {
+                if (!this.db) return;
+                const estimatedBytes = this._approximateBytes(payload);
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', 'readwrite');
+                    const store = transaction.objectStore('pngText');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save PNG text'));
+                    store.put({
+                        id: fileId,
+                        folderId,
+                        payload,
+                        lastAccessed: Date.now(),
+                        estimatedBytes
+                    });
+                });
+            }
+
+            async getPngText(fileId, options = { updateAccess: true }) {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', options.updateAccess ? 'readwrite' : 'readonly');
+                    const store = transaction.objectStore('pngText');
+                    const request = store.get(fileId);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record && options.updateAccess) {
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                        resolve(record ? record.payload : null);
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
-            async addToSyncQueue(operation) { return Promise.resolve(); }
-            async readSyncQueue() { return Promise.resolve([]); }
-            async deleteFromSyncQueue(id) { return Promise.resolve(); }
+
+            async clearPngTextForFolder(folderId) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', 'readwrite');
+                    const store = transaction.objectStore('pngText');
+                    const index = store.index('folderId');
+                    const range = IDBKeyRange.only(folderId);
+                    const cursorRequest = index.openCursor(range);
+                    cursorRequest.onsuccess = (event) => {
+                        const cursor = event.target.result;
+                        if (cursor) {
+                            cursor.delete();
+                            cursor.continue();
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to clear PNG text for folder'));
+                });
+            }
+
+            async updateSyncMeta(id, payload) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncMeta', 'readwrite');
+                    const store = transaction.objectStore('syncMeta');
+                    const getRequest = store.get(id);
+                    getRequest.onsuccess = () => {
+                        const existing = getRequest.result || {};
+                        const record = { id, ...existing, ...payload };
+                        store.put(record);
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to update sync meta'));
+                });
+            }
+
+            async getSyncMeta(id) {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncMeta', 'readonly');
+                    const store = transaction.objectStore('syncMeta');
+                    const request = store.get(id);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            async getCacheStats() {
+                const limits = await this.getSyncMeta('limits') || this.defaultLimits;
+                const folderRecords = await this._collectStoreRecords('folderCache');
+                const totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+                const stats = {
+                    folderCount: folderRecords.length,
+                    totalBytes,
+                    lastSweep: Date.now()
+                };
+                await this.updateSyncMeta('stats', stats);
+                return { limits, stats };
+            }
+
+            async enforceCacheLimits(limitsOverride = {}) {
+                const limits = { ...this.defaultLimits, ...(await this.getSyncMeta('limits') || {}), ...limitsOverride };
+                const maxFolders = limits.maxFolders || this.defaultLimits.maxFolders;
+                const maxBytes = (limits.maxMegabytes || this.defaultLimits.maxMegabytes) * 1024 * 1024;
+
+                const folderRecords = await this._collectStoreRecords('folderCache');
+                let totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+                let totalCount = folderRecords.length;
+                const candidates = folderRecords.filter(record => !record.pendingOps).sort((a, b) => (a.lastAccessed || 0) - (b.lastAccessed || 0));
+                const evicted = [];
+
+                for (const record of candidates) {
+                    if (totalCount <= maxFolders && totalBytes <= maxBytes) {
+                        break;
+                    }
+                    await this.deleteFolderCache(record.folderId);
+                    await this.clearPngTextForFolder(record.folderId);
+                    totalCount -= 1;
+                    totalBytes -= record.estimatedBytes || 0;
+                    evicted.push({ folderId: record.folderId, reclaimedBytes: record.estimatedBytes || 0 });
+                }
+
+                await this.updateSyncMeta('stats', {
+                    folderCount: totalCount,
+                    totalBytes,
+                    lastSweep: Date.now(),
+                    evicted
+                });
+                return evicted;
+            }
+
+            async _collectStoreRecords(storeName) {
+                if (!this.db) return [];
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(storeName, 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const results = [];
+                    const request = store.openCursor();
+                    request.onsuccess = (event) => {
+                        const cursor = event.target.result;
+                        if (cursor) {
+                            results.push(cursor.value);
+                            cursor.continue();
+                        }
+                    };
+                    transaction.oncomplete = () => resolve(results);
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to collect store records'));
+                });
+            }
         }
         class SyncManager {
-            constructor() { this.worker = null; this.syncInterval = null; }
-            start() { /* Placeholder */ }
-            stop() { /* Placeholder */ }
-            requestSync() { /* Placeholder */ }
+            constructor() {
+                this.worker = null;
+                this.workerUrl = null;
+                this.started = false;
+                this.flushPromises = new Map();
+                this.queueNotifyTimer = null;
+                this.lifecycleHandlersAttached = false;
+            }
+
+            start() {
+                if (!state.providerType) { return; }
+                this.ensureWorker();
+                this.configureWorker();
+                this.attachLifecycleHooks();
+                this.started = true;
+            }
+
+            stop() {
+                this.started = false;
+                this.detachLifecycleHooks();
+                if (this.queueNotifyTimer) {
+                    clearTimeout(this.queueNotifyTimer);
+                    this.queueNotifyTimer = null;
+                }
+                if (this.worker) {
+                    this.worker.terminate();
+                    this.worker = null;
+                }
+                if (this.workerUrl) {
+                    URL.revokeObjectURL(this.workerUrl);
+                    this.workerUrl = null;
+                }
+            }
+
+            ensureWorker() {
+                if (this.worker) { return; }
+                const source = this.buildWorkerSource();
+                const blob = new Blob([source], { type: 'application/javascript' });
+                this.workerUrl = URL.createObjectURL(blob);
+                this.worker = new Worker(this.workerUrl);
+                this.worker.addEventListener('message', (event) => this.handleWorkerMessage(event));
+                this.worker.addEventListener('error', (error) => console.error('[SyncWorker]', error.message));
+                this.worker.postMessage({ type: 'init', providerType: state.providerType || null });
+            }
+
+            configureWorker() {
+                if (!this.worker) { return; }
+                this.worker.postMessage({
+                    type: 'configure',
+                    providerType: state.providerType || null,
+                    limits: state.dbManager?.defaultLimits || { maxFolders: 1000, maxMegabytes: 500 }
+                });
+                this.worker.postMessage({ type: 'process', reason: 'startup' });
+            }
+
+            attachLifecycleHooks() {
+                if (this.lifecycleHandlersAttached) { return; }
+                this.visibilityHandler = () => {
+                    if (document.visibilityState === 'hidden') {
+                        this.flush({ reason: 'visibilitychange', keepalive: false }).catch(() => {});
+                    }
+                };
+                this.pageHideHandler = () => {
+                    this.flush({ reason: 'pagehide', keepalive: true }).catch(() => {});
+                };
+                this.beforeUnloadHandler = () => {
+                    this.flush({ reason: 'beforeunload', keepalive: true }).catch(() => {});
+                };
+                document.addEventListener('visibilitychange', this.visibilityHandler, { passive: true });
+                window.addEventListener('pagehide', this.pageHideHandler, { passive: true });
+                window.addEventListener('beforeunload', this.beforeUnloadHandler, { passive: true });
+                this.lifecycleHandlersAttached = true;
+            }
+
+            detachLifecycleHooks() {
+                if (!this.lifecycleHandlersAttached) { return; }
+                document.removeEventListener('visibilitychange', this.visibilityHandler);
+                window.removeEventListener('pagehide', this.pageHideHandler);
+                window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+                this.lifecycleHandlersAttached = false;
+            }
+
+            handleWorkerMessage(event) {
+                const data = event.data || {};
+                switch (data.type) {
+                    case 'ready':
+                        break;
+                    case 'log':
+                        console.debug('[SyncWorker]', data.message, data.detail || '');
+                        break;
+                    case 'flushAccepted':
+                        break;
+                    case 'flushComplete': {
+                        const resolver = this.flushPromises.get(data.flushId);
+                        if (resolver) {
+                            resolver.resolve();
+                            this.flushPromises.delete(data.flushId);
+                        }
+                        break;
+                    }
+                    case 'flushFailed': {
+                        const resolver = this.flushPromises.get(data.flushId);
+                        if (resolver) {
+                            resolver.reject(new Error(data.error || 'Flush failed'));
+                            this.flushPromises.delete(data.flushId);
+                        }
+                        break;
+                    }
+                    case 'tokenRequest':
+                        this.handleTokenRequest(data.requestId, Boolean(data.forceRefresh));
+                        break;
+                    case 'tokenResponseTimeout':
+                        console.warn('[SyncWorker] token request timed out');
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            async handleTokenRequest(requestId, forceRefresh = false) {
+                if (!this.worker) { return; }
+                try {
+                    const provider = state.provider;
+                    if (!provider) {
+                        throw new Error('No provider');
+                    }
+                    let token = null;
+                    if (forceRefresh && typeof provider.refreshAccessToken === 'function') {
+                        token = await provider.refreshAccessToken();
+                    } else if (typeof provider.getAccessToken === 'function') {
+                        token = await provider.getAccessToken();
+                    }
+                    if (!token) {
+                        throw new Error('Unable to acquire access token');
+                    }
+                    this.worker.postMessage({ type: 'tokenResponse', requestId, token });
+                } catch (error) {
+                    this.worker.postMessage({ type: 'tokenResponse', requestId, error: error.message || String(error) });
+                }
+            }
+
+            async queueMetadataUpdate(fileId, updates, options = {}) {
+                if (!state.dbManager || !fileId) { return; }
+                const providerType = state.providerType || 'unknown';
+                const folderId = options.folderId || (state.currentFolder?.id ?? null);
+                await state.dbManager.enqueueFileOperation(
+                    fileId,
+                    providerType,
+                    { type: 'metadata', payload: updates },
+                    { folderId }
+                );
+                this.notifyQueueChange();
+            }
+
+            notifyQueueChange() {
+                if (!this.worker) { return; }
+                if (this.queueNotifyTimer) {
+                    clearTimeout(this.queueNotifyTimer);
+                }
+                this.queueNotifyTimer = setTimeout(() => {
+                    this.queueNotifyTimer = null;
+                    this.worker.postMessage({ type: 'queueUpdated' });
+                }, 150);
+            }
+
+            requestSync() {
+                if (!this.worker) { return; }
+                this.worker.postMessage({ type: 'process', reason: 'manual' });
+            }
+
+            flush(options = {}) {
+                if (!this.worker) { return Promise.resolve(); }
+                const flushId = options.flushId || Utils.uuid();
+                return new Promise((resolve, reject) => {
+                    this.flushPromises.set(flushId, { resolve, reject });
+                    this.worker.postMessage({
+                        type: 'flushRequest',
+                        flushId,
+                        keepalive: Boolean(options.keepalive),
+                        reason: options.reason || 'lifecycle'
+                    });
+                    setTimeout(() => {
+                        if (this.flushPromises.has(flushId)) {
+                            const resolver = this.flushPromises.get(flushId);
+                            resolver.reject(new Error('Flush timeout'));
+                            this.flushPromises.delete(flushId);
+                        }
+                    }, 15000);
+                });
+            }
+
+            buildWorkerSource() {
+                return String.raw`(() => {
+  const DB_NAME = 'Orbital8-Goji-V1';
+  const DB_VERSION = 4;
+  let db = null;
+  let providerType = null;
+  let currentLimits = { maxFolders: 1000, maxMegabytes: 500 };
+  let processing = false;
+  let scheduled = false;
+  const tokenWaiters = new Map();
+  let tokenCounter = 0;
+
+  function log(message, detail) {
+    self.postMessage({ type: 'log', message, detail });
+  }
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (event) => {
+        const upgradeDb = event.target.result;
+        const oldVersion = event.oldVersion || 0;
+        if (oldVersion < 1 && !upgradeDb.objectStoreNames.contains('folderCache')) {
+          const folderStore = upgradeDb.createObjectStore('folderCache', { keyPath: 'folderId' });
+          folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+        }
+        if (oldVersion < 2) {
+          if (!upgradeDb.objectStoreNames.contains('metadata')) {
+            const metadataStore = upgradeDb.createObjectStore('metadata', { keyPath: 'id' });
+            metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
+          }
+          if (!upgradeDb.objectStoreNames.contains('syncQueue')) {
+            const queueStore = upgradeDb.createObjectStore('syncQueue', { keyPath: 'fileId' });
+            queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+            queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+            queueStore.createIndex('folderId', 'folderId', { unique: false });
+          }
+        }
+        if (oldVersion < 3) {
+          if (upgradeDb.objectStoreNames.contains('syncQueue')) {
+            upgradeDb.deleteObjectStore('syncQueue');
+            const queueStore = upgradeDb.createObjectStore('syncQueue', { keyPath: 'fileId' });
+            queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+            queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+            queueStore.createIndex('folderId', 'folderId', { unique: false });
+          }
+          if (!upgradeDb.objectStoreNames.contains('pngText')) {
+            const pngStore = upgradeDb.createObjectStore('pngText', { keyPath: 'id' });
+            pngStore.createIndex('folderId', 'folderId', { unique: false });
+            pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+          }
+        }
+        if (oldVersion < 4 && !upgradeDb.objectStoreNames.contains('syncMeta')) {
+          upgradeDb.createObjectStore('syncMeta', { keyPath: 'id' });
+        }
+      };
+      request.onsuccess = (event) => resolve(event.target.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+    });
+  }
+
+  async function getDb() {
+    if (!db) {
+      db = await openDb();
+    }
+    return db;
+  }
+
+  async function readAll(storeName) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      const results = [];
+      const request = store.openCursor();
+      request.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          results.push(cursor.value);
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve(results);
+      tx.onerror = () => reject(tx.error || new Error('Failed to read store'));
+    });
+  }
+
+  async function mutateQueueRecords(fileIds, mutate) {
+    if (!fileIds || !fileIds.length) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readwrite');
+      const store = tx.objectStore('syncQueue');
+      for (const fileId of fileIds) {
+        const request = store.get(fileId);
+        request.onsuccess = () => {
+          const record = request.result;
+          if (record) {
+            const updated = mutate(record) || record;
+            if (updated) {
+              store.put(updated);
+            }
+          }
+        };
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update queue records'));
+    });
+  }
+
+  async function clearQueueEntries(fileIds) {
+    if (!fileIds || !fileIds.length) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readwrite');
+      const store = tx.objectStore('syncQueue');
+      for (const fileId of fileIds) {
+        store.delete(fileId);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to clear queue entries'));
+    });
+  }
+
+  async function markMetadataSynced(fileId, timestamp) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('metadata', 'readwrite');
+      const store = tx.objectStore('metadata');
+      const request = store.get(fileId);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (record) {
+          record.lastSyncedAt = timestamp;
+          record.pendingOps = false;
+          store.put(record);
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to mark metadata synced'));
+    });
+  }
+
+  async function markFolderPending(folderId, pending) {
+    if (!folderId) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('folderCache', 'readwrite');
+      const store = tx.objectStore('folderCache');
+      const request = store.get(folderId);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (record) {
+          record.pendingOps = pending;
+          record.lastAccessed = Date.now();
+          store.put(record);
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update folder state'));
+    });
+  }
+
+  async function hasPendingForFolder(folderId) {
+    if (!folderId) { return false; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readonly');
+      const store = tx.objectStore('syncQueue');
+      if (!store.indexNames.contains('folderId')) {
+        tx.oncomplete = () => resolve(false);
+        tx.onerror = () => resolve(false);
+        return;
+      }
+      let resolved = false;
+      const index = store.index('folderId');
+      const range = IDBKeyRange.only(folderId);
+      const request = index.openKeyCursor(range);
+      request.onsuccess = (event) => {
+        if (resolved) { return; }
+        const cursor = event.target.result;
+        if (cursor) {
+          resolved = true;
+          resolve(true);
+        }
+      };
+      tx.oncomplete = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(false);
+        }
+      };
+      tx.onerror = () => {
+        if (!resolved) {
+          resolved = true;
+          reject(tx.error || new Error('Failed to inspect queue by folder'));
+        }
+      };
+    });
+  }
+
+  async function updateSyncMeta(id, payload) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncMeta', 'readwrite');
+      const store = tx.objectStore('syncMeta');
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const existing = request.result || {};
+        store.put(Object.assign({ id }, existing, payload));
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update sync meta'));
+    });
+  }
+
+  async function deleteFolderCache(folderId) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('folderCache', 'readwrite');
+      const store = tx.objectStore('folderCache');
+      store.delete(folderId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to delete folder cache'));
+    });
+  }
+
+  async function clearPngTextForFolder(folderId) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('pngText', 'readwrite');
+      const store = tx.objectStore('pngText');
+      if (!store.indexNames.contains('folderId')) {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        return;
+      }
+      const index = store.index('folderId');
+      const range = IDBKeyRange.only(folderId);
+      const request = index.openCursor(range);
+      request.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to clear PNG text entries'));
+    });
+  }
+
+  function aggregateOperations(operations) {
+    const metadata = {};
+    const other = [];
+    (operations || []).forEach((operation) => {
+      if (operation.type === 'metadata') {
+        Object.assign(metadata, operation.payload || {});
+      } else {
+        other.push(operation);
+      }
+    });
+    return { metadata, other };
+  }
+
+  function normalizeGoogleMetadata(metadata) {
+    const normalized = {};
+    Object.keys(metadata || {}).forEach((key) => {
+      const value = metadata[key];
+      if (Array.isArray(value)) {
+        normalized[key] = value.join(',');
+      } else if (value === null || value === undefined) {
+        normalized[key] = '';
+      } else if (typeof value === 'object') {
+        try {
+          normalized[key] = JSON.stringify(value);
+        } catch (error) {
+          normalized[key] = String(value);
+        }
+      } else {
+        normalized[key] = String(value);
+      }
+    });
+    return normalized;
+  }
+
+  function applyPatch(target, patch) {
+    const result = Object.assign({}, target || {});
+    Object.keys(patch || {}).forEach((key) => {
+      const value = patch[key];
+      if (value === undefined) { return; }
+      if (value === null) {
+        delete result[key];
+      } else {
+        result[key] = value;
+      }
+    });
+    return result;
+  }
+
+  function requestToken(forceRefresh) {
+    tokenCounter += 1;
+    const requestId = 'token-' + tokenCounter;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (tokenWaiters.has(requestId)) {
+          tokenWaiters.get(requestId).reject(new Error('Token timeout'));
+          tokenWaiters.delete(requestId);
+        }
+      }, 15000);
+      tokenWaiters.set(requestId, { resolve: (token) => { clearTimeout(timeout); resolve(token); }, reject: (error) => { clearTimeout(timeout); reject(error); } });
+      self.postMessage({ type: 'tokenRequest', requestId, forceRefresh: Boolean(forceRefresh) });
+    });
+  }
+
+  async function syncGoogleDrive(entry, aggregated, options) {
+    const metadata = normalizeGoogleMetadata(aggregated.metadata);
+    if (!Object.keys(metadata).length) { return; }
+    let token = await requestToken(false);
+    const url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(entry.fileId);
+    const body = JSON.stringify({ appProperties: metadata });
+    let response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body,
+      keepalive: Boolean(options.keepalive)
+    });
+    if (response.status === 401 || response.status === 403) {
+      token = await requestToken(true);
+      response = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        body,
+        keepalive: Boolean(options.keepalive)
+      });
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error('Google Drive metadata update failed: ' + response.status + ' ' + text);
+    }
+  }
+
+  async function syncOneDrive(entry, aggregated, options) {
+    const patch = aggregated.metadata || {};
+    if (!Object.keys(patch).length) { return; }
+    let token = await requestToken(false);
+    const base = 'https://graph.microsoft.com/v1.0';
+    const path = '/me/drive/special/approot:/' + encodeURIComponent(entry.fileId) + '.json:/content';
+    let existing = {};
+    let response = await fetch(base + path, {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      keepalive: Boolean(options.keepalive)
+    });
+    if (response.status === 401 || response.status === 403) {
+      token = await requestToken(true);
+      response = await fetch(base + path, {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        keepalive: Boolean(options.keepalive)
+      });
+    }
+    if (response.status === 200) {
+      try {
+        existing = await response.json();
+      } catch (error) {
+        existing = {};
+      }
+    } else if (response.status !== 404) {
+      const text = await response.text().catch(() => '');
+      throw new Error('OneDrive metadata fetch failed: ' + response.status + ' ' + text);
+    }
+    const merged = applyPatch(existing, patch);
+    const putResponse = await fetch(base + path, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(merged),
+      keepalive: Boolean(options.keepalive)
+    });
+    if (!putResponse.ok) {
+      const text = await putResponse.text().catch(() => '');
+      throw new Error('OneDrive metadata write failed: ' + putResponse.status + ' ' + text);
+    }
+  }
+
+  async function enforceCacheLimits() {
+    const limits = currentLimits || { maxFolders: 1000, maxMegabytes: 500 };
+    const maxFolders = limits.maxFolders || 1000;
+    const maxBytes = (limits.maxMegabytes || 500) * 1024 * 1024;
+    const folderRecords = await readAll('folderCache');
+    let totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+    let totalCount = folderRecords.length;
+    const candidates = folderRecords
+      .filter((record) => !record.pendingOps)
+      .sort((a, b) => (a.lastAccessed || 0) - (b.lastAccessed || 0));
+    const evicted = [];
+    for (const record of candidates) {
+      if (totalCount <= maxFolders && totalBytes <= maxBytes) {
+        break;
+      }
+      await deleteFolderCache(record.folderId);
+      await clearPngTextForFolder(record.folderId);
+      totalCount -= 1;
+      totalBytes -= record.estimatedBytes || 0;
+      evicted.push({ folderId: record.folderId, reclaimedBytes: record.estimatedBytes || 0 });
+    }
+    await updateSyncMeta('stats', {
+      folderCount: totalCount,
+      totalBytes,
+      lastSweep: Date.now(),
+      evicted
+    });
+  }
+
+  async function loadQueue() {
+    const queue = await readAll('syncQueue');
+    return queue.sort((a, b) => {
+      if (a.pendingFlush && !b.pendingFlush) { return -1; }
+      if (!a.pendingFlush && b.pendingFlush) { return 1; }
+      return (a.lastMergedAt || 0) - (b.lastMergedAt || 0);
+    });
+  }
+
+  async function processQueue(options = {}) {
+    if (processing) {
+      scheduled = true;
+      return;
+    }
+    processing = true;
+    try {
+      const entries = await loadQueue();
+      if (!entries.length) { return; }
+      if (options.flushId) {
+        await mutateQueueRecords(entries.map((entry) => entry.fileId), (record) => {
+          record.pendingFlush = true;
+          record.inFlightFlushId = options.flushId;
+          return record;
+        });
+      }
+      for (const entry of entries) {
+        try {
+          const aggregated = aggregateOperations(entry.operations);
+          if (providerType === 'googledrive') {
+            await syncGoogleDrive(entry, aggregated, options);
+          } else if (providerType === 'onedrive') {
+            await syncOneDrive(entry, aggregated, options);
+          }
+          await markMetadataSynced(entry.fileId, Date.now());
+          await clearQueueEntries([entry.fileId]);
+          if (entry.folderId) {
+            const pending = await hasPendingForFolder(entry.folderId);
+            if (!pending) {
+              await markFolderPending(entry.folderId, false);
+            }
+          }
+        } catch (error) {
+          await mutateQueueRecords([entry.fileId], (record) => {
+            record.pendingFlush = Boolean(options.flushId);
+            record.inFlightFlushId = null;
+            record.retryCount = (record.retryCount || 0) + 1;
+            return record;
+          });
+          if (entry.folderId) {
+            await markFolderPending(entry.folderId, true);
+          }
+          throw error;
+        }
+      }
+      await enforceCacheLimits();
+    } finally {
+      processing = false;
+      if (scheduled) {
+        scheduled = false;
+        processQueue({ reason: 'scheduled' }).catch((error) => log('Scheduled queue processing failed', error.message));
+      }
+    }
+  }
+
+  self.addEventListener('message', (event) => {
+    const data = event.data || {};
+    switch (data.type) {
+      case 'init':
+        providerType = data.providerType || null;
+        getDb().then(() => self.postMessage({ type: 'ready' })).catch((error) => log('Worker init failed', error.message));
+        break;
+      case 'configure':
+        providerType = data.providerType || providerType;
+        if (data.limits) {
+          currentLimits = data.limits;
+          updateSyncMeta('limits', currentLimits).catch((error) => log('Failed to persist limits', error.message));
+        }
+        break;
+      case 'queueUpdated':
+        processQueue({ reason: 'queueUpdated' }).catch((error) => log('Queue update failed', error.message));
+        break;
+      case 'process':
+        processQueue({ reason: data.reason || 'manual' }).catch((error) => log('Process request failed', error.message));
+        break;
+      case 'flushRequest':
+        (async () => {
+          try {
+            await processQueue({ flushId: data.flushId, keepalive: Boolean(data.keepalive), reason: data.reason || 'flush' });
+            self.postMessage({ type: 'flushComplete', flushId: data.flushId });
+          } catch (error) {
+            self.postMessage({ type: 'flushFailed', flushId: data.flushId, error: error.message || String(error) });
+          }
+        })();
+        self.postMessage({ type: 'flushAccepted', flushId: data.flushId });
+        break;
+      case 'tokenResponse': {
+        const waiter = tokenWaiters.get(data.requestId);
+        if (waiter) {
+          tokenWaiters.delete(data.requestId);
+          if (data.error) {
+            waiter.reject(new Error(data.error));
+          } else {
+            waiter.resolve(data.token);
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
+})();`;
+            }
         }
         class VisualCueManager {
             constructor() {
@@ -1294,7 +2502,33 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor() {
+                this.abortController = null;
+                this.worker = null;
+                this.workerUrl = null;
+                this.pendingParses = new Map();
+                this.ensureWorker();
+            }
+            ensureWorker() {
+                if (this.worker) { return; }
+                const source = this.buildWorkerSource();
+                const blob = new Blob([source], { type: 'application/javascript' });
+                this.workerUrl = URL.createObjectURL(blob);
+                this.worker = new Worker(this.workerUrl);
+                this.worker.addEventListener('message', (event) => this.handleWorkerMessage(event));
+            }
+            handleWorkerMessage(event) {
+                const data = event.data || {};
+                if (!data.id) { return; }
+                const pending = this.pendingParses.get(data.id);
+                if (!pending) { return; }
+                this.pendingParses.delete(data.id);
+                if (data.type === 'parsed') {
+                    pending.resolve(data.metadata || {});
+                } else if (data.type === 'parseError') {
+                    pending.reject(new Error(data.error || 'Metadata parse failed'));
+                }
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -1303,38 +2537,27 @@
             }
             async extract(buffer) {
                 if (!buffer) return {};
-                const metadata = {};
-                const view = new DataView(buffer);
-                if (buffer.byteLength < 8) return {};
-                let pos = 8;
-                try {
-                    while (pos < buffer.byteLength - 12) {
-                        const chunkLength = view.getUint32(pos, false);
-                        pos += 4;
-                        let chunkType = '';
-                        for (let i = 0; i < 4; i++) { chunkType += String.fromCharCode(view.getUint8(pos + i)); }
-                        pos += 4;
-                        if (chunkType === 'tEXt') {
-                            let keyword = '';
-                            let value = '';
-                            let nullFound = false;
-                            for (let i = 0; i < chunkLength; i++) {
-                                const byte = view.getUint8(pos + i);
-                                if (!nullFound) {
-                                    if (byte === 0) { nullFound = true; } else { keyword += String.fromCharCode(byte); }
-                                } else { value += String.fromCharCode(byte); }
-                            }
-                            metadata[keyword] = value;
-                        } else if (chunkType === 'IHDR') {
-                            const width = view.getUint32(pos, false);
-                            const height = view.getUint32(pos + 4, false);
-                            metadata._dimensions = { width, height };
-                        } else if (chunkType === 'IEND') { break; }
-                        pos += chunkLength + 4;
-                        if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
-                    }
-                } catch (error) { /* Return what we have so far */ }
-                return metadata;
+                this.ensureWorker();
+                const requestId = Utils.uuid();
+                return new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        if (this.pendingParses.has(requestId)) {
+                            this.pendingParses.get(requestId).reject(new Error('Metadata parse timeout'));
+                            this.pendingParses.delete(requestId);
+                        }
+                    }, 10000);
+                    this.pendingParses.set(requestId, {
+                        resolve: (payload) => {
+                            clearTimeout(timeout);
+                            resolve(payload);
+                        },
+                        reject: (error) => {
+                            clearTimeout(timeout);
+                            reject(error);
+                        }
+                    });
+                    this.worker.postMessage({ type: 'parsePng', id: requestId, buffer }, [buffer]);
+                });
             }
             async fetchMetadata(file, isForExport = false) {
                 if (file.mimeType !== 'image/png') {
@@ -1345,13 +2568,15 @@
                     this.abortController = new AbortController();
                     let response;
                     const requestOptions = {};
-                    if(state.activeRequests) requestOptions.signal = state.activeRequests.signal;
-                    
+                    if (state.activeRequests) { requestOptions.signal = state.activeRequests.signal; }
                     if (state.providerType === 'googledrive') {
                         response = await state.provider.makeApiCall(`/files/${file.id}?alt=media`, { headers: { 'Range': 'bytes=0-65535' }, ...requestOptions }, false);
                     } else {
                         const accessToken = await state.provider.getAccessToken();
-                        response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`, { headers: { 'Authorization': `Bearer ${accessToken}`, 'Range': 'bytes=0-65535' }, ...requestOptions });
+                        response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`, {
+                            headers: { 'Authorization': `Bearer ${accessToken}`, 'Range': 'bytes=0-65535' },
+                            ...requestOptions
+                        });
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
@@ -1360,6 +2585,100 @@
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
                 }
+            }
+            buildWorkerSource() {
+                return String.raw`(() => {
+  const textDecoder = new TextDecoder('utf-8');
+
+  async function inflateZtxtChunk(bytes) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('DecompressionStream not supported');
+    }
+    const stream = new DecompressionStream('deflate');
+    const writer = stream.writable.getWriter();
+    await writer.write(bytes);
+    await writer.close();
+    const reader = stream.readable.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const result = await reader.read();
+      if (result.done) { break; }
+      chunks.push(result.value);
+      total += result.value.length;
+    }
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return output;
+  }
+
+  async function parsePng(buffer) {
+    const view = new DataView(buffer);
+    const metadata = {};
+    if (buffer.byteLength < 8) { return metadata; }
+    let pos = 8;
+    while (pos < buffer.byteLength - 12) {
+      const length = view.getUint32(pos, false);
+      pos += 4;
+      let chunkType = '';
+      for (let i = 0; i < 4; i++) {
+        chunkType += String.fromCharCode(view.getUint8(pos + i));
+      }
+      pos += 4;
+      if (pos + length > buffer.byteLength) {
+        break;
+      }
+      if (chunkType === 'tEXt') {
+        const data = new Uint8Array(buffer, pos, length);
+        const nullIndex = data.indexOf(0);
+        const keywordBytes = nullIndex === -1 ? data : data.slice(0, nullIndex);
+        const valueBytes = nullIndex === -1 ? new Uint8Array() : data.slice(nullIndex + 1);
+        const keyword = textDecoder.decode(keywordBytes);
+        const value = textDecoder.decode(valueBytes);
+        metadata[keyword] = value;
+      } else if (chunkType === 'zTXt') {
+        const data = new Uint8Array(buffer, pos, length);
+        const nullIndex = data.indexOf(0);
+        const keywordBytes = nullIndex === -1 ? data : data.slice(0, nullIndex);
+        const keyword = textDecoder.decode(keywordBytes);
+        const compressionMethod = nullIndex + 1 < data.length ? data[nullIndex + 1] : 0;
+        const compressed = data.slice(nullIndex + 2);
+        if (compressionMethod === 0) {
+          try {
+            const inflated = await inflateZtxtChunk(compressed);
+            metadata[keyword] = textDecoder.decode(inflated);
+          } catch (error) {
+            metadata[keyword] = '[[compressed text decode failed]]';
+          }
+        }
+      } else if (chunkType === 'IHDR') {
+        const width = view.getUint32(pos, false);
+        const height = view.getUint32(pos + 4, false);
+        metadata._dimensions = { width, height };
+      } else if (chunkType === 'IEND') {
+        break;
+      }
+      pos += length + 4;
+    }
+    return metadata;
+  }
+
+  self.addEventListener('message', async (event) => {
+    const data = event.data || {};
+    if (data.type === 'parsePng' && data.buffer) {
+      try {
+        const metadata = await parsePng(data.buffer);
+        self.postMessage({ type: 'parsed', id: data.id, metadata });
+      } catch (error) {
+        self.postMessage({ type: 'parseError', id: data.id, error: error.message || String(error) });
+      }
+    }
+  });
+})();`;
             }
         }
         class BaseProvider {
@@ -1456,6 +2775,13 @@
                 });
                 if (!response.ok) { throw new Error('Failed to refresh access token'); }
                 const tokens = await response.json(); this.accessToken = tokens.access_token; this.storeCredentials(); return this.accessToken;
+            }
+            async getAccessToken() {
+                if (this.accessToken) { return this.accessToken; }
+                if (this.refreshToken && this.clientSecret) {
+                    return await this.refreshAccessToken();
+                }
+                throw new Error('Not authenticated');
             }
             async makeApiCall(endpoint, options = {}, isJson = true) {
                 if (!this.accessToken) { throw new Error('Not authenticated'); }
@@ -2021,13 +3347,22 @@
                 Core.showEmptyState();
                 Utils.elements.emptyState.classList.add('hidden');
             },
-            async updateUserMetadata(fileId, updates) {
+            async commitUserMetadataUpdate(fileId, updates, options = {}) {
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
-                    if (!file) return;
+                    if (!file) { return; }
                     Object.assign(file, updates);
-                    await state.dbManager.saveMetadata(file.id, file);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    await state.dbManager.saveMetadata(file.id, file, {
+                        provider: state.providerType || 'unknown',
+                        pendingOps: true
+                    });
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { pendingOps: true });
+                    if (state.syncManager) {
+                        await state.syncManager.queueMetadataUpdate(fileId, updates, {
+                            folderId: state.currentFolder.id,
+                            immediate: options.immediate || false
+                        });
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -2073,6 +3408,7 @@
                     } else {
                         finalMetadata.metadataStatus = 'loaded';
                         finalMetadata.extractedMetadata = metadata;
+                        await state.dbManager.savePngText(file.id, state.currentFolder.id, metadata);
                     }
                     await state.dbManager.saveMetadata(file.id, finalMetadata);
                     Object.assign(file, finalMetadata);
@@ -2085,6 +3421,13 @@
                     await state.dbManager.saveMetadata(file.id, file);
                 }
             }
+        };
+        App.updateUserMetadata = Utils.debounce(function(fileId, updates, options = {}) {
+            return App.commitUserMetadataUpdate(fileId, updates, options);
+        }, 750);
+        App.updateUserMetadataImmediate = function(fileId, updates, options = {}) {
+            const mergedOptions = Object.assign({}, options, { immediate: true });
+            return App.commitUserMetadataUpdate(fileId, updates, mergedOptions);
         };
         const Core = {
             initializeStacks() {
@@ -2265,13 +3608,13 @@
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
                         const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
                         const newSequence = minSequence - 1;
-                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence });
+                        await App.updateUserMetadataImmediate(currentImage.id, { stackSequence: newSequence });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
                     } else {
                         const newSequence = Date.now();
-                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
+                        await App.updateUserMetadataImmediate(currentImage.id, { stack: targetStack, stackSequence: newSequence });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stack = targetStack;
                         item.stackSequence = newSequence;
@@ -2869,7 +4212,7 @@
                         if (file) {
                             const currentStack = file.stack;
                             const newSequence = Date.now();
-                            await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
+                            await App.updateUserMetadataImmediate(fileId, { stack: targetStack, stackSequence: newSequence });
                             const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
                             if (currentStackIndex !== -1) {
                                 state.stacks[currentStack].splice(currentStackIndex, 1);
@@ -2896,7 +4239,7 @@
                         if (file) {
                             const currentTags = file.tags || [];
                             const newTags = [...new Set([...currentTags, ...tagsToAdd])];
-                            await App.updateUserMetadata(fileId, { tags: newTags });
+                            await App.updateUserMetadataImmediate(fileId, { tags: newTags });
                             tagsToAdd.forEach(tag => state.tags.add(tag));
                         }
                     },
@@ -3646,7 +4989,7 @@
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
                         if (!currentFile) return;
                         const isFavorite = !currentFile.favorite;
-                        await App.updateUserMetadata(currentFile.id, { favorite: isFavorite });
+                        await App.updateUserMetadataImmediate(currentFile.id, { favorite: isFavorite });
                         Core.updateFavoriteButton();
                     } catch (error) {
                          Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
