@@ -1,5 +1,5 @@
 
-<!-- Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button -->
+<!-- Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -685,7 +685,7 @@
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
         <div class="app-footer">
-            <span class="footer-text">Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button</span>
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
             <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
         </div>
     </div>
@@ -703,7 +703,7 @@
             <div id="auth-status" class="status info"></div>
         </div>
         <div class="app-footer">
-            <span class="footer-text">Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button</span>
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
             <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
         </div>
     </div>
@@ -721,7 +721,7 @@
             </div>
         </div>
         <div class="app-footer">
-            <span class="footer-text">Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button</span>
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
             <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
         </div>
     </div>
@@ -738,7 +738,7 @@
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
         <div class="app-footer">
-            <span class="footer-text">Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button</span>
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
             <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
         </div>
     </div>
@@ -811,7 +811,7 @@
         
         <div id="toast" class="toast"></div>
         <div class="app-footer">
-            <span class="footer-text">Orbital8-O-2025-09-23 09:32 UTC :: Mobile diagnostics window + footer log button</span>
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
             <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
         </div>
     </div>
@@ -5170,7 +5170,27 @@
                 if (!suppressToast) {
                     Utils.showToast(toastMessage || 'Sync diagnostics logged to console', 'info', true);
                 }
+                if (state.dbManager) {
+                    try {
+                        await state.dbManager.updateSyncMeta('lastDiagnostics', {
+                            generatedAt: Date.now(),
+                            report
+                        });
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Failed to persist diagnostics snapshot', error);
+                    }
+                }
                 return report;
+            },
+            async getLastReport() {
+                if (!state.dbManager) { return null; }
+                try {
+                    const record = await state.dbManager.getSyncMeta('lastDiagnostics');
+                    return record ? (record.report || null) : null;
+                } catch (error) {
+                    console.warn('[SyncDiagnostics] Failed to read stored diagnostics', error);
+                    return null;
+                }
             },
             openWindow(report, options = {}) {
                 if (!report) { return null; }
@@ -5260,6 +5280,26 @@
                         overflow: auto;
                         max-height: 360px;
                         box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+                    }
+                    .action-row {
+                        margin-top: 10px;
+                        display: flex;
+                        gap: 8px;
+                        flex-wrap: wrap;
+                    }
+                    .action-button {
+                        background: rgba(59, 130, 246, 0.25);
+                        border: 1px solid rgba(59, 130, 246, 0.4);
+                        border-radius: 8px;
+                        color: #dbeafe;
+                        padding: 8px 12px;
+                        font-size: 12px;
+                        cursor: pointer;
+                        transition: background 0.2s ease, transform 0.2s ease;
+                    }
+                    .action-button:hover {
+                        background: rgba(59, 130, 246, 0.35);
+                        transform: translateY(-1px);
                     }
                     a { color: inherit; }
                 `;
@@ -5367,8 +5407,64 @@
                 rawSection.appendChild(rawHeading);
                 const rawPre = doc.createElement('pre');
                 rawPre.className = 'raw-report';
-                rawPre.textContent = JSON.stringify(report, null, 2);
+                const jsonText = JSON.stringify(report, null, 2);
+                rawPre.textContent = jsonText;
                 rawSection.appendChild(rawPre);
+                const actionRow = doc.createElement('div');
+                actionRow.className = 'action-row';
+                const copyButton = doc.createElement('button');
+                copyButton.type = 'button';
+                copyButton.className = 'action-button';
+                copyButton.textContent = 'Copy JSON';
+                copyButton.addEventListener('click', async () => {
+                    try {
+                        if (popup.navigator && popup.navigator.clipboard && popup.navigator.clipboard.writeText) {
+                            await popup.navigator.clipboard.writeText(jsonText);
+                        } else {
+                            const textarea = doc.createElement('textarea');
+                            textarea.value = jsonText;
+                            textarea.style.position = 'fixed';
+                            textarea.style.top = '-1000px';
+                            textarea.style.opacity = '0';
+                            doc.body.appendChild(textarea);
+                            textarea.focus();
+                            textarea.select();
+                            doc.execCommand('copy');
+                            doc.body.removeChild(textarea);
+                        }
+                        const original = copyButton.textContent;
+                        copyButton.textContent = 'Copied!';
+                        setTimeout(() => { copyButton.textContent = original; }, 2000);
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Clipboard copy failed', error);
+                        const original = copyButton.textContent;
+                        copyButton.textContent = 'Copy failed';
+                        setTimeout(() => { copyButton.textContent = original; }, 2000);
+                    }
+                });
+                const downloadButton = doc.createElement('button');
+                downloadButton.type = 'button';
+                downloadButton.className = 'action-button';
+                downloadButton.textContent = 'Download JSON';
+                downloadButton.addEventListener('click', () => {
+                    try {
+                        const blob = new Blob([jsonText], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const anchor = doc.createElement('a');
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        anchor.href = url;
+                        anchor.download = `sync-diagnostics-${timestamp}.json`;
+                        doc.body.appendChild(anchor);
+                        anchor.click();
+                        doc.body.removeChild(anchor);
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Download failed', error);
+                    }
+                });
+                actionRow.appendChild(copyButton);
+                actionRow.appendChild(downloadButton);
+                rawSection.appendChild(actionRow);
                 container.appendChild(rawSection);
 
                 return popup;
