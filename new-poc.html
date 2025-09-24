@@ -715,20 +715,45 @@
 
             function render() {
                 if (!isModalOpen) return;
-                if (!logs.length && !appState.lastDiagnosticsReport) {
+                const persistedLogs = appState.lastDiagnosticsReport?.logs || [];
+                const activeLogs = logs.length ? logs : persistedLogs;
+                if (!activeLogs.length && !appState.lastDiagnosticsReport) {
                     dom.diagnosticsOutput.textContent = 'No diagnostics captured yet.';
                     dom.diagnosticsOutput.classList.add('diagnostics-empty');
                     return;
                 }
                 dom.diagnosticsOutput.classList.remove('diagnostics-empty');
-                const logLines = logs.map(formatEntry).join('\n\n');
+                if (!activeLogs.length) {
+                    dom.diagnosticsOutput.textContent = 'No diagnostics captured yet.';
+                    dom.diagnosticsOutput.classList.add('diagnostics-empty');
+                    return;
+                }
+                const logLines = activeLogs.map(formatEntry).join('\n\n');
                 if (!appState.lastDiagnosticsReport) {
                     dom.diagnosticsOutput.textContent = logLines;
                     return;
                 }
                 const report = appState.lastDiagnosticsReport;
-                const summary = `Release: ${report.release}\nGenerated: ${new Date(report.createdAt).toISOString()}\nQueue entries: ${report.snapshot.queue.length}\nMetadata records: ${report.snapshot.metadata.length}`;
-                dom.diagnosticsOutput.textContent = `${summary}\n\n--- Logs ---\n${logLines}`;
+                const snapshot = report.snapshot || {};
+                const queueEntries = Array.isArray(snapshot.queue) ? snapshot.queue.length : 0;
+                const metadataRecords = Array.isArray(snapshot.metadata) ? snapshot.metadata.length : 0;
+                const summaryParts = [
+                    `Release: ${report.release}`,
+                    `Generated: ${new Date(report.createdAt).toISOString()}`,
+                    `Queue entries: ${queueEntries}`,
+                    `Metadata records: ${metadataRecords}`
+                ];
+                if (snapshot.provider) {
+                    summaryParts.push(`Provider: ${snapshot.provider}`);
+                }
+                if (snapshot.currentFolder) {
+                    const folderName = snapshot.currentFolder.name || snapshot.currentFolder.id || 'unknown';
+                    summaryParts.push(`Current folder: ${folderName}`);
+                }
+                if (!logs.length && persistedLogs.length) {
+                    summaryParts.push('Source: Last saved diagnostics snapshot');
+                }
+                dom.diagnosticsOutput.textContent = `${summaryParts.join('\n')}\n\n--- Logs ---\n${logLines}`;
             }
 
             function log(message, context = null, level = 'info') {
@@ -752,8 +777,35 @@
 
             async function copy() {
                 const text = dom.diagnosticsOutput.textContent || '';
-                await navigator.clipboard.writeText(text);
-                showStatus('Diagnostics copied to clipboard.', 'success');
+                if (!text.trim()) {
+                    showStatus('No diagnostics to copy yet.', 'info');
+                    return;
+                }
+                if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                    await navigator.clipboard.writeText(text);
+                    showStatus('Diagnostics copied to clipboard.', 'success');
+                    return;
+                }
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    const successful = document.execCommand('copy');
+                    if (!successful) {
+                        throw new Error('execCommand copy failed');
+                    }
+                    showStatus('Diagnostics copied to clipboard.', 'success');
+                } catch (error) {
+                    showStatus('Clipboard copy not supported.', 'error');
+                    log('Clipboard fallback failed', { error: error.message }, 'error');
+                    throw error;
+                } finally {
+                    document.body.removeChild(textarea);
+                }
             }
 
             function download() {
@@ -1038,7 +1090,6 @@
                 getFolderEntries,
                 putFolderEntry,
                 putMetadataBatch,
-                getMetadata,
                 listMetadataByFolder
             };
         })();
@@ -1143,7 +1194,7 @@ async function clearOperations(entry, success) {
 
 function buildRequestInit(method, body, keepalive) {
   const headers = { 'Content-Type': 'application/json' };
-  if (authState && authState.token) headers['Authorization'] = `Bearer ${authState.token}`;
+  if (authState && authState.token) headers['Authorization'] = 'Bearer ' + authState.token;
   const init = { method, headers, body: body ? JSON.stringify(body) : undefined };
   if (keepalive) init.keepalive = true;
   return init;
@@ -1151,11 +1202,11 @@ function buildRequestInit(method, body, keepalive) {
 
 async function fetchExistingMetadata(provider, fileId, keepalive) {
   if (provider === 'onedrive') {
-    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    const url = 'https://graph.microsoft.com/v1.0/me/drive/special/approot:/' + encodeURIComponent(fileId) + '.json:/content';
     try {
       const response = await fetch(url, buildRequestInit('GET', null, keepalive));
       if (response.status === 404) { return {}; }
-      if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+      if (!response.ok) { throw new Error('HTTP ' + response.status); }
       return await response.json();
     } catch (error) {
       log('error', 'Failed to fetch existing metadata', { provider, fileId, error: error.message });
@@ -1167,12 +1218,12 @@ async function fetchExistingMetadata(provider, fileId, keepalive) {
 
 async function writeMetadata(provider, fileId, payload, keepalive) {
   if (provider === 'onedrive') {
-    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    const url = 'https://graph.microsoft.com/v1.0/me/drive/special/approot:/' + encodeURIComponent(fileId) + '.json:/content';
     const init = buildRequestInit('PUT', payload, keepalive);
     try {
       const response = await fetch(url, init);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error('HTTP ' + response.status);
       }
       return true;
     } catch (error) {
@@ -1230,12 +1281,12 @@ async function processOtherOperation(entry, operation, keepalive) {
   const provider = entry.provider;
   if (operation.type === 'deleteFile') {
     if (provider === 'onedrive') {
-      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
-      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}` } : {};
+      const url = 'https://graph.microsoft.com/v1.0/me/drive/items/' + entry.fileId;
+      const headers = authState && authState.token ? { Authorization: 'Bearer ' + authState.token } : {};
       const init = { method: 'DELETE', headers, keepalive };
       try {
         const response = await fetch(url, init);
-        if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
         await withTx(['metadata'], 'readwrite', (store) => { store.delete(entry.key); });
         log('info', 'File deleted remotely', { key: entry.key });
       } catch (error) {
@@ -1247,13 +1298,13 @@ async function processOtherOperation(entry, operation, keepalive) {
     }
   } else if (operation.type === 'moveFile' && operation.payload?.targetFolderId) {
     if (provider === 'onedrive') {
-      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
-      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+      const url = 'https://graph.microsoft.com/v1.0/me/drive/items/' + entry.fileId;
+      const headers = authState && authState.token ? { Authorization: 'Bearer ' + authState.token, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
       const body = { parentReference: { id: operation.payload.targetFolderId } };
       const init = { method: 'PATCH', headers, body: JSON.stringify(body), keepalive };
       try {
         const response = await fetch(url, init);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
       } catch (error) {
         log('error', 'Move failed', { key: entry.key, error: error.message });
         throw error;
@@ -1264,7 +1315,7 @@ async function processOtherOperation(entry, operation, keepalive) {
       req.onsuccess = () => {
         const record = req.result;
         if (!record) return;
-        record.folderKey = `${provider}:${operation.payload.targetFolderId}`;
+        record.folderKey = provider + ':' + operation.payload.targetFolderId;
         record.metadata = record.metadata || {};
         record.metadata.folderId = operation.payload.targetFolderId;
         store.put(record);
@@ -1289,7 +1340,7 @@ async function processOtherOperation(entry, operation, keepalive) {
       req.onsuccess = () => {
         const record = req.result;
         if (!record) return;
-        record.folderKey = `${provider}:${operation.payload.folderId}`;
+        record.folderKey = provider + ':' + operation.payload.folderId;
         record.metadata = record.metadata || {};
         record.metadata.folderId = operation.payload.folderId;
         store.put(record);
@@ -1413,7 +1464,7 @@ self.onmessage = async (event) => {
     return;
   }
   if (data.type === 'queueUpdated') {
-    const key = `${data.provider}:${data.fileId}`;
+    const key = data.provider + ':' + data.fileId;
     if (data.critical) {
       processQueueForKey(key, { reason: data.reason });
     } else {
@@ -1713,7 +1764,7 @@ self.onmessage = async (event) => {
   if (data.type !== 'extract') return;
   try {
     const texts = await extractPngText(data.buffer);
-    const key = `${data.provider}:${data.fileId}`;
+    const key = data.provider + ':' + data.fileId;
     const record = {
       key,
       id: data.fileId,
