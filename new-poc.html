@@ -1090,7 +1090,6 @@
                 getFolderEntries,
                 putFolderEntry,
                 putMetadataBatch,
-                getMetadata,
                 listMetadataByFolder
             };
         })();
@@ -1195,7 +1194,7 @@ async function clearOperations(entry, success) {
 
 function buildRequestInit(method, body, keepalive) {
   const headers = { 'Content-Type': 'application/json' };
-  if (authState && authState.token) headers['Authorization'] = `Bearer ${authState.token}`;
+  if (authState && authState.token) headers['Authorization'] = 'Bearer ' + authState.token;
   const init = { method, headers, body: body ? JSON.stringify(body) : undefined };
   if (keepalive) init.keepalive = true;
   return init;
@@ -1203,11 +1202,11 @@ function buildRequestInit(method, body, keepalive) {
 
 async function fetchExistingMetadata(provider, fileId, keepalive) {
   if (provider === 'onedrive') {
-    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    const url = 'https://graph.microsoft.com/v1.0/me/drive/special/approot:/' + encodeURIComponent(fileId) + '.json:/content';
     try {
       const response = await fetch(url, buildRequestInit('GET', null, keepalive));
       if (response.status === 404) { return {}; }
-      if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+      if (!response.ok) { throw new Error('HTTP ' + response.status); }
       return await response.json();
     } catch (error) {
       log('error', 'Failed to fetch existing metadata', { provider, fileId, error: error.message });
@@ -1219,12 +1218,12 @@ async function fetchExistingMetadata(provider, fileId, keepalive) {
 
 async function writeMetadata(provider, fileId, payload, keepalive) {
   if (provider === 'onedrive') {
-    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    const url = 'https://graph.microsoft.com/v1.0/me/drive/special/approot:/' + encodeURIComponent(fileId) + '.json:/content';
     const init = buildRequestInit('PUT', payload, keepalive);
     try {
       const response = await fetch(url, init);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error('HTTP ' + response.status);
       }
       return true;
     } catch (error) {
@@ -1282,12 +1281,12 @@ async function processOtherOperation(entry, operation, keepalive) {
   const provider = entry.provider;
   if (operation.type === 'deleteFile') {
     if (provider === 'onedrive') {
-      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
-      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}` } : {};
+      const url = 'https://graph.microsoft.com/v1.0/me/drive/items/' + entry.fileId;
+      const headers = authState && authState.token ? { Authorization: 'Bearer ' + authState.token } : {};
       const init = { method: 'DELETE', headers, keepalive };
       try {
         const response = await fetch(url, init);
-        if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
         await withTx(['metadata'], 'readwrite', (store) => { store.delete(entry.key); });
         log('info', 'File deleted remotely', { key: entry.key });
       } catch (error) {
@@ -1299,13 +1298,13 @@ async function processOtherOperation(entry, operation, keepalive) {
     }
   } else if (operation.type === 'moveFile' && operation.payload?.targetFolderId) {
     if (provider === 'onedrive') {
-      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
-      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+      const url = 'https://graph.microsoft.com/v1.0/me/drive/items/' + entry.fileId;
+      const headers = authState && authState.token ? { Authorization: 'Bearer ' + authState.token, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
       const body = { parentReference: { id: operation.payload.targetFolderId } };
       const init = { method: 'PATCH', headers, body: JSON.stringify(body), keepalive };
       try {
         const response = await fetch(url, init);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
       } catch (error) {
         log('error', 'Move failed', { key: entry.key, error: error.message });
         throw error;
@@ -1316,7 +1315,7 @@ async function processOtherOperation(entry, operation, keepalive) {
       req.onsuccess = () => {
         const record = req.result;
         if (!record) return;
-        record.folderKey = `${provider}:${operation.payload.targetFolderId}`;
+        record.folderKey = provider + ':' + operation.payload.targetFolderId;
         record.metadata = record.metadata || {};
         record.metadata.folderId = operation.payload.targetFolderId;
         store.put(record);
@@ -1341,7 +1340,7 @@ async function processOtherOperation(entry, operation, keepalive) {
       req.onsuccess = () => {
         const record = req.result;
         if (!record) return;
-        record.folderKey = `${provider}:${operation.payload.folderId}`;
+        record.folderKey = provider + ':' + operation.payload.folderId;
         record.metadata = record.metadata || {};
         record.metadata.folderId = operation.payload.folderId;
         store.put(record);
@@ -1465,7 +1464,7 @@ self.onmessage = async (event) => {
     return;
   }
   if (data.type === 'queueUpdated') {
-    const key = `${data.provider}:${data.fileId}`;
+    const key = data.provider + ':' + data.fileId;
     if (data.critical) {
       processQueueForKey(key, { reason: data.reason });
     } else {
@@ -1765,7 +1764,7 @@ self.onmessage = async (event) => {
   if (data.type !== 'extract') return;
   try {
     const texts = await extractPngText(data.buffer);
-    const key = `${data.provider}:${data.fileId}`;
+    const key = data.provider + ':' + data.fileId;
     const record = {
       key,
       id: data.fileId,
