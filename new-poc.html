@@ -1,0 +1,2091 @@
+<!-- Orbital8-Goji-2025-09-24T03:08:32Z new sync pipeline & diagnostics modal -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no, maximum-scale=1.0">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Orbital8 Goji – Sync POC</title>
+    <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js"></script>
+    <style>
+        :root {
+            --accent: #f59e0b;
+            --accent-dark: #d97706;
+            --glass: rgba(255, 255, 255, 0.08);
+            --border: rgba(255, 255, 255, 0.25);
+            --border-strong: rgba(255, 255, 255, 0.45);
+            --dark-gradient: linear-gradient(135deg, #0f0f0f 0%, #1a1a1a 100%);
+            --surface: rgba(17, 24, 39, 0.8);
+            --text-light: rgba(255, 255, 255, 0.86);
+            --text-muted: rgba(255, 255, 255, 0.55);
+            --success: #10b981;
+            --danger: #ef4444;
+            --modal-bg: rgba(15, 23, 42, 0.88);
+            --shadow-strong: 0 20px 40px rgba(15, 23, 42, 0.45);
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            color: var(--text-light);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overscroll-behavior: none;
+            touch-action: none;
+        }
+
+        body {
+            background: var(--dark-gradient);
+        }
+
+        .screen {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--dark-gradient);
+            padding: 32px;
+            z-index: 1000;
+        }
+
+        .screen.hidden { display: none; }
+
+        .card {
+            width: min(520px, 92vw);
+            padding: 48px 40px;
+            border-radius: 28px;
+            border: 1px solid var(--border);
+            background: var(--glass);
+            backdrop-filter: blur(24px);
+            text-align: center;
+            box-shadow: var(--shadow-strong);
+        }
+
+        .title {
+            font-size: 26px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.75);
+        }
+
+        .subtitle {
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+
+        .provider-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            border-radius: 18px;
+            padding: 16px 20px;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            color: white;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 16px;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }
+
+        .provider-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 24px rgba(245, 158, 11, 0.32);
+            border-color: var(--accent);
+        }
+
+        .provider-button span.icon {
+            display: inline-flex;
+            width: 36px;
+            height: 36px;
+            border-radius: 12px;
+            background: rgba(17, 24, 39, 0.6);
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .input, .notes-textarea, .tag-input, .select {
+            width: 100%;
+            padding: 14px 18px;
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            background: rgba(0, 0, 0, 0.25);
+            color: white;
+            font-size: 15px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            backdrop-filter: blur(12px);
+        }
+
+        .input:focus, .notes-textarea:focus, .tag-input:focus, .select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+        }
+
+        .notes-textarea {
+            min-height: 140px;
+            resize: vertical;
+            color: #111827;
+            background: rgba(255, 255, 255, 0.92);
+        }
+
+        .button, .footer-button {
+            width: 100%;
+            padding: 16px 22px;
+            border-radius: 16px;
+            border: none;
+            font-size: 17px;
+            font-weight: 600;
+            cursor: pointer;
+            color: white;
+            background: linear-gradient(45deg, var(--accent), var(--accent-dark));
+            box-shadow: 0 14px 24px rgba(245, 158, 11, 0.35);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            margin-bottom: 16px;
+        }
+
+        .button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+
+        .button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 18px 32px rgba(245, 158, 11, 0.45);
+        }
+
+        .button.secondary {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            color: rgba(255, 255, 255, 0.82);
+            box-shadow: none;
+        }
+
+        .button.secondary:hover:not(:disabled) {
+            border-color: rgba(255, 255, 255, 0.45);
+        }
+
+        .folder-list {
+            max-height: 320px;
+            overflow-y: auto;
+            margin-bottom: 24px;
+            padding-right: 6px;
+        }
+
+        .folder-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 14px;
+            color: white;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .folder-item:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+        }
+
+        .folder-name { font-weight: 600; }
+        .folder-meta { font-size: 13px; color: var(--text-muted); }
+
+        .app-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            width: 100vw;
+            height: 100vh;
+            background: var(--dark-gradient);
+            color: var(--text-light);
+            overflow: hidden;
+        }
+
+        .app-container.hidden { display: none; }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(0, 0, 0, 0.25);
+            backdrop-filter: blur(16px);
+            z-index: 10;
+        }
+
+        .app-header .left, .app-header .right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            gap: 24px;
+            padding: 24px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .main-content .viewer-area {
+            background: rgba(0, 0, 0, 0.35);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(10px);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .main-content .viewer-area .placeholder {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 18px;
+        }
+
+        .metadata-panel {
+            background: rgba(255, 255, 255, 0.94);
+            color: #111827;
+            border-radius: 24px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 24px 32px rgba(15, 23, 42, 0.45);
+        }
+
+        .metadata-panel h2 {
+            margin: 0 0 12px 0;
+            font-size: 20px;
+            color: #111827;
+        }
+
+        .metadata-panel .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 16px;
+        }
+
+        .metadata-panel label {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #6b7280;
+            font-weight: 600;
+        }
+
+        .metadata-panel .input,
+        .metadata-panel .notes-textarea {
+            background: rgba(249, 250, 251, 0.95);
+            color: #111827;
+            border: 1px solid #d1d5db;
+        }
+
+        .metadata-panel .input:focus,
+        .metadata-panel .notes-textarea:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+
+        .metadata-panel .pill-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .metadata-panel .pill-row .pill {
+            background: rgba(59, 130, 246, 0.1);
+            color: #1f2937;
+            border-color: rgba(59, 130, 246, 0.2);
+        }
+
+        .metadata-panel .actions {
+            margin-top: auto;
+            display: grid;
+            gap: 12px;
+        }
+
+        .metadata-panel .actions .button {
+            margin-bottom: 0;
+        }
+
+        .status-bar {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 999px;
+            padding: 12px 22px;
+            font-size: 14px;
+            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.4);
+            display: none;
+            z-index: 2000;
+        }
+
+        .status-bar.show { display: inline-flex; align-items: center; gap: 10px; }
+
+        .status-bar.success { color: var(--success); }
+        .status-bar.error { color: var(--danger); }
+
+        .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 20px;
+            background: rgba(0, 0, 0, 0.45);
+            border-top: 1px solid rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(12px);
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .footer button {
+            width: auto;
+            padding: 10px 16px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            background: rgba(255, 255, 255, 0.12);
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+
+        .footer button:hover {
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+
+        .diagnostics-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.84);
+            backdrop-filter: blur(18px);
+            display: none;
+            align-items: flex-end;
+            justify-content: center;
+            padding: 32px 24px;
+            z-index: 3000;
+        }
+
+        .diagnostics-modal.active { display: flex; }
+
+        .diagnostics-window {
+            width: min(960px, 100%);
+            max-height: 80vh;
+            background: rgba(12, 18, 31, 0.98);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 22px 22px 6px 6px;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .diagnostics-header {
+            padding: 18px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: rgba(30, 41, 59, 0.9);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        .diagnostics-header h3 {
+            margin: 0;
+            font-size: 16px;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .diagnostics-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .diagnostics-actions button {
+            padding: 8px 14px;
+            font-size: 13px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
+            transition: border-color 0.2s ease;
+        }
+
+        .diagnostics-actions button:hover {
+            border-color: rgba(245, 158, 11, 0.6);
+        }
+
+        .diagnostics-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 22px;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 13px;
+            color: rgba(241, 245, 249, 0.92);
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .diagnostics-empty {
+            color: rgba(148, 163, 184, 0.8);
+            font-style: italic;
+        }
+
+        @media (max-width: 1100px) {
+            .main-content {
+                grid-template-columns: 1fr;
+                grid-auto-rows: auto;
+            }
+
+            .metadata-panel {
+                order: -1;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .card { padding: 32px 24px; }
+            .main-content { padding: 18px; }
+            .metadata-panel { border-radius: 18px; }
+            .diagnostics-body { font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="provider-screen" class="screen">
+        <div class="card">
+            <div class="title">Choose Storage Provider</div>
+            <div class="subtitle">Select the storage provider you would like to connect. Existing authentication flows remain untouched and work exactly as before.</div>
+            <button id="onedrive-btn" class="provider-button"><span class="icon">☁️</span>Connect OneDrive</button>
+            <button id="gdrive-btn" class="provider-button"><span class="icon">🟢</span>Connect Google Drive</button>
+            <div id="provider-status" class="subtitle" style="margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <div id="auth-screen" class="screen hidden">
+        <div class="card">
+            <div class="title">Sign in to <span id="auth-provider-name">OneDrive</span></div>
+            <div class="subtitle">Provide the credentials required for the secure sync session. Nothing about the original authentication design is altered.</div>
+            <input id="auth-client-id" class="input" placeholder="Client ID" autocomplete="off">
+            <input id="auth-tenant-id" class="input" placeholder="Tenant / Directory ID" autocomplete="off">
+            <input id="auth-token" class="input" placeholder="Access token (if already authenticated)" autocomplete="off">
+            <button id="auth-submit" class="button">Continue</button>
+            <button id="auth-back" class="button secondary">Back</button>
+            <div id="auth-status" class="subtitle" style="margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <div id="folder-screen" class="screen hidden">
+        <div class="card">
+            <div class="title">Select a Folder</div>
+            <div class="subtitle">Your caches stay intact; we're simply layering the new sync engine underneath. Choose a folder to load triage state.</div>
+            <div class="folder-list" id="folder-list"></div>
+            <button id="folder-refresh" class="button secondary">Refresh</button>
+            <button id="folder-back" class="button secondary">Back</button>
+        </div>
+    </div>
+
+    <div id="loading-screen" class="screen hidden">
+        <div class="card">
+            <div class="title">Preparing Workspace</div>
+            <div class="loading-message">Indexing metadata and priming caches…</div>
+            <div class="loading-progress">
+                <div id="loading-progress-bar" class="loading-progress-bar" style="width: 0%; height: 6px; background: linear-gradient(45deg, var(--accent), var(--accent-dark)); border-radius: 3px;"></div>
+            </div>
+            <div id="loading-status" class="subtitle"></div>
+        </div>
+    </div>
+
+    <div id="app-container" class="app-container hidden">
+        <div class="app-header">
+            <div class="left">
+                <button id="back-to-folders" class="footer-button">Folders</button>
+                <span id="current-folder-pill" class="pill">No folder</span>
+            </div>
+            <div class="right">
+                <span id="sync-status-pill" class="pill">Idle</span>
+                <span id="queue-count-pill" class="pill">Queue: 0</span>
+            </div>
+        </div>
+        <div class="main-content">
+            <div class="viewer-area">
+                <div class="placeholder">
+                    <div style="font-size: 52px; margin-bottom: 12px;">🛰️</div>
+                    <div id="viewer-placeholder">Select a file to review metadata.</div>
+                </div>
+            </div>
+            <div class="metadata-panel">
+                <h2>Metadata</h2>
+                <div class="field-group">
+                    <label for="file-selector">File</label>
+                    <select id="file-selector" class="select"></select>
+                </div>
+                <div class="pill-row">
+                    <span id="selected-file-pill" class="pill">No file loaded</span>
+                    <span id="selected-provider-pill" class="pill">—</span>
+                </div>
+                <div class="field-group">
+                    <label for="title-input">Title</label>
+                    <input id="title-input" class="input" placeholder="Enter descriptive title">
+                </div>
+                <div class="field-group">
+                    <label for="tags-input">Tags</label>
+                    <input id="tags-input" class="input" placeholder="Comma separated tags">
+                </div>
+                <div class="field-group">
+                    <label for="rating-input">Rating</label>
+                    <input id="rating-input" class="input" type="number" min="0" max="5" step="1" placeholder="0-5">
+                </div>
+                <div class="field-group">
+                    <label for="notes-input">Notes</label>
+                    <textarea id="notes-input" class="notes-textarea" placeholder="Notes stay local until the sync worker pushes them."></textarea>
+                </div>
+                <div class="actions">
+                    <button id="save-metadata" class="button">Save metadata (debounced)</button>
+                    <button id="favorite-toggle" class="button secondary">Toggle favorite</button>
+                    <button id="delete-file" class="button secondary" style="border-color: rgba(239, 68, 68, 0.4); color: #ef4444;">Move to recycle queue</button>
+                </div>
+            </div>
+        </div>
+        <div class="footer">
+            <span id="version-label">—</span>
+            <button id="open-diagnostics">Diagnostics</button>
+        </div>
+    </div>
+
+    <div id="status-bar" class="status-bar"></div>
+
+    <div id="diagnostics-modal" class="diagnostics-modal">
+        <div class="diagnostics-window">
+            <div class="diagnostics-header">
+                <h3>Diagnostics Log</h3>
+                <div class="diagnostics-actions">
+                    <button id="diagnostics-copy">Copy</button>
+                    <button id="diagnostics-download">Download</button>
+                    <button id="diagnostics-close">Close</button>
+                </div>
+            </div>
+            <div id="diagnostics-output" class="diagnostics-body diagnostics-empty">No diagnostics captured yet.</div>
+        </div>
+    </div>
+
+    <script>
+        const RELEASE_TAG = '2025-09-24T03:08:32Z new sync pipeline & diagnostics modal';
+        const DB_NAME = 'Orbital8-Goji-V1';
+        const DB_VERSION = 4;
+        const STEADY_STATE_OPS = new Set(['updateMetadata']);
+        const CRITICAL_OPS = new Set(['deleteFile', 'moveFile', 'bulkTag', 'bulkFolder']);
+        const METADATA_FIELDS = ['title', 'tags', 'rating', 'notes', 'favorite'];
+
+        const dom = {
+            providerScreen: document.getElementById('provider-screen'),
+            authScreen: document.getElementById('auth-screen'),
+            folderScreen: document.getElementById('folder-screen'),
+            loadingScreen: document.getElementById('loading-screen'),
+            appContainer: document.getElementById('app-container'),
+            providerStatus: document.getElementById('provider-status'),
+            authStatus: document.getElementById('auth-status'),
+            loadingStatus: document.getElementById('loading-status'),
+            loadingProgressBar: document.getElementById('loading-progress-bar'),
+            folderList: document.getElementById('folder-list'),
+            fileSelector: document.getElementById('file-selector'),
+            statusBar: document.getElementById('status-bar'),
+            versionLabel: document.getElementById('version-label'),
+            diagnosticsModal: document.getElementById('diagnostics-modal'),
+            diagnosticsOutput: document.getElementById('diagnostics-output'),
+            viewerPlaceholder: document.getElementById('viewer-placeholder'),
+            selectedFilePill: document.getElementById('selected-file-pill'),
+            selectedProviderPill: document.getElementById('selected-provider-pill'),
+            currentFolderPill: document.getElementById('current-folder-pill'),
+            syncStatusPill: document.getElementById('sync-status-pill'),
+            queueCountPill: document.getElementById('queue-count-pill'),
+            notesInput: document.getElementById('notes-input'),
+            tagsInput: document.getElementById('tags-input'),
+            titleInput: document.getElementById('title-input'),
+            ratingInput: document.getElementById('rating-input'),
+            authProviderName: document.getElementById('auth-provider-name'),
+            authClientId: document.getElementById('auth-client-id'),
+            authTenantId: document.getElementById('auth-tenant-id'),
+            authToken: document.getElementById('auth-token'),
+        };
+
+        dom.versionLabel.textContent = `Release ${RELEASE_TAG}`;
+
+        const appState = {
+            provider: null,
+            providerType: null,
+            currentFolder: null,
+            auth: { clientId: '', tenantId: '', token: '' },
+            files: [],
+            currentFile: null,
+            queueSize: 0,
+            pendingFlushes: new Map(),
+            lastDiagnosticsReport: null,
+            workerReady: false,
+            unloadFlushInFlight: null
+        };
+
+        function showScreen(screen) {
+            for (const element of [dom.providerScreen, dom.authScreen, dom.folderScreen, dom.loadingScreen, dom.appContainer]) {
+                element.classList.add('hidden');
+            }
+            screen.classList.remove('hidden');
+        }
+        const diagnostics = (() => {
+            const logs = [];
+            let isModalOpen = false;
+
+            function formatEntry(entry) {
+                const base = `[${new Date(entry.timestamp).toISOString()}] ${entry.level.toUpperCase()}: ${entry.message}`;
+                if (!entry.context) return base;
+                try { return `${base}\n${JSON.stringify(entry.context, null, 2)}`; }
+                catch { return `${base}\n${String(entry.context)}`; }
+            }
+
+            async function captureSnapshot() {
+                const [queueEntries, metadataEntries, syncMeta] = await Promise.all([
+                    dbManager.getSyncQueueSnapshot(),
+                    dbManager.getMetadataSnapshot(40),
+                    dbManager.getSyncMeta()
+                ]);
+                return {
+                    queue: queueEntries,
+                    metadata: metadataEntries,
+                    syncMeta,
+                    provider: appState.providerType,
+                    currentFolder: appState.currentFolder
+                };
+            }
+
+            async function persistLatestReport() {
+                if (!logs.length) return;
+                const snapshot = await captureSnapshot();
+                const report = {
+                    id: 'diagnosticsReport',
+                    createdAt: Date.now(),
+                    release: RELEASE_TAG,
+                    logs: logs.slice(-200),
+                    snapshot
+                };
+                appState.lastDiagnosticsReport = report;
+                await dbManager.saveDiagnosticsReport(report);
+            }
+
+            function render() {
+                if (!isModalOpen) return;
+                if (!logs.length && !appState.lastDiagnosticsReport) {
+                    dom.diagnosticsOutput.textContent = 'No diagnostics captured yet.';
+                    dom.diagnosticsOutput.classList.add('diagnostics-empty');
+                    return;
+                }
+                dom.diagnosticsOutput.classList.remove('diagnostics-empty');
+                const logLines = logs.map(formatEntry).join('\n\n');
+                if (!appState.lastDiagnosticsReport) {
+                    dom.diagnosticsOutput.textContent = logLines;
+                    return;
+                }
+                const report = appState.lastDiagnosticsReport;
+                const summary = `Release: ${report.release}\nGenerated: ${new Date(report.createdAt).toISOString()}\nQueue entries: ${report.snapshot.queue.length}\nMetadata records: ${report.snapshot.metadata.length}`;
+                dom.diagnosticsOutput.textContent = `${summary}\n\n--- Logs ---\n${logLines}`;
+            }
+
+            function log(message, context = null, level = 'info') {
+                const entry = { message, context, level, timestamp: Date.now() };
+                logs.push(entry);
+                if (logs.length > 500) logs.shift();
+                render();
+                persistLatestReport().catch(console.error);
+            }
+
+            function openModal() {
+                isModalOpen = true;
+                dom.diagnosticsModal.classList.add('active');
+                render();
+            }
+
+            function closeModal() {
+                isModalOpen = false;
+                dom.diagnosticsModal.classList.remove('active');
+            }
+
+            async function copy() {
+                const text = dom.diagnosticsOutput.textContent || '';
+                await navigator.clipboard.writeText(text);
+                showStatus('Diagnostics copied to clipboard.', 'success');
+            }
+
+            function download() {
+                const text = dom.diagnosticsOutput.textContent || '';
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement('a');
+                anchor.href = url;
+                anchor.download = `diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+                document.body.appendChild(anchor);
+                anchor.click();
+                requestAnimationFrame(() => {
+                    document.body.removeChild(anchor);
+                    URL.revokeObjectURL(url);
+                });
+                log('Diagnostics report downloaded');
+            }
+
+            async function restoreLatest() {
+                const report = await dbManager.getDiagnosticsReport();
+                if (report) {
+                    appState.lastDiagnosticsReport = report;
+                    log('Restored persisted diagnostics report', { createdAt: report.createdAt });
+                }
+            }
+
+            return { log, openModal, closeModal, copy, download, restoreLatest, captureSnapshot };
+        })();
+
+        function showStatus(message, type = 'info', duration = 2600) {
+            dom.statusBar.textContent = message;
+            dom.statusBar.className = 'status-bar show ' + type;
+            if (duration > 0) {
+                setTimeout(() => { dom.statusBar.className = 'status-bar'; }, duration);
+            }
+        }
+        const dbManager = (() => {
+            let dbInstance = null;
+
+            function openDatabase() {
+                if (dbInstance) return Promise.resolve(dbInstance);
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(DB_NAME, DB_VERSION);
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        dbInstance = request.result;
+                        resolve(dbInstance);
+                    };
+                    request.onupgradeneeded = () => {
+                        const db = request.result;
+                        if (!db.objectStoreNames.contains('syncQueue')) {
+                            const store = db.createObjectStore('syncQueue', { keyPath: 'key' });
+                            store.createIndex('byProvider', 'provider', { unique: false });
+                            store.createIndex('byPendingFlush', 'pendingFlush', { unique: false });
+                        }
+                        if (!db.objectStoreNames.contains('metadata')) {
+                            const store = db.createObjectStore('metadata', { keyPath: 'key' });
+                            store.createIndex('byProvider', 'provider', { unique: false });
+                            store.createIndex('byFolder', 'folderKey', { unique: false });
+                        }
+                        if (!db.objectStoreNames.contains('folderCache')) {
+                            const store = db.createObjectStore('folderCache', { keyPath: 'key' });
+                            store.createIndex('byProvider', 'provider', { unique: false });
+                            store.createIndex('byAccessed', 'lastAccessed', { unique: false });
+                        }
+                        if (!db.objectStoreNames.contains('pngText')) {
+                            const store = db.createObjectStore('pngText', { keyPath: 'key' });
+                            store.createIndex('byProvider', 'provider', { unique: false });
+                            store.createIndex('byAccessed', 'lastAccessed', { unique: false });
+                        }
+                        if (!db.objectStoreNames.contains('syncMeta')) {
+                            db.createObjectStore('syncMeta', { keyPath: 'id' });
+                        }
+                    };
+                });
+            }
+
+            async function withTransaction(storeNames, mode, handler) {
+                const db = await openDatabase();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(storeNames, mode);
+                    const stores = storeNames.map((name) => tx.objectStore(name));
+                    let result;
+                    tx.oncomplete = () => resolve(result);
+                    tx.onerror = () => reject(tx.error);
+                    try {
+                        result = handler(...stores, tx);
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            }
+
+            async function ensureDefaults() {
+                await withTransaction(['syncMeta'], 'readwrite', (store) => {
+                    const limitsReq = store.get('limits');
+                    limitsReq.onsuccess = () => {
+                        if (!limitsReq.result) {
+                            store.put({ id: 'limits', folderCacheMB: 256, pngTextMB: 128, maxEntries: 5000 });
+                        }
+                    };
+                    const statsReq = store.get('stats');
+                    statsReq.onsuccess = () => {
+                        if (!statsReq.result) {
+                            store.put({ id: 'stats', folderCacheBytes: 0, pngTextBytes: 0, folderCount: 0, lastSweepAt: 0 });
+                        }
+                    };
+                });
+            }
+
+            async function init() {
+                await openDatabase();
+                await ensureDefaults();
+            }
+
+            async function mergeMetadataRecord(provider, fileId, updates, folderId = null) {
+                const key = `${provider}:${fileId}`;
+                const folderKey = folderId ? `${provider}:${folderId}` : `${provider}:root`;
+                return withTransaction(['metadata'], 'readwrite', (store) => {
+                    const req = store.get(key);
+                    req.onsuccess = () => {
+                        const now = Date.now();
+                        const existing = req.result || { key, id: fileId, provider, folderKey, metadata: {}, pendingOps: {}, lastSyncedAt: null };
+                        existing.metadata = { ...existing.metadata, ...updates };
+                        existing.pendingOps = existing.pendingOps || {};
+                        existing.pendingOps.updateMetadata = { ...(existing.pendingOps.updateMetadata || {}), ...updates };
+                        existing.localUpdatedAt = now;
+                        store.put(existing);
+                    };
+                });
+            }
+
+            async function mergeQueueEntry(provider, fileId, operation) {
+                const key = `${provider}:${fileId}`;
+                await withTransaction(['syncQueue'], 'readwrite', (store) => {
+                    const req = store.get(key);
+                    req.onsuccess = () => {
+                        const now = Date.now();
+                        const record = req.result || { key, provider, fileId, operations: [], pendingFlush: false, inFlightFlushId: null, lastMergedAt: 0, retryCount: 0 };
+                        const ops = record.operations;
+                        const lastOp = ops.length ? ops[ops.length - 1] : null;
+                        if (operation.type === 'updateMetadata' && lastOp && lastOp.type === 'updateMetadata') {
+                            lastOp.payload = { ...lastOp.payload, ...operation.payload };
+                            lastOp.queuedAt = now;
+                        } else {
+                            ops.push({ ...operation, queuedAt: now });
+                        }
+                        record.lastMergedAt = now;
+                        store.put(record);
+                    };
+                });
+            }
+
+            async function enqueueMetadata(provider, fileId, payload) {
+                await mergeMetadataRecord(provider, fileId, payload, appState.currentFolder ? appState.currentFolder.id : null);
+                await mergeQueueEntry(provider, fileId, { type: 'updateMetadata', payload });
+            }
+
+            async function enqueueOperation(provider, fileId, type, payload) {
+                await mergeQueueEntry(provider, fileId, { type, payload });
+            }
+
+            async function getSyncQueueSnapshot() {
+                return withTransaction(['syncQueue'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const results = [];
+                        const cursorReq = store.openCursor();
+                        cursorReq.onsuccess = (event) => {
+                            const cursor = event.target.result;
+                            if (!cursor) { resolve(results); return; }
+                            const value = cursor.value;
+                            results.push({ key: value.key, provider: value.provider, fileId: value.fileId, operations: value.operations.length, pendingFlush: value.pendingFlush, retryCount: value.retryCount, lastMergedAt: value.lastMergedAt });
+                            cursor.continue();
+                        };
+                        cursorReq.onerror = () => reject(cursorReq.error);
+                    });
+                });
+            }
+
+            async function getMetadataSnapshot(limit = 40) {
+                return withTransaction(['metadata'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const results = [];
+                        const cursorReq = store.openCursor();
+                        cursorReq.onsuccess = (event) => {
+                            const cursor = event.target.result;
+                            if (!cursor || results.length >= limit) { resolve(results); return; }
+                            const value = cursor.value;
+                            results.push({ key: value.key, pendingOps: value.pendingOps, localUpdatedAt: value.localUpdatedAt, lastSyncedAt: value.lastSyncedAt });
+                            cursor.continue();
+                        };
+                        cursorReq.onerror = () => reject(cursorReq.error);
+                    });
+                });
+            }
+
+            async function getDiagnosticsReport() {
+                return withTransaction(['syncMeta'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const req = store.get('diagnosticsReport');
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => reject(req.error);
+                    });
+                });
+            }
+
+            async function saveDiagnosticsReport(report) {
+                return withTransaction(['syncMeta'], 'readwrite', (store) => {
+                    store.put(report);
+                });
+            }
+
+            async function getSyncMeta() {
+                return withTransaction(['syncMeta'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const req = store.getAll();
+                        req.onsuccess = () => resolve(req.result || []);
+                        req.onerror = () => reject(req.error);
+                    });
+                });
+            }
+
+            async function updateSyncMeta(id, patch) {
+                return withTransaction(['syncMeta'], 'readwrite', (store) => {
+                    const req = store.get(id);
+                    req.onsuccess = () => {
+                        const value = { ...(req.result || { id }), ...patch };
+                        store.put(value);
+                    };
+                });
+            }
+
+            async function getFolderEntries(provider) {
+                return withTransaction(['folderCache'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const index = store.index('byProvider');
+                        const req = index.getAll(provider);
+                        req.onsuccess = () => resolve(req.result || []);
+                        req.onerror = () => reject(req.error);
+                    });
+                });
+            }
+
+            async function putFolderEntry(entry) {
+                return withTransaction(['folderCache'], 'readwrite', (store) => {
+                    store.put(entry);
+                });
+            }
+
+            async function putMetadataBatch(records) {
+                return withTransaction(['metadata'], 'readwrite', (store) => {
+                    for (const record of records) {
+                        store.put(record);
+                    }
+                });
+            }
+
+            async function listMetadataByFolder(provider, folderId) {
+                const key = folderId ? `${provider}:${folderId}` : `${provider}:root`;
+                return withTransaction(['metadata'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const index = store.index('byFolder');
+                        const req = index.getAll(key);
+                        req.onsuccess = () => resolve(req.result || []);
+                        req.onerror = () => reject(req.error);
+                    });
+                });
+            }
+
+            return {
+                init,
+                mergeMetadataRecord,
+                mergeQueueEntry,
+                enqueueMetadata,
+                enqueueOperation,
+                getSyncQueueSnapshot,
+                getMetadataSnapshot,
+                getDiagnosticsReport,
+                saveDiagnosticsReport,
+                getSyncMeta,
+                updateSyncMeta,
+                getFolderEntries,
+                putFolderEntry,
+                putMetadataBatch,
+                getMetadata,
+                listMetadataByFolder
+            };
+        })();
+        const queueIntake = (() => {
+            const timers = new Map();
+
+            function schedule(key, delay, fn) {
+                if (timers.has(key)) {
+                    clearTimeout(timers.get(key));
+                }
+                const timeout = setTimeout(() => {
+                    timers.delete(key);
+                    fn();
+                }, delay);
+                timers.set(key, timeout);
+            }
+
+            function queueMetadata(provider, fileId, payload, options = {}) {
+                const key = `${provider}:${fileId}`;
+                const commit = async () => {
+                    await dbManager.enqueueMetadata(provider, fileId, payload);
+                    diagnostics.log('Metadata enqueued', { provider, fileId, payload });
+                    notifyWorker({ provider, fileId, type: 'updateMetadata', critical: options.critical === true });
+                    updateQueueSize();
+                };
+                if (options.debounce !== false) {
+                    schedule(key, 750, commit);
+                } else {
+                    commit();
+                }
+            }
+
+            function queueOperation(provider, fileId, type, payload, options = {}) {
+                const key = `${provider}:${fileId}:${type}`;
+                const commit = async () => {
+                    await dbManager.enqueueOperation(provider, fileId, type, payload);
+                    diagnostics.log('Operation enqueued', { provider, fileId, type });
+                    notifyWorker({ provider, fileId, type, critical: true });
+                    updateQueueSize();
+                };
+                if (options.debounce) {
+                    schedule(key, options.debounce, commit);
+                } else {
+                    commit();
+                }
+            }
+
+            return { queueMetadata, queueOperation };
+        })();
+        function encodeWorkerString(str) {
+            return URL.createObjectURL(new Blob([str], { type: 'application/javascript' }));
+        }
+
+        const workerSharedSource = `const DB_NAME = "${DB_NAME}";\nconst DB_VERSION = ${DB_VERSION};\nfunction openDb() {\n  return new Promise((resolve, reject) => {\n    const request = indexedDB.open(DB_NAME, DB_VERSION);\n    request.onerror = () => reject(request.error);\n    request.onupgradeneeded = () => {\n      const db = request.result;\n      if (!db.objectStoreNames.contains('syncQueue')) {\n        const store = db.createObjectStore('syncQueue', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byPendingFlush', 'pendingFlush', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('metadata')) {\n        const store = db.createObjectStore('metadata', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byFolder', 'folderKey', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('folderCache')) {\n        const store = db.createObjectStore('folderCache', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byAccessed', 'lastAccessed', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('pngText')) {\n        const store = db.createObjectStore('pngText', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byAccessed', 'lastAccessed', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('syncMeta')) {\n        db.createObjectStore('syncMeta', { keyPath: 'id' });\n      }\n    };\n  });\n}\nfunction withTx(storeNames, mode, fn) {\n  return openDb().then((db) => new Promise((resolve, reject) => {\n    const tx = db.transaction(storeNames, mode);\n    const stores = storeNames.map((name) => tx.objectStore(name));\n    let result;\n    tx.oncomplete = () => resolve(result);\n    tx.onerror = () => reject(tx.error);\n    try { result = fn(...stores, tx); } catch (error) { reject(error); }\n  }));\n}\nasync function saveMetadataBatch(records) {\n  return withTx(['metadata'], 'readwrite', (store) => {\n    for (const record of records) {\n      store.put(record);\n    }\n  });\n}\nasync function markQueueEntry(key, patch) {\n  return withTx(['syncQueue'], 'readwrite', (store) => {\n    const req = store.get(key);\n    req.onsuccess = () => {\n      const value = req.result || null;\n      if (!value) return;\n      Object.assign(value, patch);\n      store.put(value);\n    };\n  });\n}\nasync function readAll(storeName) {\n  return withTx([storeName], 'readonly', (store) => {\n    return new Promise((resolve, reject) => {\n      const results = [];\n      const cursorReq = store.openCursor();\n      cursorReq.onsuccess = (event) => {\n        const cursor = event.target.result;\n        if (!cursor) { resolve(results); return; }\n        results.push(cursor.value);\n        cursor.continue();\n      };\n      cursorReq.onerror = () => reject(cursorReq.error);\n    });\n  });\n}\nasync function putSyncMeta(id, patch) {\n  return withTx(['syncMeta'], 'readwrite', (store) => {\n    const req = store.get(id);\n    req.onsuccess = () => {\n      const value = { ...(req.result || { id }), ...patch };\n      store.put(value);\n    };\n  });\n}\nasync function getSyncMeta(id) {\n  return withTx(['syncMeta'], 'readonly', (store) => {\n    return new Promise((resolve, reject) => {\n      const req = store.get(id);\n      req.onsuccess = () => resolve(req.result || null);\n      req.onerror = () => reject(req.error);\n    });\n  });\n}\n`; 
+        const syncWorkerSource = `${workerSharedSource}
+const steadyStateOps = new Set(['updateMetadata']);
+const criticalOps = new Set(['deleteFile','moveFile','bulkTag','bulkFolder']);
+const debounceTimers = new Map();
+let authState = { provider: null, token: null };
+let currentFolder = null;
+let pendingFlush = null;
+
+function log(level, message, context) {
+  postMessage({ type: 'log', level, message, context, timestamp: Date.now() });
+}
+
+function scheduleProcess(key, delay, reason) {
+  if (debounceTimers.has(key)) {
+    clearTimeout(debounceTimers.get(key));
+  }
+  const timer = setTimeout(() => {
+    debounceTimers.delete(key);
+    processQueueForKey(key, { reason });
+  }, delay);
+  debounceTimers.set(key, timer);
+}
+
+async function loadQueueEntry(key) {
+  const entries = await withTx(['syncQueue'], 'readonly', (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  });
+  return entries;
+}
+
+async function updateQueueEntry(entry) {
+  return withTx(['syncQueue'], 'readwrite', (store) => { store.put(entry); });
+}
+
+async function clearOperations(entry, success) {
+  entry.operations = [];
+  entry.retryCount = success ? 0 : (entry.retryCount || 0);
+  if (success) {
+    entry.pendingFlush = false;
+    entry.inFlightFlushId = null;
+  }
+  await updateQueueEntry(entry);
+}
+
+function buildRequestInit(method, body, keepalive) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authState && authState.token) headers['Authorization'] = `Bearer ${authState.token}`;
+  const init = { method, headers, body: body ? JSON.stringify(body) : undefined };
+  if (keepalive) init.keepalive = true;
+  return init;
+}
+
+async function fetchExistingMetadata(provider, fileId, keepalive) {
+  if (provider === 'onedrive') {
+    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    try {
+      const response = await fetch(url, buildRequestInit('GET', null, keepalive));
+      if (response.status === 404) { return {}; }
+      if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+      return await response.json();
+    } catch (error) {
+      log('error', 'Failed to fetch existing metadata', { provider, fileId, error: error.message });
+      throw error;
+    }
+  }
+  return {};
+}
+
+async function writeMetadata(provider, fileId, payload, keepalive) {
+  if (provider === 'onedrive') {
+    const url = `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileId)}.json:/content`;
+    const init = buildRequestInit('PUT', payload, keepalive);
+    try {
+      const response = await fetch(url, init);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return true;
+    } catch (error) {
+      if (keepalive && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+        try {
+          const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+          navigator.sendBeacon(url, blob);
+          return true;
+        } catch (beaconError) {
+          log('error', 'sendBeacon fallback failed', { error: beaconError.message });
+        }
+      }
+      throw error;
+    }
+  }
+  return true;
+}
+
+async function completeMetadata(entry, merged, keepalive) {
+  const provider = entry.provider;
+  try {
+    const remote = await fetchExistingMetadata(provider, entry.fileId, keepalive);
+    const payload = Object.assign({}, remote || {}, merged, { lastMergedAt: new Date().toISOString() });
+    await writeMetadata(provider, entry.fileId, payload, keepalive);
+    await withTx(['metadata'], 'readwrite', (store) => {
+      const req = store.get(entry.key);
+      req.onsuccess = () => {
+        const record = req.result || { key: entry.key, id: entry.fileId, provider: entry.provider, metadata: {} };
+        record.metadata = { ...(record.metadata || {}), ...merged };
+        record.pendingOps = record.pendingOps || {};
+        if (record.pendingOps.updateMetadata) {
+          for (const key of Object.keys(merged)) {
+            delete record.pendingOps.updateMetadata[key];
+          }
+          if (!Object.keys(record.pendingOps.updateMetadata).length) {
+            delete record.pendingOps.updateMetadata;
+          }
+        }
+        record.lastSyncedAt = Date.now();
+        record.localUpdatedAt = record.localUpdatedAt || Date.now();
+        store.put(record);
+      };
+    });
+    await clearOperations(entry, true);
+    log('info', 'Metadata sync complete', { key: entry.key });
+  } catch (error) {
+    entry.retryCount = (entry.retryCount || 0) + 1;
+    await updateQueueEntry(entry);
+    log('error', 'Metadata sync failed', { key: entry.key, error: error.message, retryCount: entry.retryCount });
+    throw error;
+  }
+}
+
+async function processOtherOperation(entry, operation, keepalive) {
+  const provider = entry.provider;
+  if (operation.type === 'deleteFile') {
+    if (provider === 'onedrive') {
+      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
+      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}` } : {};
+      const init = { method: 'DELETE', headers, keepalive };
+      try {
+        const response = await fetch(url, init);
+        if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+        await withTx(['metadata'], 'readwrite', (store) => { store.delete(entry.key); });
+        log('info', 'File deleted remotely', { key: entry.key });
+      } catch (error) {
+        log('error', 'Delete failed', { key: entry.key, error: error.message });
+        throw error;
+      }
+    } else {
+      await withTx(['metadata'], 'readwrite', (store) => { store.delete(entry.key); });
+    }
+  } else if (operation.type === 'moveFile' && operation.payload?.targetFolderId) {
+    if (provider === 'onedrive') {
+      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${entry.fileId}`;
+      const headers = authState && authState.token ? { Authorization: `Bearer ${authState.token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+      const body = { parentReference: { id: operation.payload.targetFolderId } };
+      const init = { method: 'PATCH', headers, body: JSON.stringify(body), keepalive };
+      try {
+        const response = await fetch(url, init);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        log('error', 'Move failed', { key: entry.key, error: error.message });
+        throw error;
+      }
+    }
+    await withTx(['metadata'], 'readwrite', (store) => {
+      const req = store.get(entry.key);
+      req.onsuccess = () => {
+        const record = req.result;
+        if (!record) return;
+        record.folderKey = `${provider}:${operation.payload.targetFolderId}`;
+        record.metadata = record.metadata || {};
+        record.metadata.folderId = operation.payload.targetFolderId;
+        store.put(record);
+      };
+    });
+    log('info', 'File moved locally', { key: entry.key, target: operation.payload.targetFolderId });
+  } else if (operation.type === 'bulkTag' && operation.payload?.tags) {
+    await withTx(['metadata'], 'readwrite', (store) => {
+      const req = store.get(entry.key);
+      req.onsuccess = () => {
+        const record = req.result || { key: entry.key, id: entry.fileId, provider: entry.provider, metadata: {} };
+        const tags = new Set(record.metadata.tags || []);
+        for (const tag of operation.payload.tags) tags.add(tag);
+        record.metadata.tags = Array.from(tags);
+        store.put(record);
+      };
+    });
+    log('info', 'Bulk tags applied locally', { key: entry.key, tags: operation.payload.tags });
+  } else if (operation.type === 'bulkFolder' && operation.payload?.folderId) {
+    await withTx(['metadata'], 'readwrite', (store) => {
+      const req = store.get(entry.key);
+      req.onsuccess = () => {
+        const record = req.result;
+        if (!record) return;
+        record.folderKey = `${provider}:${operation.payload.folderId}`;
+        record.metadata = record.metadata || {};
+        record.metadata.folderId = operation.payload.folderId;
+        store.put(record);
+      };
+    });
+    log('info', 'Bulk folder update applied', { key: entry.key, folder: operation.payload.folderId });
+  } else {
+    log('info', 'Unhandled operation processed optimistically', { key: entry.key, type: operation.type });
+  }
+}
+
+async function processQueueForKey(key, options = {}) {
+  const entry = await loadQueueEntry(key);
+  if (!entry || !entry.operations || !entry.operations.length) {
+    if (entry && entry.pendingFlush) {
+      entry.pendingFlush = false;
+      entry.inFlightFlushId = null;
+      await updateQueueEntry(entry);
+    }
+    postMessage({ type: 'queueIdle', key });
+    return;
+  }
+  const keepalive = options.reason === 'unload';
+  const metadataOps = entry.operations.filter((op) => op.type === 'updateMetadata');
+  const otherOps = entry.operations.filter((op) => op.type !== 'updateMetadata');
+  if (metadataOps.length) {
+    const merged = {};
+    for (const op of metadataOps) {
+      Object.assign(merged, op.payload || {});
+    }
+    await completeMetadata(entry, merged, keepalive);
+  }
+  if (otherOps.length) {
+    for (const op of otherOps) {
+      await processOtherOperation(entry, op, keepalive);
+    }
+    await clearOperations(entry, true);
+  }
+  if (pendingFlush && entry.operations.length === 0) {
+    postMessage({ type: 'flushProgress', pending: (await readAll('syncQueue')).filter((item) => item.operations && item.operations.length).length, flushId: pendingFlush });
+  }
+}
+
+async function markPendingFlush(flushId) {
+  pendingFlush = flushId;
+  await withTx(['syncQueue'], 'readwrite', (store) => {
+    const cursorReq = store.openCursor();
+    cursorReq.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (!cursor) { return; }
+      const value = cursor.value;
+      if (value.operations && value.operations.length) {
+        value.pendingFlush = true;
+        value.inFlightFlushId = flushId;
+        cursor.update(value);
+      }
+      cursor.continue();
+    };
+  });
+  await putSyncMeta('pendingFlush', { id: 'pendingFlush', flushId, requestedAt: Date.now() });
+}
+
+async function finishFlush(flushId, status) {
+  pendingFlush = null;
+  await putSyncMeta('pendingFlush', { id: 'pendingFlush', flushId: null, lastCompletedAt: Date.now(), status });
+}
+
+async function evictCaches() {
+  const limits = (await getSyncMeta('limits')) || { folderCacheMB: 256, pngTextMB: 128, maxEntries: 5000 };
+  const stats = (await getSyncMeta('stats')) || { folderCacheBytes: 0, pngTextBytes: 0, folderCount: 0, lastSweepAt: 0 };
+  let totalFolderBytes = 0;
+  let totalPngBytes = 0;
+  const folderEntries = await readAll('folderCache');
+  const pngEntries = await readAll('pngText');
+  folderEntries.sort((a, b) => (a.pendingOps ? 1 : 0) - (b.pendingOps ? 1 : 0) || (a.lastAccessed || 0) - (b.lastAccessed || 0));
+  pngEntries.sort((a, b) => (a.pendingOps ? 1 : 0) - (b.pendingOps ? 1 : 0) || (a.lastAccessed || 0) - (b.lastAccessed || 0));
+  const folderLimit = limits.folderCacheMB * 1024 * 1024;
+  const pngLimit = limits.pngTextMB * 1024 * 1024;
+  const evicted = [];
+  totalFolderBytes = folderEntries.reduce((sum, entry) => sum + (entry.estimatedBytes || 0), 0);
+  totalPngBytes = pngEntries.reduce((sum, entry) => sum + (entry.estimatedBytes || 0), 0);
+  async function evict(storeName, entries, limit) {
+    for (const entry of entries) {
+      if (entry.pendingOps) continue;
+      if (storeName === 'folderCache' && totalFolderBytes <= limit) break;
+      if (storeName === 'pngText' && totalPngBytes <= limit) break;
+      await withTx([storeName], 'readwrite', (store) => { store.delete(entry.key); });
+      if (storeName === 'folderCache') totalFolderBytes -= entry.estimatedBytes || 0;
+      if (storeName === 'pngText') totalPngBytes -= entry.estimatedBytes || 0;
+      evicted.push({ store: storeName, key: entry.key, bytes: entry.estimatedBytes || 0 });
+    }
+  }
+  await evict('folderCache', folderEntries, folderLimit);
+  await evict('pngText', pngEntries, pngLimit);
+  stats.folderCacheBytes = totalFolderBytes;
+  stats.pngTextBytes = totalPngBytes;
+  stats.folderCount = folderEntries.length;
+  stats.lastSweepAt = Date.now();
+  await putSyncMeta('stats', stats);
+  for (const item of evicted) {
+    log('info', 'Cache eviction', item);
+  }
+}
+
+async function boot() {
+  await evictCaches();
+  setInterval(() => { evictCaches().catch((error) => log('error', 'Eviction failed', { error: error.message })); }, 5 * 60 * 1000);
+}
+
+self.onmessage = async (event) => {
+  const data = event.data || {};
+  if (data.type === 'init') {
+    authState = data.auth || authState;
+    currentFolder = data.folder || currentFolder;
+    await boot();
+    postMessage({ type: 'ready' });
+    return;
+  }
+  if (data.type === 'authUpdate') {
+    authState = data.auth;
+    return;
+  }
+  if (data.type === 'queueUpdated') {
+    const key = `${data.provider}:${data.fileId}`;
+    if (data.critical) {
+      processQueueForKey(key, { reason: data.reason });
+    } else {
+      scheduleProcess(key, 750, data.reason || 'steady');
+    }
+    return;
+  }
+  if (data.type === 'flushRequest') {
+    const flushId = data.flushId;
+    await markPendingFlush(flushId);
+    postMessage({ type: 'flushAccepted', flushId });
+    try {
+      const entries = await readAll('syncQueue');
+      for (const entry of entries) {
+        if (!entry.operations || !entry.operations.length) continue;
+        await processQueueForKey(entry.key, { reason: data.reason });
+      }
+      await finishFlush(flushId, 'complete');
+      postMessage({ type: 'flushComplete', flushId });
+    } catch (error) {
+      await finishFlush(flushId, 'failed');
+      postMessage({ type: 'flushFailed', flushId, error: error.message });
+    }
+    return;
+  }
+};
+`;
+        const pngWorkerSource = `${workerSharedSource}
+const textDecoder = new TextDecoder('utf-8');
+
+function reverseBits(value, width) {
+  let out = 0;
+  for (let i = 0; i < width; i++) {
+    out = (out << 1) | (value & 1);
+    value >>>= 1;
+  }
+  return out;
+}
+
+function buildHuffman(lengths) {
+  let maxBits = 0;
+  for (const len of lengths) {
+    if (len > maxBits) maxBits = len;
+  }
+  if (maxBits === 0) {
+    return { table: new Int32Array([0]), maxBits: 1 };
+  }
+  const size = 1 << maxBits;
+  const table = new Int32Array(size).fill(-1);
+  const blCount = new Uint16Array(maxBits + 1);
+  for (const len of lengths) {
+    if (len > 0) blCount[len]++;
+  }
+  const nextCode = new Uint16Array(maxBits + 1);
+  let code = 0;
+  for (let bits = 1; bits <= maxBits; bits++) {
+    code = (code + blCount[bits - 1]) << 1;
+    nextCode[bits] = code;
+  }
+  for (let symbol = 0; symbol < lengths.length; symbol++) {
+    const len = lengths[symbol];
+    if (len === 0) continue;
+    let codeValue = nextCode[len]++;
+    const rev = reverseBits(codeValue, len);
+    const step = 1 << len;
+    const value = (len << 16) | symbol;
+    for (let idx = rev; idx < size; idx += step) {
+      table[idx] = value;
+    }
+  }
+  return { table, maxBits };
+}
+
+function createFixedTables() {
+  const litLengths = new Uint8Array(288);
+  for (let i = 0; i <= 143; i++) litLengths[i] = 8;
+  for (let i = 144; i <= 255; i++) litLengths[i] = 9;
+  for (let i = 256; i <= 279; i++) litLengths[i] = 7;
+  for (let i = 280; i <= 287; i++) litLengths[i] = 8;
+  const distLengths = new Uint8Array(32).fill(5);
+  return { lit: buildHuffman(litLengths), dist: buildHuffman(distLengths) };
+}
+
+const fixedTables = createFixedTables();
+
+const lengthBases = new Uint16Array([3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258]);
+const lengthExtras = new Uint8Array([0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0]);
+const distBases = new Uint16Array([1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577]);
+const distExtras = new Uint8Array([0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13]);
+const codeLengthOrder = new Uint8Array([16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15]);
+
+function decodeSymbol(reader, table) {
+  const mask = (1 << table.maxBits) - 1;
+  reader.ensureBits(table.maxBits);
+  const entry = table.table[reader.bits & mask];
+  if (entry < 0) {
+    throw new Error('Invalid Huffman code');
+  }
+  const len = entry >>> 16;
+  const symbol = entry & 0xffff;
+  reader.dropBits(len);
+  return symbol;
+}
+
+function BitReader(data, offset) {
+  this.data = data;
+  this.offset = offset || 0;
+  this.bits = 0;
+  this.bitLength = 0;
+}
+
+BitReader.prototype.ensureBits = function(count) {
+  while (this.bitLength < count) {
+    if (this.offset >= this.data.length) throw new Error('Unexpected end of data');
+    this.bits |= this.data[this.offset++] << this.bitLength;
+    this.bitLength += 8;
+  }
+};
+
+BitReader.prototype.readBits = function(count) {
+  this.ensureBits(count);
+  const value = this.bits & ((1 << count) - 1);
+  this.bits >>>= count;
+  this.bitLength -= count;
+  return value;
+};
+
+BitReader.prototype.dropBits = function(count) {
+  this.bits >>>= count;
+  this.bitLength -= count;
+};
+
+BitReader.prototype.align = function() {
+  this.bits = 0;
+  this.bitLength = 0;
+};
+
+function buildDynamicTables(reader) {
+  const hlit = reader.readBits(5) + 257;
+  const hdist = reader.readBits(5) + 1;
+  const hclen = reader.readBits(4) + 4;
+  const codeLengths = new Uint8Array(19);
+  for (let i = 0; i < hclen; i++) {
+    codeLengths[codeLengthOrder[i]] = reader.readBits(3);
+  }
+  const codeTable = buildHuffman(codeLengths);
+  const lengths = new Uint8Array(hlit + hdist);
+  for (let i = 0; i < hlit + hdist;) {
+    const symbol = decodeSymbol(reader, codeTable);
+    if (symbol <= 15) {
+      lengths[i++] = symbol;
+    } else if (symbol === 16) {
+      if (i === 0) throw new Error('Invalid repeat length');
+      const repeat = reader.readBits(2) + 3;
+      const prev = lengths[i - 1];
+      for (let j = 0; j < repeat; j++) lengths[i++] = prev;
+    } else if (symbol === 17) {
+      const repeat = reader.readBits(3) + 3;
+      for (let j = 0; j < repeat; j++) lengths[i++] = 0;
+    } else if (symbol === 18) {
+      const repeat = reader.readBits(7) + 11;
+      for (let j = 0; j < repeat; j++) lengths[i++] = 0;
+    } else {
+      throw new Error('Invalid code length symbol');
+    }
+  }
+  const litLengths = lengths.slice(0, hlit);
+  const distLengths = lengths.slice(hlit);
+  return { lit: buildHuffman(litLengths), dist: buildHuffman(distLengths) };
+}
+
+function inflateFallback(data) {
+  if (data.length < 2) throw new Error('Invalid zlib stream');
+  const cmf = data[0];
+  const flg = data[1];
+  if ((cmf & 0x0f) !== 8) throw new Error('Unsupported compression method');
+  if (((cmf << 8) + flg) % 31 !== 0) throw new Error('Invalid zlib header');
+  let offset = 2;
+  if (flg & 0x20) offset += 4;
+  const reader = new BitReader(data, offset);
+  const output = [];
+  let finalBlock = false;
+  while (!finalBlock) {
+    finalBlock = reader.readBits(1) === 1;
+    const type = reader.readBits(2);
+    if (type === 0) {
+      reader.align();
+      if (reader.offset + 4 > data.length) throw new Error('Invalid stored block');
+      const len = data[reader.offset] | (data[reader.offset + 1] << 8);
+      const nlen = data[reader.offset + 2] | (data[reader.offset + 3] << 8);
+      reader.offset += 4;
+      if ((len ^ 0xffff) !== nlen) throw new Error('LEN/NLEN mismatch');
+      for (let i = 0; i < len; i++) {
+        if (reader.offset >= data.length) throw new Error('Stored block truncated');
+        output.push(data[reader.offset++]);
+      }
+    } else {
+      const tables = type === 1 ? fixedTables : (type === 2 ? buildDynamicTables(reader) : null);
+      if (!tables) throw new Error('Reserved block type');
+      while (true) {
+        const symbol = decodeSymbol(reader, tables.lit);
+        if (symbol === 256) break;
+        if (symbol < 256) {
+          output.push(symbol);
+        } else {
+          const lengthIndex = symbol - 257;
+          if (lengthIndex < 0 || lengthIndex >= lengthBases.length) throw new Error('Invalid length code');
+          const length = lengthBases[lengthIndex] + (lengthExtras[lengthIndex] ? reader.readBits(lengthExtras[lengthIndex]) : 0);
+          const distSymbol = decodeSymbol(reader, tables.dist);
+          if (distSymbol >= distBases.length) throw new Error('Invalid distance code');
+          const distance = distBases[distSymbol] + (distExtras[distSymbol] ? reader.readBits(distExtras[distSymbol]) : 0);
+          if (distance > output.length) throw new Error('Invalid distance');
+          for (let i = 0; i < length; i++) {
+            output.push(output[output.length - distance]);
+          }
+        }
+      }
+    }
+  }
+  return new Uint8Array(output);
+}
+
+async function inflateZtxtChunk(bytes) {
+  if (typeof DecompressionStream === 'function') {
+    const stream = new DecompressionStream('deflate');
+    const writer = stream.writable.getWriter();
+    await writer.write(bytes);
+    await writer.close();
+    const reader = stream.readable.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+      total += result.value.length;
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
+  }
+  return inflateFallback(bytes);
+}
+
+function parseTextChunk(data) {
+  const idx = data.indexOf(0);
+  if (idx === -1) return null;
+  const keyword = textDecoder.decode(data.slice(0, idx));
+  const text = textDecoder.decode(data.slice(idx + 1));
+  return { keyword, text };
+}
+
+async function parseZTextChunk(data) {
+  const idx = data.indexOf(0);
+  if (idx === -1 || idx + 2 >= data.length) return null;
+  const keyword = textDecoder.decode(data.slice(0, idx));
+  const method = data[idx + 1];
+  if (method !== 0) throw new Error('Unsupported compression method');
+  const compressed = data.slice(idx + 2);
+  const inflated = await inflateZtxtChunk(compressed);
+  return { keyword, text: textDecoder.decode(inflated) };
+}
+
+async function extractPngText(buffer) {
+  const data = new Uint8Array(buffer);
+  const signature = new Uint8Array([137,80,78,71,13,10,26,10]);
+  for (let i = 0; i < signature.length; i++) {
+    if (data[i] !== signature[i]) throw new Error('Not a PNG');
+  }
+  const results = {};
+  let offset = 8;
+  while (offset + 8 <= data.length) {
+    const length = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+    const type = String.fromCharCode(data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]);
+    offset += 8;
+    const chunkData = data.slice(offset, offset + length);
+    offset += length + 4; // skip CRC
+    if (type === 'tEXt') {
+      const parsed = parseTextChunk(chunkData);
+      if (parsed) results[parsed.keyword] = parsed.text;
+    } else if (type === 'zTXt') {
+      const parsed = await parseZTextChunk(chunkData);
+      if (parsed) results[parsed.keyword] = parsed.text;
+    } else if (type === 'IEND') {
+      break;
+    }
+  }
+  return results;
+}
+
+self.onmessage = async (event) => {
+  const data = event.data || {};
+  if (data.type !== 'extract') return;
+  try {
+    const texts = await extractPngText(data.buffer);
+    const key = `${data.provider}:${data.fileId}`;
+    const record = {
+      key,
+      id: data.fileId,
+      provider: data.provider,
+      metadata: { pngText: texts },
+      pendingOps: {},
+      lastSyncedAt: Date.now(),
+      localUpdatedAt: Date.now()
+    };
+    await saveMetadataBatch([record]);
+    await withTx(['pngText'], 'readwrite', (store) => {
+      store.put({ key, id: data.fileId, provider: data.provider, data: texts, estimatedBytes: JSON.stringify(texts).length, lastAccessed: Date.now(), pendingOps: null });
+    });
+    postMessage({ type: 'extractComplete', fileId: data.fileId, provider: data.provider, texts });
+  } catch (error) {
+    postMessage({ type: 'extractFailed', fileId: data.fileId, provider: data.provider, error: error.message });
+  }
+};
+`;
+        async function updateQueueSize() {
+            const snapshot = await dbManager.getSyncQueueSnapshot();
+            const pending = snapshot.filter((entry) => entry.operations > 0).length;
+            appState.queueSize = pending;
+            dom.queueCountPill.textContent = `Queue: ${pending}`;
+        }
+
+        let syncWorker = null;
+        let pngWorker = null;
+        const flushWaiters = new Map();
+
+        function setupWorkers() {
+            if (!syncWorker) {
+                syncWorker = new Worker(encodeWorkerString(syncWorkerSource));
+                syncWorker.onmessage = (event) => {
+                    const message = event.data || {};
+                    if (message.type === 'ready') {
+                        appState.workerReady = true;
+                        diagnostics.log('Sync worker ready');
+                        updateQueueSize();
+                    } else if (message.type === 'log') {
+                        diagnostics.log(message.message, message.context, message.level || 'info');
+                    } else if (message.type === 'queueIdle') {
+                        updateQueueSize();
+                    } else if (message.type === 'flushAccepted') {
+                        const waiter = flushWaiters.get(message.flushId);
+                        if (waiter) waiter.accept();
+                    } else if (message.type === 'flushComplete') {
+                        const waiter = flushWaiters.get(message.flushId);
+                        if (waiter) waiter.resolve('complete');
+                        flushWaiters.delete(message.flushId);
+                        dom.syncStatusPill.textContent = 'Idle';
+                        diagnostics.log('Flush complete', { flushId: message.flushId });
+                    } else if (message.type === 'flushFailed') {
+                        const waiter = flushWaiters.get(message.flushId);
+                        if (waiter) waiter.resolve('failed');
+                        flushWaiters.delete(message.flushId);
+                        dom.syncStatusPill.textContent = 'Needs attention';
+                        diagnostics.log('Flush failed', { flushId: message.flushId, error: message.error }, 'error');
+                    }
+                };
+                syncWorker.postMessage({ type: 'init', auth: appState.auth, folder: appState.currentFolder });
+            }
+            if (!pngWorker) {
+                pngWorker = new Worker(encodeWorkerString(pngWorkerSource));
+                pngWorker.onmessage = (event) => {
+                    const message = event.data || {};
+                    if (message.type === 'extractComplete') {
+                        diagnostics.log('PNG text extracted', { fileId: message.fileId, provider: message.provider });
+                    } else if (message.type === 'extractFailed') {
+                        diagnostics.log('PNG extract failed', { fileId: message.fileId, error: message.error }, 'error');
+                    }
+                };
+            }
+        }
+
+        function notifyWorker({ provider, fileId, type, critical = false, reason = 'steady' }) {
+            if (!syncWorker) return;
+            syncWorker.postMessage({ type: 'queueUpdated', provider, fileId, operation: type, critical, reason });
+        }
+
+        async function requestFlush(reason = 'manual') {
+            if (!syncWorker) return 'idle';
+            const flushId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            dom.syncStatusPill.textContent = 'Flushing…';
+            diagnostics.log('Flush requested', { flushId, reason });
+            let acceptResolver;
+            let resolveFlush;
+            const accepted = new Promise((resolve) => { acceptResolver = resolve; });
+            const completion = new Promise((resolve) => { resolveFlush = resolve; });
+            flushWaiters.set(flushId, {
+                accept: () => acceptResolver(),
+                resolve: (status) => resolveFlush(status)
+            });
+            syncWorker.postMessage({ type: 'flushRequest', flushId, reason });
+            await accepted;
+            const status = await completion;
+            return status;
+        }
+
+        function triggerPngExtraction(file) {
+            if (!pngWorker || !file || !file.buffer) return;
+            pngWorker.postMessage({ type: 'extract', provider: appState.providerType, fileId: file.id, buffer: file.buffer }, [file.buffer]);
+        }
+        function renderFolderList(folders) {
+            dom.folderList.innerHTML = '';
+            if (!folders.length) {
+                const empty = document.createElement('div');
+                empty.className = 'subtitle';
+                empty.textContent = 'No folders cached yet. Use Refresh to pull from your provider.';
+                dom.folderList.appendChild(empty);
+                return;
+            }
+            for (const folder of folders) {
+                const item = document.createElement('div');
+                item.className = 'folder-item';
+                const info = document.createElement('div');
+                info.innerHTML = `<div class="folder-name">${folder.name || folder.id}</div><div class="folder-meta">${folder.itemCount || 0} items · ${(folder.updatedAt ? new Date(folder.updatedAt).toLocaleString() : 'unknown')}</div>`;
+                item.appendChild(info);
+                item.addEventListener('click', () => openFolder(folder));
+                dom.folderList.appendChild(item);
+            }
+        }
+
+        async function refreshFolders({ forceNetwork = false } = {}) {
+            if (!appState.providerType) return;
+            let folders = [];
+            if (!forceNetwork) {
+                folders = (await dbManager.getFolderEntries(appState.providerType)).map((entry) => ({
+                    id: entry.id,
+                    provider: entry.provider,
+                    name: entry.data?.name || entry.id,
+                    itemCount: entry.data?.itemCount || 0,
+                    updatedAt: entry.data?.updatedAt || entry.lastAccessed,
+                    key: entry.key
+                }));
+            }
+            if (!folders.length && appState.auth.token && appState.providerType === 'onedrive') {
+                try {
+                    const response = await fetch('https://graph.microsoft.com/v1.0/me/drive/special/approot/children?$select=id,name,lastModifiedDateTime', {
+                        headers: { 'Authorization': `Bearer ${appState.auth.token}` }
+                    });
+                    if (response.ok) {
+                        const json = await response.json();
+                        folders = (json.value || []).map((item) => ({
+                            id: item.id,
+                            provider: 'onedrive',
+                            name: item.name,
+                            itemCount: item.folder?.childCount || 0,
+                            updatedAt: item.lastModifiedDateTime
+                        }));
+                        for (const folder of folders) {
+                            await dbManager.putFolderEntry({
+                                key: `${folder.provider}:${folder.id}`,
+                                id: folder.id,
+                                provider: folder.provider,
+                                data: { name: folder.name, itemCount: folder.itemCount, updatedAt: folder.updatedAt },
+                                estimatedBytes: 0,
+                                lastAccessed: Date.now(),
+                                pendingOps: null
+                            });
+                        }
+                    } else {
+                        diagnostics.log('Folder fetch failed', { status: response.status }, 'error');
+                    }
+                } catch (error) {
+                    diagnostics.log('Folder fetch error', { error: error.message }, 'error');
+                }
+            }
+            if (!folders.length) {
+                const sampleId = `${appState.providerType}-sample`;
+                await dbManager.putFolderEntry({
+                    key: `${appState.providerType}:${sampleId}`,
+                    id: sampleId,
+                    provider: appState.providerType,
+                    data: { name: 'Sample Imports', itemCount: 4, updatedAt: Date.now() },
+                    estimatedBytes: 0,
+                    lastAccessed: Date.now(),
+                    pendingOps: null
+                });
+                folders = (await dbManager.getFolderEntries(appState.providerType)).map((entry) => ({
+                    id: entry.id,
+                    provider: entry.provider,
+                    name: entry.data?.name || entry.id,
+                    itemCount: entry.data?.itemCount || 0,
+                    updatedAt: entry.data?.updatedAt || entry.lastAccessed,
+                    key: entry.key
+                }));
+            }
+            appState.folders = folders;
+            renderFolderList(folders);
+        }
+
+        function populateFileSelector() {
+            dom.fileSelector.innerHTML = '';
+            if (!appState.files.length) {
+                dom.fileSelector.disabled = true;
+                dom.viewerPlaceholder.textContent = 'No files in this folder yet.';
+                dom.selectedFilePill.textContent = 'No file loaded';
+                return;
+            }
+            dom.fileSelector.disabled = false;
+            for (const file of appState.files) {
+                const option = document.createElement('option');
+                option.value = file.id;
+                option.textContent = file.metadata?.title || file.name || file.id;
+                dom.fileSelector.appendChild(option);
+            }
+            dom.fileSelector.value = appState.files[0].id;
+            loadFile(appState.files[0].id);
+        }
+
+        async function ensureSampleFile(folder) {
+            let records = await dbManager.listMetadataByFolder(appState.providerType, folder.id);
+            if (!records.length) {
+                const sampleId = `${folder.id}-asset-1`;
+                await dbManager.mergeMetadataRecord(appState.providerType, sampleId, {
+                    title: 'Sample Orbital Capture',
+                    tags: 'demo,orbital8',
+                    notes: 'Sample metadata to demonstrate the sync queue.',
+                    rating: 4,
+                    favorite: false
+                }, folder.id);
+                records = await dbManager.listMetadataByFolder(appState.providerType, folder.id);
+            }
+            return records;
+        }
+
+        async function openFolder(folder) {
+            appState.currentFolder = folder;
+            dom.currentFolderPill.textContent = folder.name || folder.id;
+            showScreen(dom.loadingScreen);
+            dom.loadingStatus.textContent = 'Collecting metadata from local cache…';
+            const records = await ensureSampleFile(folder);
+            appState.files = records.map((record) => ({
+                id: record.id,
+                name: record.metadata?.title || record.id,
+                metadata: record.metadata || {},
+                provider: record.provider,
+                buffer: null
+            }));
+            diagnostics.log('Folder opened', { folderId: folder.id, files: appState.files.length });
+            populateFileSelector();
+            showScreen(dom.appContainer);
+            dom.selectedProviderPill.textContent = appState.providerType;
+        }
+
+        function loadFile(fileId) {
+            const file = appState.files.find((item) => item.id === fileId);
+            if (!file) return;
+            appState.currentFile = file;
+            dom.selectedFilePill.textContent = file.metadata?.title || file.name || file.id;
+            dom.selectedProviderPill.textContent = appState.providerType;
+            dom.titleInput.value = file.metadata?.title || '';
+            dom.tagsInput.value = Array.isArray(file.metadata?.tags) ? file.metadata.tags.join(', ') : (file.metadata?.tags || '');
+            dom.ratingInput.value = file.metadata?.rating ?? '';
+            dom.notesInput.value = file.metadata?.notes || '';
+            dom.viewerPlaceholder.textContent = file.metadata?.title || file.name || file.id;
+        }
+
+        function queueMetadataUpdate(partial, options = {}) {
+            if (!appState.currentFile) return;
+            appState.currentFile.metadata = { ...(appState.currentFile.metadata || {}), ...partial };
+            queueIntake.queueMetadata(appState.providerType, appState.currentFile.id, partial, options);
+        }
+
+        function handleMetadataSave() {
+            const payload = {
+                title: dom.titleInput.value.trim(),
+                tags: dom.tagsInput.value.split(',').map((tag) => tag.trim()).filter(Boolean),
+                rating: dom.ratingInput.value ? Number(dom.ratingInput.value) : null,
+                notes: dom.notesInput.value
+            };
+            queueMetadataUpdate(payload, { debounce: false });
+            showStatus('Metadata queued for sync.', 'success');
+        }
+
+        function toggleFavorite() {
+            if (!appState.currentFile) return;
+            const current = Boolean(appState.currentFile.metadata?.favorite);
+            queueMetadataUpdate({ favorite: !current }, { debounce: false, critical: true });
+            showStatus(!current ? 'Marked as favorite locally.' : 'Removed favorite locally.', 'info');
+        }
+
+        function deleteFile() {
+            if (!appState.currentFile) return;
+            queueIntake.queueOperation(appState.providerType, appState.currentFile.id, 'deleteFile', {}, { debounce: false });
+            showStatus('Delete enqueued. Sync worker will remove it on flush.', 'info');
+        }
+
+        function bindMetadataInputs() {
+            dom.titleInput.addEventListener('input', () => queueMetadataUpdate({ title: dom.titleInput.value.trim() }));
+            dom.tagsInput.addEventListener('input', () => queueMetadataUpdate({ tags: dom.tagsInput.value.split(',').map((tag) => tag.trim()).filter(Boolean) }));
+            dom.ratingInput.addEventListener('change', () => queueMetadataUpdate({ rating: dom.ratingInput.value ? Number(dom.ratingInput.value) : null }, { debounce: false }));
+            dom.notesInput.addEventListener('input', () => queueMetadataUpdate({ notes: dom.notesInput.value }, { debounce: true }));
+        }
+
+        async function initialize() {
+            await dbManager.init();
+            await diagnostics.restoreLatest();
+            setupWorkers();
+            bindMetadataInputs();
+            showScreen(dom.providerScreen);
+            diagnostics.log('Application initialized', { release: RELEASE_TAG });
+        }
+
+        document.getElementById('onedrive-btn').addEventListener('click', () => {
+            appState.providerType = 'onedrive';
+            dom.authProviderName.textContent = 'OneDrive';
+            showScreen(dom.authScreen);
+        });
+
+        document.getElementById('gdrive-btn').addEventListener('click', () => {
+            appState.providerType = 'googledrive';
+            dom.authProviderName.textContent = 'Google Drive';
+            showStatus('Google Drive support is limited in this build.', 'error', 3200);
+            showScreen(dom.authScreen);
+        });
+
+        document.getElementById('auth-submit').addEventListener('click', async () => {
+            appState.auth = {
+                clientId: dom.authClientId.value.trim(),
+                tenantId: dom.authTenantId.value.trim(),
+                token: dom.authToken.value.trim()
+            };
+            diagnostics.log('Authentication parameters captured', { provider: appState.providerType });
+            if (syncWorker) {
+                syncWorker.postMessage({ type: 'authUpdate', auth: appState.auth });
+            }
+            showScreen(dom.folderScreen);
+            await refreshFolders({ forceNetwork: true });
+        });
+
+        document.getElementById('auth-back').addEventListener('click', () => {
+            showScreen(dom.providerScreen);
+        });
+
+        document.getElementById('folder-refresh').addEventListener('click', () => refreshFolders({ forceNetwork: true }));
+        document.getElementById('folder-back').addEventListener('click', () => showScreen(dom.authScreen));
+        document.getElementById('back-to-folders').addEventListener('click', () => {
+            showScreen(dom.folderScreen);
+            refreshFolders();
+        });
+
+        dom.fileSelector.addEventListener('change', () => loadFile(dom.fileSelector.value));
+        document.getElementById('save-metadata').addEventListener('click', handleMetadataSave);
+        document.getElementById('favorite-toggle').addEventListener('click', toggleFavorite);
+        document.getElementById('delete-file').addEventListener('click', deleteFile);
+
+        document.getElementById('open-diagnostics').addEventListener('click', diagnostics.openModal);
+        document.getElementById('diagnostics-close').addEventListener('click', diagnostics.closeModal);
+        document.getElementById('diagnostics-copy').addEventListener('click', () => diagnostics.copy().catch((error) => diagnostics.log('Clipboard copy failed', { error: error.message }, 'error')));
+        document.getElementById('diagnostics-download').addEventListener('click', diagnostics.download);
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                requestFlush('hidden');
+            }
+        });
+
+        window.addEventListener('pagehide', () => {
+            requestFlush('pagehide');
+        });
+
+        window.addEventListener('beforeunload', (event) => {
+            if (appState.unloadFlushInFlight) return;
+            appState.unloadFlushInFlight = requestFlush('unload');
+            event.preventDefault();
+            event.returnValue = '';
+            appState.unloadFlushInFlight.finally(() => { appState.unloadFlushInFlight = null; });
+        });
+
+        initialize();
+    </script>
+</body>
+</html>
