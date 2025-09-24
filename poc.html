@@ -1,5 +1,5 @@
 
-<!-- Orbital8-O-2025-09-18 05:30 AM -->
+<!-- Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -442,9 +442,37 @@
         
         .app-footer {
             position: fixed; bottom: 0; left: 0; right: 0; background: rgba(0, 0, 0, 0.8);
-            color: rgba(255, 255, 255, 0.6); text-align: center;
+            color: rgba(255, 255, 255, 0.7);
             padding: 4px 8px;
             font-size: 10px; z-index: 5; backdrop-filter: blur(10px);
+            display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+            text-align: center;
+        }
+
+        .footer-text {
+            display: inline-flex; align-items: center; justify-content: center;
+            gap: 4px; line-height: 1.4; text-align: center;
+        }
+
+        .footer-log-button {
+            background: rgba(255, 255, 255, 0.08);
+            color: #f9fafb;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 999px;
+            font-size: 10px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .footer-log-button:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+
+        .footer-log-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
         /* NEW: Standardized UI Button */
@@ -656,7 +684,10 @@
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
+            <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
+        </div>
     </div>
     
     <!-- Unified Auth Screen -->
@@ -671,7 +702,10 @@
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
             <div id="auth-status" class="status info"></div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
+            <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
+        </div>
     </div>
     
     <!-- Unified Folder Screen -->
@@ -686,7 +720,10 @@
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
+            <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
+        </div>
     </div>
     
     <!-- Loading Screen -->
@@ -700,7 +737,10 @@
             </div>
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
+            <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
+        </div>
     </div>
     
     <!-- Main App Container -->
@@ -770,7 +810,10 @@
         </button>
         
         <div id="toast" class="toast"></div>
-        <div class="app-footer">Orbital8-O-2025-09-18 05:30 AM</div>
+        <div class="app-footer">
+            <span class="footer-text">Orbital8-P-2025-09-23 23:18 UTC :: Sync plan integration + exportable diagnostics</span>
+            <button type="button" class="footer-log-button" data-footer-log>Open Sync Log</button>
+        </div>
     </div>
     
     <!-- Enhanced Grid Modal -->
@@ -1069,6 +1112,32 @@
                     metadataTable: document.getElementById('metadata-table')
                 };
             },
+
+            setupFooterLogButtons() {
+                const buttons = Array.from(document.querySelectorAll('[data-footer-log]'));
+                this.elements.footerLogButtons = buttons;
+                buttons.forEach((button) => {
+                    button.addEventListener('click', async () => {
+                        if (button.disabled) { return; }
+                        button.disabled = true;
+                        try {
+                            const report = await SyncDiagnostics.log({ suppressToast: true });
+                            const popup = SyncDiagnostics.openWindow(report);
+                            if (popup) {
+                                try { popup.focus(); } catch (focusError) { /* noop */ }
+                                this.showToast('Sync diagnostics opened in a new window', 'info', true);
+                            } else {
+                                this.showToast('Allow pop-ups to view sync diagnostics', 'error', true);
+                            }
+                        } catch (error) {
+                            console.error('[SyncDiagnostics] Failed to open diagnostics window', error);
+                            this.showToast(`Diagnostics failed: ${error.message}`, 'error', true);
+                        } finally {
+                            setTimeout(() => { button.disabled = false; }, 400);
+                        }
+                    });
+                });
+            },
             
             showScreen(screenId) {
                 const screens = ['provider-screen', 'auth-screen', 'folder-screen', 'loading-screen', 'app-container'];
@@ -1149,6 +1218,40 @@
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             },
+
+            debounce(fn, delay = 250) {
+                let timer = null;
+                let pendingPromise = null;
+                return function debounced(...args) {
+                    if (timer) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    if (pendingPromise) {
+                        pendingPromise.resolve();
+                        pendingPromise = null;
+                    }
+                    return new Promise((resolve, reject) => {
+                        timer = setTimeout(() => {
+                            timer = null;
+                            pendingPromise = null;
+                            Promise.resolve(fn.apply(this, args)).then(resolve).catch(reject);
+                        }, delay);
+                        pendingPromise = { resolve, reject };
+                    });
+                };
+            },
+
+            uuid() {
+                if (crypto && typeof crypto.randomUUID === 'function') {
+                    return crypto.randomUUID();
+                }
+                return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = Math.random() * 16 | 0;
+                    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+            },
             
             updateLoadingProgress(current, total, message = '') {
                 state.loadingProgress = { current, total };
@@ -1164,51 +1267,166 @@
         };
 
         class DBManager {
-            constructor() { this.db = null; }
+            constructor() {
+                this.db = null;
+                this.DB_NAME = 'Orbital8-Goji-V1';
+                this.DB_VERSION = 4;
+                this.defaultLimits = { maxFolders: 1000, maxMegabytes: 500 };
+            }
+
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 2);
+                    const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
+                        const upgradeTransaction = event.target.transaction;
 
-                        if (oldVersion < 1 && !db.objectStoreNames.contains('folderCache')) {
-                            db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                        if (oldVersion < 1) {
+                            if (!db.objectStoreNames.contains('folderCache')) {
+                                const folderStore = db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                                folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
                         }
 
                         if (oldVersion < 2) {
                             if (!db.objectStoreNames.contains('metadata')) {
-                                db.createObjectStore('metadata', { keyPath: 'id' });
+                                const metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
+                                metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
                             }
                             if (!db.objectStoreNames.contains('syncQueue')) {
-                                db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+                                const queueStore = db.createObjectStore('syncQueue', { keyPath: 'fileId' });
+                                queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+                                queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+                                queueStore.createIndex('folderId', 'folderId', { unique: false });
                             }
+                        }
+
+                        if (oldVersion < 3) {
+                            if (db.objectStoreNames.contains('syncQueue')) {
+                                db.deleteObjectStore('syncQueue');
+                                const queueStore = db.createObjectStore('syncQueue', { keyPath: 'fileId' });
+                                queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+                                queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+                                queueStore.createIndex('folderId', 'folderId', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('pngText')) {
+                                const pngStore = db.createObjectStore('pngText', { keyPath: 'id' });
+                                pngStore.createIndex('folderId', 'folderId', { unique: false });
+                                pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                        }
+
+                        if (oldVersion < 4) {
+                            if (!db.objectStoreNames.contains('syncMeta')) {
+                                db.createObjectStore('syncMeta', { keyPath: 'id' });
+                            }
+                            if (!db.objectStoreNames.contains('metadata')) {
+                                const metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
+                                metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('folderCache')) {
+                                const folderStore = db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                                folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                            if (!db.objectStoreNames.contains('pngText')) {
+                                const pngStore = db.createObjectStore('pngText', { keyPath: 'id' });
+                                pngStore.createIndex('folderId', 'folderId', { unique: false });
+                                pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                            }
+                        }
+
+                        if (upgradeTransaction && upgradeTransaction.objectStoreNames.contains('folderCache')) {
+                            try {
+                                const folderStore = upgradeTransaction.objectStore('folderCache');
+                                if (!folderStore.indexNames.contains('lastAccessed')) {
+                                    folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                                }
+                            } catch (error) { /* index already exists */ }
                         }
                     };
                     request.onsuccess = (event) => { this.db = event.target.result; resolve(); };
                     request.onerror = (event) => reject(event.target.error);
                 });
             }
-            async getFolderCache(folderId) {
+
+            _approximateBytes(value) {
+                try {
+                    const encoder = new TextEncoder();
+                    return encoder.encode(JSON.stringify(value)).length;
+                } catch (error) {
+                    return 0;
+                }
+            }
+
+            async getFolderCache(folderId, options = { updateAccess: true }) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderCache', 'readonly');
+                    const transaction = this.db.transaction('folderCache', options.updateAccess ? 'readwrite' : 'readonly');
                     const store = transaction.objectStore('folderCache');
                     const request = store.get(folderId);
-                    request.onsuccess = () => resolve(request.result ? request.result.files : null);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record && options.updateAccess) {
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                        resolve(record ? record.files : null);
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveFolderCache(folderId, files) {
+
+            async saveFolderCache(folderId, files, options = {}) {
+                if (!this.db) return;
+                const estimatedBytes = this._approximateBytes(files);
+                const record = {
+                    folderId,
+                    files,
+                    timestamp: Date.now(),
+                    lastAccessed: Date.now(),
+                    estimatedBytes,
+                    pendingOps: Boolean(options.pendingOps)
+                };
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderCache', 'readwrite');
+                    const store = transaction.objectStore('folderCache');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save folder cache'));
+                    store.put(record);
+                });
+            }
+
+            async markFolderPendingOps(folderId, pending = true) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    const getRequest = store.get(folderId);
+                    getRequest.onsuccess = () => {
+                        const record = getRequest.result;
+                        if (record) {
+                            record.pendingOps = pending;
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark folder pending state'));
                 });
             }
+
+            async deleteFolderCache(folderId) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderCache', 'readwrite');
+                    const store = transaction.objectStore('folderCache');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to delete folder cache'));
+                    store.delete(folderId);
+                });
+            }
+
             async getMetadata(fileId) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
@@ -1219,35 +1437,1155 @@
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveMetadata(fileId, metadata) {
+
+            async saveMetadata(fileId, metadata, extras = {}) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const request = store.put({ id: fileId, metadata });
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    const getRequest = store.get(fileId);
+                    getRequest.onsuccess = () => {
+                        const existing = getRequest.result || {};
+                        const record = {
+                            id: fileId,
+                            metadata,
+                            provider: extras.provider ?? existing.provider ?? null,
+                            localUpdatedAt: extras.localUpdatedAt ?? Date.now(),
+                            lastSyncedAt: extras.lastSyncedAt ?? existing.lastSyncedAt ?? null,
+                            pendingOps: extras.pendingOps ?? existing.pendingOps ?? false
+                        };
+                        const putRequest = store.put(record);
+                        putRequest.onsuccess = () => resolve();
+                        putRequest.onerror = () => reject(putRequest.error);
+                    };
+                    getRequest.onerror = () => reject(getRequest.error);
                 });
             }
+
+            async saveMetadataBatch(entries = []) {
+                if (!this.db || !entries.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readwrite');
+                    const store = transaction.objectStore('metadata');
+                    for (const entry of entries) {
+                        const record = {
+                            id: entry.id,
+                            metadata: entry.metadata,
+                            provider: entry.provider ?? null,
+                            localUpdatedAt: entry.localUpdatedAt ?? Date.now(),
+                            lastSyncedAt: entry.lastSyncedAt ?? null,
+                            pendingOps: entry.pendingOps ?? false
+                        };
+                        store.put(record);
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save metadata batch'));
+                });
+            }
+
             async deleteMetadata(fileId) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const request = store.delete(fileId);
-                    request.onsuccess = () => resolve();
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to delete metadata'));
+                    store.delete(fileId);
+                });
+            }
+
+            _mergeOperations(existingOps = [], operation, timestamp = Date.now()) {
+                const merged = Array.isArray(existingOps) ? existingOps.slice() : [];
+                if (!operation) return merged;
+                const op = { ...operation, queuedAt: timestamp };
+                if (op.type === 'metadata') {
+                    const existing = merged.find(item => item.type === 'metadata');
+                    if (existing) {
+                        existing.payload = { ...existing.payload, ...op.payload };
+                        existing.queuedAt = timestamp;
+                    } else {
+                        merged.push({ type: 'metadata', payload: { ...op.payload }, queuedAt: timestamp });
+                    }
+                } else {
+                    merged.push(op);
+                }
+                return merged;
+            }
+
+            async enqueueFileOperation(fileId, provider, operation, options = {}) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['syncQueue', 'metadata', 'folderCache'], 'readwrite');
+                    const queueStore = transaction.objectStore('syncQueue');
+                    const metadataStore = transaction.objectStore('metadata');
+                    const folderStore = transaction.objectStore('folderCache');
+
+                    const queueRequest = queueStore.get(fileId);
+                    queueRequest.onsuccess = () => {
+                        const existing = queueRequest.result || {};
+                        const timestamp = Date.now();
+                        const operations = this._mergeOperations(existing.operations, operation, timestamp);
+                        const record = {
+                            fileId,
+                            provider,
+                            folderId: options.folderId ?? existing.folderId ?? null,
+                            operations,
+                            pendingFlush: existing.pendingFlush ?? false,
+                            inFlightFlushId: existing.inFlightFlushId ?? null,
+                            lastMergedAt: timestamp,
+                            retryCount: existing.retryCount ?? 0
+                        };
+                        queueStore.put(record);
+                    };
+                    queueRequest.onerror = () => transaction.abort();
+
+                    if (options.folderId) {
+                        const folderRequest = folderStore.get(options.folderId);
+                        folderRequest.onsuccess = () => {
+                            const folderRecord = folderRequest.result;
+                            if (folderRecord) {
+                                folderRecord.pendingOps = true;
+                                folderRecord.lastAccessed = Date.now();
+                                folderStore.put(folderRecord);
+                            }
+                        };
+                    }
+
+                    const metadataRequest = metadataStore.get(fileId);
+                    metadataRequest.onsuccess = () => {
+                        const record = metadataRequest.result;
+                        if (record) {
+                            record.pendingOps = true;
+                            record.localUpdatedAt = Date.now();
+                            record.provider = provider;
+                            metadataStore.put(record);
+                        }
+                    };
+
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to enqueue file operation'));
+                });
+            }
+
+            async getSyncQueueSnapshot() {
+                if (!this.db) return [];
+                const records = await this._collectStoreRecords('syncQueue');
+                return records.sort((a, b) => (a.lastMergedAt || 0) - (b.lastMergedAt || 0));
+            }
+
+            async markQueueInFlight(fileIds = [], flushId = null) {
+                if (!this.db || !fileIds.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const fileId of fileIds) {
+                        const request = store.get(fileId);
+                        request.onsuccess = () => {
+                            const record = request.result;
+                            if (record) {
+                                record.inFlightFlushId = flushId;
+                                record.pendingFlush = Boolean(flushId);
+                                store.put(record);
+                            }
+                        };
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark queue entries in flight'));
+                });
+            }
+
+            async clearQueueEntries(fileIds = []) {
+                if (!this.db || !fileIds.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const fileId of fileIds) {
+                        store.delete(fileId);
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to clear queue entries'));
+                });
+            }
+
+            async resetPendingFlushMarkers() {
+                if (!this.db) return;
+                const records = await this.getSyncQueueSnapshot();
+                if (!records.length) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readwrite');
+                    const store = transaction.objectStore('syncQueue');
+                    for (const record of records) {
+                        if (record.pendingFlush || record.inFlightFlushId) {
+                            record.pendingFlush = false;
+                            record.inFlightFlushId = null;
+                            store.put(record);
+                        }
+                    }
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to reset pending flush markers'));
+                });
+            }
+
+            async markMetadataSynced(fileId, timestamp = Date.now()) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readwrite');
+                    const store = transaction.objectStore('metadata');
+                    const request = store.get(fileId);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record) {
+                            record.lastSyncedAt = timestamp;
+                            record.pendingOps = false;
+                            store.put(record);
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to mark metadata synced'));
+                });
+            }
+
+            async savePngText(fileId, folderId, payload) {
+                if (!this.db) return;
+                const estimatedBytes = this._approximateBytes(payload);
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', 'readwrite');
+                    const store = transaction.objectStore('pngText');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to save PNG text'));
+                    store.put({
+                        id: fileId,
+                        folderId,
+                        payload,
+                        lastAccessed: Date.now(),
+                        estimatedBytes
+                    });
+                });
+            }
+
+            async getPngText(fileId, options = { updateAccess: true }) {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', options.updateAccess ? 'readwrite' : 'readonly');
+                    const store = transaction.objectStore('pngText');
+                    const request = store.get(fileId);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (record && options.updateAccess) {
+                            record.lastAccessed = Date.now();
+                            store.put(record);
+                        }
+                        resolve(record ? record.payload : null);
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
-            async addToSyncQueue(operation) { return Promise.resolve(); }
-            async readSyncQueue() { return Promise.resolve([]); }
-            async deleteFromSyncQueue(id) { return Promise.resolve(); }
+
+            async clearPngTextForFolder(folderId) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('pngText', 'readwrite');
+                    const store = transaction.objectStore('pngText');
+                    const index = store.index('folderId');
+                    const range = IDBKeyRange.only(folderId);
+                    const cursorRequest = index.openCursor(range);
+                    cursorRequest.onsuccess = (event) => {
+                        const cursor = event.target.result;
+                        if (cursor) {
+                            cursor.delete();
+                            cursor.continue();
+                        }
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to clear PNG text for folder'));
+                });
+            }
+
+            async updateSyncMeta(id, payload) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncMeta', 'readwrite');
+                    const store = transaction.objectStore('syncMeta');
+                    const getRequest = store.get(id);
+                    getRequest.onsuccess = () => {
+                        const existing = getRequest.result || {};
+                        const record = { id, ...existing, ...payload };
+                        store.put(record);
+                    };
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to update sync meta'));
+                });
+            }
+
+            async getSyncMeta(id) {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncMeta', 'readonly');
+                    const store = transaction.objectStore('syncMeta');
+                    const request = store.get(id);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            async getCacheStats() {
+                const limits = await this.getSyncMeta('limits') || this.defaultLimits;
+                const folderRecords = await this._collectStoreRecords('folderCache');
+                const totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+                const stats = {
+                    folderCount: folderRecords.length,
+                    totalBytes,
+                    lastSweep: Date.now()
+                };
+                await this.updateSyncMeta('stats', stats);
+                return { limits, stats };
+            }
+
+            async getMetadataRecords() {
+                return this._collectStoreRecords('metadata');
+            }
+
+            async getFolderRecords() {
+                return this._collectStoreRecords('folderCache');
+            }
+
+            async enforceCacheLimits(limitsOverride = {}) {
+                const limits = { ...this.defaultLimits, ...(await this.getSyncMeta('limits') || {}), ...limitsOverride };
+                const maxFolders = limits.maxFolders || this.defaultLimits.maxFolders;
+                const maxBytes = (limits.maxMegabytes || this.defaultLimits.maxMegabytes) * 1024 * 1024;
+
+                const folderRecords = await this._collectStoreRecords('folderCache');
+                let totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+                let totalCount = folderRecords.length;
+                const candidates = folderRecords.filter(record => !record.pendingOps).sort((a, b) => (a.lastAccessed || 0) - (b.lastAccessed || 0));
+                const evicted = [];
+
+                for (const record of candidates) {
+                    if (totalCount <= maxFolders && totalBytes <= maxBytes) {
+                        break;
+                    }
+                    await this.deleteFolderCache(record.folderId);
+                    await this.clearPngTextForFolder(record.folderId);
+                    totalCount -= 1;
+                    totalBytes -= record.estimatedBytes || 0;
+                    evicted.push({ folderId: record.folderId, reclaimedBytes: record.estimatedBytes || 0 });
+                }
+
+                await this.updateSyncMeta('stats', {
+                    folderCount: totalCount,
+                    totalBytes,
+                    lastSweep: Date.now(),
+                    evicted
+                });
+                return evicted;
+            }
+
+            async _collectStoreRecords(storeName) {
+                if (!this.db) return [];
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(storeName, 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const results = [];
+                    const request = store.openCursor();
+                    request.onsuccess = (event) => {
+                        const cursor = event.target.result;
+                        if (cursor) {
+                            results.push(cursor.value);
+                            cursor.continue();
+                        }
+                    };
+                    transaction.oncomplete = () => resolve(results);
+                    transaction.onerror = () => reject(transaction.error || new Error('Failed to collect store records'));
+                });
+            }
         }
         class SyncManager {
-            constructor() { this.worker = null; this.syncInterval = null; }
-            start() { /* Placeholder */ }
-            stop() { /* Placeholder */ }
-            requestSync() { /* Placeholder */ }
+            constructor() {
+                this.worker = null;
+                this.workerUrl = null;
+                this.started = false;
+                this.flushPromises = new Map();
+                this.queueNotifyTimer = null;
+                this.lifecycleHandlersAttached = false;
+            }
+
+            start() {
+                if (!state.providerType) { return; }
+                this.ensureWorker();
+                this.configureWorker();
+                this.attachLifecycleHooks();
+                this.started = true;
+            }
+
+            stop() {
+                this.started = false;
+                this.detachLifecycleHooks();
+                if (this.queueNotifyTimer) {
+                    clearTimeout(this.queueNotifyTimer);
+                    this.queueNotifyTimer = null;
+                }
+                if (this.worker) {
+                    this.worker.terminate();
+                    this.worker = null;
+                }
+                if (this.workerUrl) {
+                    URL.revokeObjectURL(this.workerUrl);
+                    this.workerUrl = null;
+                }
+            }
+
+            ensureWorker() {
+                if (this.worker) { return; }
+                const source = this.buildWorkerSource();
+                const blob = new Blob([source], { type: 'application/javascript' });
+                this.workerUrl = URL.createObjectURL(blob);
+                this.worker = new Worker(this.workerUrl);
+                this.worker.addEventListener('message', (event) => this.handleWorkerMessage(event));
+                this.worker.addEventListener('error', (error) => console.error('[SyncWorker]', error.message));
+                this.worker.postMessage({ type: 'init', providerType: state.providerType || null });
+            }
+
+            configureWorker() {
+                if (!this.worker) { return; }
+                this.worker.postMessage({
+                    type: 'configure',
+                    providerType: state.providerType || null,
+                    limits: state.dbManager?.defaultLimits || { maxFolders: 1000, maxMegabytes: 500 }
+                });
+                this.worker.postMessage({ type: 'process', reason: 'startup' });
+            }
+
+            attachLifecycleHooks() {
+                if (this.lifecycleHandlersAttached) { return; }
+                this.visibilityHandler = () => {
+                    if (document.visibilityState === 'hidden') {
+                        this.flush({ reason: 'visibilitychange', keepalive: false }).catch(() => {});
+                    }
+                };
+                this.pageHideHandler = () => {
+                    this.flush({ reason: 'pagehide', keepalive: true }).catch(() => {});
+                };
+                this.beforeUnloadHandler = () => {
+                    this.flush({ reason: 'beforeunload', keepalive: true }).catch(() => {});
+                };
+                document.addEventListener('visibilitychange', this.visibilityHandler, { passive: true });
+                window.addEventListener('pagehide', this.pageHideHandler, { passive: true });
+                window.addEventListener('beforeunload', this.beforeUnloadHandler, { passive: true });
+                this.lifecycleHandlersAttached = true;
+            }
+
+            detachLifecycleHooks() {
+                if (!this.lifecycleHandlersAttached) { return; }
+                document.removeEventListener('visibilitychange', this.visibilityHandler);
+                window.removeEventListener('pagehide', this.pageHideHandler);
+                window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+                this.lifecycleHandlersAttached = false;
+            }
+
+            handleWorkerMessage(event) {
+                const data = event.data || {};
+                switch (data.type) {
+                    case 'ready':
+                        break;
+                    case 'log':
+                        console.debug('[SyncWorker]', data.message, data.detail || '');
+                        break;
+                    case 'flushAccepted':
+                        break;
+                    case 'flushComplete': {
+                        const resolver = this.flushPromises.get(data.flushId);
+                        if (resolver) {
+                            resolver.resolve();
+                            this.flushPromises.delete(data.flushId);
+                        }
+                        break;
+                    }
+                    case 'flushFailed': {
+                        const resolver = this.flushPromises.get(data.flushId);
+                        if (resolver) {
+                            resolver.reject(new Error(data.error || 'Flush failed'));
+                            this.flushPromises.delete(data.flushId);
+                        }
+                        break;
+                    }
+                    case 'tokenRequest':
+                        this.handleTokenRequest(data.requestId, Boolean(data.forceRefresh));
+                        break;
+                    case 'tokenResponseTimeout':
+                        console.warn('[SyncWorker] token request timed out');
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            async handleTokenRequest(requestId, forceRefresh = false) {
+                if (!this.worker) { return; }
+                try {
+                    const provider = state.provider;
+                    if (!provider) {
+                        throw new Error('No provider');
+                    }
+                    let token = null;
+                    if (forceRefresh && typeof provider.refreshAccessToken === 'function') {
+                        token = await provider.refreshAccessToken();
+                    } else if (typeof provider.getAccessToken === 'function') {
+                        token = await provider.getAccessToken();
+                    }
+                    if (!token) {
+                        throw new Error('Unable to acquire access token');
+                    }
+                    this.worker.postMessage({ type: 'tokenResponse', requestId, token });
+                } catch (error) {
+                    this.worker.postMessage({ type: 'tokenResponse', requestId, error: error.message || String(error) });
+                }
+            }
+
+            async queueMetadataUpdate(fileId, updates, options = {}) {
+                if (!state.dbManager || !fileId) { return; }
+                const providerType = state.providerType || 'unknown';
+                const folderId = options.folderId || (state.currentFolder?.id ?? null);
+                await state.dbManager.enqueueFileOperation(
+                    fileId,
+                    providerType,
+                    { type: 'metadata', payload: updates },
+                    { folderId }
+                );
+                this.notifyQueueChange();
+            }
+
+            notifyQueueChange() {
+                if (!this.worker) { return; }
+                if (this.queueNotifyTimer) {
+                    clearTimeout(this.queueNotifyTimer);
+                }
+                this.queueNotifyTimer = setTimeout(() => {
+                    this.queueNotifyTimer = null;
+                    this.worker.postMessage({ type: 'queueUpdated' });
+                }, 150);
+            }
+
+            requestSync() {
+                if (!this.worker) { return; }
+                this.worker.postMessage({ type: 'process', reason: 'manual' });
+            }
+
+            flush(options = {}) {
+                if (!this.worker) { return Promise.resolve(); }
+                const flushId = options.flushId || Utils.uuid();
+                return new Promise((resolve, reject) => {
+                    this.flushPromises.set(flushId, { resolve, reject });
+                    this.worker.postMessage({
+                        type: 'flushRequest',
+                        flushId,
+                        keepalive: Boolean(options.keepalive),
+                        reason: options.reason || 'lifecycle'
+                    });
+                    setTimeout(() => {
+                        if (this.flushPromises.has(flushId)) {
+                            const resolver = this.flushPromises.get(flushId);
+                            resolver.reject(new Error('Flush timeout'));
+                            this.flushPromises.delete(flushId);
+                        }
+                    }, 15000);
+                });
+            }
+
+            buildWorkerSource() {
+                return String.raw`(() => {
+  const DB_NAME = 'Orbital8-Goji-V1';
+  const DB_VERSION = 4;
+  let db = null;
+  let providerType = null;
+  let currentLimits = { maxFolders: 1000, maxMegabytes: 500 };
+  let processing = false;
+  let scheduled = false;
+  const tokenWaiters = new Map();
+  let tokenCounter = 0;
+
+  function log(message, detail) {
+    self.postMessage({ type: 'log', message, detail });
+  }
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (event) => {
+        const upgradeDb = event.target.result;
+        const oldVersion = event.oldVersion || 0;
+        if (oldVersion < 1 && !upgradeDb.objectStoreNames.contains('folderCache')) {
+          const folderStore = upgradeDb.createObjectStore('folderCache', { keyPath: 'folderId' });
+          folderStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+        }
+        if (oldVersion < 2) {
+          if (!upgradeDb.objectStoreNames.contains('metadata')) {
+            const metadataStore = upgradeDb.createObjectStore('metadata', { keyPath: 'id' });
+            metadataStore.createIndex('pendingOps', 'pendingOps', { unique: false });
+          }
+          if (!upgradeDb.objectStoreNames.contains('syncQueue')) {
+            const queueStore = upgradeDb.createObjectStore('syncQueue', { keyPath: 'fileId' });
+            queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+            queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+            queueStore.createIndex('folderId', 'folderId', { unique: false });
+          }
+        }
+        if (oldVersion < 3) {
+          if (upgradeDb.objectStoreNames.contains('syncQueue')) {
+            upgradeDb.deleteObjectStore('syncQueue');
+            const queueStore = upgradeDb.createObjectStore('syncQueue', { keyPath: 'fileId' });
+            queueStore.createIndex('pendingFlush', 'pendingFlush', { unique: false });
+            queueStore.createIndex('lastMergedAt', 'lastMergedAt', { unique: false });
+            queueStore.createIndex('folderId', 'folderId', { unique: false });
+          }
+          if (!upgradeDb.objectStoreNames.contains('pngText')) {
+            const pngStore = upgradeDb.createObjectStore('pngText', { keyPath: 'id' });
+            pngStore.createIndex('folderId', 'folderId', { unique: false });
+            pngStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+          }
+        }
+        if (oldVersion < 4 && !upgradeDb.objectStoreNames.contains('syncMeta')) {
+          upgradeDb.createObjectStore('syncMeta', { keyPath: 'id' });
+        }
+      };
+      request.onsuccess = (event) => resolve(event.target.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+    });
+  }
+
+  async function getDb() {
+    if (!db) {
+      db = await openDb();
+    }
+    return db;
+  }
+
+  async function readAll(storeName) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      const results = [];
+      const request = store.openCursor();
+      request.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          results.push(cursor.value);
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve(results);
+      tx.onerror = () => reject(tx.error || new Error('Failed to read store'));
+    });
+  }
+
+  async function mutateQueueRecords(fileIds, mutate) {
+    if (!fileIds || !fileIds.length) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readwrite');
+      const store = tx.objectStore('syncQueue');
+      for (const fileId of fileIds) {
+        const request = store.get(fileId);
+        request.onsuccess = () => {
+          const record = request.result;
+          if (record) {
+            const updated = mutate(record) || record;
+            if (updated) {
+              store.put(updated);
+            }
+          }
+        };
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update queue records'));
+    });
+  }
+
+  async function clearQueueEntries(fileIds) {
+    if (!fileIds || !fileIds.length) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readwrite');
+      const store = tx.objectStore('syncQueue');
+      for (const fileId of fileIds) {
+        store.delete(fileId);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to clear queue entries'));
+    });
+  }
+
+  async function markMetadataSynced(fileId, timestamp) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('metadata', 'readwrite');
+      const store = tx.objectStore('metadata');
+      const request = store.get(fileId);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (record) {
+          record.lastSyncedAt = timestamp;
+          record.pendingOps = false;
+          store.put(record);
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to mark metadata synced'));
+    });
+  }
+
+  async function markFolderPending(folderId, pending) {
+    if (!folderId) { return; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('folderCache', 'readwrite');
+      const store = tx.objectStore('folderCache');
+      const request = store.get(folderId);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (record) {
+          record.pendingOps = pending;
+          record.lastAccessed = Date.now();
+          store.put(record);
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update folder state'));
+    });
+  }
+
+  async function hasPendingForFolder(folderId) {
+    if (!folderId) { return false; }
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncQueue', 'readonly');
+      const store = tx.objectStore('syncQueue');
+      if (!store.indexNames.contains('folderId')) {
+        tx.oncomplete = () => resolve(false);
+        tx.onerror = () => resolve(false);
+        return;
+      }
+      let resolved = false;
+      const index = store.index('folderId');
+      const range = IDBKeyRange.only(folderId);
+      const request = index.openKeyCursor(range);
+      request.onsuccess = (event) => {
+        if (resolved) { return; }
+        const cursor = event.target.result;
+        if (cursor) {
+          resolved = true;
+          resolve(true);
+        }
+      };
+      tx.oncomplete = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(false);
+        }
+      };
+      tx.onerror = () => {
+        if (!resolved) {
+          resolved = true;
+          reject(tx.error || new Error('Failed to inspect queue by folder'));
+        }
+      };
+    });
+  }
+
+  async function updateSyncMeta(id, payload) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('syncMeta', 'readwrite');
+      const store = tx.objectStore('syncMeta');
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const existing = request.result || {};
+        store.put(Object.assign({ id }, existing, payload));
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to update sync meta'));
+    });
+  }
+
+  async function deleteFolderCache(folderId) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('folderCache', 'readwrite');
+      const store = tx.objectStore('folderCache');
+      store.delete(folderId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to delete folder cache'));
+    });
+  }
+
+  async function clearPngTextForFolder(folderId) {
+    const database = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('pngText', 'readwrite');
+      const store = tx.objectStore('pngText');
+      if (!store.indexNames.contains('folderId')) {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        return;
+      }
+      const index = store.index('folderId');
+      const range = IDBKeyRange.only(folderId);
+      const request = index.openCursor(range);
+      request.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to clear PNG text entries'));
+    });
+  }
+
+  function aggregateOperations(operations) {
+    const metadata = {};
+    const other = [];
+    (operations || []).forEach((operation) => {
+      if (operation.type === 'metadata') {
+        Object.assign(metadata, operation.payload || {});
+      } else {
+        other.push(operation);
+      }
+    });
+    return { metadata, other };
+  }
+
+  function normalizeGoogleMetadata(metadata) {
+    const normalized = {};
+    Object.keys(metadata || {}).forEach((key) => {
+      const value = metadata[key];
+      if (Array.isArray(value)) {
+        normalized[key] = value.join(',');
+      } else if (value === null || value === undefined) {
+        normalized[key] = '';
+      } else if (typeof value === 'object') {
+        try {
+          normalized[key] = JSON.stringify(value);
+        } catch (error) {
+          normalized[key] = String(value);
+        }
+      } else {
+        normalized[key] = String(value);
+      }
+    });
+    return normalized;
+  }
+
+  function applyPatch(target, patch) {
+    const result = Object.assign({}, target || {});
+    Object.keys(patch || {}).forEach((key) => {
+      const value = patch[key];
+      if (value === undefined) { return; }
+      if (value === null) {
+        delete result[key];
+      } else {
+        result[key] = value;
+      }
+    });
+    return result;
+  }
+
+  function requestToken(forceRefresh) {
+    tokenCounter += 1;
+    const requestId = 'token-' + tokenCounter;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (tokenWaiters.has(requestId)) {
+          tokenWaiters.get(requestId).reject(new Error('Token timeout'));
+          tokenWaiters.delete(requestId);
+        }
+      }, 15000);
+      tokenWaiters.set(requestId, { resolve: (token) => { clearTimeout(timeout); resolve(token); }, reject: (error) => { clearTimeout(timeout); reject(error); } });
+      self.postMessage({ type: 'tokenRequest', requestId, forceRefresh: Boolean(forceRefresh) });
+    });
+  }
+
+  async function syncGoogleDrive(entry, aggregated, options) {
+    const metadata = normalizeGoogleMetadata(aggregated.metadata);
+    if (!Object.keys(metadata).length) { return; }
+    let token = await requestToken(false);
+    const url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(entry.fileId);
+    const body = JSON.stringify({ appProperties: metadata });
+    let response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body,
+      keepalive: Boolean(options.keepalive)
+    });
+    if (response.status === 401 || response.status === 403) {
+      token = await requestToken(true);
+      response = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        body,
+        keepalive: Boolean(options.keepalive)
+      });
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error('Google Drive metadata update failed: ' + response.status + ' ' + text);
+    }
+  }
+
+  async function syncOneDrive(entry, aggregated, options) {
+    const patch = aggregated.metadata || {};
+    if (!Object.keys(patch).length) { return; }
+    let token = await requestToken(false);
+    const base = 'https://graph.microsoft.com/v1.0';
+    const path = '/me/drive/special/approot:/' + encodeURIComponent(entry.fileId) + '.json:/content';
+    let existing = {};
+    let response = await fetch(base + path, {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      keepalive: Boolean(options.keepalive)
+    });
+    if (response.status === 401 || response.status === 403) {
+      token = await requestToken(true);
+      response = await fetch(base + path, {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        keepalive: Boolean(options.keepalive)
+      });
+    }
+    if (response.status === 200) {
+      try {
+        existing = await response.json();
+      } catch (error) {
+        existing = {};
+      }
+    } else if (response.status !== 404) {
+      const text = await response.text().catch(() => '');
+      throw new Error('OneDrive metadata fetch failed: ' + response.status + ' ' + text);
+    }
+    const merged = applyPatch(existing, patch);
+    const putResponse = await fetch(base + path, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(merged),
+      keepalive: Boolean(options.keepalive)
+    });
+    if (!putResponse.ok) {
+      const text = await putResponse.text().catch(() => '');
+      throw new Error('OneDrive metadata write failed: ' + putResponse.status + ' ' + text);
+    }
+  }
+
+  async function enforceCacheLimits() {
+    const limits = currentLimits || { maxFolders: 1000, maxMegabytes: 500 };
+    const maxFolders = limits.maxFolders || 1000;
+    const maxBytes = (limits.maxMegabytes || 500) * 1024 * 1024;
+    const folderRecords = await readAll('folderCache');
+    let totalBytes = folderRecords.reduce((sum, record) => sum + (record.estimatedBytes || 0), 0);
+    let totalCount = folderRecords.length;
+    const candidates = folderRecords
+      .filter((record) => !record.pendingOps)
+      .sort((a, b) => (a.lastAccessed || 0) - (b.lastAccessed || 0));
+    const evicted = [];
+    for (const record of candidates) {
+      if (totalCount <= maxFolders && totalBytes <= maxBytes) {
+        break;
+      }
+      await deleteFolderCache(record.folderId);
+      await clearPngTextForFolder(record.folderId);
+      totalCount -= 1;
+      totalBytes -= record.estimatedBytes || 0;
+      evicted.push({ folderId: record.folderId, reclaimedBytes: record.estimatedBytes || 0 });
+    }
+    await updateSyncMeta('stats', {
+      folderCount: totalCount,
+      totalBytes,
+      lastSweep: Date.now(),
+      evicted
+    });
+  }
+
+  async function loadQueue() {
+    const queue = await readAll('syncQueue');
+    return queue.sort((a, b) => {
+      if (a.pendingFlush && !b.pendingFlush) { return -1; }
+      if (!a.pendingFlush && b.pendingFlush) { return 1; }
+      return (a.lastMergedAt || 0) - (b.lastMergedAt || 0);
+    });
+  }
+
+  async function processQueue(options = {}) {
+    if (processing) {
+      scheduled = true;
+      return;
+    }
+    processing = true;
+    const summary = {
+      startedAt: Date.now(),
+      reason: options.reason || 'manual',
+      flushId: options.flushId || null,
+      keepalive: Boolean(options.keepalive),
+      processed: [],
+      failed: [],
+      pendingBefore: 0,
+      pendingAfter: 0
+    };
+    try {
+      const entries = await loadQueue();
+      summary.pendingBefore = entries.length;
+      if (!entries.length) {
+        summary.status = 'idle';
+        summary.completedAt = Date.now();
+        summary.pendingAfter = 0;
+        await updateSyncMeta('lastRun', summary).catch((error) => log('Failed to persist run summary', error.message));
+        return;
+      }
+      if (options.flushId) {
+        await mutateQueueRecords(entries.map((entry) => entry.fileId), (record) => {
+          record.pendingFlush = true;
+          record.inFlightFlushId = options.flushId;
+          return record;
+        });
+      }
+      for (const entry of entries) {
+        try {
+          const aggregated = aggregateOperations(entry.operations);
+          if (providerType === 'googledrive') {
+            await syncGoogleDrive(entry, aggregated, options);
+          } else if (providerType === 'onedrive') {
+            await syncOneDrive(entry, aggregated, options);
+          }
+          await markMetadataSynced(entry.fileId, Date.now());
+          await clearQueueEntries([entry.fileId]);
+          if (entry.folderId) {
+            const pending = await hasPendingForFolder(entry.folderId);
+            if (!pending) {
+              await markFolderPending(entry.folderId, false);
+            }
+          }
+          const operationTypes = [];
+          if (aggregated.metadata && Object.keys(aggregated.metadata).length) {
+            operationTypes.push('metadata');
+          }
+          (aggregated.other || []).forEach((op) => operationTypes.push(op.type));
+          summary.processed.push({
+            fileId: entry.fileId,
+            provider: entry.provider || providerType || 'unknown',
+            operationTypes,
+            queuedAt: entry.lastMergedAt || Date.now(),
+            completedAt: Date.now()
+          });
+        } catch (error) {
+          await mutateQueueRecords([entry.fileId], (record) => {
+            record.pendingFlush = Boolean(options.flushId);
+            record.inFlightFlushId = null;
+            record.retryCount = (record.retryCount || 0) + 1;
+            return record;
+          });
+          if (entry.folderId) {
+            await markFolderPending(entry.folderId, true);
+          }
+          summary.failed.push({
+            fileId: entry.fileId,
+            provider: entry.provider || providerType || 'unknown',
+            error: error.message || String(error),
+            operationTypes: (entry.operations || []).map((op) => op.type)
+          });
+          summary.error = summary.error || (error.message || String(error));
+          throw error;
+        }
+      }
+      await enforceCacheLimits();
+      summary.status = 'success';
+      summary.completedAt = Date.now();
+      const remaining = await loadQueue();
+      summary.pendingAfter = remaining.length;
+      await updateSyncMeta('lastRun', summary).catch((error) => log('Failed to persist run summary', error.message));
+    } catch (error) {
+      summary.status = summary.status || 'failed';
+      summary.error = summary.error || (error.message || String(error));
+      summary.completedAt = summary.completedAt || Date.now();
+      try {
+        const remaining = await loadQueue();
+        summary.pendingAfter = remaining.length;
+      } catch (readError) {
+        summary.pendingAfter = summary.pendingAfter || 0;
+      }
+      await updateSyncMeta('lastRun', summary).catch((persistError) => log('Failed to persist run summary', persistError.message));
+      throw error;
+    } finally {
+      processing = false;
+      if (scheduled) {
+        scheduled = false;
+        processQueue({ reason: 'scheduled' }).catch((error) => log('Scheduled queue processing failed', error.message));
+      }
+    }
+  }
+
+  self.addEventListener('message', (event) => {
+    const data = event.data || {};
+    switch (data.type) {
+      case 'init':
+        providerType = data.providerType || null;
+        getDb().then(() => self.postMessage({ type: 'ready' })).catch((error) => log('Worker init failed', error.message));
+        break;
+      case 'configure':
+        providerType = data.providerType || providerType;
+        if (data.limits) {
+          currentLimits = data.limits;
+          updateSyncMeta('limits', currentLimits).catch((error) => log('Failed to persist limits', error.message));
+        }
+        break;
+      case 'queueUpdated':
+        processQueue({ reason: 'queueUpdated' }).catch((error) => log('Queue update failed', error.message));
+        break;
+      case 'process':
+        processQueue({ reason: data.reason || 'manual' }).catch((error) => log('Process request failed', error.message));
+        break;
+      case 'flushRequest':
+        (async () => {
+          try {
+            await processQueue({ flushId: data.flushId, keepalive: Boolean(data.keepalive), reason: data.reason || 'flush' });
+            self.postMessage({ type: 'flushComplete', flushId: data.flushId });
+          } catch (error) {
+            self.postMessage({ type: 'flushFailed', flushId: data.flushId, error: error.message || String(error) });
+          }
+        })();
+        self.postMessage({ type: 'flushAccepted', flushId: data.flushId });
+        break;
+      case 'tokenResponse': {
+        const waiter = tokenWaiters.get(data.requestId);
+        if (waiter) {
+          tokenWaiters.delete(data.requestId);
+          if (data.error) {
+            waiter.reject(new Error(data.error));
+          } else {
+            waiter.resolve(data.token);
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
+})();`;
+            }
         }
         class VisualCueManager {
             constructor() {
@@ -1294,7 +2632,33 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor() {
+                this.abortController = null;
+                this.worker = null;
+                this.workerUrl = null;
+                this.pendingParses = new Map();
+                this.ensureWorker();
+            }
+            ensureWorker() {
+                if (this.worker) { return; }
+                const source = this.buildWorkerSource();
+                const blob = new Blob([source], { type: 'application/javascript' });
+                this.workerUrl = URL.createObjectURL(blob);
+                this.worker = new Worker(this.workerUrl);
+                this.worker.addEventListener('message', (event) => this.handleWorkerMessage(event));
+            }
+            handleWorkerMessage(event) {
+                const data = event.data || {};
+                if (!data.id) { return; }
+                const pending = this.pendingParses.get(data.id);
+                if (!pending) { return; }
+                this.pendingParses.delete(data.id);
+                if (data.type === 'parsed') {
+                    pending.resolve(data.metadata || {});
+                } else if (data.type === 'parseError') {
+                    pending.reject(new Error(data.error || 'Metadata parse failed'));
+                }
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -1303,38 +2667,27 @@
             }
             async extract(buffer) {
                 if (!buffer) return {};
-                const metadata = {};
-                const view = new DataView(buffer);
-                if (buffer.byteLength < 8) return {};
-                let pos = 8;
-                try {
-                    while (pos < buffer.byteLength - 12) {
-                        const chunkLength = view.getUint32(pos, false);
-                        pos += 4;
-                        let chunkType = '';
-                        for (let i = 0; i < 4; i++) { chunkType += String.fromCharCode(view.getUint8(pos + i)); }
-                        pos += 4;
-                        if (chunkType === 'tEXt') {
-                            let keyword = '';
-                            let value = '';
-                            let nullFound = false;
-                            for (let i = 0; i < chunkLength; i++) {
-                                const byte = view.getUint8(pos + i);
-                                if (!nullFound) {
-                                    if (byte === 0) { nullFound = true; } else { keyword += String.fromCharCode(byte); }
-                                } else { value += String.fromCharCode(byte); }
-                            }
-                            metadata[keyword] = value;
-                        } else if (chunkType === 'IHDR') {
-                            const width = view.getUint32(pos, false);
-                            const height = view.getUint32(pos + 4, false);
-                            metadata._dimensions = { width, height };
-                        } else if (chunkType === 'IEND') { break; }
-                        pos += chunkLength + 4;
-                        if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
-                    }
-                } catch (error) { /* Return what we have so far */ }
-                return metadata;
+                this.ensureWorker();
+                const requestId = Utils.uuid();
+                return new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        if (this.pendingParses.has(requestId)) {
+                            this.pendingParses.get(requestId).reject(new Error('Metadata parse timeout'));
+                            this.pendingParses.delete(requestId);
+                        }
+                    }, 10000);
+                    this.pendingParses.set(requestId, {
+                        resolve: (payload) => {
+                            clearTimeout(timeout);
+                            resolve(payload);
+                        },
+                        reject: (error) => {
+                            clearTimeout(timeout);
+                            reject(error);
+                        }
+                    });
+                    this.worker.postMessage({ type: 'parsePng', id: requestId, buffer }, [buffer]);
+                });
             }
             async fetchMetadata(file, isForExport = false) {
                 if (file.mimeType !== 'image/png') {
@@ -1345,13 +2698,15 @@
                     this.abortController = new AbortController();
                     let response;
                     const requestOptions = {};
-                    if(state.activeRequests) requestOptions.signal = state.activeRequests.signal;
-                    
+                    if (state.activeRequests) { requestOptions.signal = state.activeRequests.signal; }
                     if (state.providerType === 'googledrive') {
                         response = await state.provider.makeApiCall(`/files/${file.id}?alt=media`, { headers: { 'Range': 'bytes=0-65535' }, ...requestOptions }, false);
                     } else {
                         const accessToken = await state.provider.getAccessToken();
-                        response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`, { headers: { 'Authorization': `Bearer ${accessToken}`, 'Range': 'bytes=0-65535' }, ...requestOptions });
+                        response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`, {
+                            headers: { 'Authorization': `Bearer ${accessToken}`, 'Range': 'bytes=0-65535' },
+                            ...requestOptions
+                        });
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
@@ -1360,6 +2715,100 @@
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
                 }
+            }
+            buildWorkerSource() {
+                return String.raw`(() => {
+  const textDecoder = new TextDecoder('utf-8');
+
+  async function inflateZtxtChunk(bytes) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('DecompressionStream not supported');
+    }
+    const stream = new DecompressionStream('deflate');
+    const writer = stream.writable.getWriter();
+    await writer.write(bytes);
+    await writer.close();
+    const reader = stream.readable.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const result = await reader.read();
+      if (result.done) { break; }
+      chunks.push(result.value);
+      total += result.value.length;
+    }
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return output;
+  }
+
+  async function parsePng(buffer) {
+    const view = new DataView(buffer);
+    const metadata = {};
+    if (buffer.byteLength < 8) { return metadata; }
+    let pos = 8;
+    while (pos < buffer.byteLength - 12) {
+      const length = view.getUint32(pos, false);
+      pos += 4;
+      let chunkType = '';
+      for (let i = 0; i < 4; i++) {
+        chunkType += String.fromCharCode(view.getUint8(pos + i));
+      }
+      pos += 4;
+      if (pos + length > buffer.byteLength) {
+        break;
+      }
+      if (chunkType === 'tEXt') {
+        const data = new Uint8Array(buffer, pos, length);
+        const nullIndex = data.indexOf(0);
+        const keywordBytes = nullIndex === -1 ? data : data.slice(0, nullIndex);
+        const valueBytes = nullIndex === -1 ? new Uint8Array() : data.slice(nullIndex + 1);
+        const keyword = textDecoder.decode(keywordBytes);
+        const value = textDecoder.decode(valueBytes);
+        metadata[keyword] = value;
+      } else if (chunkType === 'zTXt') {
+        const data = new Uint8Array(buffer, pos, length);
+        const nullIndex = data.indexOf(0);
+        const keywordBytes = nullIndex === -1 ? data : data.slice(0, nullIndex);
+        const keyword = textDecoder.decode(keywordBytes);
+        const compressionMethod = nullIndex + 1 < data.length ? data[nullIndex + 1] : 0;
+        const compressed = data.slice(nullIndex + 2);
+        if (compressionMethod === 0) {
+          try {
+            const inflated = await inflateZtxtChunk(compressed);
+            metadata[keyword] = textDecoder.decode(inflated);
+          } catch (error) {
+            metadata[keyword] = '[[compressed text decode failed]]';
+          }
+        }
+      } else if (chunkType === 'IHDR') {
+        const width = view.getUint32(pos, false);
+        const height = view.getUint32(pos + 4, false);
+        metadata._dimensions = { width, height };
+      } else if (chunkType === 'IEND') {
+        break;
+      }
+      pos += length + 4;
+    }
+    return metadata;
+  }
+
+  self.addEventListener('message', async (event) => {
+    const data = event.data || {};
+    if (data.type === 'parsePng' && data.buffer) {
+      try {
+        const metadata = await parsePng(data.buffer);
+        self.postMessage({ type: 'parsed', id: data.id, metadata });
+      } catch (error) {
+        self.postMessage({ type: 'parseError', id: data.id, error: error.message || String(error) });
+      }
+    }
+  });
+})();`;
             }
         }
         class BaseProvider {
@@ -1456,6 +2905,13 @@
                 });
                 if (!response.ok) { throw new Error('Failed to refresh access token'); }
                 const tokens = await response.json(); this.accessToken = tokens.access_token; this.storeCredentials(); return this.accessToken;
+            }
+            async getAccessToken() {
+                if (this.accessToken) { return this.accessToken; }
+                if (this.refreshToken && this.clientSecret) {
+                    return await this.refreshAccessToken();
+                }
+                throw new Error('Not authenticated');
             }
             async makeApiCall(endpoint, options = {}, isJson = true) {
                 if (!this.accessToken) { throw new Error('Not authenticated'); }
@@ -2021,13 +3477,22 @@
                 Core.showEmptyState();
                 Utils.elements.emptyState.classList.add('hidden');
             },
-            async updateUserMetadata(fileId, updates) {
+            async commitUserMetadataUpdate(fileId, updates, options = {}) {
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
-                    if (!file) return;
+                    if (!file) { return; }
                     Object.assign(file, updates);
-                    await state.dbManager.saveMetadata(file.id, file);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    await state.dbManager.saveMetadata(file.id, file, {
+                        provider: state.providerType || 'unknown',
+                        pendingOps: true
+                    });
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { pendingOps: true });
+                    if (state.syncManager) {
+                        await state.syncManager.queueMetadataUpdate(fileId, updates, {
+                            folderId: state.currentFolder.id,
+                            immediate: options.immediate || false
+                        });
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -2073,6 +3538,7 @@
                     } else {
                         finalMetadata.metadataStatus = 'loaded';
                         finalMetadata.extractedMetadata = metadata;
+                        await state.dbManager.savePngText(file.id, state.currentFolder.id, metadata);
                     }
                     await state.dbManager.saveMetadata(file.id, finalMetadata);
                     Object.assign(file, finalMetadata);
@@ -2085,6 +3551,19 @@
                     await state.dbManager.saveMetadata(file.id, file);
                 }
             }
+        };
+        App.updateUserMetadata = Utils.debounce(function(fileId, updates, options = {}) {
+            return App.commitUserMetadataUpdate(fileId, updates, options);
+        }, 750);
+        App.updateUserMetadataImmediate = function(fileId, updates, options = {}) {
+            const mergedOptions = Object.assign({}, options, { immediate: true });
+            return App.commitUserMetadataUpdate(fileId, updates, mergedOptions);
+        };
+        App.runSyncDiagnostics = function(options = {}) {
+            return SyncDiagnostics.log(options);
+        };
+        App.requeuePendingMetadata = function(options = {}) {
+            return SyncDiagnostics.requeuePendingMetadata(options);
         };
         const Core = {
             initializeStacks() {
@@ -2265,13 +3744,13 @@
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
                         const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
                         const newSequence = minSequence - 1;
-                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence });
+                        await App.updateUserMetadataImmediate(currentImage.id, { stackSequence: newSequence });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
                     } else {
                         const newSequence = Date.now();
-                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence });
+                        await App.updateUserMetadataImmediate(currentImage.id, { stack: targetStack, stackSequence: newSequence });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stack = targetStack;
                         item.stackSequence = newSequence;
@@ -2869,7 +4348,7 @@
                         if (file) {
                             const currentStack = file.stack;
                             const newSequence = Date.now();
-                            await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence });
+                            await App.updateUserMetadataImmediate(fileId, { stack: targetStack, stackSequence: newSequence });
                             const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
                             if (currentStackIndex !== -1) {
                                 state.stacks[currentStack].splice(currentStackIndex, 1);
@@ -2896,7 +4375,7 @@
                         if (file) {
                             const currentTags = file.tags || [];
                             const newTags = [...new Set([...currentTags, ...tagsToAdd])];
-                            await App.updateUserMetadata(fileId, { tags: newTags });
+                            await App.updateUserMetadataImmediate(fileId, { tags: newTags });
                             tagsToAdd.forEach(tag => state.tags.add(tag));
                         }
                     },
@@ -2962,6 +4441,9 @@
             hubPressActive: false,
             overlay: null,
             lastHubTap: { time: 0, x: 0, y: 0 },
+            touchInProgress: false,
+            suppressMouseUntil: 0,
+            pointerMode: null,
             DOUBLE_TAP_MAX_INTERVAL: 320,
             DOUBLE_TAP_MAX_DISTANCE: 28,
             TAP_DISTANCE_THRESHOLD: 26,
@@ -2971,6 +4453,9 @@
             trailThrottle: null,
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
+                this.touchInProgress = false;
+                this.suppressMouseUntil = 0;
+                this.pointerMode = null;
                 this.setupEventListeners();
                 this.setupPinchZoom();
                 this.initGestureOverlay();
@@ -3162,6 +4647,17 @@
                 }
             },
             handleStart(e) {
+                const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                if (e.type === 'mousedown') {
+                    if (this.touchInProgress || now < this.suppressMouseUntil) {
+                        return;
+                    }
+                    this.pointerMode = 'mouse';
+                } else if (e.type === 'touchstart') {
+                    this.touchInProgress = true;
+                    this.pointerMode = 'touch';
+                    this.suppressMouseUntil = now + 400;
+                }
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
                 if (state.currentScale > 1.1) return;
                 const point = e.touches ? e.touches[0] : e;
@@ -3180,6 +4676,13 @@
                 this.queueTrail(point.clientX, point.clientY);
             },
             handleMove(e) {
+                const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                if (e.type === 'mousemove' && (this.touchInProgress || now < this.suppressMouseUntil)) {
+                    return;
+                }
+                if (e.type === 'touchmove') {
+                    this.suppressMouseUntil = now + 400;
+                }
                 if (!state.isDragging) return;
                 if (e.touches && e.touches.length > 1) {
                     state.isDragging = false; Utils.elements.centerImage.classList.remove('dragging');
@@ -3205,6 +4708,10 @@
                 }
             },
             handleEnd(e) {
+                const eventTime = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                if (e.type === 'mouseup' && (this.touchInProgress || eventTime < this.suppressMouseUntil)) {
+                    return;
+                }
                 if (!state.isDragging) return;
                 state.isDragging = false;
                 Utils.elements.centerImage.classList.remove('dragging');
@@ -3264,6 +4771,13 @@
                 this.hideAllEdgeGlows();
                 this.hubPressActive = false;
                 this.gestureStarted = false;
+                if (e.type === 'touchend' || e.type === 'touchcancel') {
+                    this.touchInProgress = false;
+                    this.suppressMouseUntil = (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) + 400;
+                }
+                if (e.type === 'mouseup' || e.type === 'touchend' || e.type === 'touchcancel') {
+                    this.pointerMode = null;
+                }
             },
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
@@ -3501,11 +5015,521 @@
                 this.switchToStack(nextStack);
             }
         };
+        const SyncDiagnostics = {
+            async collect() {
+                if (!state.dbManager) {
+                    throw new Error('Database manager is not ready');
+                }
+                const [
+                    queue,
+                    metadataRecords,
+                    folderRecords,
+                    limitsMeta,
+                    statsMeta,
+                    lastRunMeta
+                ] = await Promise.all([
+                    state.dbManager.getSyncQueueSnapshot(),
+                    state.dbManager.getMetadataRecords(),
+                    state.dbManager.getFolderRecords(),
+                    state.dbManager.getSyncMeta('limits'),
+                    state.dbManager.getSyncMeta('stats'),
+                    state.dbManager.getSyncMeta('lastRun')
+                ]);
+                const queueSummary = (queue || []).map((entry) => ({
+                    fileId: entry.fileId,
+                    provider: entry.provider || state.providerType || 'unknown',
+                    operations: (entry.operations || []).map(op => op.type).join(', '),
+                    pendingFlush: Boolean(entry.pendingFlush),
+                    inFlightFlushId: entry.inFlightFlushId || null,
+                    retryCount: entry.retryCount || 0,
+                    lastMergedAt: entry.lastMergedAt ? new Date(entry.lastMergedAt).toISOString() : null
+                }));
+                const pendingMetadataSummary = (metadataRecords || [])
+                    .filter((record) => record && (record.pendingOps || (record.localUpdatedAt && (!record.lastSyncedAt || record.lastSyncedAt < record.localUpdatedAt))))
+                    .map((record) => ({
+                        id: record.id,
+                        provider: record.provider || state.providerType || 'unknown',
+                        pendingOps: Boolean(record.pendingOps),
+                        localUpdatedAt: record.localUpdatedAt ? new Date(record.localUpdatedAt).toISOString() : null,
+                        lastSyncedAt: record.lastSyncedAt ? new Date(record.lastSyncedAt).toISOString() : null
+                    }));
+                const pendingFoldersSummary = (folderRecords || [])
+                    .filter((record) => record?.pendingOps)
+                    .map((record) => ({
+                        folderId: record.folderId,
+                        fileCount: Array.isArray(record.files) ? record.files.length : 0,
+                        estimatedBytes: record.estimatedBytes || 0,
+                        lastAccessed: record.lastAccessed ? new Date(record.lastAccessed).toISOString() : null
+                    }));
+                const stuckQueueSummary = queueSummary.filter((entry) => entry.pendingFlush || entry.retryCount >= 3);
+                const issues = [];
+                const fixes = new Set();
+                if (queueSummary.length) {
+                    const fix = 'Ensure App.syncManager is active, then run await App.syncManager.flush({ reason: "diagnostics", keepalive: true }).';
+                    issues.push({
+                        type: 'queue',
+                        message: `${queueSummary.length} change(s) pending sync`,
+                        details: queueSummary.slice(0, 5),
+                        recommendedFix: fix
+                    });
+                    fixes.add(fix);
+                }
+                if (stuckQueueSummary.length) {
+                    const fix = 'Check authentication/network, inspect console for SyncWorker errors, then call await App.syncManager.requestSync().';
+                    issues.push({
+                        type: 'stuckQueue',
+                        message: `${stuckQueueSummary.length} queued change(s) have pending flush markers or repeated failures`,
+                        details: stuckQueueSummary.slice(0, 5),
+                        recommendedFix: fix
+                    });
+                    fixes.add(fix);
+                }
+                if (pendingMetadataSummary.length) {
+                    const fix = 'Run await SyncDiagnostics.requeuePendingMetadata() to requeue unsynced metadata, then await App.syncManager.requestSync().';
+                    issues.push({
+                        type: 'metadata',
+                        message: `${pendingMetadataSummary.length} metadata record(s) are marked pending locally`,
+                        details: pendingMetadataSummary.slice(0, 5),
+                        recommendedFix: fix
+                    });
+                    fixes.add(fix);
+                }
+                const lastRun = lastRunMeta || null;
+                if (lastRun && lastRun.status === 'failed') {
+                    const fix = 'Resolve the reported worker error (often auth or network), then rerun await App.syncManager.flush({ reason: "retry", keepalive: true }).';
+                    issues.push({
+                        type: 'workerFailure',
+                        message: `Last sync attempt failed: ${lastRun.error || 'unknown error'}`,
+                        details: lastRun,
+                        recommendedFix: fix
+                    });
+                    fixes.add(fix);
+                }
+                if (queueSummary.length && lastRun && lastRun.completedAt) {
+                    const ageMs = Date.now() - lastRun.completedAt;
+                    if (ageMs > 5 * 60 * 1000) {
+                        const minutes = (ageMs / 60000).toFixed(1);
+                        const fix = 'Call await App.syncManager.requestSync() to wake the worker or reload the app if it remains idle.';
+                        issues.push({
+                            type: 'staleWorker',
+                            message: `Sync worker has been idle for ${minutes} minutes while changes are queued`,
+                            details: { completedAt: new Date(lastRun.completedAt).toISOString() },
+                            recommendedFix: fix
+                        });
+                        fixes.add(fix);
+                    }
+                }
+                return {
+                    queueRaw: queue,
+                    metadataRaw: metadataRecords,
+                    folderRaw: folderRecords,
+                    queueSummary,
+                    pendingMetadataSummary,
+                    pendingFoldersSummary,
+                    stuckQueueSummary,
+                    lastRun,
+                    limits: limitsMeta || state.dbManager.defaultLimits,
+                    stats: statsMeta || null,
+                    issues,
+                    fixes: Array.from(fixes)
+                };
+            },
+            async log(options = {}) {
+                const { toastMessage, suppressToast } = options;
+                const report = await this.collect();
+                console.groupCollapsed(`[SyncDiagnostics] ${new Date().toISOString()}`);
+                if (report.issues.length) {
+                    report.issues.forEach((issue, index) => {
+                        console.group(`Issue ${index + 1}: ${issue.message}`);
+                        if (issue.details) { console.log('Details:', issue.details); }
+                        if (issue.recommendedFix) { console.log('Recommended fix:', issue.recommendedFix); }
+                        console.groupEnd();
+                    });
+                } else {
+                    console.log('No sync issues detected.');
+                }
+                if (report.queueSummary.length) {
+                    console.log(`Queue (${report.queueSummary.length} entries, showing up to 25):`);
+                    console.table(report.queueSummary.slice(0, 25));
+                }
+                if (report.pendingMetadataSummary.length) {
+                    console.log(`Metadata pending (${report.pendingMetadataSummary.length} entries, showing up to 25):`);
+                    console.table(report.pendingMetadataSummary.slice(0, 25));
+                }
+                if (report.pendingFoldersSummary.length) {
+                    console.log(`Folders with pending ops (${report.pendingFoldersSummary.length} entries):`);
+                    console.table(report.pendingFoldersSummary);
+                }
+                if (report.lastRun) {
+                    console.log('Last worker run summary:', report.lastRun);
+                }
+                if (report.fixes.length) {
+                    console.log('Fix checklist:', report.fixes);
+                }
+                console.groupEnd();
+                if (!suppressToast) {
+                    Utils.showToast(toastMessage || 'Sync diagnostics logged to console', 'info', true);
+                }
+                if (state.dbManager) {
+                    try {
+                        await state.dbManager.updateSyncMeta('lastDiagnostics', {
+                            generatedAt: Date.now(),
+                            report
+                        });
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Failed to persist diagnostics snapshot', error);
+                    }
+                }
+                return report;
+            },
+            async getLastReport() {
+                if (!state.dbManager) { return null; }
+                try {
+                    const record = await state.dbManager.getSyncMeta('lastDiagnostics');
+                    return record ? (record.report || null) : null;
+                } catch (error) {
+                    console.warn('[SyncDiagnostics] Failed to read stored diagnostics', error);
+                    return null;
+                }
+            },
+            openWindow(report, options = {}) {
+                if (!report) { return null; }
+                const features = options.windowFeatures || 'noopener,width=520,height=720,resizable=yes,scrollbars=yes';
+                const popup = window.open('', '_blank', features);
+                if (!popup) { return null; }
+
+                const doc = popup.document;
+                doc.open();
+                doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sync Diagnostics</title></head><body></body></html>');
+                doc.close();
+
+                const style = doc.createElement('style');
+                style.textContent = `
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        background: #0f172a;
+                        color: #e2e8f0;
+                        margin: 0;
+                        padding: 24px;
+                        line-height: 1.5;
+                    }
+                    h1 {
+                        margin: 0 0 12px;
+                        font-size: 20px;
+                    }
+                    h2 {
+                        margin: 24px 0 8px;
+                        font-size: 16px;
+                        color: #fcd34d;
+                    }
+                    h3 {
+                        margin: 0 0 8px;
+                        font-size: 14px;
+                    }
+                    .meta {
+                        font-size: 12px;
+                        opacity: 0.75;
+                    }
+                    .section {
+                        margin-bottom: 20px;
+                    }
+                    .summary-list {
+                        list-style: none;
+                        padding: 0;
+                        margin: 12px 0 0;
+                        display: grid;
+                        gap: 6px;
+                    }
+                    .summary-list li {
+                        background: rgba(148, 163, 184, 0.14);
+                        border-radius: 8px;
+                        padding: 8px 10px;
+                        font-size: 12px;
+                    }
+                    .issue {
+                        background: rgba(248, 113, 113, 0.14);
+                        border-left: 3px solid #f87171;
+                        padding: 12px;
+                        border-radius: 10px;
+                        margin-bottom: 12px;
+                    }
+                    .issue-fix {
+                        font-weight: 500;
+                        margin: 0 0 8px;
+                        color: #fca5a5;
+                    }
+                    .issue-details {
+                        background: rgba(15, 23, 42, 0.55);
+                        padding: 8px;
+                        border-radius: 8px;
+                        overflow-x: auto;
+                        font-size: 12px;
+                    }
+                    .checklist {
+                        padding-left: 18px;
+                        margin: 12px 0 0;
+                    }
+                    .checklist li {
+                        margin-bottom: 6px;
+                    }
+                    .raw-report {
+                        background: rgba(15, 23, 42, 0.8);
+                        padding: 12px;
+                        border-radius: 12px;
+                        font-size: 12px;
+                        overflow: auto;
+                        max-height: 360px;
+                        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+                    }
+                    .action-row {
+                        margin-top: 10px;
+                        display: flex;
+                        gap: 8px;
+                        flex-wrap: wrap;
+                    }
+                    .action-button {
+                        background: rgba(59, 130, 246, 0.25);
+                        border: 1px solid rgba(59, 130, 246, 0.4);
+                        border-radius: 8px;
+                        color: #dbeafe;
+                        padding: 8px 12px;
+                        font-size: 12px;
+                        cursor: pointer;
+                        transition: background 0.2s ease, transform 0.2s ease;
+                    }
+                    .action-button:hover {
+                        background: rgba(59, 130, 246, 0.35);
+                        transform: translateY(-1px);
+                    }
+                    a { color: inherit; }
+                `;
+                doc.head.appendChild(style);
+
+                const container = doc.createElement('div');
+                container.className = 'diagnostics-container';
+                doc.body.appendChild(container);
+
+                const title = doc.createElement('h1');
+                title.textContent = options.title || 'Sync Diagnostics';
+                container.appendChild(title);
+
+                const meta = doc.createElement('div');
+                meta.className = 'meta';
+                meta.textContent = `Generated ${new Date().toLocaleString()}`;
+                container.appendChild(meta);
+
+                const summarySection = doc.createElement('section');
+                summarySection.className = 'section';
+                const summaryHeading = doc.createElement('h2');
+                summaryHeading.textContent = 'Summary';
+                summarySection.appendChild(summaryHeading);
+                const summaryList = doc.createElement('ul');
+                summaryList.className = 'summary-list';
+                const lastRun = report.lastRun || null;
+                const lastRunSummary = (() => {
+                    if (!lastRun) { return 'Last worker run: none recorded'; }
+                    const status = lastRun.status || 'unknown';
+                    const completed = lastRun.completedAt ? new Date(lastRun.completedAt).toLocaleString() : 'time not recorded';
+                    const error = lastRun.error ? ` – ${lastRun.error}` : '';
+                    return `Last worker run: ${status}${error ? error : ''} at ${completed}`;
+                })();
+                [
+                    `Queue entries pending: ${(report.queueSummary || []).length}`,
+                    `Metadata records pending: ${(report.pendingMetadataSummary || []).length}`,
+                    `Folders with pending ops: ${(report.pendingFoldersSummary || []).length}`,
+                    lastRunSummary
+                ].forEach((text) => {
+                    const li = doc.createElement('li');
+                    li.textContent = text;
+                    summaryList.appendChild(li);
+                });
+                summarySection.appendChild(summaryList);
+                container.appendChild(summarySection);
+
+                const issuesSection = doc.createElement('section');
+                issuesSection.className = 'section';
+                const issuesHeading = doc.createElement('h2');
+                issuesHeading.textContent = 'Issues';
+                issuesSection.appendChild(issuesHeading);
+                if (report.issues && report.issues.length) {
+                    report.issues.forEach((issue) => {
+                        const block = doc.createElement('article');
+                        block.className = 'issue';
+                        const issueTitle = doc.createElement('h3');
+                        issueTitle.textContent = issue.message;
+                        block.appendChild(issueTitle);
+                        if (issue.recommendedFix) {
+                            const fix = doc.createElement('p');
+                            fix.className = 'issue-fix';
+                            fix.textContent = `Recommended fix: ${issue.recommendedFix}`;
+                            block.appendChild(fix);
+                        }
+                        if (issue.details) {
+                            const details = doc.createElement('pre');
+                            details.className = 'issue-details';
+                            details.textContent = JSON.stringify(issue.details, null, 2);
+                            block.appendChild(details);
+                        }
+                        issuesSection.appendChild(block);
+                    });
+                } else {
+                    const none = doc.createElement('p');
+                    none.textContent = 'No sync issues detected.';
+                    issuesSection.appendChild(none);
+                }
+                container.appendChild(issuesSection);
+
+                const fixesSection = doc.createElement('section');
+                fixesSection.className = 'section';
+                const fixesHeading = doc.createElement('h2');
+                fixesHeading.textContent = 'Fix Checklist';
+                fixesSection.appendChild(fixesHeading);
+                if (report.fixes && report.fixes.length) {
+                    const list = doc.createElement('ul');
+                    list.className = 'checklist';
+                    report.fixes.forEach((fixText) => {
+                        const li = doc.createElement('li');
+                        li.textContent = fixText;
+                        list.appendChild(li);
+                    });
+                    fixesSection.appendChild(list);
+                } else {
+                    const none = doc.createElement('p');
+                    none.textContent = 'No fixes required.';
+                    fixesSection.appendChild(none);
+                }
+                container.appendChild(fixesSection);
+
+                const rawSection = doc.createElement('section');
+                rawSection.className = 'section';
+                const rawHeading = doc.createElement('h2');
+                rawHeading.textContent = 'Raw Report';
+                rawSection.appendChild(rawHeading);
+                const rawPre = doc.createElement('pre');
+                rawPre.className = 'raw-report';
+                const jsonText = JSON.stringify(report, null, 2);
+                rawPre.textContent = jsonText;
+                rawSection.appendChild(rawPre);
+                const actionRow = doc.createElement('div');
+                actionRow.className = 'action-row';
+                const copyButton = doc.createElement('button');
+                copyButton.type = 'button';
+                copyButton.className = 'action-button';
+                copyButton.textContent = 'Copy JSON';
+                copyButton.addEventListener('click', async () => {
+                    try {
+                        if (popup.navigator && popup.navigator.clipboard && popup.navigator.clipboard.writeText) {
+                            await popup.navigator.clipboard.writeText(jsonText);
+                        } else {
+                            const textarea = doc.createElement('textarea');
+                            textarea.value = jsonText;
+                            textarea.style.position = 'fixed';
+                            textarea.style.top = '-1000px';
+                            textarea.style.opacity = '0';
+                            doc.body.appendChild(textarea);
+                            textarea.focus();
+                            textarea.select();
+                            doc.execCommand('copy');
+                            doc.body.removeChild(textarea);
+                        }
+                        const original = copyButton.textContent;
+                        copyButton.textContent = 'Copied!';
+                        setTimeout(() => { copyButton.textContent = original; }, 2000);
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Clipboard copy failed', error);
+                        const original = copyButton.textContent;
+                        copyButton.textContent = 'Copy failed';
+                        setTimeout(() => { copyButton.textContent = original; }, 2000);
+                    }
+                });
+                const downloadButton = doc.createElement('button');
+                downloadButton.type = 'button';
+                downloadButton.className = 'action-button';
+                downloadButton.textContent = 'Download JSON';
+                downloadButton.addEventListener('click', () => {
+                    try {
+                        const blob = new Blob([jsonText], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const anchor = doc.createElement('a');
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        anchor.href = url;
+                        anchor.download = `sync-diagnostics-${timestamp}.json`;
+                        doc.body.appendChild(anchor);
+                        anchor.click();
+                        doc.body.removeChild(anchor);
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Download failed', error);
+                    }
+                });
+                actionRow.appendChild(copyButton);
+                actionRow.appendChild(downloadButton);
+                rawSection.appendChild(actionRow);
+                container.appendChild(rawSection);
+
+                return popup;
+            },
+            async requeuePendingMetadata(options = {}) {
+                if (!state.dbManager) {
+                    throw new Error('Database manager is not ready');
+                }
+                const fileFilter = Array.isArray(options.fileIds) && options.fileIds.length ? new Set(options.fileIds) : null;
+                const [metadataRecords, queueRecords, folderRecords] = await Promise.all([
+                    state.dbManager.getMetadataRecords(),
+                    state.dbManager.getSyncQueueSnapshot(),
+                    state.dbManager.getFolderRecords()
+                ]);
+                const queuedIds = new Set((queueRecords || []).map((entry) => entry.fileId));
+                const folderMap = new Map();
+                (folderRecords || []).forEach((folder) => {
+                    if (Array.isArray(folder.files)) {
+                        folder.files.forEach((file) => {
+                            if (file && file.id) {
+                                folderMap.set(file.id, folder.folderId);
+                            }
+                        });
+                    }
+                });
+                let requeued = 0;
+                const candidates = (metadataRecords || []).filter((record) => {
+                    if (!record) { return false; }
+                    const unsynced = record.pendingOps || (record.localUpdatedAt && (!record.lastSyncedAt || record.lastSyncedAt < record.localUpdatedAt));
+                    if (!unsynced) { return false; }
+                    if (queuedIds.has(record.id)) { return false; }
+                    if (fileFilter && !fileFilter.has(record.id)) { return false; }
+                    return true;
+                });
+                for (const record of candidates) {
+                    try {
+                        const folderId = folderMap.get(record.id) || record.metadata?.folderId || record.metadata?.parentId || null;
+                        const provider = record.provider || state.providerType || 'unknown';
+                        await state.dbManager.enqueueFileOperation(
+                            record.id,
+                            provider,
+                            { type: 'metadata', payload: record.metadata || {} },
+                            { folderId }
+                        );
+                        requeued += 1;
+                    } catch (error) {
+                        console.warn('[SyncDiagnostics] Failed to requeue metadata for', record.id, error);
+                    }
+                }
+                if (requeued > 0 && state.syncManager) {
+                    state.syncManager.requestSync();
+                }
+                if (requeued > 0) {
+                    Utils.showToast(`Requeued ${requeued} metadata record(s) for sync`, 'info', true);
+                } else {
+                    Utils.showToast('No pending metadata records required requeue', 'info', true);
+                }
+                return { requeued, requestedSync: requeued > 0, scanned: candidates.length };
+            }
+        };
         const DraggableResizable = {
             init(modal, header) {
                 let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
                 let isDragging = false;
-                
+
                 header.onmousedown = dragMouseDown;
 
                 function dragMouseDown(e) {
@@ -3646,7 +5670,7 @@
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
                         if (!currentFile) return;
                         const isFavorite = !currentFile.favorite;
-                        await App.updateUserMetadata(currentFile.id, { favorite: isFavorite });
+                        await App.updateUserMetadataImmediate(currentFile.id, { favorite: isFavorite });
                         Core.updateFavoriteButton();
                     } catch (error) {
                          Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
@@ -3771,9 +5795,12 @@
                 });
             }
         };
+        window.SyncDiagnostics = SyncDiagnostics;
+        window.runSyncDiagnostics = (options) => SyncDiagnostics.log(options);
         async function initApp() {
             try {
                 Utils.init();
+                Utils.setupFooterLogButtons();
                 state.visualCues = new VisualCueManager();
                 state.haptic = new HapticFeedbackManager();
                 state.export = new ExportSystem();
