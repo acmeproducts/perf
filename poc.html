@@ -494,37 +494,68 @@
     </style>
 </head>
 <body>
-    <div id="provider-screen" class="screen">
+    <!-- Provider Selection Screen -->
+    <div class="screen" id="provider-screen">
         <div class="card">
-            <div class="title">Choose Storage Provider</div>
-            <div class="subtitle">Select the storage provider you would like to connect. Existing authentication flows remain untouched and work exactly as before.</div>
-            <button id="onedrive-btn" class="provider-button"><span class="icon">☁️</span>Connect OneDrive</button>
-            <button id="gdrive-btn" class="provider-button"><span class="icon">🟢</span>Connect Google Drive</button>
-            <div id="provider-status" class="subtitle" style="margin-top: 20px;"></div>
+            <h1 class="title" style="font-size: 32px;">Orbital8</h1>
+            <p class="subtitle">Select your cloud storage provider</p>
+            <button class="provider-button" id="google-drive-btn">
+                <svg style="width: 20px; height: 20px;" viewBox="0 0 24 24"><path fill="currentColor" d="M6.28 7L9.69 1h4.62l3.41 6zM16.05 7H7.95l4.05 7zM11.76 15h8.58L24 21H7.05z"/></svg>
+                Google Drive
+            </button>
+            <button class="provider-button" id="onedrive-btn">
+                <svg style="width: 20px; height: 20px;" viewBox="0 0 24 24"><path fill="currentColor" d="M17.75 8C16.82 8 16 8.82 16 9.75S16.82 11.5 17.75 11.5s1.75-.82 1.75-1.75S18.68 8 17.75 8z"/></svg>
+                OneDrive
+            </button>
+            <div class="settings-section">
+                <div style="margin-bottom: 16px;">
+                    <label style="color: rgba(255,255,255,0.9); font-size: 14px; font-weight: 500; display: block; margin-bottom: 8px;">Visual Cue Intensity:</label>
+                    <div class="intensity-options">
+                        <button class="intensity-btn" data-level="low">Low</button>
+                        <button class="intensity-btn active" data-level="medium">Medium</button>
+                        <button class="intensity-btn" data-level="high">High</button>
+                    </div>
+                </div>
+                <div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="haptic-enabled" checked style="margin: 0;">
+                        Enable Haptic Feedback (Mobile)
+                    </label>
+                </div>
+            </div>
+            <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
+        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
     </div>
 
-    <div id="auth-screen" class="screen hidden">
+    <!-- Unified Auth Screen -->
+    <div class="screen hidden" id="auth-screen">
         <div class="card">
-            <div class="title">Sign in to <span id="auth-provider-name">OneDrive</span></div>
-            <div class="subtitle">Provide the credentials required for the secure sync session. Nothing about the original authentication design is altered.</div>
-            <input id="auth-client-id" class="input" placeholder="Client ID" autocomplete="off">
-            <input id="auth-tenant-id" class="input" placeholder="Tenant / Directory ID" autocomplete="off">
-            <input id="auth-token" class="input" placeholder="Access token (if already authenticated)" autocomplete="off">
-            <button id="auth-submit" class="button">Continue</button>
-            <button id="auth-back" class="button secondary">Back</button>
-            <div id="auth-status" class="subtitle" style="margin-top: 20px;"></div>
+            <h1 class="title" id="auth-title">Provider</h1>
+            <p class="subtitle" id="auth-subtitle">Connect to your account</p>
+            <div id="gdrive-secret-container" class="hidden" style="margin-bottom: 16px;">
+                <input type="password" id="gdrive-client-secret" class="input" placeholder="Enter Google Client Secret" style="margin-bottom: 0;">
+            </div>
+            <button class="button" id="auth-button">Connect</button>
+            <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
+            <div id="auth-status" class="status info"></div>
         </div>
+        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
     </div>
 
-    <div id="folder-screen" class="screen hidden">
-        <div class="card">
-            <div class="title">Select a Folder</div>
-            <div class="subtitle">Your caches stay intact; we're simply layering the new sync engine underneath. Choose a folder to load triage state.</div>
+    <!-- Unified Folder Screen -->
+    <div class="screen hidden" id="folder-screen">
+        <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
+            <h2 class="title" id="folder-title">Select Folder</h2>
+            <div class="subtitle" id="folder-subtitle">Choose a folder containing images</div>
             <div class="folder-list" id="folder-list"></div>
-            <button id="folder-refresh" class="button secondary">Refresh</button>
-            <button id="folder-back" class="button secondary">Back</button>
+            <div class="folder-actions">
+                <button class="folder-button" id="folder-refresh-button">Refresh</button>
+                <button class="folder-button" id="folder-back-button">← Provider</button>
+                <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
+            </div>
         </div>
+        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
     </div>
 
     <div id="loading-screen" class="screen hidden">
@@ -1023,6 +1054,17 @@
                 });
             }
 
+            async function getMetadata(provider, fileId) {
+                const key = `${provider}:${fileId}`;
+                return withTransaction(['metadata'], 'readonly', (store) => {
+                    return new Promise((resolve, reject) => {
+                        const req = store.get(key);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => reject(req.error);
+                    });
+                });
+            }
+
             return {
                 init,
                 mergeMetadataRecord,
@@ -1092,103 +1134,7 @@
             return URL.createObjectURL(new Blob([str], { type: 'application/javascript' }));
         }
 
-        const workerSharedSource = `const DB_NAME = "${DB_NAME}";
-const DB_VERSION = ${DB_VERSION};
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains('syncQueue')) {
-        const store = db.createObjectStore('syncQueue', { keyPath: 'key' });
-        store.createIndex('byProvider', 'provider', { unique: false });
-        store.createIndex('byPendingFlush', 'pendingFlush', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('metadata')) {
-        const store = db.createObjectStore('metadata', { keyPath: 'key' });
-        store.createIndex('byProvider', 'provider', { unique: false });
-        store.createIndex('byFolder', 'folderKey', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('folderCache')) {
-        const store = db.createObjectStore('folderCache', { keyPath: 'key' });
-        store.createIndex('byProvider', 'provider', { unique: false });
-        store.createIndex('byAccessed', 'lastAccessed', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('pngText')) {
-        const store = db.createObjectStore('pngText', { keyPath: 'key' });
-        store.createIndex('byProvider', 'provider', { unique: false });
-        store.createIndex('byAccessed', 'lastAccessed', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('syncMeta')) {
-        db.createObjectStore('syncMeta', { keyPath: 'id' });
-      }
-    };
-  });
-}
-function withTx(storeNames, mode, fn) {
-  return openDb().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(storeNames, mode);
-    const stores = storeNames.map((name) => tx.objectStore(name));
-    let result;
-    tx.oncomplete = () => resolve(result);
-    tx.onerror = () => reject(tx.error);
-    try { result = fn(...stores, tx); } catch (error) { reject(error); }
-  }));
-}
-async function saveMetadataBatch(records) {
-  return withTx(['metadata'], 'readwrite', (store) => {
-    for (const record of records) {
-      store.put(record);
-    }
-  });
-}
-async function markQueueEntry(key, patch) {
-  return withTx(['syncQueue'], 'readwrite', (store) => {
-    const req = store.get(key);
-    req.onsuccess = () => {
-      const value = req.result || null;
-      if (!value) return;
-      Object.assign(value, patch);
-      store.put(value);
-    };
-  });
-}
-async function readAll(storeName) {
-  return withTx([storeName], 'readonly', (store) => {
-    return new Promise((resolve, reject) => {
-      const results = [];
-      const cursorReq = store.openCursor();
-      cursorReq.onsuccess = (event) => {
-        const cursor = event.target.result;
-        if (!cursor) { resolve(results); return; }
-        results.push(cursor.value);
-        cursor.continue();
-      };
-      cursorReq.onerror = () => reject(cursorReq.error);
-    });
-  });
-}
-async function putSyncMeta(id, patch) {
-  return withTx(['syncMeta'], 'readwrite', (store) => {
-    const req = store.get(id);
-    req.onsuccess = () => {
-      const value = { ...(req.result || { id }), ...patch };
-      store.put(value);
-    };
-  });
-}
-async function getSyncMeta(id) {
-  return withTx(['syncMeta'], 'readonly', (store) => {
-    return new Promise((resolve, reject) => {
-      const req = store.get(id);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  });
-}
-`;
+        const workerSharedSource = `const DB_NAME = "${DB_NAME}";\nconst DB_VERSION = ${DB_VERSION};\nfunction openDb() {\n  return new Promise((resolve, reject) => {\n    const request = indexedDB.open(DB_NAME, DB_VERSION);\n    request.onerror = () => reject(request.error);\n    request.onsuccess = () => resolve(request.result);\n    request.onupgradeneeded = (event) => {\n      const db = event.target.result;\n      if (!db.objectStoreNames.contains('syncQueue')) {\n        const store = db.createObjectStore('syncQueue', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byPendingFlush', 'pendingFlush', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('metadata')) {\n        const store = db.createObjectStore('metadata', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byFolder', 'folderKey', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('folderCache')) {\n        const store = db.createObjectStore('folderCache', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byAccessed', 'lastAccessed', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('pngText')) {\n        const store = db.createObjectStore('pngText', { keyPath: 'key' });\n        store.createIndex('byProvider', 'provider', { unique: false });\n        store.createIndex('byAccessed', 'lastAccessed', { unique: false });\n      }\n      if (!db.objectStoreNames.contains('syncMeta')) {\n        db.createObjectStore('syncMeta', { keyPath: 'id' });\n      }\n    };\n  });\n}\nfunction withTx(storeNames, mode, fn) {\n  return openDb().then((db) => new Promise((resolve, reject) => {\n    const tx = db.transaction(storeNames, mode);\n    const stores = storeNames.map((name) => tx.objectStore(name));\n    let result;\n    tx.oncomplete = () => resolve(result);\n    tx.onerror = () => reject(tx.error);\n    try { result = fn(...stores, tx); } catch (error) { reject(error); }\n  }));\n}\nasync function saveMetadataBatch(records) {\n  return withTx(['metadata'], 'readwrite', (store) => {\n    for (const record of records) {\n      store.put(record);\n    }\n  });\n}\nasync function markQueueEntry(key, patch) {\n  return withTx(['syncQueue'], 'readwrite', (store) => {\n    const req = store.get(key);\n    req.onsuccess = () => {\n      const value = req.result || null;\n      if (!value) return;\n      Object.assign(value, patch);\n      store.put(value);\n    };\n  });\n}\nasync function readAll(storeName) {\n  return withTx([storeName], 'readonly', (store) => {\n    return new Promise((resolve, reject) => {\n      const results = [];\n      const cursorReq = store.openCursor();\n      cursorReq.onsuccess = (event) => {\n        const cursor = event.target.result;\n        if (!cursor) { resolve(results); return; }\n        results.push(cursor.value);\n        cursor.continue();\n      };\n      cursorReq.onerror = () => reject(cursorReq.error);\n    });\n  });\n}\nasync function putSyncMeta(id, patch) {\n  return withTx(['syncMeta'], 'readwrite', (store) => {\n    const req = store.get(id);\n    req.onsuccess = () => {\n      const value = { ...(req.result || { id }), ...patch };\n      store.put(value);\n    };\n  });\n}\nasync function getSyncMeta(id) {\n  return withTx(['syncMeta'], 'readonly', (store) => {\n    return new Promise((resolve, reject) => {\n      const req = store.get(id);\n      req.onsuccess = () => resolve(req.result || null);\n      req.onerror = () => reject(req.error);\n    });\n  });\n}\n`;
         const syncWorkerSource = `${workerSharedSource}
 const steadyStateOps = new Set(['updateMetadata']);
 const criticalOps = new Set(['deleteFile','moveFile','bulkTag','bulkFolder']);
