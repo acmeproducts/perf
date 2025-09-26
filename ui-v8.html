@@ -2246,9 +2246,16 @@
                 }
                 const localManifest = await this.getLocalManifest(providerType, folderId);
                 const sanitized = this.sanitizeManifest(remoteManifest);
-                if ((sanitized.version || 0) <= (localManifest.version || 0)) {
-                    await this.persistManifest(providerType, folderId, sanitized, remoteContext);
-                    return { files: cachedFiles, changed: false, updatedIds: [], removedIds: [], manifest: sanitized };
+                const localVersion = localManifest.version || 0;
+                const remoteVersion = sanitized.version || 0;
+                if (remoteVersion <= localVersion) {
+                    // Keep the newer local manifest when the remote payload is stale. This avoids
+                    // downgrading local entries that have not been pushed upstream yet (e.g. the
+                    // last remote save was delayed or rolled back).
+                    const stateUpdates = { lastSyncAt: Date.now(), remoteVersion };
+                    if (remoteContext?.remoteId) { stateUpdates.remoteManifestId = remoteContext.remoteId; }
+                    await this.saveState(providerType, folderId, stateUpdates);
+                    return { files: cachedFiles, changed: false, updatedIds: [], removedIds: [], missingIds: [], manifest: localManifest };
                 }
                 const fileMap = new Map((cachedFiles || []).map(file => [file.id, { ...file }]));
                 const updatedIds = [];
