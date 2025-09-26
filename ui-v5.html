@@ -1,4 +1,4 @@
-<!-- Orbital8-N-2025-09-18 04:40 AM -->
+<!-- Orbital8-O v5-2025-09-24 12:00 PM -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -694,7 +694,7 @@
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
-        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-24 12:00 PM</div>
     </div>
     
     <!-- Unified Auth Screen -->
@@ -709,7 +709,7 @@
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
             <div id="auth-status" class="status info"></div>
         </div>
-        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-24 12:00 PM</div>
     </div>
     
     <!-- Unified Folder Screen -->
@@ -724,7 +724,7 @@
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
         </div>
-        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-24 12:00 PM</div>
     </div>
     
     <!-- Loading Screen -->
@@ -738,7 +738,7 @@
             </div>
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
-        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-24 12:00 PM</div>
     </div>
     
     <!-- Main App Container -->
@@ -808,7 +808,7 @@
         </button>
         
         <div id="toast" class="toast"></div>
-        <div class="app-footer">Orbital8-M-2025-09-18 04:16 AM</div>
+        <div class="app-footer">Orbital8-O-2025-09-24 12:00 PM</div>
     </div>
     
     <!-- Enhanced Grid Modal -->
@@ -2101,11 +2101,20 @@
                 }
                 this.pendingMutations.set(fileId, buffer);
                 this.hasPendingWork = true;
-
+                const updateKeys = Object.keys(change.updates || {});
+                const descriptorParts = [];
+                if (change.operationType) descriptorParts.push(change.operationType);
+                if (change.updates?.stack) descriptorParts.push(`stack→${change.updates.stack}`);
+                if (change.updates?.stackSequence) descriptorParts.push(`seq=${change.updates.stackSequence}`);
+                if (descriptorParts.length === 0 && updateKeys.length > 0) {
+                    descriptorParts.push(updateKeys.join(', '));
+                }
+                const descriptor = descriptorParts.join(' · ') || 'update';
                 this.logger?.log({
                     event: 'queue:buffer',
                     level: 'info',
                     fileId,
+                    details: `Buffered ${descriptor} (${debounce ? 'debounced' : 'immediate'})`,
                     data: change
                 });
 
@@ -2136,6 +2145,12 @@
                 };
                 try {
                     const id = await this.dbManager.addToSyncQueue(entry);
+                    const persistDescriptorParts = [];
+                    if (entry.operationType) persistDescriptorParts.push(entry.operationType);
+                    if (entry.updates?.stack) persistDescriptorParts.push(`stack→${entry.updates.stack}`);
+                    if (entry.updates?.stackSequence) persistDescriptorParts.push(`seq=${entry.updates.stackSequence}`);
+                    const persistDescriptor = persistDescriptorParts.join(' · ') || 'mutation';
+                    this.logger?.log({ event: 'queue:persist', level: 'info', fileId, details: `Persisted ${persistDescriptor} to syncQueue (#${id}).`, data: entry });
                     this.scheduleProcess('buffer-commit');
                     return id;
                 } catch (error) {
@@ -2214,6 +2229,8 @@
                 const updates = entry.updates || {};
                 const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
                 const payload = { ...metadataRecord, ...updates, localUpdatedAt: entry.localUpdatedAt };
+                const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
+                const stackFragment = stackLabel ? ` (${stackLabel})` : '';
                 try {
                     if (providerType === 'googledrive') {
                         await provider.updateFileMetadata(entry.fileId, this.serializeGoogleMetadata(payload));
@@ -2223,6 +2240,10 @@
                         await provider.updateFileMetadata(entry.fileId, payload);
                     }
                     await this.dbManager.deleteFromSyncQueue(entry.queueIds);
+                    this.logger?.log({ event: 'sync:success', level: 'success', fileId: entry.fileId, details: `Applied ${entry.operationType}${stackFragment} to ${providerType}.`, data: { updates, stackLabel } });
+                } catch (error) {
+                    await this.dbManager.markPendingFlush(entry.queueIds, true);
+                    this.logger?.log({ event: 'sync:error', level: 'error', fileId: entry.fileId, details: `Failed to sync ${entry.operationType}: ${error.message}`, data: { updates, stackLabel } });
                 }
             }
             serializeGoogleMetadata(payload) {
@@ -3138,6 +3159,97 @@
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
             },
+            async deleteFile(fileId, options = {}) {
+                const { source = 'ui', originStack = null, name = null } = options;
+                const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
+                let file = null;
+                let stackRemoval = null;
+                if (fileIndex > -1) {
+                    const removed = state.imageFiles.splice(fileIndex, 1);
+                    file = removed && removed.length ? removed[0] : null;
+                    if (file && file.stack && state.stacks[file.stack]) {
+                        const stackArray = state.stacks[file.stack];
+                        const stackIndex = stackArray.findIndex(f => f.id === fileId);
+                        if (stackIndex > -1) {
+                            stackRemoval = { name: file.stack, index: stackIndex };
+                            stackArray.splice(stackIndex, 1);
+                        }
+                    }
+                }
+                const stackBefore = originStack || file?.stack || null;
+                const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
+                const fileName = name || file?.name || '';
+                const persistState = async () => {
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                };
+                const restoreState = async (reason) => {
+                    if (!file) { return false; }
+                    if (fileIndex > -1) {
+                        state.imageFiles.splice(fileIndex, 0, file);
+                    } else {
+                        state.imageFiles.push(file);
+                    }
+                    if (stackRemoval && state.stacks[stackRemoval.name]) {
+                        state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
+                    } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
+                        state.stacks[file.stack].push(file);
+                    }
+                    await persistState();
+                    state.syncLog?.log({
+                        event: 'provider:trash:rollback',
+                        level: 'warn',
+                        fileId,
+                        details: `Restored ${fileName || fileId} after ${reason}.`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    return true;
+                };
+                await persistState();
+
+                const provider = state.provider;
+                const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
+                if (!provider || typeof provider.deleteFile !== 'function') {
+                    state.syncLog?.log({
+                        event: 'provider:trash:error',
+                        level: 'error',
+                        fileId,
+                        details: `Provider recycle bin unavailable for ${fileName || fileId} (${providerName}).`,
+                        data: { source, stack: stackBefore }
+                    });
+                    await restoreState('missing provider recycle support');
+                    Utils.showToast('Provider recycle bin unavailable. Item restored locally.', 'error', true);
+                    return false;
+                }
+
+                state.syncLog?.log({
+                    event: 'provider:trash:request',
+                    level: 'warn',
+                    fileId,
+                    details: `Moving ${fileName || fileId} from ${stackLabel || 'unknown stack'} into the ${providerName} recycle bin (${source}).`,
+                    data: { source, stack: stackBefore, stackLabel }
+                });
+
+                try {
+                    await provider.deleteFile(fileId);
+                    state.syncLog?.log({
+                        event: 'provider:trash:success',
+                        level: 'success',
+                        fileId,
+                        details: `${providerName} recycle bin accepted ${fileName || fileId} (from ${stackLabel || 'unknown stack'}). File is not permanently deleted.`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    return true;
+                } catch (e) {
+                    state.syncLog?.log({
+                        event: 'provider:trash:error',
+                        level: 'error',
+                        fileId,
+                        details: `Provider recycle move failed: ${e.message}`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    await restoreState('provider recycle failure');
+                    Utils.showToast(`Failed to move to recycle bin: ${e.message}`, 'error', true);
+                    return false;
                 }
             },
             async extractMetadataInBackground(pngFiles) {
@@ -3346,6 +3458,8 @@
                 if (currentPill) currentPill.classList.add('active');
             },
             
+            async moveToStack(targetStack, options = {}) {
+                const { source = 'ui:direct' } = options;
                 if (state.isImageTransitioning) return;
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) return;
@@ -3357,16 +3471,35 @@
                     state.isImageTransitioning = true;
                     const originalStackName = state.currentStack;
                     const movedFileId = currentImage.id;
+                    const stackLabel = STACK_NAMES[targetStack] || targetStack;
+                    const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
                     if (targetStack === originalStackName) {
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
                         const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
                         const newSequence = minSequence - 1;
+                        state.syncLog?.log({
+                            event: 'ui:stack-resequence',
+                            level: 'info',
+                            fileId: movedFileId,
+                            details: `Re-sequencing ${currentImage.name || movedFileId} within ${originalStackLabel} (${source}).`,
+                            data: { stack: originalStackName, stackSequence: newSequence, source }
+                        });
                         await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:resequence' });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
                     } else {
                         const newSequence = Date.now();
+                        const isRecycleStackMove = targetStack === 'trash';
+                        state.syncLog?.log({
+                            event: isRecycleStackMove ? 'ui:stack-recycle' : 'ui:stack-move',
+                            level: 'info',
+                            fileId: movedFileId,
+                            details: isRecycleStackMove
+                                ? `Moved ${currentImage.name || movedFileId} from ${originalStackLabel} to ${stackLabel} (${source}). Metadata only—cloud file stays put until the recycle-bin action is used.`
+                                : `Moving ${currentImage.name || movedFileId} from ${originalStackLabel} to ${stackLabel} (${source}).`,
+                            data: { from: originalStackName, to: targetStack, stackSequence: newSequence, source, scope: isRecycleStackMove ? 'metadata-only' : 'stack-move' }
+                        });
                         await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stack = targetStack;
@@ -3392,6 +3525,7 @@
             },
 
             async deleteCurrentImage(options = {}) {
+                const { exitFocusIfEmpty = true, source = 'ui:direct' } = options;
                 if (state.isImageTransitioning) return;
                 const currentStackName = state.currentStack;
                 const currentStackArray = state.stacks[currentStackName];
@@ -3404,6 +3538,25 @@
                 const originalStack = currentFile.stack || currentStackName;
 
                 try {
+                    state.syncLog?.log({
+                        event: 'ui:provider-trash-request',
+                        level: 'warn',
+                        fileId,
+                        details: `User requested moving ${currentFile.name || fileId} from ${STACK_NAMES[originalStack] || originalStack} into the provider recycle bin (${source}). No permanent deletion occurs.`,
+                        data: { from: originalStack, source }
+                    });
+                    const movedToRecycle = await App.deleteFile(fileId, { source, originStack: originalStack, name: currentFile.name });
+                    if (!movedToRecycle) {
+                        state.syncLog?.log({
+                            event: 'ui:provider-trash-abort',
+                            level: 'error',
+                            fileId,
+                            details: `Provider recycle move failed for ${currentFile.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
+                            data: { from: originalStack, source }
+                        });
+                        await this.displayCurrentImage();
+                        return;
+                    }
                     this.updateStackCounts();
                     const updatedStack = state.stacks[currentStackName] || [];
                     if (updatedStack.length === 0) {
@@ -3416,6 +3569,7 @@
                         state.currentStackPosition = 0;
                         await this.displayCurrentImage();
                     }
+                    Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
                     Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: true });
                 } catch (error) {
                     Utils.showToast(`Failed to delete ${currentFile.name}`, 'error', true);
@@ -3651,6 +3805,7 @@
                 let results = [...state.stacks[state.grid.stack]];
 
                 // 1. Pass: Modifiers
+                const tagFilters = [];
                 modifiers.forEach(mod => {
                     if (mod === '#favorite') {
                         results = results.filter(file => file.favorite === true);
@@ -3664,6 +3819,19 @@
                         if (!isNaN(rating)) {
                             results = results.filter(file => file.contentRating === rating);
                         }
+                    } else if (mod.length > 1) {
+                        const normalizedTag = TagService.normalizeTagValue(mod);
+                        if (normalizedTag.length > 1) {
+                            tagFilters.push(normalizedTag.toLowerCase());
+                        }
+                    }
+                });
+                if (tagFilters.length > 0) {
+                    results = results.filter(file => {
+                        const tags = TagService.normalizeTagList(file.tags || []).map(tag => tag.toLowerCase());
+                        return tagFilters.every(tag => tags.includes(tag));
+                    });
+                }
 
                 // 2. Pass: Inclusions
                 inclusions.forEach(term => {
@@ -4114,6 +4282,15 @@
                         if (file) {
                             const currentStack = file.stack;
                             const newSequence = Date.now();
+                            const fromLabel = currentStack ? (STACK_NAMES[currentStack] || currentStack) : 'unknown';
+                            const toLabel = STACK_NAMES[targetStack] || targetStack;
+                            state.syncLog?.log({
+                                event: targetStack === 'trash' ? 'ui:stack-recycle' : 'ui:stack-move',
+                                level: targetStack === 'trash' ? 'warn' : 'info',
+                                fileId,
+                                details: `Bulk move ${file.name || fileId} from ${fromLabel} to ${toLabel} (grid selection).`,
+                                data: { from: currentStack, to: targetStack, stackSequence: newSequence, source: 'grid:bulk-move' }
+                            });
                             await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
                             const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
                             if (currentStackIndex !== -1) {
@@ -4163,6 +4340,14 @@
             async executeDelete() {
                 await this.executeBulkAction({
                     action: async (fileId) => {
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        await App.deleteFile(fileId, {
+                            source: 'grid:bulk-delete',
+                            originStack: file?.stack || null,
+                            name: file?.name || null
+                        });
+                    },
+                    successMessage: `Moved {count} images to provider recycle bin`
                 });
             },
             async executeExport() {
@@ -4409,6 +4594,7 @@
                 try {
                     UI.acknowledgePillCounter(targetStack);
                     if (state.haptic) { state.haptic.triggerFeedback('swipe'); }
+                    await Core.moveToStack(targetStack, { source: 'gesture:flick' });
                     this.hideAllEdgeGlows();
                 } catch(error) {
                     Utils.showToast(`Flick failed: ${error.message}`, 'error', true);
@@ -4581,6 +4767,7 @@
                 await Core.displayCurrentImage();
             },
             async deleteCurrentImage() {
+                await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
             }
         };
         const Folders = {
@@ -4751,9 +4938,25 @@
         };
         const DraggableResizable = {
             init(modal, header) {
+                if (!modal || !header) {
+                    const logger = (typeof state !== 'undefined' && state?.syncLog) ? state.syncLog : null;
+                    logger?.log({
+                        event: 'ui:draggable:init:error',
+                        level: 'error',
+                        details: 'Draggable init skipped due to missing modal/header reference.',
+                        data: {
+                            modalPresent: Boolean(modal),
+                            headerPresent: Boolean(header),
+                            modalId: modal && modal.id ? modal.id : null,
+                            headerId: header && header.id ? header.id : null
+                        }
+                    });
+                    return;
+                }
+
                 let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
                 let isDragging = false;
-                
+
                 header.onmousedown = dragMouseDown;
 
                 function dragMouseDown(e) {
@@ -4826,8 +5029,42 @@
                 this.setupDraggables();
             },
             setupDraggables() {
-                DraggableResizable.init(Utils.elements.detailsModal.querySelector('.modal-content'), Utils.elements.detailsModalHeader);
-                DraggableResizable.init(Utils.elements.gridModal.querySelector('.modal-content'), Utils.elements.gridModalHeaderMain);
+                const {
+                    detailsModal,
+                    detailsModalHeader,
+                    gridModal,
+                    gridModalHeaderMain
+                } = Utils.elements;
+
+                const detailsContent = detailsModal ? detailsModal.querySelector('.modal-content') : null;
+                if (detailsContent && detailsModalHeader) {
+                    DraggableResizable.init(detailsContent, detailsModalHeader);
+                } else {
+                    state.syncLog?.log({
+                        event: 'ui:draggable:init:skip',
+                        level: 'warn',
+                        details: 'Skipped draggable wiring for details modal.',
+                        data: {
+                            modalFound: Boolean(detailsModal),
+                            headerFound: Boolean(detailsModalHeader)
+                        }
+                    });
+                }
+
+                const gridContent = gridModal ? gridModal.querySelector('.modal-content') : null;
+                if (gridContent && gridModalHeaderMain) {
+                    DraggableResizable.init(gridContent, gridModalHeaderMain);
+                } else {
+                    state.syncLog?.log({
+                        event: 'ui:draggable:init:skip',
+                        level: 'warn',
+                        details: 'Skipped draggable wiring for grid modal.',
+                        data: {
+                            modalFound: Boolean(gridModal),
+                            headerFound: Boolean(gridModalHeaderMain)
+                        }
+                    });
+                }
             },
             setupProviderSelection() {
                 Utils.elements.googleDriveBtn.addEventListener('click', () => App.selectProvider('googledrive'));
@@ -4886,6 +5123,9 @@
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
             },
             setupFocusMode() {
+                Utils.elements.centerTrashBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: false, source: 'button:center-trash' }));
+                Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
+                Utils.elements.focusDeleteBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'button:focus-trash' }));
                 Utils.elements.focusFavoriteBtn.addEventListener('click', async () => {
                     try {
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
@@ -5090,6 +5330,7 @@
                             const targetStack = keyMap[e.key];
                             if (state.stacks[state.currentStack].length > 0) {
                                 UI.acknowledgePillCounter(targetStack);
+                                await Core.moveToStack(targetStack, { source: `keyboard:${e.key}` });
                             }
                             return;
                         }
