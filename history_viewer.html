@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub History Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .timeline-entry-content { display: none; }
+        .timeline-entry.open .timeline-entry-content { display: block; }
+        #pat-modal.hidden { display: none; }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        pre, code {
+            user-select: text !important;
+            -webkit-user-select: text !important;
+            pointer-events: auto !important;
+        }
+        #fallback-copy-container {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <!-- PAT Modal -->
+    <div id="pat-modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+        <div class="relative p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">GitHub Personal Access Token</h3>
+                <div class="mt-2 px-7 py-3">
+                    <p class="text-sm text-gray-500">
+                        Please provide a GitHub PAT with 'repo' scope. This is stored only in your browser's local storage.
+                    </p>
+                    <input type="password" id="pat-input" class="mt-4 px-3 py-2 border border-gray-300 rounded-md w-full" placeholder="ghp_...">
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="save-pat-button" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                        Save and Continue
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container mx-auto p-4">
+        <header class="bg-white shadow rounded-lg p-6 mb-8">
+            <h1 class="text-2xl font-bold text-gray-800 mb-4">GitHub History Viewer</h1>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                    <label for="github-user" class="block text-sm font-medium text-gray-700">GitHub User</label>
+                    <input type="text" id="github-user" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="github-repo" class="block text-sm font-medium text-gray-700">Repository</label>
+                    <select id="github-repo" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"></select>
+                </div>
+                <div>
+                    <label for="github-branch" class="block text-sm font-medium text-gray-700">Branch</label>
+                    <select id="github-branch" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"></select>
+                </div>
+                <div>
+                    <label for="commit-date" class="block text-sm font-medium text-gray-700">Commit Date</label>
+                    <select id="commit-date" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"></select>
+                </div>
+            </div>
+        </header>
+
+        <main id="timeline-container"></main>
+        <div id="fallback-copy-container"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DOM Elements ---
+            const patModal = document.getElementById('pat-modal');
+            const savePatButton = document.getElementById('save-pat-button');
+            const patInput = document.getElementById('pat-input');
+            const timelineContainer = document.getElementById('timeline-container');
+            const userInput = document.getElementById('github-user');
+            const repoSelect = document.getElementById('github-repo');
+            const branchSelect = document.getElementById('github-branch');
+            const dateSelect = document.getElementById('commit-date');
+
+            // --- State ---
+            let pat = localStorage.getItem('github_pat');
+            let allCommits = [];
+
+            // --- Main Logic ---
+
+            function checkPat() {
+                if (!pat) {
+                    patModal.classList.remove('hidden');
+                } else {
+                    patModal.classList.add('hidden');
+                    initialize();
+                }
+            }
+
+            function initialize() {
+                userInput.value = localStorage.getItem('github_user') || 'acmeproducts';
+                fetchAndPopulateRepos();
+            }
+
+            async function apiFetch(url) {
+                const headers = { 'Authorization': `token ${pat}`, 'Accept': 'application/vnd.github.v3+json' };
+                const response = await fetch(url, { headers });
+                if (response.status === 401) {
+                    localStorage.removeItem('github_pat');
+                    pat = null;
+                    checkPat();
+                    throw new Error('GitHub PAT is invalid or has expired. Please provide a new one.');
+                }
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`GitHub API error: ${response.status} - ${errorText}`);
+                }
+                return response.json();
+            }
+
+            async function fetchAndPopulateRepos() {
+                const user = userInput.value.trim();
+                if (!user) return;
+                localStorage.setItem('github_user', user);
+
+                setLoadingState(repoSelect, 'Loading repos...');
+                setLoadingState(branchSelect, 'Waiting for repo...');
+                setLoadingState(dateSelect, 'Waiting for branch...');
+                timelineContainer.innerHTML = '';
+
+                try {
+                    const repos = await apiFetch(`https://api.github.com/users/${user}/repos?sort=pushed&per_page=100`);
+                    populateDropdown(repoSelect, repos.map(r => ({ value: r.name, text: r.name })));
+
+                    const defaultRepo = localStorage.getItem('github_repo') || 'perf';
+                    if ([...repoSelect.options].some(opt => opt.value === defaultRepo)) {
+                        repoSelect.value = defaultRepo;
+                    } else if (repoSelect.options.length > 0) {
+                        repoSelect.selectedIndex = 0;
+                    }
+
+                    repoSelect.disabled = false;
+                    await fetchAndPopulateBranches();
+                } catch (error) {
+                    setErrorState(repoSelect, 'Failed to load repos');
+                    console.error(error);
+                }
+            }
+
+            async function fetchAndPopulateBranches() {
+                const user = userInput.value.trim();
+                const repo = repoSelect.value;
+                if (!user || !repo) return;
+
+                localStorage.setItem('github_repo', repo);
+                setLoadingState(branchSelect, 'Loading branches...');
+                setLoadingState(dateSelect, 'Waiting for branch...');
+                timelineContainer.innerHTML = '';
+
+                try {
+                    const repoDetails = await apiFetch(`https://api.github.com/repos/${user}/${repo}`);
+                    const actualDefaultBranch = repoDetails.default_branch;
+
+                    const branches = await apiFetch(`https://api.github.com/repos/${user}/${repo}/branches`);
+                    populateDropdown(branchSelect, branches.map(b => ({ value: b.name, text: b.name })));
+
+                    const defaultBranch = actualDefaultBranch || 'main';
+                     if ([...branchSelect.options].some(opt => opt.value === defaultBranch)) {
+                        branchSelect.value = defaultBranch;
+                    } else if (branchSelect.options.length > 0) {
+                        branchSelect.selectedIndex = 0;
+                    }
+
+                    branchSelect.disabled = false;
+                    await fetchAndPopulateCommits();
+                } catch (error) {
+                    setErrorState(branchSelect, 'Failed to load branches');
+                    console.error(error);
+                }
+            }
+
+            async function fetchAndPopulateCommits() {
+                const user = userInput.value.trim();
+                const repo = repoSelect.value;
+                const branch = branchSelect.value;
+                if (!user || !repo || !branch) return;
+
+                localStorage.setItem('github_branch', branch);
+                setLoadingState(dateSelect, 'Loading commits...');
+                timelineContainer.innerHTML = '<div class="loader"></div>';
+
+                try {
+                    const url = `https://api.github.com/repos/${user}/${repo}/commits?sha=${branch}&per_page=100`;
+                    allCommits = await apiFetch(url);
+                    populateDateFilter(allCommits);
+                    dateSelect.disabled = false;
+                    filterAndRenderCommits();
+                } catch (error) {
+                    setErrorState(dateSelect, 'Failed to load commits');
+                    timelineContainer.innerHTML = `<p class="text-red-500">${error.message}</p>`;
+                }
+            }
+
+            function populateDateFilter(commits) {
+                 const uniqueDates = [...new Set(commits.map(c => c.commit.author.date))]
+                    .sort((a, b) => new Date(b) - new Date(a));
+
+                const options = uniqueDates.map(dateStr => {
+                    const date = new Date(dateStr);
+                    return {
+                        value: date.toISOString(),
+                        text: date.toLocaleString(undefined, { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                    };
+                });
+                populateDropdown(dateSelect, options, { prepend: { value: '', text: 'All Dates' } });
+            }
+
+            function filterAndRenderCommits() {
+                const selectedDateStr = dateSelect.value;
+                let filteredCommits = allCommits;
+
+                if (selectedDateStr) {
+                    filteredCommits = allCommits.filter(c => c.commit.author.date === selectedDateStr);
+                }
+                renderTimeline(filteredCommits);
+            }
+
+            function renderTimeline(commits) {
+                if (!commits || commits.length === 0) {
+                    timelineContainer.innerHTML = '<p>No commits found for the selected criteria.</p>';
+                    return;
+                }
+
+                timelineContainer.innerHTML = '';
+                commits.forEach(commitData => {
+                    const commit = commitData.commit;
+                    const entry = document.createElement('div');
+                    entry.className = 'timeline-entry bg-white shadow rounded-lg mb-4';
+                    entry.innerHTML = `
+                        <div class="timeline-entry-header cursor-pointer p-4 hover:bg-gray-50">
+                            <h3 class="font-bold text-gray-800">${escapeHTML(commit.message.split('\\n')[0])}</h3>
+                            <p class="text-sm text-gray-600">by ${escapeHTML(commit.author.name)} on ${new Date(commit.author.date).toLocaleString()}</p>
+                            <a href="${commitData.html_url}" target="_blank" class="text-xs text-blue-500 hover:underline">View on GitHub: ${commitData.sha.substring(0, 7)}</a>
+                        </div>
+                        <div class="timeline-entry-content border-t border-gray-200 p-4"></div>
+                    `;
+                    timelineContainer.appendChild(entry);
+
+                    const header = entry.querySelector('.timeline-entry-header');
+                    header.addEventListener('click', (e) => {
+                        if (e.target.tagName === 'A') return;
+                        entry.classList.toggle('open');
+                        const content = entry.querySelector('.timeline-entry-content');
+                        if (entry.classList.contains('open') && !content.dataset.loaded) {
+                            fetchCommitDetails(commitData.url, content);
+                            content.dataset.loaded = true;
+                        }
+                    });
+                });
+            }
+
+            async function fetchCommitDetails(url, contentElement) {
+                contentElement.innerHTML = '<div class="loader"></div>';
+                try {
+                    const commitDetails = await apiFetch(url);
+                    let filesHtml = '';
+                    commitDetails.files.forEach(file => {
+                        filesHtml += `
+                            <div class="file-entry border-b border-gray-200 py-2 last:border-b-0">
+                                <div class="flex justify-between items-center">
+                                    <span class="font-semibold text-gray-700 break-all">${escapeHTML(file.filename)}</span>
+                                    <button class="copy-button text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-1 px-2 rounded ml-2" data-sha="${commitDetails.sha}" data-filename="${file.filename}">Copy</button>
+                                </div>
+                                <details class="mt-2">
+                                    <summary class="cursor-pointer text-sm text-blue-600">View Content</summary>
+                                    <div class="file-content-container mt-2"></div>
+                                </details>
+                            </div>
+                        `;
+                    });
+                    contentElement.innerHTML = filesHtml;
+
+                    contentElement.querySelectorAll('details').forEach((details, index) => {
+                        details.addEventListener('toggle', (e) => {
+                            const contentContainer = e.target.querySelector('.file-content-container');
+                            if (e.target.open && !contentContainer.dataset.loaded) {
+                                fetchFileContent(commitDetails.sha, commitDetails.files[index].filename, contentContainer);
+                                contentContainer.dataset.loaded = "true";
+                            }
+                        });
+                    });
+
+                    contentElement.querySelectorAll('.copy-button').forEach(button => {
+                        button.addEventListener('click', async (e) => {
+                            e.stopPropagation();
+                            const filename = e.target.dataset.filename;
+                            const sha = e.target.dataset.sha;
+                            try {
+                                const content = await getFileContent(sha, filename);
+                                copyToClipboard(content, e.target);
+                            } catch (err) {
+                                console.error('Copy failed:', err);
+                                button.textContent = 'Error!';
+                            }
+                        });
+                    });
+
+                } catch (error) {
+                    contentElement.innerHTML = `<p class="text-red-500">${error.message}</p>`;
+                }
+            }
+
+            async function getFileContent(sha, filename) {
+                const user = userInput.value.trim();
+                const repo = repoSelect.value;
+                const url = `https://api.github.com/repos/${user}/${repo}/contents/${filename}?ref=${sha}`;
+                const response = await fetch(url, { headers: { 'Authorization': `token ${pat}`, 'Accept': 'application/vnd.github.v3.raw' }});
+                if (!response.ok) throw new Error(`Failed to fetch content: ${response.statusText}`);
+                return await response.text();
+            }
+
+            async function fetchFileContent(sha, filename, element) {
+                element.innerHTML = '<div class="loader"></div>';
+                try {
+                    const content = await getFileContent(sha, filename);
+                    element.innerHTML = `<pre class="bg-gray-800 text-white p-4 rounded-md mt-2 overflow-auto text-sm"><code class="font-mono">${escapeHTML(content)}</code></pre>`;
+                } catch (error) {
+                    element.innerHTML = `<p class="text-red-500">${error.message}</p>`;
+                }
+            }
+
+            async function copyToClipboard(text, buttonElement) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    buttonElement.textContent = 'Copied!';
+                } catch (err) {
+                    console.warn('Clipboard API failed. Using fallback.', err);
+                    showCopyFallback(text);
+                    buttonElement.textContent = 'Copied!';
+                } finally {
+                    setTimeout(() => { buttonElement.textContent = 'Copy'; }, 2000);
+                }
+            }
+
+            function showCopyFallback(text) {
+                const container = document.getElementById('fallback-copy-container');
+                container.innerHTML = `
+                    <div class="p-4 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-lg shadow-lg">
+                        <p class="font-bold mb-2">Could not copy automatically.</p>
+                        <p class="mb-2">Please copy the text from the box below:</p>
+                        <textarea class="w-full h-32 p-2 font-mono text-sm border border-gray-300 rounded">${escapeHTML(text)}</textarea>
+                    </div>
+                `;
+                const textarea = container.querySelector('textarea');
+                textarea.select();
+                setTimeout(() => { container.innerHTML = ''; }, 10000);
+            }
+
+            // --- Utility Functions ---
+            function escapeHTML(str) {
+                return str ? str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]) : '';
+            }
+
+            function setLoadingState(selectElement, text) {
+                selectElement.innerHTML = `<option>${text}</option>`;
+                selectElement.disabled = true;
+            }
+
+            function setErrorState(selectElement, text) {
+                selectElement.innerHTML = `<option>${text}</option>`;
+                selectElement.disabled = true;
+            }
+
+            function populateDropdown(selectElement, items, options = {}) {
+                selectElement.innerHTML = '';
+                if (options.prepend) {
+                    const opt = document.createElement('option');
+                    opt.value = options.prepend.value;
+                    opt.textContent = options.prepend.text;
+                    selectElement.appendChild(opt);
+                }
+                items.forEach(item => {
+                    const opt = document.createElement('option');
+                    opt.value = item.value;
+                    opt.textContent = item.text;
+                    selectElement.appendChild(opt);
+                });
+            }
+
+            // --- Event Listeners ---
+            savePatButton.addEventListener('click', () => {
+                const patValue = patInput.value.trim();
+                if (patValue) {
+                    localStorage.setItem('github_pat', patValue);
+                    pat = patValue;
+                    patModal.classList.add('hidden');
+                    initialize();
+                }
+            });
+            userInput.addEventListener('change', fetchAndPopulateRepos);
+            repoSelect.addEventListener('change', fetchAndPopulateBranches);
+            branchSelect.addEventListener('change', fetchAndPopulateCommits);
+            dateSelect.addEventListener('change', filterAndRenderCommits);
+
+            checkPat();
+        });
+    </script>
+</body>
+</html>
