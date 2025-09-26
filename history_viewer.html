@@ -178,11 +178,25 @@
                     const actualDefaultBranch = repoDetails.default_branch;
 
                     const branches = await apiFetch(`https://api.github.com/repos/${user}/${repo}/branches`);
-                    populateDropdown(branchSelect, branches.map(b => ({ value: b.name, text: b.name })));
 
-                    const defaultBranch = actualDefaultBranch || 'main';
-                     if ([...branchSelect.options].some(opt => opt.value === defaultBranch)) {
-                        branchSelect.value = defaultBranch;
+                    const branchesWithDates = await Promise.all(branches.map(async (branch) => {
+                        const commitDetails = await apiFetch(branch.commit.url);
+                        return {
+                            name: branch.name,
+                            lastUpdate: new Date(commitDetails.commit.author.date)
+                        };
+                    }));
+
+                    branchesWithDates.sort((a, b) => b.lastUpdate - a.lastUpdate);
+
+                    const options = branchesWithDates.map(b => ({
+                        value: b.name,
+                        text: `${b.name} (updated: ${b.lastUpdate.toLocaleString()})`
+                    }));
+                    populateDropdown(branchSelect, options);
+
+                    if ([...branchSelect.options].some(opt => opt.value === actualDefaultBranch)) {
+                        branchSelect.value = actualDefaultBranch;
                     } else if (branchSelect.options.length > 0) {
                         branchSelect.selectedIndex = 0;
                     }
