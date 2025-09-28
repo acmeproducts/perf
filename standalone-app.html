@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitHub Standalone Editor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --surface: rgba(15, 23, 42, 0.88);
+      --text: #e2e8f0;
+      --accent: #38bdf8;
+      --danger: #f87171;
+      --success: #34d399;
+      --border: rgba(148, 163, 184, 0.4);
+      --radius: 16px;
+      --gap: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1e293b, #020617);
+      min-height: 100vh;
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 32px 16px 64px;
+    }
+
+    main {
+      width: min(1100px, 100%);
+      display: grid;
+      gap: var(--gap);
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+
+    section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 45px rgba(2, 6, 23, 0.45);
+    }
+
+    h1 {
+      grid-column: 1 / -1;
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      margin: 0;
+      text-align: center;
+      letter-spacing: 0.01em;
+      font-weight: 600;
+    }
+
+    p.lead {
+      grid-column: 1 / -1;
+      margin: 0;
+      text-align: center;
+      opacity: 0.75;
+      font-size: 0.95rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.8;
+      margin-bottom: 6px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.7);
+      color: inherit;
+      padding: 12px 14px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
+    }
+
+    textarea {
+      min-height: 420px;
+      resize: vertical;
+      font-family: var(--mono);
+      line-height: 1.45;
+      letter-spacing: 0.01em;
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: var(--gap);
+    }
+
+    button {
+      border: none;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 30px rgba(56, 189, 248, 0.28);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      color: #0f172a;
+    }
+
+    button.danger {
+      background: rgba(248, 113, 113, 0.16);
+      color: var(--danger);
+    }
+
+    button.secondary {
+      background: rgba(148, 163, 184, 0.12);
+      color: #cbd5f5;
+    }
+
+    ul.file-list {
+      list-style: none;
+      padding: 0;
+      margin: 16px 0 0;
+      max-height: 360px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.6);
+    }
+
+    ul.file-list li {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    ul.file-list li:last-child {
+      border-bottom: none;
+    }
+
+    ul.file-list li.active {
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+    }
+
+    ul.file-list li:hover {
+      background: rgba(56, 189, 248, 0.1);
+    }
+
+    .status-bar {
+      margin-top: 18px;
+      font-size: 0.9rem;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(15, 23, 42, 0.65);
+      min-height: 42px;
+    }
+
+    .status-bar.success { border-color: rgba(52, 211, 153, 0.35); color: var(--success); }
+    .status-bar.error { border-color: rgba(248, 113, 113, 0.35); color: var(--danger); }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+      justify-content: flex-end;
+    }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      font-size: 0.75rem;
+      letter-spacing: 0.03em;
+      margin-right: 6px;
+    }
+
+    dialog {
+      border: none;
+      border-radius: 20px;
+      padding: 24px;
+      max-width: 360px;
+      width: calc(100% - 40px);
+      background: rgba(15, 23, 42, 0.95);
+      color: var(--text);
+      box-shadow: 0 24px 60px rgba(2, 6, 23, 0.6);
+    }
+
+    dialog::backdrop {
+      background: rgba(2, 6, 23, 0.75);
+      backdrop-filter: blur(6px);
+    }
+
+    .pat-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 18px;
+      justify-content: flex-end;
+    }
+
+    @media (max-width: 720px) {
+      body { padding: 24px 12px 48px; }
+      textarea { min-height: 320px; }
+      main { grid-template-columns: 1fr; }
+      section { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Standalone GitHub Editor</h1>
+    <p class="lead">Works from any static host. Provide a Personal Access Token once, then browse, edit, and commit files directly from your browser.</p>
+
+    <section aria-labelledby="connection-heading">
+      <h2 id="connection-heading" style="margin-top:0;font-size:1.1rem;">Repository Connection</h2>
+      <div class="row">
+        <div>
+          <label for="ownerInput">Owner</label>
+          <input id="ownerInput" autocomplete="off" placeholder="github-user" spellcheck="false">
+        </div>
+        <div>
+          <label for="repoInput">Repository</label>
+          <input id="repoInput" autocomplete="off" placeholder="repo-name" spellcheck="false">
+        </div>
+      </div>
+      <div class="row" style="margin-top: var(--gap);">
+        <div>
+          <label for="branchInput">Branch</label>
+          <input id="branchInput" autocomplete="off" placeholder="main">
+        </div>
+        <div>
+          <label for="pathFilterInput">Path Filter (optional)</label>
+          <input id="pathFilterInput" autocomplete="off" placeholder="e.g. src/">
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="loadBtn" class="primary" type="button">Load Repository</button>
+        <button id="changePatBtn" type="button">Update Token</button>
+        <button id="signOutBtn" class="danger" type="button">Forget Token</button>
+      </div>
+      <div class="status-bar" id="connectionStatus" role="status" aria-live="polite"></div>
+      <ul class="file-list" id="fileList" aria-label="Repository files"></ul>
+    </section>
+
+    <section aria-labelledby="editor-heading">
+      <h2 id="editor-heading" style="margin-top:0;font-size:1.1rem;">Editor</h2>
+      <div>
+        <label for="filePathDisplay">Selected File</label>
+        <input id="filePathDisplay" readonly>
+      </div>
+      <div style="margin-top: var(--gap);">
+        <label for="editorArea">File Contents</label>
+        <textarea id="editorArea" placeholder="Select a file to load its contents" spellcheck="false"></textarea>
+      </div>
+      <div class="row" style="margin-top: var(--gap);">
+        <div>
+          <label for="commitMessageInput">Commit Message</label>
+          <input id="commitMessageInput" placeholder="Describe your change">
+        </div>
+        <div>
+          <label for="commitBranchInput">Commit Branch</label>
+          <input id="commitBranchInput" placeholder="same as base by default">
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="refreshFileBtn" type="button">Reload File</button>
+        <button id="saveBtn" class="primary" type="button">Commit Changes</button>
+      </div>
+      <div class="status-bar" id="editorStatus" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <dialog id="tokenDialog">
+    <form method="dialog">
+      <h3 style="margin:0 0 12px;font-size:1.15rem;">GitHub Personal Access Token</h3>
+      <p style="margin:0 0 16px;font-size:0.9rem;opacity:0.75;">Generate a fine-grained token with <strong>repo</strong> scope. The token is stored in <code>localStorage</code> on this device only.</p>
+      <label for="tokenInput">Token</label>
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_...">
+      <div class="pat-actions">
+        <button value="cancel" type="submit" class="secondary">Cancel</button>
+        <button id="storePatBtn" value="confirm" type="submit" class="primary">Save Token</button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="fileListItemTemplate">
+    <li>
+      <span class="file-name"></span>
+      <span class="tag-pill file-size"></span>
+    </li>
+  </template>
+
+  <script>
+    (() => {
+      const STORAGE_TOKEN_KEY = 'standalone_github_pat_v1';
+      const STORAGE_OWNER_KEY = 'standalone_github_owner';
+      const STORAGE_REPO_KEY = 'standalone_github_repo';
+      const STORAGE_BRANCH_KEY = 'standalone_github_branch';
+      const STORAGE_FILTER_KEY = 'standalone_github_filter';
+      const STORAGE_COMMIT_BRANCH_KEY = 'standalone_github_commit_branch';
+
+      const elements = {
+        ownerInput: document.getElementById('ownerInput'),
+        repoInput: document.getElementById('repoInput'),
+        branchInput: document.getElementById('branchInput'),
+        pathFilterInput: document.getElementById('pathFilterInput'),
+        commitBranchInput: document.getElementById('commitBranchInput'),
+        commitMessageInput: document.getElementById('commitMessageInput'),
+        fileList: document.getElementById('fileList'),
+        loadBtn: document.getElementById('loadBtn'),
+        refreshFileBtn: document.getElementById('refreshFileBtn'),
+        saveBtn: document.getElementById('saveBtn'),
+        changePatBtn: document.getElementById('changePatBtn'),
+        signOutBtn: document.getElementById('signOutBtn'),
+        editorArea: document.getElementById('editorArea'),
+        connectionStatus: document.getElementById('connectionStatus'),
+        editorStatus: document.getElementById('editorStatus'),
+        filePathDisplay: document.getElementById('filePathDisplay'),
+        tokenDialog: document.getElementById('tokenDialog'),
+        tokenInput: document.getElementById('tokenInput'),
+        storePatBtn: document.getElementById('storePatBtn'),
+        fileTemplate: document.getElementById('fileListItemTemplate'),
+      };
+
+      let token = localStorage.getItem(STORAGE_TOKEN_KEY) || '';
+      let currentSha = null;
+      let currentPath = '';
+      let treeCache = [];
+
+      // Restore prior session state
+      elements.ownerInput.value = localStorage.getItem(STORAGE_OWNER_KEY) || '';
+      elements.repoInput.value = localStorage.getItem(STORAGE_REPO_KEY) || '';
+      const branch = localStorage.getItem(STORAGE_BRANCH_KEY) || 'main';
+      elements.branchInput.value = branch;
+      const commitBranch = localStorage.getItem(STORAGE_COMMIT_BRANCH_KEY) || '';
+      elements.commitBranchInput.value = commitBranch;
+      elements.pathFilterInput.value = localStorage.getItem(STORAGE_FILTER_KEY) || '';
+
+      function ensureToken(promptIfMissing = true) {
+        if (token) return true;
+        if (!promptIfMissing) return false;
+        showTokenDialog();
+        return false;
+      }
+
+      function showTokenDialog(initial = '') {
+        elements.tokenInput.value = initial || token || '';
+        if (typeof elements.tokenDialog.showModal === 'function') {
+          elements.tokenDialog.showModal();
+        } else {
+          alert('Your browser does not support the token dialog. Please use a modern browser.');
+        }
+      }
+
+      function updateStatus(target, message, cls) {
+        target.className = 'status-bar' + (cls ? ' ' + cls : '');
+        target.textContent = message;
+      }
+
+      async function githubRequest(path, options = {}) {
+        if (!ensureToken()) throw new Error('Token required');
+        const url = new URL(path, 'https://api.github.com');
+        const headers = {
+          'Accept': 'application/vnd.github.v3+json',
+          'Authorization': `token ${token}`,
+        };
+        if (options.headers) Object.assign(headers, options.headers);
+        const response = await fetch(url.toString(), { ...options, headers });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(`GitHub ${response.status}: ${detail || response.statusText}`);
+        }
+        if (response.status === 204) return null;
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+      }
+
+      function decodeContent(base64) {
+        try {
+          return decodeURIComponent(escape(atob(base64)));
+        } catch (error) {
+          console.warn('Falling back to plain atob for content decode', error);
+          return atob(base64);
+        }
+      }
+
+      function encodeContent(text) {
+        const normalized = text.replace(/\r\n?/g, '\n');
+        return btoa(unescape(encodeURIComponent(normalized)));
+      }
+
+      async function loadRepository() {
+        if (!ensureToken()) return;
+        const owner = elements.ownerInput.value.trim();
+        const repo = elements.repoInput.value.trim();
+        const branchName = elements.branchInput.value.trim() || 'main';
+        if (!owner || !repo) {
+          updateStatus(elements.connectionStatus, 'Owner and repository are required.', 'error');
+          return;
+        }
+
+        updateStatus(elements.connectionStatus, 'Loading repository tree…', '');
+        elements.fileList.innerHTML = '';
+        treeCache = [];
+        try {
+          const ref = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+          const defaultBranch = ref.default_branch || branchName;
+          if (!elements.branchInput.value.trim()) {
+            elements.branchInput.value = defaultBranch;
+          }
+          const tree = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(branchName)}?recursive=1`);
+          if (!tree || !Array.isArray(tree.tree)) throw new Error('Unexpected tree response');
+          treeCache = tree.tree.filter(entry => entry.type === 'blob');
+          const filter = elements.pathFilterInput.value.trim();
+          renderFileList(filter);
+          persistConnectionState();
+          updateStatus(elements.connectionStatus, `Loaded ${treeCache.length} blobs from ${branchName}.`, 'success');
+        } catch (error) {
+          console.error(error);
+          updateStatus(elements.connectionStatus, error.message, 'error');
+        }
+      }
+
+      function renderFileList(filter = '') {
+        elements.fileList.innerHTML = '';
+        const matcher = filter ? new RegExp(filter.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*'), 'i') : null;
+        const items = matcher ? treeCache.filter(item => matcher.test(item.path)) : treeCache;
+        const template = elements.fileTemplate.content.firstElementChild;
+        items.slice(0, 2000).forEach(item => {
+          const clone = template.cloneNode(true);
+          const nameSpan = clone.querySelector('.file-name');
+          const sizeSpan = clone.querySelector('.file-size');
+          nameSpan.textContent = item.path;
+          sizeSpan.textContent = item.size ? `${item.size.toLocaleString()} B` : 'blob';
+          clone.dataset.path = item.path;
+          clone.addEventListener('click', () => selectFile(item.path));
+          elements.fileList.appendChild(clone);
+        });
+      }
+
+      async function selectFile(path) {
+        if (!ensureToken()) return;
+        const owner = elements.ownerInput.value.trim();
+        const repo = elements.repoInput.value.trim();
+        const branchName = elements.branchInput.value.trim() || 'main';
+        if (!owner || !repo) {
+          updateStatus(elements.editorStatus, 'Owner and repository are required.', 'error');
+          return;
+        }
+        updateStatus(elements.editorStatus, `Loading ${path}…`, '');
+        elements.saveBtn.disabled = true;
+        try {
+          const data = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branchName)}`);
+          currentSha = data.sha;
+          currentPath = data.path;
+          const content = decodeContent(data.content);
+          elements.editorArea.value = content;
+          elements.filePathDisplay.value = currentPath;
+          elements.commitMessageInput.value = elements.commitMessageInput.value || `Update ${currentPath}`;
+          markActiveFile(path);
+          updateStatus(elements.editorStatus, `Loaded ${currentPath}`, 'success');
+          elements.saveBtn.disabled = false;
+        } catch (error) {
+          console.error(error);
+          updateStatus(elements.editorStatus, error.message, 'error');
+        }
+      }
+
+      function markActiveFile(path) {
+        for (const li of elements.fileList.children) {
+          li.classList.toggle('active', li.dataset.path === path);
+        }
+      }
+
+      async function refreshFile() {
+        if (!currentPath) {
+          updateStatus(elements.editorStatus, 'Select a file to refresh.', '');
+          return;
+        }
+        await selectFile(currentPath);
+      }
+
+      async function saveFile() {
+        if (!ensureToken()) return;
+        const owner = elements.ownerInput.value.trim();
+        const repo = elements.repoInput.value.trim();
+        const baseBranch = elements.branchInput.value.trim() || 'main';
+        const commitBranch = elements.commitBranchInput.value.trim() || baseBranch;
+        const message = elements.commitMessageInput.value.trim() || `Update ${currentPath}`;
+        if (!currentPath) {
+          updateStatus(elements.editorStatus, 'Select a file before committing.', 'error');
+          return;
+        }
+        const encoded = encodeContent(elements.editorArea.value);
+        updateStatus(elements.editorStatus, 'Saving changes…', '');
+        elements.saveBtn.disabled = true;
+        try {
+          const payload = {
+            message,
+            content: encoded,
+            branch: commitBranch,
+            sha: currentSha,
+          };
+          const res = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(currentPath)}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          });
+          currentSha = res.content && res.content.sha ? res.content.sha : currentSha;
+          updateStatus(elements.editorStatus, `Committed to ${commitBranch} at ${res.commit && res.commit.sha ? res.commit.sha.slice(0, 7) : 'latest'}.`, 'success');
+          persistConnectionState();
+          elements.saveBtn.disabled = false;
+        } catch (error) {
+          console.error(error);
+          updateStatus(elements.editorStatus, error.message, 'error');
+          elements.saveBtn.disabled = false;
+        }
+      }
+
+      function persistConnectionState() {
+        localStorage.setItem(STORAGE_OWNER_KEY, elements.ownerInput.value.trim());
+        localStorage.setItem(STORAGE_REPO_KEY, elements.repoInput.value.trim());
+        localStorage.setItem(STORAGE_BRANCH_KEY, elements.branchInput.value.trim() || 'main');
+        localStorage.setItem(STORAGE_FILTER_KEY, elements.pathFilterInput.value.trim());
+        localStorage.setItem(STORAGE_COMMIT_BRANCH_KEY, elements.commitBranchInput.value.trim());
+      }
+
+      function clearSelection() {
+        currentPath = '';
+        currentSha = null;
+        elements.filePathDisplay.value = '';
+        elements.editorArea.value = '';
+        elements.commitMessageInput.value = '';
+        markActiveFile('');
+      }
+
+      function forgetToken() {
+        localStorage.removeItem(STORAGE_TOKEN_KEY);
+        token = '';
+        clearSelection();
+        updateStatus(elements.connectionStatus, 'Token removed. Provide a new token to continue.', '');
+        ensureToken();
+      }
+
+      elements.storePatBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const value = elements.tokenInput.value.trim();
+        if (!value) {
+          updateStatus(elements.connectionStatus, 'Token cannot be empty.', 'error');
+          return;
+        }
+        localStorage.setItem(STORAGE_TOKEN_KEY, value);
+        token = value;
+        elements.tokenDialog.close('confirm');
+        updateStatus(elements.connectionStatus, 'Token stored locally.', 'success');
+      });
+
+      elements.tokenDialog.addEventListener('close', () => {
+        elements.tokenInput.value = '';
+        if (!token) {
+          updateStatus(elements.connectionStatus, 'Token required to access repository data.', 'error');
+        }
+      });
+
+      elements.loadBtn.addEventListener('click', loadRepository);
+      elements.refreshFileBtn.addEventListener('click', refreshFile);
+      elements.saveBtn.addEventListener('click', saveFile);
+      elements.changePatBtn.addEventListener('click', () => showTokenDialog());
+      elements.signOutBtn.addEventListener('click', () => {
+        if (confirm('Remove the stored Personal Access Token?')) forgetToken();
+      });
+      elements.pathFilterInput.addEventListener('input', (event) => {
+        renderFileList(event.target.value.trim());
+        localStorage.setItem(STORAGE_FILTER_KEY, event.target.value.trim());
+      });
+
+      ensureToken();
+      if (token && elements.ownerInput.value && elements.repoInput.value) {
+        loadRepository();
+      }
+    })();
+  </script>
+</body>
+</html>
