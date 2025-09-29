@@ -1078,7 +1078,7 @@
         });
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
-            syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, currentFolder: { id: null, name: '' },
+            syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null, currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
@@ -1089,7 +1089,8 @@
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
             activeRequests: new AbortController(),
-            sessionVisitedFolders: new Set()
+            sessionVisitedFolders: new Set(),
+            pendingBackgroundProbe: null
         };
         const getCurrentFolderContext = (overrides = {}) => {
             const providerType = overrides.providerType ?? state.providerType ?? null;
@@ -3340,9 +3341,25 @@
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
+                const coordinator = state.folderSyncCoordinator;
+                let preparation = null;
 
-                if (forceFullResync || isFirstSessionVisit || cachedFiles.length === 0) {
-                    await this.syncFolderFromCloud(forceFullResync ? [] : cachedFiles, sessionKey);
+                if (coordinator && typeof coordinator.prepareFolder === 'function') {
+                    try {
+                        preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(forceFullResync) });
+                    } catch (error) {
+                        state.syncLog?.log?.({ event: 'foldersync:prepare:error', level: 'error', details: `Prepare failed: ${error.message}` });
+                        preparation = null;
+                    }
+                }
+
+                if (preparation?.mode === 'delta') {
+                    await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
+                    return;
+                }
+
+                if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || forceFullResync) {
+                    await this.syncFolderFromCloud(forceFullResync ? [] : cachedFiles, sessionKey, { preparation });
                     return;
                 }
 
@@ -3351,27 +3368,107 @@
                 Utils.showScreen('app-container');
                 Core.initializeStacks();
                 Core.initializeImageDisplay();
+                state.sessionVisitedFolders.add(sessionKey);
+
+                if (preparation?.mode === 'cache') {
+                    state.syncLog?.log?.({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while probe runs.` });
+                } else if (coordinator && typeof coordinator.queueBackgroundProbe === 'function') {
+                    const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
+                    coordinator.queueBackgroundProbe(folderId, { localManifest });
+                }
+
+                if (state.pendingBackgroundProbe?.folderId === folderId) {
+                    const pending = state.pendingBackgroundProbe;
+                    state.pendingBackgroundProbe = null;
+                    await this.applyDeltaFromCoordinator(pending);
+                }
             },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
-                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
+            normalizeFileMetadata(file) {
+                if (!file) return file;
+                const normalized = {
+                    ...file,
+                    appProperties: { ...(file.appProperties || {}) }
+                };
+                const appProps = normalized.appProperties;
+                if (!normalized.stack) {
+                    normalized.stack = appProps.slideboxStack || 'in';
+                }
+                const rawSequence = normalized.stackSequence ?? appProps.stackSequence;
+                const parsedSequence = Number.parseInt(rawSequence, 10);
+                normalized.stackSequence = Number.isNaN(parsedSequence) ? 0 : parsedSequence;
+                if (Array.isArray(normalized.tags)) {
+                    normalized.tags = normalized.tags.map(tag => tag.trim()).filter(Boolean);
+                } else if (typeof appProps.slideboxTags === 'string') {
+                    normalized.tags = appProps.slideboxTags.split(',').map(tag => tag.trim()).filter(Boolean);
+                } else {
+                    normalized.tags = [];
+                }
+                normalized.tags.sort((a, b) => a.localeCompare(b));
+                if (normalized.notes == null) {
+                    normalized.notes = appProps.notes || '';
+                }
+                const rawQuality = normalized.qualityRating ?? appProps.qualityRating;
+                const parsedQuality = Number.parseInt(rawQuality, 10);
+                normalized.qualityRating = Number.isNaN(parsedQuality) ? 0 : parsedQuality;
+                const rawContent = normalized.contentRating ?? appProps.contentRating;
+                const parsedContent = Number.parseInt(rawContent, 10);
+                normalized.contentRating = Number.isNaN(parsedContent) ? 0 : parsedContent;
+                if (normalized.favorite == null) {
+                    normalized.favorite = appProps.favorite === 'true';
+                }
+                return normalized;
+            },
+            computeMetadataSignature(file) {
+                if (!file) return 'null';
+                const normalized = this.normalizeFileMetadata({ ...file });
+                const flags = normalized.flags || '';
+                return JSON.stringify({
+                    stack: normalized.stack || '',
+                    stackSequence: normalized.stackSequence || 0,
+                    favorite: Boolean(normalized.favorite),
+                    qualityRating: normalized.qualityRating || 0,
+                    contentRating: normalized.contentRating || 0,
+                    notes: normalized.notes || '',
+                    tags: normalized.tags || [],
+                    flags
+                });
+            },
+            mergeCloudWithCache(cloudFiles, cachedFiles, options = {}) {
+                const forceUpdateIds = new Set(options.forceUpdateIds || []);
+                const cachedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
                 const merged = [];
                 const newIds = [];
                 const updatedIds = [];
                 const removedIds = [];
 
                 for (const cloudFile of cloudFiles) {
+                    if (!cloudFile?.id) continue;
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
-                        merged.push({ ...cloudFile });
+                        const normalizedNew = this.normalizeFileMetadata({ ...cloudFile });
+                        merged.push(normalizedNew);
                         newIds.push(cloudFile.id);
                     } else {
+                        const combined = {
+                            ...cached,
+                            ...cloudFile,
+                            appProperties: {
+                                ...(cached.appProperties || {}),
+                                ...(cloudFile.appProperties || {})
+                            }
+                        };
+                        const normalizedCombined = this.normalizeFileMetadata(combined);
                         const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
                         const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const metadataChanged = this.computeMetadataSignature(cached) !== this.computeMetadataSignature(normalizedCombined);
+                        const hasNewerTimestamp = !Number.isNaN(cloudModified) && (Number.isNaN(cachedModified) || cloudModified > cachedModified);
+                        const shouldUpdate = forceUpdateIds.has(cloudFile.id) || metadataChanged || hasNewerTimestamp;
+
+                        if (shouldUpdate) {
+                            merged.push(normalizedCombined);
                             updatedIds.push(cloudFile.id);
                         } else {
-                            merged.push(cached);
+                            merged.push(this.normalizeFileMetadata({ ...cached }));
                         }
                         cachedMap.delete(cloudFile.id);
                     }
@@ -3389,9 +3486,160 @@
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
-            async syncFolderFromCloud(cachedFiles, sessionKey) {
+            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
+                const folderId = state.currentFolder.id;
+                const diff = preparation?.diff || { changedIds: [], removedIds: [] };
+                const remoteManifest = preparation?.remoteManifest || null;
+                const folderState = preparation?.folderState || null;
+                const coordinator = state.folderSyncCoordinator;
+
+                if (!background) {
+                    const totalSteps = (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0);
+                    Utils.showScreen('loading-screen');
+                    Utils.updateLoadingProgress(0, totalSteps, 'Applying cloud updates...');
+                }
+
+                try {
+                    const changedIds = diff.changedIds || [];
+                    let cloudFiles = [];
+                    if (changedIds.length > 0) {
+                        if (!state.provider || typeof state.provider.fetchFilesByIds !== 'function') {
+                            await coordinator?.markRequiresFullResync?.(folderId, 'delta-provider-missing');
+                            await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                            return;
+                        }
+                        cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
+                        cloudFiles = cloudFiles.map(file => this.normalizeFileMetadata({
+                            ...file,
+                            appProperties: { ...(file.appProperties || {}) }
+                        }));
+                    }
+
+                    const mergedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
+                    const incompleteDelta = changedIds.length > 0 && cloudFiles.length !== changedIds.length;
+                    for (const file of cloudFiles) {
+                        const existing = mergedMap.get(file.id) || {};
+                        const combined = this.normalizeFileMetadata({
+                            ...existing,
+                            ...file,
+                            appProperties: {
+                                ...(existing.appProperties || {}),
+                                ...(file.appProperties || {})
+                            }
+                        });
+                        mergedMap.set(file.id, combined);
+                    }
+                    const removedIds = diff.removedIds || [];
+                    for (const removed of removedIds) {
+                        mergedMap.delete(removed);
+                    }
+
+                    state.imageFiles = Array.from(mergedMap.values());
+
+                    if (!background) {
+                        const total = (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0);
+                        Utils.updateLoadingProgress(total, total, 'Finishing sync...');
+                    }
+
+                    const context = getCurrentFolderContext({ folderId });
+                    for (const file of cloudFiles) {
+                        await state.dbManager.saveMetadata(file.id, file, context);
+                    }
+                    for (const removed of removedIds) {
+                        await state.dbManager.deleteMetadata(removed);
+                    }
+
+                    await this.processAllMetadata(state.imageFiles, false);
+                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+
+                    let manifestRecord = null;
+                    if (remoteManifest) {
+                        manifestRecord = { ...remoteManifest };
+                    } else if (coordinator && typeof coordinator.buildManifestFromFiles === 'function') {
+                        manifestRecord = { entries: coordinator.buildManifestFromFiles(folderId, state.imageFiles) };
+                    } else {
+                        manifestRecord = { entries: {} };
+                    }
+                    manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
+                    const diffSummary = { changed: changedIds.length, removed: removedIds.length };
+                    const manifestMeta = {
+                        cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
+                        localVersion: folderState?.localVersion ?? null,
+                        lastDiffSummary: diffSummary
+                    };
+                    await coordinator?.persistManifest?.(folderId, manifestRecord, manifestMeta);
+                    const updatedCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? 0;
+                    await coordinator?.persistFolderState?.(folderId, {
+                        cloudVersion: updatedCloudVersion,
+                        localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
+                        lastCloudAck: Date.now()
+                    });
+
+                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                    state.sessionVisitedFolders.add(key);
+
+                    if (!background) {
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
+                    } else {
+                        Core.initializeStacks();
+                        Core.updateStackCounts();
+                        if (state.imageFiles.length > 0) {
+                            await Core.displayCurrentImage();
+                        } else {
+                            Core.showEmptyState();
+                        }
+                    }
+
+                    const summary = [];
+                    if (changedIds.length > 0) summary.push(`${changedIds.length} updated`);
+                    if (removedIds.length > 0) summary.push(`${removedIds.length} removed`);
+                    if (summary.length > 0) {
+                        Utils.showToast(`Folder updated (${summary.join(', ')})`, 'info');
+                    }
+                    if (incompleteDelta) {
+                        await coordinator?.markRequiresFullResync?.(folderId, 'delta-incomplete');
+                    }
+                    state.syncLog?.log?.({
+                        event: 'foldersync:delta-apply',
+                        level: 'success',
+                        details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
+                        data: { cloudVersion: updatedCloudVersion }
+                    });
+                } catch (error) {
+                    state.syncLog?.log?.({ event: 'foldersync:delta-error', level: 'error', details: `Delta sync failed: ${error.message}` });
+                    Utils.showToast(`Delta sync failed: ${error.message}`, 'error', true);
+                    await state.folderSyncCoordinator?.markRequiresFullResync?.(folderId, 'delta-error');
+                    await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                }
+            },
+            async applyDeltaFromCoordinator(payload) {
+                if (!payload) return;
+                if (payload.forceFullResync) {
+                    await this.loadImages({ forceFullResync: true });
+                    return;
+                }
+                if (!payload.diff?.hasChanges) return;
+                if (payload.folderId !== state.currentFolder?.id) {
+                    state.pendingBackgroundProbe = payload;
+                    return;
+                }
+                const folderId = state.currentFolder.id;
+                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
+                const cachedFiles = (await state.dbManager.getFolderCache(folderId)) || state.imageFiles || [];
+                await this.applyDeltaSync({
+                    cachedFiles,
+                    sessionKey,
+                    preparation: { ...payload, folderState: await state.dbManager.getFolderState({ providerType: state.providerType, folderId }) },
+                    background: true
+                });
+            },
+            async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
                 const folderId = state.currentFolder.id;
                 const hadCached = cachedFiles.length > 0;
+                const coordinator = state.folderSyncCoordinator;
+                const preparation = options.preparation || null;
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
 
@@ -3434,6 +3682,49 @@
                     this.switchToCommonUI();
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
+
+                    if (coordinator && typeof coordinator.buildManifestFromFiles === 'function') {
+                        const manifestEntries = coordinator.buildManifestFromFiles(folderId, state.imageFiles);
+                        let remoteManifestResponse = null;
+                        let manifestRequiresRescan = false;
+                        if (state.provider && typeof state.provider.saveFolderManifest === 'function') {
+                            try {
+                                remoteManifestResponse = await state.provider.saveFolderManifest(folderId, {
+                                    entries: manifestEntries,
+                                    requiresFullResync: false,
+                                    cloudVersion: preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? 0,
+                                    localVersion: preparation?.folderState?.localVersion ?? 0,
+                                    manifestFileId: preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
+                                }, { signal: state.activeRequests?.signal });
+                                state.syncLog?.log?.({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
+                            } catch (error) {
+                                manifestRequiresRescan = true;
+                                state.syncLog?.log?.({ event: 'manifest:save:error', level: 'error', details: `Manifest save failed: ${error.message}` });
+                            }
+                        }
+
+                        const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                        const manifestPayload = {
+                            entries: manifestEntries,
+                            requiresFullResync: manifestRequiresRescan,
+                            cloudVersion: remoteCloudVersion,
+                            localVersion: preparation?.folderState?.localVersion ?? remoteCloudVersion,
+                            manifestFileId: remoteManifestResponse?.manifestFileId || preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
+                        };
+                        await coordinator.persistManifest?.(folderId, manifestPayload, {
+                            cloudVersion: manifestPayload.cloudVersion,
+                            localVersion: manifestPayload.localVersion,
+                            lastDiffSummary: { new: newIds.length, updated: updatedIds.length, removed: removedIds.length }
+                        });
+                        await coordinator.persistFolderState?.(folderId, {
+                            cloudVersion: manifestPayload.cloudVersion,
+                            localVersion: Math.max(manifestPayload.localVersion ?? 0, manifestPayload.cloudVersion ?? 0),
+                            lastCloudAck: Date.now()
+                        });
+                        if (manifestPayload.requiresFullResync) {
+                            await coordinator.markRequiresFullResync?.(folderId, 'manifest-save-failed');
+                        }
+                    }
 
                     if (hadCached && hasChanges) {
                         const diffSummary = [];
