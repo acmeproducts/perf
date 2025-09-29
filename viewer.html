@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Viewer</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      --bg: #f7f8fc;
+      --bg-dark: #151922;
+      --panel: #ffffff;
+      --panel-dark: #1f2430;
+      --border: #dde1ee;
+      --border-dark: #2e3445;
+      --muted: #6b7280;
+      --accent: #4f46e5;
+      --accent-soft: rgba(79, 70, 229, 0.12);
+      --success: #16a34a;
+      --danger: #dc2626;
+      line-height: 1.6;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(180deg, rgba(79, 70, 229, 0.12), transparent 320px) var(--bg);
+      color: #111827;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: linear-gradient(180deg, rgba(99, 102, 241, 0.32), transparent 320px) var(--bg-dark);
+        color: #e5e7eb;
+      }
+    }
+
+    header {
+      padding: 32px clamp(20px, 4vw, 48px) 12px;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: clamp(1.6rem, 5vw, 2.4rem);
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      margin: 8px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+    }
+
+    .app-shell {
+      padding: 0 clamp(20px, 4vw, 48px) 48px;
+    }
+
+    .tab-bar {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab-button {
+      position: relative;
+      appearance: none;
+      background: none;
+      border: none;
+      font: inherit;
+      padding: 12px 18px;
+      border-radius: 12px 12px 0 0;
+      cursor: pointer;
+      color: var(--muted);
+      transition: color 0.2s ease, background-color 0.2s ease;
+    }
+
+    .tab-button.active {
+      color: var(--accent);
+      background: var(--panel);
+      box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .tab-panel {
+      display: none;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0 16px 16px 16px;
+      padding: 24px;
+      margin-top: -1px;
+      box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .tab-button.active {
+        background: var(--panel-dark);
+        color: #c7d2fe;
+        box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+      }
+
+      .tab-panel {
+        background: var(--panel-dark);
+        border-color: var(--border-dark);
+        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+      }
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .toolbar button,
+    .toolbar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      background: rgba(79, 70, 229, 0.06);
+      color: var(--accent);
+      padding: 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .toolbar button:hover,
+    .toolbar label:hover {
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+
+    .toolbar label input {
+      display: none;
+    }
+
+    #status-bar {
+      min-height: 24px;
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    .entries {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .entry {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px 20px;
+      background: rgba(255, 255, 255, 0.85);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    }
+
+    .entry.open {
+      box-shadow: 0 20px 44px rgba(15, 23, 42, 0.12);
+    }
+
+    .entry.excluded {
+      opacity: 0.55;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .entry {
+        background: rgba(31, 36, 48, 0.9);
+        border-color: var(--border-dark);
+      }
+
+      .entry.open {
+        box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55);
+      }
+    }
+
+    .entry-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      cursor: default;
+    }
+
+    .entry-toggle {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: transparent;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+
+    .entry.open .entry-toggle {
+      transform: rotate(90deg);
+    }
+
+    .entry-header-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-weight: 600;
+    }
+
+    .entry-header-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.95rem;
+    }
+
+    .separator::before {
+      content: "·";
+      color: var(--muted);
+      margin: 0 4px;
+    }
+
+    .editable-text {
+      position: relative;
+      padding: 2px 4px;
+      border-radius: 6px;
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .editable-text:hover {
+      background: rgba(79, 70, 229, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.18);
+      cursor: text;
+    }
+
+    .editable-text.editing {
+      background: rgba(79, 70, 229, 0.12);
+      box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.35);
+    }
+
+    .include-toggle {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .include-toggle input {
+      width: 44px;
+      height: 24px;
+      appearance: none;
+      background: rgba(79, 70, 229, 0.25);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .include-toggle input::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 4px;
+      width: 18px;
+      height: 18px;
+      background: #ffffff;
+      border-radius: 50%;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+      transition: transform 0.2s ease;
+    }
+
+    .include-toggle input:not(:checked) {
+      background: rgba(148, 163, 184, 0.35);
+    }
+
+    .include-toggle input:checked::after {
+      transform: translateX(18px);
+    }
+
+    .entry-body {
+      margin-top: 16px;
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+      display: none;
+      gap: 12px;
+      flex-direction: column;
+    }
+
+    .entry.open .entry-body {
+      display: flex;
+    }
+
+    .detail-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 0.95rem;
+    }
+
+    .detail-line .pipe {
+      color: var(--muted);
+    }
+
+    .link-button {
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: rgba(79, 70, 229, 0.08);
+      color: var(--accent);
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+      font-size: 0.85rem;
+    }
+
+    .link-button:hover {
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+
+    .section-title {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .section-title.editable-text:hover {
+      cursor: text;
+    }
+
+    .section-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .entry-line {
+      position: relative;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 0.93rem;
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .entry-line:hover {
+      background: rgba(148, 163, 184, 0.12);
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.3);
+      cursor: text;
+    }
+
+    .entry-line .line-text {
+      display: inline;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .entry-line .open-link {
+      margin-left: 8px;
+      border: 1px solid rgba(79, 70, 229, 0.2);
+      background: rgba(79, 70, 229, 0.12);
+      color: var(--accent);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .entry-line .open-link:hover {
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+
+    .inline-editor,
+    .inline-editor-area {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      font: inherit;
+      background: rgba(79, 70, 229, 0.08);
+      color: inherit;
+      resize: vertical;
+    }
+
+    .inline-editor-area {
+      min-height: 56px;
+    }
+
+    .link-editor {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .link-editor input {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      font: inherit;
+      background: rgba(79, 70, 229, 0.08);
+      color: inherit;
+    }
+
+    .link-editor .editor-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .link-editor button {
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .link-editor .save {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+
+    .link-editor .cancel {
+      background: rgba(248, 113, 113, 0.12);
+      color: var(--danger);
+    }
+
+    .link-editor .save:hover {
+      background: rgba(34, 197, 94, 0.25);
+    }
+
+    .link-editor .cancel:hover {
+      background: rgba(248, 113, 113, 0.2);
+    }
+
+    @media (max-width: 920px) {
+      .entry-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .include-toggle {
+        margin-left: 0;
+      }
+
+      .detail-line {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .detail-line .pipe {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Codex Review Viewer</h1>
+    <p>Track review artefacts, toggle inclusion, and edit contextual notes inline. Double-click any line to update it.</p>
+  </header>
+  <div class="app-shell">
+    <nav class="tab-bar" role="tablist">
+      <button class="tab-button active" id="tab-view" role="tab" aria-selected="true" aria-controls="panel-view">View</button>
+    </nav>
+    <section class="tab-panel active" id="panel-view" role="tabpanel" aria-labelledby="tab-view">
+      <div class="toolbar">
+        <button type="button" id="refresh-button">↻ Refresh</button>
+        <label for="import-input">⬆ Import JSON<input id="import-input" type="file" accept="application/json" /></label>
+        <button type="button" id="export-button">⬇ Export JSON</button>
+        <button type="button" id="save-button">💾 Save JSON</button>
+      </div>
+      <div id="status-bar" role="status" aria-live="polite"></div>
+      <div class="entries" id="entry-list"></div>
+    </section>
+  </div>
+  <script>
+    const STORAGE_KEY = 'viewer_entries_state_v1';
+
+    const defaultEntries = [
+      {
+        id: 76,
+        title: 'Adjust touch end handling for drag gestures',
+        summary: 'Ensure release events stay smooth for cross-browser sync scenarios.',
+        timestamp: '9/27/2025, 6:05:13 PM',
+        docRef: 'codex/review-analysis-v9-cross-browser-sync.md-77an0q',
+        pr: {
+          label: 'View PR',
+          url: 'https://github.com/user/repo/pull/76'
+        },
+        include: true,
+        sections: [
+          {
+            title: '------ live links',
+            lines: [
+              'https://chatgpt.com/codex/tasks/task_e_68d7b9a3f380832db7d50f1434ad43a8',
+              'Filename: ui-v9a.htnl',
+              'repo: https://GitHub.com/user/repo/<filename> |  pages : http://username.github.io/repo/<filename>',
+              'Filename: ui-v9b.html',
+              'repo: https://GitHub.com/user/repo/<filename> |  pages : http://username.github.io/repo/<filename>'
+            ]
+          },
+          {
+            title: '------- item metadata',
+            lines: [
+              'Tags',
+              'Add tag and press Enter',
+              '',
+              'Notes',
+              'Add checklist notes…',
+              '',
+              'Status:'
+            ]
+          }
+        ]
+      }
+    ];
+
+    const dom = {
+      entryList: document.getElementById('entry-list'),
+      refreshButton: document.getElementById('refresh-button'),
+      exportButton: document.getElementById('export-button'),
+      saveButton: document.getElementById('save-button'),
+      importInput: document.getElementById('import-input'),
+      statusBar: document.getElementById('status-bar')
+    };
+
+    let entries = loadState();
+    const openEntries = new Set();
+
+    function loadState() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            return parsed;
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load saved state', error);
+      }
+      return JSON.parse(JSON.stringify(defaultEntries));
+    }
+
+    function saveState() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+        setStatus('Saved current entries to local storage.');
+      } catch (error) {
+        console.error('Unable to save state', error);
+        setStatus('Unable to save state. Check storage availability.', true);
+      }
+    }
+
+    function setStatus(message, isError = false) {
+      dom.statusBar.textContent = message || '';
+      dom.statusBar.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+      if (message) {
+        clearTimeout(setStatus.timeoutId);
+        setStatus.timeoutId = setTimeout(() => {
+          dom.statusBar.textContent = '';
+        }, 4000);
+      }
+    }
+
+    function renderEntries() {
+      dom.entryList.innerHTML = '';
+      if (!entries.length) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'entry';
+        emptyState.innerHTML = '<strong>No entries yet.</strong> Use Import JSON to bring in existing review data.';
+        dom.entryList.appendChild(emptyState);
+        return;
+      }
+
+      entries.forEach((entry, index) => {
+        const entryEl = document.createElement('article');
+        entryEl.className = 'entry';
+        entryEl.dataset.index = index;
+        if (openEntries.has(index)) {
+          entryEl.classList.add('open');
+        }
+        if (!entry.include) {
+          entryEl.classList.add('excluded');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'entry-header';
+
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'entry-toggle';
+        toggleButton.setAttribute('aria-label', 'Toggle entry details');
+        toggleButton.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5l8 7-8 7"></path></svg>';
+        header.appendChild(toggleButton);
+
+        const meta = document.createElement('div');
+        meta.className = 'entry-header-meta';
+        meta.innerHTML = `
+          <span class="entry-id">#${entry.id}</span>
+          <span class="separator"></span>
+          <span class="entry-title editable-text" data-editable data-field="title" data-entry-index="${index}">${escapeHtml(entry.title)}</span>
+          <span class="separator"></span>
+          <span class="entry-date editable-text" data-editable data-field="timestamp" data-entry-index="${index}">${escapeHtml(entry.timestamp)}</span>
+          <span class="separator"></span>
+          <span class="entry-summary editable-text" data-editable data-field="summary" data-entry-index="${index}">${escapeHtml(entry.summary)}</span>
+        `;
+        header.appendChild(meta);
+
+        const includeWrap = document.createElement('label');
+        includeWrap.className = 'include-toggle';
+        includeWrap.innerHTML = `
+          <span>${entry.include ? 'Include' : 'Exclude'}</span>
+          <input type="checkbox" data-role="include-toggle" data-entry-index="${index}" ${entry.include ? 'checked' : ''} aria-label="Toggle include for entry ${entry.id}">
+        `;
+        header.appendChild(includeWrap);
+
+        entryEl.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'entry-body';
+
+        const detailLine = document.createElement('div');
+        detailLine.className = 'detail-line';
+
+        const tsSpan = document.createElement('span');
+        tsSpan.className = 'editable-text';
+        tsSpan.dataset.editable = '';
+        tsSpan.dataset.field = 'timestamp';
+        tsSpan.dataset.entryIndex = index;
+        tsSpan.textContent = entry.timestamp;
+
+        const docSpan = document.createElement('span');
+        docSpan.className = 'editable-text';
+        docSpan.dataset.editable = '';
+        docSpan.dataset.field = 'docRef';
+        docSpan.dataset.entryIndex = index;
+        docSpan.textContent = entry.docRef;
+
+        const prSpan = document.createElement('span');
+        prSpan.className = 'editable-text';
+        prSpan.dataset.editable = '';
+        prSpan.dataset.field = 'prLink';
+        prSpan.dataset.entryIndex = index;
+        prSpan.textContent = entry.pr.label;
+
+        const prButton = document.createElement('button');
+        prButton.type = 'button';
+        prButton.className = 'link-button';
+        prButton.dataset.url = entry.pr.url;
+        prButton.textContent = '↗';
+        prButton.title = 'Open PR in new tab';
+
+        detailLine.appendChild(tsSpan);
+        detailLine.appendChild(pipeSeparator());
+        detailLine.appendChild(docSpan);
+        detailLine.appendChild(pipeSeparator());
+        detailLine.appendChild(prSpan);
+        detailLine.appendChild(prButton);
+
+        body.appendChild(detailLine);
+
+        entry.sections.forEach((section, sectionIndex) => {
+          const sectionTitle = document.createElement('div');
+          sectionTitle.className = 'section-title editable-text';
+          sectionTitle.dataset.editable = '';
+          sectionTitle.dataset.field = 'sectionTitle';
+          sectionTitle.dataset.entryIndex = index;
+          sectionTitle.dataset.sectionIndex = sectionIndex;
+          sectionTitle.textContent = section.title;
+          body.appendChild(sectionTitle);
+
+          const sectionBody = document.createElement('div');
+          sectionBody.className = 'section-body';
+
+          section.lines.forEach((line, lineIndex) => {
+            const lineEl = document.createElement('div');
+            lineEl.className = 'entry-line editable-text';
+            lineEl.dataset.editable = '';
+            lineEl.dataset.field = 'sectionLine';
+            lineEl.dataset.entryIndex = index;
+            lineEl.dataset.sectionIndex = sectionIndex;
+            lineEl.dataset.lineIndex = lineIndex;
+
+            const textSpan = document.createElement('span');
+            textSpan.className = 'line-text';
+            textSpan.textContent = line || '';
+            lineEl.appendChild(textSpan);
+
+            findUrls(line).forEach(url => {
+              const openButton = document.createElement('button');
+              openButton.type = 'button';
+              openButton.className = 'open-link';
+              openButton.dataset.url = url;
+              openButton.textContent = '↗';
+              openButton.title = 'Open link in new tab';
+              lineEl.appendChild(openButton);
+            });
+
+            sectionBody.appendChild(lineEl);
+          });
+
+          body.appendChild(sectionBody);
+        });
+
+        entryEl.appendChild(body);
+        dom.entryList.appendChild(entryEl);
+      });
+    }
+
+    function pipeSeparator() {
+      const span = document.createElement('span');
+      span.className = 'pipe';
+      span.textContent = '|';
+      return span;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function findUrls(text) {
+      if (!text) return [];
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const matches = [];
+      let match;
+      while ((match = urlRegex.exec(text)) !== null) {
+        matches.push(match[0]);
+      }
+      return matches;
+    }
+
+    function handleEntryClick(event) {
+      const toggle = event.target.closest('.entry-toggle');
+      if (toggle) {
+        const entryEl = toggle.closest('.entry');
+        if (!entryEl) return;
+        const index = Number(entryEl.dataset.index);
+        if (openEntries.has(index)) {
+          openEntries.delete(index);
+        } else {
+          openEntries.add(index);
+        }
+        renderEntries();
+        event.preventDefault();
+        return;
+      }
+
+      const includeToggle = event.target.closest('input[data-role="include-toggle"]');
+      if (includeToggle) {
+        const index = Number(includeToggle.dataset.entryIndex);
+        entries[index].include = includeToggle.checked;
+        renderEntries();
+        setStatus(`Entry #${entries[index].id} marked as ${includeToggle.checked ? 'included' : 'excluded'}.`);
+        return;
+      }
+
+      const linkButton = event.target.closest('[data-url]');
+      if (linkButton && linkButton.dataset.url) {
+        window.open(linkButton.dataset.url, '_blank');
+        return;
+      }
+    }
+
+    function handleDoubleClick(event) {
+      const editable = event.target.closest('[data-editable]');
+      if (!editable) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const entryIndex = Number(editable.dataset.entryIndex);
+      const field = editable.dataset.field;
+      const sectionIndex = editable.dataset.sectionIndex ? Number(editable.dataset.sectionIndex) : null;
+      const lineIndex = editable.dataset.lineIndex ? Number(editable.dataset.lineIndex) : null;
+
+      if (field === 'prLink') {
+        const currentLink = entries[entryIndex].pr;
+        startLinkEditing(editable, currentLink, updatedLink => {
+          entries[entryIndex].pr = updatedLink;
+          renderEntries();
+          setStatus('Updated PR link.');
+        });
+        return;
+      }
+
+      if (field === 'sectionTitle' || field === 'sectionLine' || field === 'summary' || field === 'title' || field === 'docRef' || field === 'timestamp') {
+        startTextEditing(editable, getValue(entryIndex, field, sectionIndex, lineIndex), newValue => {
+          setValue(entryIndex, field, newValue, sectionIndex, lineIndex);
+        });
+        return;
+      }
+    }
+
+    function getValue(entryIndex, field, sectionIndex, lineIndex) {
+      const entry = entries[entryIndex];
+      switch (field) {
+        case 'title':
+          return entry.title;
+        case 'summary':
+          return entry.summary;
+        case 'timestamp':
+          return entry.timestamp;
+        case 'docRef':
+          return entry.docRef;
+        case 'sectionTitle':
+          return entry.sections[sectionIndex].title;
+        case 'sectionLine':
+          return entry.sections[sectionIndex].lines[lineIndex];
+        default:
+          return '';
+      }
+    }
+
+    function setValue(entryIndex, field, value, sectionIndex, lineIndex) {
+      const entry = entries[entryIndex];
+      const trimmed = typeof value === 'string' ? value.trim() : value;
+      switch (field) {
+        case 'title':
+          entry.title = trimmed;
+          break;
+        case 'summary':
+          entry.summary = trimmed;
+          break;
+        case 'timestamp':
+          entry.timestamp = trimmed;
+          break;
+        case 'docRef':
+          entry.docRef = trimmed;
+          break;
+        case 'sectionTitle':
+          entry.sections[sectionIndex].title = trimmed;
+          break;
+        case 'sectionLine':
+          entry.sections[sectionIndex].lines[lineIndex] = value;
+          break;
+      }
+      renderEntries();
+      setStatus('Updated entry content.');
+    }
+
+    function startLinkEditing(element, currentLink, onSave) {
+      if (element.classList.contains('editing')) return;
+      element.classList.add('editing');
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'link-editor';
+
+      const labelInput = document.createElement('input');
+      labelInput.type = 'text';
+      labelInput.placeholder = 'Link label';
+      labelInput.value = currentLink.label || '';
+
+      const urlInput = document.createElement('input');
+      urlInput.type = 'url';
+      urlInput.placeholder = 'https://example.com';
+      urlInput.value = currentLink.url || '';
+
+      const actions = document.createElement('div');
+      actions.className = 'editor-actions';
+
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.className = 'cancel';
+      cancelButton.textContent = 'Cancel';
+
+      const saveButton = document.createElement('button');
+      saveButton.type = 'button';
+      saveButton.className = 'save';
+      saveButton.textContent = 'Save';
+
+      actions.appendChild(cancelButton);
+      actions.appendChild(saveButton);
+
+      wrapper.appendChild(labelInput);
+      wrapper.appendChild(urlInput);
+      wrapper.appendChild(actions);
+
+      element.textContent = '';
+      element.appendChild(wrapper);
+      labelInput.focus();
+      labelInput.setSelectionRange(labelInput.value.length, labelInput.value.length);
+
+      const commit = () => {
+        const nextLabel = labelInput.value.trim() || 'Link';
+        const nextUrl = urlInput.value.trim();
+        element.classList.remove('editing');
+        onSave({ label: nextLabel, url: nextUrl });
+      };
+
+      const cancel = () => {
+        element.classList.remove('editing');
+        renderEntries();
+      };
+
+      cancelButton.addEventListener('click', cancel);
+      saveButton.addEventListener('click', commit);
+
+      [labelInput, urlInput].forEach(input => {
+        input.addEventListener('keydown', event => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            if (input === labelInput) {
+              urlInput.focus();
+              urlInput.setSelectionRange(urlInput.value.length, urlInput.value.length);
+            } else {
+              commit();
+            }
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            cancel();
+          }
+        });
+      });
+
+      urlInput.addEventListener('blur', event => {
+        if (!wrapper.contains(event.relatedTarget)) {
+          commit();
+        }
+      });
+      labelInput.addEventListener('blur', event => {
+        if (!wrapper.contains(event.relatedTarget)) {
+          commit();
+        }
+      });
+    }
+
+    function startTextEditing(element, currentValue, onSave) {
+      if (element.classList.contains('editing')) return;
+      element.classList.add('editing');
+      const isMultiline = currentValue && currentValue.length > 60;
+      const input = document.createElement(isMultiline ? 'textarea' : 'input');
+      if (isMultiline) {
+        input.className = 'inline-editor-area';
+        input.rows = Math.min(6, Math.max(2, Math.ceil(currentValue.length / 60)));
+      } else {
+        input.className = 'inline-editor';
+      }
+      input.value = currentValue || '';
+      element.textContent = '';
+      element.appendChild(input);
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+
+      const commit = () => {
+        const newValue = isMultiline ? input.value : input.value;
+        element.classList.remove('editing');
+        onSave(newValue);
+      };
+
+      const cancel = () => {
+        element.classList.remove('editing');
+        renderEntries();
+      };
+
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.shiftKey && !isMultiline) {
+          event.preventDefault();
+          commit();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          cancel();
+        }
+      });
+    }
+
+    function handleRefresh() {
+      entries = loadState();
+      openEntries.clear();
+      renderEntries();
+      setStatus('Reloaded entries from saved state.');
+    }
+
+    function handleExport() {
+      const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.download = `viewer-entries-${timestamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setStatus('Exported entries as JSON.');
+    }
+
+    function handleImport(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const parsed = JSON.parse(e.target.result);
+          if (!Array.isArray(parsed)) {
+            throw new Error('JSON must be an array of entries.');
+          }
+          entries = parsed;
+          openEntries.clear();
+          renderEntries();
+          setStatus(`Imported ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'} from JSON.`);
+        } catch (error) {
+          console.error('Import failed', error);
+          setStatus('Import failed: ' + error.message, true);
+        }
+      };
+      reader.readAsText(file);
+      event.target.value = '';
+    }
+
+    dom.entryList.addEventListener('click', handleEntryClick);
+    dom.entryList.addEventListener('dblclick', handleDoubleClick);
+    dom.refreshButton.addEventListener('click', handleRefresh);
+    dom.exportButton.addEventListener('click', handleExport);
+    dom.saveButton.addEventListener('click', saveState);
+    dom.importInput.addEventListener('change', handleImport);
+
+    renderEntries();
+  </script>
+</body>
+</html>
