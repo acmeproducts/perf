@@ -3578,18 +3578,97 @@
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
             },
-            async deleteFile(fileId) {
+            async deleteFile(fileId, options = {}) {
+                const { source = 'ui', originStack = null, name = null } = options;
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
+                let file = null;
+                let stackRemoval = null;
                 if (fileIndex > -1) {
-                    const [file] = state.imageFiles.splice(fileIndex, 1);
-                    const stackIndex = state.stacks[file.stack].findIndex(f => f.id === fileId);
-                    if (stackIndex > -1) { state.stacks[file.stack].splice(stackIndex, 1); }
+                    const removed = state.imageFiles.splice(fileIndex, 1);
+                    file = removed && removed.length ? removed[0] : null;
+                    if (file && file.stack && state.stacks[file.stack]) {
+                        const stackArray = state.stacks[file.stack];
+                        const stackIndex = stackArray.findIndex(f => f.id === fileId);
+                        if (stackIndex > -1) {
+                            stackRemoval = { name: file.stack, index: stackIndex };
+                            stackArray.splice(stackIndex, 1);
+                        }
+                    }
                 }
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                const stackBefore = originStack || file?.stack || null;
+                const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
+                const fileName = name || file?.name || '';
+                const persistState = async () => {
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                };
+                const restoreState = async (reason) => {
+                    if (!file) { return false; }
+                    if (fileIndex > -1) {
+                        state.imageFiles.splice(fileIndex, 0, file);
+                    } else {
+                        state.imageFiles.push(file);
+                    }
+                    if (stackRemoval && state.stacks[stackRemoval.name]) {
+                        state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
+                    } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
+                        state.stacks[file.stack].push(file);
+                    }
+                    await persistState();
+                    state.syncLog?.log({
+                        event: 'provider:trash:rollback',
+                        level: 'warn',
+                        fileId,
+                        details: `Restored ${fileName || fileId} after ${reason}.`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    return true;
+                };
+                await persistState();
+
+                const provider = state.provider;
+                const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
+                if (!provider || typeof provider.deleteFile !== 'function') {
+                    state.syncLog?.log({
+                        event: 'provider:trash:error',
+                        level: 'error',
+                        fileId,
+                        details: `Provider recycle bin unavailable for ${fileName || fileId} (${providerName}).`,
+                        data: { source, stack: stackBefore }
+                    });
+                    await restoreState('missing provider recycle support');
+                    Utils.showToast('Provider recycle bin unavailable. Item restored locally.', 'error', true);
+                    return false;
+                }
+
+                state.syncLog?.log({
+                    event: 'provider:trash:request',
+                    level: 'warn',
+                    fileId,
+                    details: `Moving ${fileName || fileId} from ${stackLabel || 'unknown stack'} into the ${providerName} recycle bin (${source}).`,
+                    data: { source, stack: stackBefore, stackLabel }
+                });
+
                 try {
-                    await state.provider.deleteFile(fileId);
+                    await provider.deleteFile(fileId);
+                    state.syncLog?.log({
+                        event: 'provider:trash:success',
+                        level: 'success',
+                        fileId,
+                        details: `${providerName} recycle bin accepted ${fileName || fileId} (from ${stackLabel || 'unknown stack'}). File is not permanently deleted.`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    return true;
                 } catch (e) {
-                    Utils.showToast(`Failed to delete from cloud: ${e.message}`, 'error', true);
+                    state.syncLog?.log({
+                        event: 'provider:trash:error',
+                        level: 'error',
+                        fileId,
+                        details: `Provider recycle move failed: ${e.message}`,
+                        data: { source, stack: stackBefore, stackLabel }
+                    });
+                    await restoreState('provider recycle failure');
+                    Utils.showToast(`Failed to move to recycle bin: ${e.message}`, 'error', true);
+                    return false;
                 }
             },
             async resetCurrentFolder() {
@@ -3832,7 +3911,7 @@
             async moveToStack(targetStack) {
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) return;
-                
+
                 const currentImage = currentStackArray[state.currentStackPosition];
                 if (!currentImage) return;
 
@@ -3863,7 +3942,66 @@
                     Utils.showToast(`Error moving image: ${error.message}`, 'error', true);
                 }
             },
-            
+            async deleteCurrentImage(options = {}) {
+                const { exitFocusIfEmpty = true, source = 'ui:direct' } = options;
+                const currentStackName = state.currentStack;
+                const currentStackArray = state.stacks[currentStackName];
+                if (!currentStackArray || currentStackArray.length === 0) return;
+
+                const fileToDelete = currentStackArray[state.currentStackPosition];
+                if (!fileToDelete) return;
+
+                const removedIndex = state.currentStackPosition;
+                const fileId = fileToDelete.id;
+                const originalStack = fileToDelete.stack || currentStackName;
+
+                try {
+                    state.syncLog?.log({
+                        event: 'ui:provider-trash-request',
+                        level: 'warn',
+                        fileId,
+                        details: `User requested moving ${fileToDelete.name || fileId} from ${STACK_NAMES[originalStack] || originalStack} into the provider recycle bin (${source}). No permanent deletion occurs.`,
+                        data: { from: originalStack, source }
+                    });
+
+                    const movedToRecycle = await App.deleteFile(fileId, {
+                        source,
+                        originStack: originalStack,
+                        name: fileToDelete.name || null
+                    });
+
+                    if (!movedToRecycle) {
+                        state.syncLog?.log({
+                            event: 'ui:provider-trash-abort',
+                            level: 'error',
+                            fileId,
+                            details: `Provider recycle move failed for ${fileToDelete.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
+                            data: { from: originalStack, source }
+                        });
+                        await this.displayCurrentImage();
+                        return;
+                    }
+
+                    this.updateStackCounts();
+                    const updatedStack = state.stacks[currentStackName] || [];
+                    if (updatedStack.length === 0) {
+                        state.currentStackPosition = 0;
+                        if (state.isFocusMode && exitFocusIfEmpty) {
+                            Gestures.toggleFocusMode();
+                        }
+                        this.showEmptyState();
+                    } else {
+                        const nextIndex = Math.min(removedIndex, updatedStack.length - 1);
+                        state.currentStackPosition = Math.max(0, nextIndex);
+                        await this.displayCurrentImage();
+                    }
+
+                    Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
+                } catch (error) {
+                    Utils.showToast(`Failed to delete ${fileToDelete.name || fileId}: ${error.message}`, 'error', true);
+                }
+            },
+
             showEmptyState() {
                 state.currentImageLoadId = null;
                 Utils.elements.centerImage.style.opacity = '0';
@@ -4818,9 +4956,14 @@
             async executeDelete() {
                 await this.executeBulkAction({
                     action: async (fileId) => {
-                        await App.deleteFile(fileId);
+                        const file = state.imageFiles.find(f => f.id === fileId);
+                        await App.deleteFile(fileId, {
+                            source: 'grid:bulk-delete',
+                            originStack: file?.stack || null,
+                            name: file?.name || null
+                        });
                     },
-                    successMessage: `Moved {count} images to provider trash`
+                    successMessage: `Moved {count} images to provider recycle bin`
                 });
             },
             async executeExport() {
@@ -5249,21 +5392,9 @@
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
                 await Core.displayCurrentImage();
             },
-            async deleteCurrentImage() {
-                const currentStackArray = state.stacks[state.currentStack];
-                if (currentStackArray.length === 0) return;
-                const fileToDelete = currentStackArray[state.currentStackPosition];
-                const removedIndex = state.currentStackPosition;
-                try {
-                    await App.deleteFile(fileToDelete.id);
-                    Core.updateStackCounts();
-                    if (currentStackArray.length === 0) { this.toggleFocusMode(); Core.showEmptyState();
-                    } else {
-                        const nextIndex = Math.min(removedIndex, currentStackArray.length - 1);
-                        state.currentStackPosition = Math.max(0, nextIndex);
-                        await Core.displayCurrentImage();
-                    }
-                } catch (error) { Utils.showToast(`Failed to delete ${fileToDelete.name}`, 'error', true); }
+            async deleteCurrentImage(options = {}) {
+                const { source = 'gesture:focus-tap', exitFocusIfEmpty = true } = options;
+                await Core.deleteCurrentImage({ exitFocusIfEmpty, source });
             }
         };
         const Folders = {
@@ -5571,7 +5702,7 @@
             setupFocusMode() {
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.moveToStack('trash'));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
-                Utils.elements.focusDeleteBtn.addEventListener('click', () => Gestures.deleteCurrentImage());
+                Utils.elements.focusDeleteBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'button:focus-trash' }));
                 Utils.elements.focusFavoriteBtn.addEventListener('click', async () => {
                     try {
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
