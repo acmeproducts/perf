@@ -2269,7 +2269,14 @@
 
                 if (!folderState || !localManifest) {
                     this.logger?.log({ event: 'foldersync:coldstart', level: 'warn', details: `No cached state for ${folderId}; performing full scan.` });
-                    return { mode: 'full', folderState, localManifest, reason: 'cold-start' };
+                    let remoteManifest = null;
+                    try {
+                        remoteManifest = await this.fetchRemoteManifest(folderId, { reason: 'cold-start' });
+                    } catch (error) {
+                        this.logger?.log({ event: 'foldersync:coldstart:manifest-error', level: 'warn', details: `Failed to prefetch manifest for ${folderId}: ${error.message}` });
+                    }
+                    const manifestFileId = remoteManifest?.manifestFileId || null;
+                    return { mode: 'full', folderState, localManifest, remoteManifest, manifestFileId, reason: 'cold-start' };
                 }
 
                 if (localManifest.requiresFullResync) {
@@ -3401,11 +3408,29 @@
                 };
                 const headers = { 'Content-Type': 'application/json' };
                 let fileId = manifest.manifestFileId || options.manifestFileId || null;
+                let discoveredManifests = null;
+                if (!fileId) {
+                    try {
+                        const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
+                        const lookupUrl = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=10`;
+                        const lookupResponse = await this.makeApiCall(lookupUrl, { signal: options.signal });
+                        const files = Array.isArray(lookupResponse?.files) ? lookupResponse.files : [];
+                        if (files.length > 0) {
+                            fileId = files[0].id;
+                            discoveredManifests = files;
+                        }
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'manifest:lookup:fallback', level: 'warn', details: `Failed to locate existing manifest for ${folderId}: ${error.message}` });
+                    }
+                }
                 if (!fileId) {
                     const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', { method: 'POST', body: JSON.stringify(metadata) });
                     fileId = createResponse.id;
-                } else {
-                    await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
+                }
+                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
+                if (Array.isArray(discoveredManifests) && discoveredManifests.length > 1) {
+                    const duplicateIds = discoveredManifests.slice(1).map(file => file.id);
+                    state.syncLog?.log({ event: 'manifest:duplicates', level: 'warn', details: `Detected ${duplicateIds.length} duplicate manifest files for ${folderId}.`, data: { duplicates: duplicateIds } });
                 }
                 const uploadUrl = `/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                 await this.makeApiCall(uploadUrl, { method: 'PATCH', body: JSON.stringify(payload), headers, signal: options.signal }, false);
@@ -4116,17 +4141,35 @@
 
                     if (coordinator) {
                         const manifestEntries = coordinator.buildManifestFromFiles(folderId, state.imageFiles);
+                        let manifestSeed = preparation?.remoteManifest || null;
+                        let manifestFileId = manifestSeed?.manifestFileId || preparation?.localManifest?.manifestFileId || preparation?.manifestFileId || null;
+                        if (!manifestFileId && state.provider && typeof state.provider.loadFolderManifest === 'function') {
+                            try {
+                                const lookup = await state.provider.loadFolderManifest(folderId, { signal: state.activeRequests?.signal });
+                                if (lookup?.manifestFileId) {
+                                    manifestFileId = lookup.manifestFileId;
+                                    if (!manifestSeed) {
+                                        manifestSeed = lookup;
+                                    }
+                                }
+                            } catch (error) {
+                                state.syncLog?.log({ event: 'manifest:lookup:pre-save', level: 'warn', details: `Manifest lookup before save failed: ${error.message}` });
+                            }
+                        }
+
                         let remoteManifestResponse = null;
                         let manifestRequiresRescan = false;
                         if (state.provider && typeof state.provider.saveFolderManifest === 'function') {
                             try {
+                                const manifestCloudVersion = manifestSeed?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                                const manifestLocalVersion = preparation?.folderState?.localVersion ?? manifestCloudVersion;
                                 remoteManifestResponse = await state.provider.saveFolderManifest(folderId, {
                                     entries: manifestEntries,
                                     requiresFullResync: false,
-                                    cloudVersion: preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? 0,
-                                    localVersion: preparation?.folderState?.localVersion ?? 0,
-                                    manifestFileId: preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
-                                }, { signal: state.activeRequests?.signal });
+                                    cloudVersion: manifestCloudVersion,
+                                    localVersion: manifestLocalVersion,
+                                    manifestFileId
+                                }, { signal: state.activeRequests?.signal, manifestFileId });
                                 state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
                             } catch (error) {
                                 manifestRequiresRescan = true;
@@ -4134,13 +4177,15 @@
                             }
                         }
 
-                        const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                        const resolvedManifestSeed = remoteManifestResponse || manifestSeed || preparation?.remoteManifest || null;
+                        const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? resolvedManifestSeed?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                        const resolvedManifestFileId = remoteManifestResponse?.manifestFileId || manifestFileId || preparation?.localManifest?.manifestFileId || null;
                         const manifestPayload = {
                             entries: manifestEntries,
                             requiresFullResync: manifestRequiresRescan,
                             cloudVersion: remoteCloudVersion,
                             localVersion: preparation?.folderState?.localVersion ?? remoteCloudVersion,
-                            manifestFileId: remoteManifestResponse?.manifestFileId || preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
+                            manifestFileId: resolvedManifestFileId
                         };
                         await coordinator.persistManifest(folderId, manifestPayload, {
                             cloudVersion: manifestPayload.cloudVersion,
