@@ -365,6 +365,24 @@
       word-break: break-word;
     }
 
+    .entry-line .file-links {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-left: 12px;
+    }
+
+    .entry-line .file-link {
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .entry-line .file-link:hover {
+      text-decoration: underline;
+    }
+
     .entry-line .open-link {
       margin-left: 8px;
       border: 1px solid rgba(79, 70, 229, 0.2);
@@ -481,7 +499,11 @@
       <div class="toolbar">
         <button type="button" id="refresh-button">↻ Refresh</button>
         <label for="import-input">⬆ Import JSON<input id="import-input" type="file" accept="application/json" /></label>
-        <button type="button" id="export-button">⬇ Export JSON</button>
+        <button type="button" id="export-json-button">⬇ Export JSON</button>
+        <button type="button" id="export-txt-button">⬇ Export TXT</button>
+        <button type="button" id="export-md-button">⬇ Export Markdown</button>
+        <button type="button" id="export-csv-button">⬇ Export CSV</button>
+        <button type="button" id="export-pdf-button">⬇ Export PDF</button>
         <button type="button" id="save-button">💾 Save JSON</button>
       </div>
       <div id="status-bar" role="status" aria-live="polite"></div>
@@ -490,6 +512,12 @@
   </div>
   <script>
     const STORAGE_KEY = 'viewer_entries_state_v1';
+    const SHARED_STORAGE_KEYS = [
+      'codexrecall.combinedChecklist',
+      'codexrecall.sharedChecklist',
+      'codexrecall.viewerCombined'
+    ];
+    const DEFAULT_REPO_CONTEXT = { owner: '', repo: '', branch: 'main' };
 
     const defaultEntries = [
       {
@@ -533,38 +561,259 @@
     const dom = {
       entryList: document.getElementById('entry-list'),
       refreshButton: document.getElementById('refresh-button'),
-      exportButton: document.getElementById('export-button'),
+      exportJsonButton: document.getElementById('export-json-button'),
+      exportTxtButton: document.getElementById('export-txt-button'),
+      exportMarkdownButton: document.getElementById('export-md-button'),
+      exportCsvButton: document.getElementById('export-csv-button'),
+      exportPdfButton: document.getElementById('export-pdf-button'),
       saveButton: document.getElementById('save-button'),
       importInput: document.getElementById('import-input'),
       statusBar: document.getElementById('status-bar')
     };
 
+    let repoContext = { ...DEFAULT_REPO_CONTEXT };
+    let stateSource = 'default';
+    let jsPdfLoader = null;
+
     let entries = loadState();
     const openEntries = new Set();
 
     function loadState() {
+      const shared = loadSharedChecklistState();
+      if (shared) {
+        applyRepoContext(shared.repoContext);
+        stateSource = 'shared';
+        return cloneEntries(shared.entries);
+      }
+
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
           const parsed = JSON.parse(stored);
           if (Array.isArray(parsed)) {
-            return parsed;
+            stateSource = 'local';
+            applyRepoContext(null);
+            return cloneEntries(parsed);
+          }
+          if (parsed && typeof parsed === 'object') {
+            if (Array.isArray(parsed.entries)) {
+              stateSource = parsed.stateSource || 'local';
+              applyRepoContext(parsed.repoContext || null);
+              return cloneEntries(parsed.entries);
+            }
           }
         }
       } catch (error) {
         console.warn('Failed to load saved state', error);
       }
-      return JSON.parse(JSON.stringify(defaultEntries));
+
+      stateSource = 'default';
+      applyRepoContext(null);
+      return cloneEntries(defaultEntries);
     }
 
     function saveState() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-        setStatus('Saved current entries to local storage.');
+        const payload = {
+          entries,
+          repoContext,
+          stateSource: 'local',
+          savedAt: new Date().toISOString()
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        stateSource = 'local';
+        const repoLabel = formatRepoContextLabel();
+        setStatus(`Saved current entries to local storage${repoLabel ? ` for ${repoLabel}.` : '.'}`);
       } catch (error) {
         console.error('Unable to save state', error);
         setStatus('Unable to save state. Check storage availability.', true);
       }
+    }
+
+    function loadSharedChecklistState() {
+      for (const key of SHARED_STORAGE_KEYS) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(raw);
+          const entries = findEntriesInCandidate(parsed);
+          if (!Array.isArray(entries) || !entries.length) continue;
+          const repo = findRepoContext(parsed);
+          return {
+            key,
+            entries,
+            repoContext: repo
+          };
+        } catch (error) {
+          console.warn(`Failed to parse shared checklist state for ${key}`, error);
+        }
+      }
+      return null;
+    }
+
+    function findEntriesInCandidate(candidate, depth = 0) {
+      if (!candidate || depth > 4) return null;
+      if (Array.isArray(candidate)) {
+        const entryLike = candidate.some(item => item && typeof item === 'object' && (Array.isArray(item.sections) || 'sections' in item || 'summary' in item || 'title' in item));
+        return entryLike ? candidate : null;
+      }
+      if (typeof candidate !== 'object') return null;
+      if (Array.isArray(candidate.entries) && candidate.entries.length) {
+        return candidate.entries;
+      }
+      const prioritizedKeys = ['data', 'payload', 'state', 'value', 'content', 'combined', 'checklist'];
+      for (const key of prioritizedKeys) {
+        if (candidate[key]) {
+          const result = findEntriesInCandidate(candidate[key], depth + 1);
+          if (result) return result;
+        }
+      }
+      for (const value of Object.values(candidate)) {
+        if (typeof value === 'object' && value) {
+          const result = findEntriesInCandidate(value, depth + 1);
+          if (result) return result;
+        }
+      }
+      return null;
+    }
+
+    function findRepoContext(candidate, depth = 0) {
+      if (!candidate || depth > 4) return null;
+      if (typeof candidate === 'string') {
+        return interpretRepoDescriptor(candidate);
+      }
+      if (Array.isArray(candidate)) {
+        for (const value of candidate) {
+          const result = findRepoContext(value, depth + 1);
+          if (result) return result;
+        }
+        return null;
+      }
+      if (typeof candidate !== 'object') {
+        return null;
+      }
+
+      const direct = interpretRepoDescriptor(candidate);
+      if (direct && direct.owner && direct.repo) {
+        return direct;
+      }
+
+      const prioritizedKeys = ['selected', 'selectedRepo', 'selectedRepository', 'selection', 'activeRepo', 'currentRepo', 'repoContext', 'repository', 'meta', 'context', 'source', 'config', 'settings'];
+      for (const key of prioritizedKeys) {
+        if (candidate[key]) {
+          const result = findRepoContext(candidate[key], depth + 1);
+          if (result) return result;
+        }
+      }
+      for (const value of Object.values(candidate)) {
+        if (typeof value === 'object' || typeof value === 'string') {
+          const result = findRepoContext(value, depth + 1);
+          if (result) return result;
+        }
+      }
+      return null;
+    }
+
+    function interpretRepoDescriptor(value) {
+      if (!value) return null;
+      if (typeof value === 'string') {
+        return parseRepoString(value);
+      }
+      if (typeof value !== 'object') return null;
+
+      if (typeof value.repoFullName === 'string') {
+        const parsed = parseRepoString(value.repoFullName);
+        if (parsed) return parsed;
+      }
+      if (typeof value.repositoryFullName === 'string') {
+        const parsed = parseRepoString(value.repositoryFullName);
+        if (parsed) return parsed;
+      }
+      if (typeof value.fullName === 'string') {
+        const parsed = parseRepoString(value.fullName);
+        if (parsed) return parsed;
+      }
+      if (typeof value.slug === 'string') {
+        const parsed = parseRepoString(value.slug);
+        if (parsed) return parsed;
+      }
+
+      const ownerRaw = value.owner || value.org || value.organization || value.user || value.username || (value.account && (value.account.login || value.account.name));
+      const repoRaw = value.repo || value.repository || value.name || value.project || value.repoName;
+      let branchRaw = value.branch || value.ref || value.head || value.headRef || value.headRefName || value.defaultBranch || value.default_branch || value.branchName || value.selectedBranch || value.branchRef;
+
+      const owner = typeof ownerRaw === 'object' ? (ownerRaw && (ownerRaw.login || ownerRaw.name)) : ownerRaw;
+      let repo = typeof repoRaw === 'object' ? (repoRaw && (repoRaw.name || repoRaw.repo || repoRaw.repository)) : repoRaw;
+      if (!repo && typeof value.repository === 'string') {
+        const parsed = parseRepoString(value.repository);
+        if (parsed) {
+          if (!branchRaw && parsed.branch) branchRaw = parsed.branch;
+          return parsed;
+        }
+      }
+
+      if (typeof branchRaw === 'object' && branchRaw) {
+        branchRaw = branchRaw.name || branchRaw.ref || branchRaw.value;
+      }
+
+      if (owner && repo) {
+        return {
+          owner: String(owner).trim(),
+          repo: String(repo).trim(),
+          branch: branchRaw ? String(branchRaw).trim() : undefined
+        };
+      }
+
+      return null;
+    }
+
+    function parseRepoString(value) {
+      if (!value || typeof value !== 'string') return null;
+      const trimmed = value.trim();
+      if (!trimmed || !trimmed.includes('/')) return null;
+      let repoPart = trimmed;
+      let branch = '';
+      const separators = ['@', '#', ':'];
+      for (const sep of separators) {
+        const index = trimmed.indexOf(sep);
+        if (index > -1) {
+          repoPart = trimmed.slice(0, index);
+          branch = trimmed.slice(index + 1);
+          break;
+        }
+      }
+      const [owner, repo] = repoPart.split('/', 2);
+      if (!owner || !repo) return null;
+      return {
+        owner: owner.trim(),
+        repo: repo.trim(),
+        branch: branch.trim() || undefined
+      };
+    }
+
+    function cloneEntries(source) {
+      return JSON.parse(JSON.stringify(source || []));
+    }
+
+    function applyRepoContext(next) {
+      if (!next || (!next.owner && !next.repo)) {
+        repoContext = { ...DEFAULT_REPO_CONTEXT };
+        return;
+      }
+      const owner = (next.owner || '').trim();
+      const repo = (next.repo || '').trim();
+      const branch = (next.branch || '').trim();
+      repoContext = {
+        owner,
+        repo,
+        branch: branch || DEFAULT_REPO_CONTEXT.branch
+      };
+    }
+
+    function formatRepoContextLabel(context = repoContext) {
+      if (!context || !context.owner || !context.repo) return '';
+      const branch = context.branch ? `@${context.branch}` : '';
+      return `${context.owner}/${context.repo}${branch}`;
     }
 
     function setStatus(message, isError = false) {
@@ -702,6 +951,14 @@
             textSpan.textContent = line || '';
             lineEl.appendChild(textSpan);
 
+            const fileInfo = parseFileLine(line);
+            if (fileInfo) {
+              const linkGroup = createFileLinkElements(fileInfo.path);
+              if (linkGroup) {
+                lineEl.appendChild(linkGroup);
+              }
+            }
+
             findUrls(line).forEach(url => {
               const openButton = document.createElement('button');
               openButton.type = 'button';
@@ -739,6 +996,71 @@
         .replace(/'/g, '&#039;');
     }
 
+    function parseFileLine(text) {
+      if (!text) return null;
+      const match = /^Filename:\s*(.+)$/i.exec(text.trim());
+      if (!match) return null;
+      const rawPath = match[1].trim();
+      if (!rawPath || /<.*>/.test(rawPath)) return null;
+      return { path: rawPath };
+    }
+
+    function createFileLinkElements(path) {
+      if (!repoContext || !repoContext.owner || !repoContext.repo) return null;
+      const normalizedPath = normalizeFilePath(path);
+      if (!normalizedPath) return null;
+      const encodedPath = encodePathForUrl(normalizedPath);
+      const branchName = (repoContext.branch || DEFAULT_REPO_CONTEXT.branch || 'main').trim();
+      const encodedBranch = encodeURIComponent(branchName);
+
+      const container = document.createElement('span');
+      container.className = 'file-links';
+
+      const githubLink = document.createElement('a');
+      githubLink.className = 'file-link';
+      githubLink.href = `https://github.com/${repoContext.owner}/${repoContext.repo}/blob/${encodedBranch}/${encodedPath}`;
+      githubLink.target = '_blank';
+      githubLink.rel = 'noopener noreferrer';
+      githubLink.textContent = 'GitHub ↗';
+      githubLink.title = `Open ${normalizedPath} on GitHub (${branchName})`;
+
+      const pagesLink = document.createElement('a');
+      pagesLink.className = 'file-link';
+      pagesLink.href = `https://${repoContext.owner}.github.io/${repoContext.repo}/${encodedPath}`;
+      pagesLink.target = '_blank';
+      pagesLink.rel = 'noopener noreferrer';
+      pagesLink.textContent = 'Pages ↗';
+      pagesLink.title = `Open ${normalizedPath} on GitHub Pages`;
+
+      const swallowDoubleClick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      container.addEventListener('dblclick', swallowDoubleClick);
+      githubLink.addEventListener('dblclick', swallowDoubleClick);
+      pagesLink.addEventListener('dblclick', swallowDoubleClick);
+
+      container.appendChild(githubLink);
+      container.appendChild(pagesLink);
+      return container;
+    }
+
+    function normalizeFilePath(path) {
+      if (!path) return '';
+      return String(path)
+        .trim()
+        .replace(/^[\\/]+/, '')
+        .replace(/\\+/g, '/');
+    }
+
+    function encodePathForUrl(path) {
+      return normalizeFilePath(path)
+        .split('/')
+        .filter(segment => segment.length)
+        .map(segment => encodeURIComponent(segment))
+        .join('/');
+    }
+
     function findUrls(text) {
       if (!text) return [];
       const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -748,6 +1070,245 @@
         matches.push(match[0]);
       }
       return matches;
+    }
+
+    function ensureEntriesAvailable() {
+      if (entries && entries.length) {
+        return true;
+      }
+      setStatus('No entries available to export yet.', true);
+      return false;
+    }
+
+    function formatExportStatus(label) {
+      const repoLabel = formatRepoContextLabel();
+      return `Exported entries as ${label}${repoLabel ? ` for ${repoLabel}` : ''}.`;
+    }
+
+    function buildFilename(prefix, extension) {
+      const repoPart = repoContext && repoContext.owner && repoContext.repo
+        ? `${repoContext.owner}-${repoContext.repo}`
+        : '';
+      const sanitizedRepo = repoPart.replace(/[^a-zA-Z0-9-_]+/g, '-');
+      const prefixPart = sanitizedRepo ? `${prefix}-${sanitizedRepo}` : prefix;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      return `${prefixPart}-${timestamp}.${extension}`;
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    function formatEntriesAsPlainText(entriesList) {
+      const lines = [];
+      const repoLabel = formatRepoContextLabel();
+      if (repoLabel) {
+        lines.push(`Repository: ${repoLabel}`);
+        lines.push('');
+      }
+      entriesList.forEach(entry => {
+        const idPart = entry.id !== undefined && entry.id !== null ? `#${entry.id}` : '';
+        const titlePart = entry.title || '';
+        const heading = [idPart, titlePart].filter(Boolean).join(' ').trim() || 'Untitled entry';
+        lines.push(heading);
+        if (entry.summary) lines.push(`Summary: ${entry.summary}`);
+        if (entry.timestamp) lines.push(`Timestamp: ${entry.timestamp}`);
+        if (entry.docRef) lines.push(`Doc: ${entry.docRef}`);
+        if (entry.pr && (entry.pr.label || entry.pr.url)) {
+          const prLabel = entry.pr.label || 'PR link';
+          const prUrl = entry.pr.url ? ` (${entry.pr.url})` : '';
+          lines.push(`PR: ${prLabel}${prUrl}`);
+        }
+        lines.push(`Include: ${entry.include ? 'Yes' : 'No'}`);
+        if (entry.sections && entry.sections.length) {
+          entry.sections.forEach(section => {
+            lines.push('');
+            lines.push(section.title || '(untitled section)');
+            (section.lines || []).forEach(line => {
+              lines.push(`  • ${line || ''}`);
+            });
+          });
+        }
+        lines.push('');
+      });
+      const output = lines.join('\n').trim();
+      return output.length ? output : 'No entries available.';
+    }
+
+    function formatEntriesAsMarkdown(entriesList) {
+      const lines = [];
+      const repoLabel = formatRepoContextLabel();
+      if (repoLabel) {
+        lines.push(`# Checklist for ${repoLabel}`);
+      } else {
+        lines.push('# Checklist Entries');
+      }
+      lines.push('');
+      entriesList.forEach(entry => {
+        const idPart = entry.id !== undefined && entry.id !== null ? `#${entry.id}` : '';
+        const titlePart = entry.title || '';
+        const heading = [idPart, titlePart].filter(Boolean).join(' · ') || '(untitled entry)';
+        lines.push(`## ${heading}`);
+        if (entry.summary) lines.push(`- **Summary:** ${entry.summary}`);
+        if (entry.timestamp) lines.push(`- **Timestamp:** ${entry.timestamp}`);
+        if (entry.docRef) lines.push(`- **Doc:** ${entry.docRef}`);
+        if (entry.pr && (entry.pr.label || entry.pr.url)) {
+          if (entry.pr.url) {
+            const label = entry.pr.label || 'View PR';
+            lines.push(`- **PR:** [${label}](${entry.pr.url})`);
+          } else {
+            lines.push(`- **PR:** ${entry.pr.label}`);
+          }
+        }
+        lines.push(`- **Include:** ${entry.include ? 'Include' : 'Exclude'}`);
+        lines.push('');
+        if (entry.sections && entry.sections.length) {
+          entry.sections.forEach(section => {
+            lines.push(`### ${section.title || '(untitled section)'}`);
+            (section.lines || []).forEach(line => {
+              lines.push(`- ${line || ''}`);
+            });
+            lines.push('');
+          });
+        }
+      });
+      return lines.join('\n').trim();
+    }
+
+    function formatEntriesAsCsv(entriesList) {
+      const repoLabel = formatRepoContextLabel();
+      const header = ['Repository', 'Entry ID', 'Title', 'Section', 'Line', 'Included', 'Timestamp'];
+      const rows = [header];
+      if (!entriesList.length) {
+        rows.push([repoLabel || '', '', '', '', '', '', '']);
+      } else {
+        entriesList.forEach(entry => {
+          const base = [repoLabel || '', entry.id ?? '', entry.title || '', '', '', entry.include ? 'Include' : 'Exclude', entry.timestamp || ''];
+          if (entry.sections && entry.sections.length) {
+            entry.sections.forEach(section => {
+              const sectionTitle = section.title || '';
+              if (section.lines && section.lines.length) {
+                section.lines.forEach(line => {
+                  const row = [...base];
+                  row[3] = sectionTitle;
+                  row[4] = line || '';
+                  rows.push(row);
+                });
+              } else {
+                const row = [...base];
+                row[3] = sectionTitle;
+                rows.push(row);
+              }
+            });
+          } else {
+            rows.push(base);
+          }
+        });
+      }
+      return rows.map(columns => columns.map(escapeCsv).join(',')).join('\n');
+    }
+
+    function escapeCsv(value) {
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      return /[",\n]/.test(stringValue) ? `"${stringValue.replace(/"/g, '""')}"` : stringValue;
+    }
+
+    function handleExportJson() {
+      if (!ensureEntriesAvailable()) return;
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        stateSource,
+        repoContext,
+        entries
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      downloadBlob(blob, buildFilename('viewer-entries', 'json'));
+      setStatus(formatExportStatus('JSON bundle'));
+    }
+
+    function handleExportTxt() {
+      if (!ensureEntriesAvailable()) return;
+      const text = formatEntriesAsPlainText(entries);
+      const blob = new Blob([text], { type: 'text/plain' });
+      downloadBlob(blob, buildFilename('viewer-entries', 'txt'));
+      setStatus(formatExportStatus('plain text file'));
+    }
+
+    function handleExportMarkdown() {
+      if (!ensureEntriesAvailable()) return;
+      const markdown = formatEntriesAsMarkdown(entries);
+      const blob = new Blob([markdown], { type: 'text/markdown' });
+      downloadBlob(blob, buildFilename('viewer-entries', 'md'));
+      setStatus(formatExportStatus('Markdown document'));
+    }
+
+    function handleExportCsv() {
+      if (!ensureEntriesAvailable()) return;
+      const csv = formatEntriesAsCsv(entries);
+      const blob = new Blob([csv], { type: 'text/csv' });
+      downloadBlob(blob, buildFilename('viewer-entries', 'csv'));
+      setStatus(formatExportStatus('CSV file'));
+    }
+
+    async function handleExportPdf() {
+      if (!ensureEntriesAvailable()) return;
+      try {
+        const jsPDF = await loadJsPdf();
+        const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+        const text = formatEntriesAsPlainText(entries);
+        const maxWidth = doc.internal.pageSize.getWidth() - 80;
+        const lines = doc.splitTextToSize(text, maxWidth);
+        let y = 60;
+        const lineHeight = 16;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(12);
+        lines.forEach(line => {
+          if (y > doc.internal.pageSize.getHeight() - 40) {
+            doc.addPage();
+            y = 60;
+          }
+          doc.text(line, 40, y);
+          y += lineHeight;
+        });
+        doc.save(buildFilename('viewer-entries', 'pdf'));
+        setStatus(formatExportStatus('PDF document'));
+      } catch (error) {
+        console.error('PDF export failed', error);
+        setStatus(`PDF export failed: ${error.message}`, true);
+      }
+    }
+
+    function loadJsPdf() {
+      if (window.jspdf && window.jspdf.jsPDF) {
+        return Promise.resolve(window.jspdf.jsPDF);
+      }
+      if (!jsPdfLoader) {
+        jsPdfLoader = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+          script.onload = () => {
+            if (window.jspdf && window.jspdf.jsPDF) {
+              resolve(window.jspdf.jsPDF);
+            } else {
+              reject(new Error('jsPDF library unavailable after load.'));
+            }
+          };
+          script.onerror = () => reject(new Error('Failed to load jsPDF library.'));
+          document.head.appendChild(script);
+        }).catch(error => {
+          jsPdfLoader = null;
+          throw error;
+        });
+      }
+      return jsPdfLoader;
     }
 
     function handleEntryClick(event) {
@@ -984,25 +1545,23 @@
       });
     }
 
-    function handleRefresh() {
+    function handleRefresh({ silent = false } = {}) {
       entries = loadState();
       openEntries.clear();
       renderEntries();
-      setStatus('Reloaded entries from saved state.');
-    }
-
-    function handleExport() {
-      const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      link.download = `viewer-entries-${timestamp}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      setStatus('Exported entries as JSON.');
+      if (silent) return;
+      let message;
+      const repoLabel = formatRepoContextLabel();
+      if (stateSource === 'shared') {
+        message = `Reloaded entries from shared checklist${repoLabel ? ` for ${repoLabel}` : ''}.`;
+      } else if (stateSource === 'local') {
+        message = `Reloaded entries from local storage${repoLabel ? ` for ${repoLabel}` : ''}.`;
+      } else if (stateSource === 'import') {
+        message = `Reloaded imported entries${repoLabel ? ` for ${repoLabel}` : ''}.`;
+      } else {
+        message = 'Loaded default checklist sample.';
+      }
+      setStatus(message);
     }
 
     function handleImport(event) {
@@ -1012,13 +1571,23 @@
       reader.onload = e => {
         try {
           const parsed = JSON.parse(e.target.result);
-          if (!Array.isArray(parsed)) {
-            throw new Error('JSON must be an array of entries.');
+          let importedEntries;
+          let importedRepoContext = null;
+          if (Array.isArray(parsed)) {
+            importedEntries = parsed;
+          } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
+            importedEntries = parsed.entries;
+            importedRepoContext = parsed.repoContext || findRepoContext(parsed);
+          } else {
+            throw new Error('JSON must be an array of entries or an object with an "entries" array.');
           }
-          entries = parsed;
+          entries = cloneEntries(importedEntries);
+          applyRepoContext(importedRepoContext);
+          stateSource = 'import';
           openEntries.clear();
           renderEntries();
-          setStatus(`Imported ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'} from JSON.`);
+          const repoLabel = formatRepoContextLabel();
+          setStatus(`Imported ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}${repoLabel ? ` for ${repoLabel}` : ''}.`);
         } catch (error) {
           console.error('Import failed', error);
           setStatus('Import failed: ' + error.message, true);
@@ -1030,10 +1599,20 @@
 
     dom.entryList.addEventListener('click', handleEntryClick);
     dom.entryList.addEventListener('dblclick', handleDoubleClick);
-    dom.refreshButton.addEventListener('click', handleRefresh);
-    dom.exportButton.addEventListener('click', handleExport);
+    dom.refreshButton.addEventListener('click', () => handleRefresh());
+    dom.exportJsonButton.addEventListener('click', handleExportJson);
+    dom.exportTxtButton.addEventListener('click', handleExportTxt);
+    dom.exportMarkdownButton.addEventListener('click', handleExportMarkdown);
+    dom.exportCsvButton.addEventListener('click', handleExportCsv);
+    dom.exportPdfButton.addEventListener('click', handleExportPdf);
     dom.saveButton.addEventListener('click', saveState);
     dom.importInput.addEventListener('change', handleImport);
+
+    window.addEventListener('storage', event => {
+      if (event.key === STORAGE_KEY || SHARED_STORAGE_KEYS.includes(event.key)) {
+        handleRefresh({ silent: true });
+      }
+    });
 
     renderEntries();
   </script>
