@@ -2242,6 +2242,12 @@
                 if (record.manifestFileId) {
                     payload.manifestFileId = record.manifestFileId;
                 }
+                if (record.stateFileId) {
+                    payload.stateFileId = record.stateFileId;
+                }
+                if (record.remoteUpdatedAt || record.updatedAt) {
+                    payload.remoteUpdatedAt = record.remoteUpdatedAt || record.updatedAt;
+                }
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readwrite');
                     const store = transaction.objectStore('folderManifests');
@@ -2331,14 +2337,50 @@
                 const localVersion = Number(folderState.localVersion || 0);
                 const cloudVersion = Number(folderState.cloudVersion || 0);
                 if (localVersion >= cloudVersion) {
+                    let remoteMarker = null;
+                    if (this.provider && typeof this.provider.loadFolderUpdateMarker === 'function') {
+                        try {
+                            remoteMarker = await this.provider.loadFolderUpdateMarker(folderId, {
+                                signal: options.signal,
+                                manifestFileId: localManifest?.manifestFileId,
+                                stateFileId: localManifest?.stateFileId
+                            });
+                        } catch (markerError) {
+                            this.logger?.log({ event: 'foldersync:marker:error', level: 'warn', details: `Failed to fetch remote marker for ${folderId}: ${markerError.message}` });
+                        }
+                    }
+                    const remoteCloudVersion = remoteMarker?.cloudVersion != null ? Number(remoteMarker.cloudVersion) : cloudVersion;
+                    const remoteUpdatedAt = remoteMarker?.updatedAt ? Date.parse(remoteMarker.updatedAt) : null;
+                    const lastAck = folderState.lastCloudAck != null ? Number(folderState.lastCloudAck) : null;
+                    const remoteNewerVersion = !Number.isNaN(remoteCloudVersion) && remoteCloudVersion > localVersion;
+                    const remoteNewerTimestamp = remoteUpdatedAt && !Number.isNaN(remoteUpdatedAt) && (!lastAck || remoteUpdatedAt > lastAck);
+                    if (remoteNewerVersion || remoteNewerTimestamp) {
+                        this.logger?.log({
+                            event: 'foldersync:cache-stale',
+                            level: 'warn',
+                            details: `Remote marker newer (version: ${remoteMarker?.cloudVersion ?? 'n/a'}, updatedAt: ${remoteMarker?.updatedAt ?? 'n/a'}) than local cache; performing full resync.`,
+                            data: { folderId, localVersion, remoteVersion: remoteMarker?.cloudVersion ?? null }
+                        });
+                        return { mode: 'full', folderState, localManifest, reason: 'remote-marker', remoteMarker };
+                    }
+                    const confirmed = Boolean(remoteMarker && !remoteNewerVersion && !remoteNewerTimestamp && (remoteMarker.cloudVersion == null || Number(remoteMarker.cloudVersion) <= localVersion));
+                    const cacheValidation = {
+                        confirmed,
+                        remoteMarker,
+                        manifestFileId: remoteMarker?.manifestFileId || localManifest?.manifestFileId || null,
+                        stateFileId: remoteMarker?.stateFileId || localManifest?.stateFileId || null,
+                        manifestDuplicates: remoteMarker?.manifestDuplicates || [],
+                        stateDuplicates: remoteMarker?.stateDuplicates || []
+                    };
+                    const logDetails = confirmed ? 'Remote marker confirmed cache freshness; hydrating from cache.' : 'Remote marker unavailable; cache hydration requires verification.';
                     this.logger?.log({
                         event: 'foldersync:hydrate-cache',
-                        level: 'info',
-                        details: `localVersion (${localVersion}) ≥ cloudVersion (${cloudVersion}); hydrating from cache.`,
-                        data: { folderId }
+                        level: confirmed ? 'info' : 'warn',
+                        details: logDetails,
+                        data: { folderId, markerConfirmed: confirmed }
                     });
                     this.queueBackgroundProbe(folderId, { localManifest, folderState });
-                    return { mode: 'cache', folderState, localManifest };
+                    return { mode: 'cache', folderState, localManifest, cacheValidation };
                 }
 
                 const remoteManifest = await this.fetchRemoteManifest(folderId, { expectVersion: cloudVersion });
@@ -2506,11 +2548,25 @@
                     cloudVersion: manifestRecord.cloudVersion ?? extras.cloudVersion ?? null,
                     localVersion: manifestRecord.localVersion ?? extras.localVersion ?? null,
                     requiresFullResync: Boolean(manifestRecord.requiresFullResync),
-                    lastRemoteUpdate: manifestRecord.lastRemoteUpdate || Date.now(),
+                    lastRemoteUpdate: (() => {
+                        const explicitTimestamp = extras.lastRemoteUpdate ?? manifestRecord.lastRemoteUpdate ?? null;
+                        if (explicitTimestamp != null && !Number.isNaN(Number(explicitTimestamp))) {
+                            return Number(explicitTimestamp);
+                        }
+                        const isoSource = manifestRecord.updatedAt || extras.updatedAt || null;
+                        const parsed = isoSource ? Date.parse(isoSource) : NaN;
+                        return Number.isNaN(parsed) ? Date.now() : parsed;
+                    })(),
                     lastDiffSummary: extras.lastDiffSummary || null
                 };
                 if (manifestRecord.manifestFileId) {
                     payload.manifestFileId = manifestRecord.manifestFileId;
+                }
+                if (manifestRecord.stateFileId) {
+                    payload.stateFileId = manifestRecord.stateFileId;
+                }
+                if (manifestRecord.updatedAt || extras.updatedAt) {
+                    payload.remoteUpdatedAt = manifestRecord.updatedAt || extras.updatedAt;
                 }
                 const saved = await this.dbManager.saveFolderManifest(payload);
                 return saved;
@@ -2572,8 +2628,10 @@
                     cloudVersion: options.targetVersion ?? manifestRecord.cloudVersion ?? null,
                     localVersion: options.targetVersion ?? manifestRecord.localVersion ?? null,
                     manifestFileId: manifestRecord.manifestFileId || options.manifestFileId || null,
+                    stateFileId: manifestRecord.stateFileId || options.stateFileId || null,
                     lastRemoteUpdate: timestamp,
-                    lastDiffSummary: manifestRecord.lastDiffSummary || null
+                    lastDiffSummary: manifestRecord.lastDiffSummary || null,
+                    updatedAt: manifestRecord.updatedAt || new Date(timestamp).toISOString()
                 };
                 await this.dbManager.saveFolderManifest(manifestPayload);
                 let remoteResponse = null;
@@ -2584,10 +2642,14 @@
                             requiresFullResync: manifestPayload.requiresFullResync,
                             cloudVersion: options.targetVersion ?? manifestPayload.cloudVersion ?? Date.now(),
                             localVersion: options.targetVersion ?? manifestPayload.localVersion ?? null,
-                            manifestFileId: manifestPayload.manifestFileId
-                        }, { manifestFileId: manifestPayload.manifestFileId });
+                            manifestFileId: manifestPayload.manifestFileId,
+                            stateFileId: manifestPayload.stateFileId
+                        }, { manifestFileId: manifestPayload.manifestFileId, stateFileId: manifestPayload.stateFileId });
                         if (remoteResponse?.manifestFileId) {
                             manifestPayload.manifestFileId = remoteResponse.manifestFileId;
+                        }
+                        if (remoteResponse?.stateFileId) {
+                            manifestPayload.stateFileId = remoteResponse.stateFileId;
                         }
                         if (remoteResponse?.cloudVersion != null) {
                             manifestPayload.cloudVersion = remoteResponse.cloudVersion;
@@ -2598,6 +2660,9 @@
                             manifestPayload.localVersion = remoteResponse.localVersion;
                         } else if (options.targetVersion != null) {
                             manifestPayload.localVersion = options.targetVersion;
+                        }
+                        if (remoteResponse?.updatedAt) {
+                            manifestPayload.updatedAt = remoteResponse.updatedAt;
                         }
                         await this.dbManager.saveFolderManifest(manifestPayload);
                         this.logger?.log({ event: 'manifest:update', level: 'info', details: `Updated manifest entries for ${updatedIds.length} item(s) in ${folderId}.`, data: { updatedIds } });
@@ -2629,7 +2694,11 @@
                 }
                 if (this.provider && typeof this.provider.updateFolderVersionMarker === 'function') {
                     try {
-                        const remoteContext = { ...(options.remoteContext || {}), manifestFileId: manifestRecord?.manifestFileId };
+                        const remoteContext = {
+                            ...(options.remoteContext || {}),
+                            manifestFileId: manifestRecord?.manifestFileId,
+                            stateFileId: manifestRecord?.stateFileId
+                        };
                         await this.provider.updateFolderVersionMarker(folderId, nextVersion, remoteContext);
                         this.logger?.log({ event: 'foldersync:version:bump', level: 'info', details: `Pushed folder version ${nextVersion} to cloud.`, data: { folderId } });
                     } catch (error) {
@@ -3351,6 +3420,136 @@
                 if (isJson) { return await response.json(); }
                 return response;
             }
+            buildTimestampSorter(list = []) {
+                return list.slice().sort((a, b) => {
+                    const aTime = Date.parse(a.modifiedTime || 0) || 0;
+                    const bTime = Date.parse(b.modifiedTime || 0) || 0;
+                    return bTime - aTime;
+                });
+            }
+            async resolveManifestFiles(folderId, options = {}) {
+                const query = `'${folderId}' in parents and name contains '.orbital8-state' and trashed=false`;
+                const url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,appProperties,parents)&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`;
+                const response = await this.makeApiCall(url, { signal: options.signal });
+                const files = Array.isArray(response.files) ? response.files : [];
+                const sorted = this.buildTimestampSorter(files);
+                const primary = sorted.find(file => file.name === '.orbital8-state.json') || sorted[0] || null;
+                const duplicates = primary ? sorted.filter(file => file.id !== primary.id) : sorted;
+                return { primary, duplicates };
+            }
+            async resolveUpdateMarkerFiles(folderId, options = {}) {
+                const query = `'${folderId}' in parents and name contains '.orbital8-updated' and trashed=false`;
+                const url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,appProperties,parents)&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`;
+                const response = await this.makeApiCall(url, { signal: options.signal });
+                const files = Array.isArray(response.files) ? response.files : [];
+                const sorted = this.buildTimestampSorter(files);
+                const primary = sorted.find(file => file.name === '.orbital8-updated.json') || sorted[0] || null;
+                const duplicates = primary ? sorted.filter(file => file.id !== primary.id) : sorted;
+                return { primary, duplicates };
+            }
+            async loadFolderUpdateMarker(folderId, options = {}) {
+                const [manifestIndex, markerIndex] = await Promise.all([
+                    this.resolveManifestFiles(folderId, options).catch(error => {
+                        state.syncLog?.log({ event: 'marker:manifest-index:error', level: 'warn', details: `Failed to inspect manifest index for ${folderId}: ${error.message}` });
+                        throw error;
+                    }),
+                    this.resolveUpdateMarkerFiles(folderId, options).catch(error => {
+                        state.syncLog?.log({ event: 'marker:lookup:error', level: 'warn', details: `Failed to inspect update marker for ${folderId}: ${error.message}` });
+                        throw error;
+                    })
+                ]);
+                if (!markerIndex.primary) {
+                    return {
+                        cloudVersion: null,
+                        updatedAt: null,
+                        stateFileId: null,
+                        manifestFileId: manifestIndex.primary?.id || null,
+                        manifestDuplicates: manifestIndex.duplicates.map(file => file.id),
+                        stateDuplicates: [],
+                        markerMissing: true
+                    };
+                }
+                let markerData = {};
+                try {
+                    const markerResponse = await this.makeApiCall(`/files/${markerIndex.primary.id}?alt=media`, { method: 'GET', signal: options.signal }, false);
+                    const markerText = await markerResponse.text();
+                    markerData = markerText ? JSON.parse(markerText) : {};
+                } catch (error) {
+                    if (!/403|404/.test(error.message || '')) {
+                        throw error;
+                    }
+                }
+                const numericVersion = Number(markerData.cloudVersion ?? markerIndex.primary.appProperties?.orbital8CloudVersion ?? null);
+                const cloudVersion = Number.isNaN(numericVersion) ? null : numericVersion;
+                const updatedAt = markerData.updatedAt || markerIndex.primary.modifiedTime || null;
+                return {
+                    cloudVersion,
+                    updatedAt,
+                    stateFileId: markerIndex.primary.id,
+                    manifestFileId: manifestIndex.primary?.id || null,
+                    manifestDuplicates: manifestIndex.duplicates.map(file => file.id),
+                    stateDuplicates: markerIndex.duplicates.map(file => file.id),
+                    markerMissing: false
+                };
+            }
+            async saveFolderUpdateMarker(folderId, { cloudVersion, updatedAt }, options = {}) {
+                const isoTimestamp = updatedAt || new Date().toISOString();
+                let stateFileId = options.stateFileId || null;
+                let duplicates = Array.isArray(options.stateDuplicates) ? options.stateDuplicates : [];
+                let lookup = options.lookup || null;
+                if (!stateFileId) {
+                    lookup = lookup || await this.resolveUpdateMarkerFiles(folderId, options);
+                    if (lookup.primary) {
+                        stateFileId = lookup.primary.id;
+                        duplicates = lookup.duplicates.map(file => file.id);
+                        await this.makeApiCall(`/files/${stateFileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                            method: 'PATCH',
+                            body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(cloudVersion) } }),
+                            signal: options.signal
+                        });
+                    } else {
+                        const metadata = {
+                            name: '.orbital8-updated.json',
+                            parents: [folderId],
+                            mimeType: 'application/json',
+                            appProperties: { orbital8CloudVersion: String(cloudVersion) }
+                        };
+                        const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', {
+                            method: 'POST',
+                            body: JSON.stringify(metadata),
+                            signal: options.signal
+                        });
+                        stateFileId = createResponse.id;
+                    }
+                } else {
+                    await this.makeApiCall(`/files/${stateFileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(cloudVersion) } }),
+                        signal: options.signal
+                    });
+                }
+                const uploadUrl = `/upload/drive/v3/files/${stateFileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                const payload = { folderId, cloudVersion, updatedAt: isoTimestamp };
+                await this.makeApiCall(uploadUrl, {
+                    method: 'PATCH',
+                    body: JSON.stringify(payload),
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: options.signal
+                }, false);
+                return { stateFileId, stateDuplicates: duplicates.length > 0 ? duplicates : (lookup?.duplicates || []) };
+            }
+            async cleanupManifestDuplicates(folderId, { keepId, duplicates = [], signal } = {}) {
+                if (!Array.isArray(duplicates) || duplicates.length === 0 || !keepId) { return; }
+                const targets = duplicates.filter(id => id && id !== keepId);
+                if (targets.length === 0) { return; }
+                await Promise.all(targets.map(async (id) => {
+                    try {
+                        await this.makeApiCall(`/files/${id}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'DELETE', signal }, false);
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'manifest:cleanup:error', level: 'warn', details: `Failed to remove duplicate manifest ${id}: ${error.message}` });
+                    }
+                }));
+            }
             async getFolders() {
                 const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
                 return response.files.map(folder => ({
@@ -3399,32 +3598,59 @@
             }
             async loadFolderManifest(folderId, options = {}) {
                 try {
-                    const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
-                    const url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,appProperties,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1`;
-                    const response = await this.makeApiCall(url, { signal: options.signal });
-                    const manifestFile = response.files && response.files[0];
+                    const manifestIndex = await this.resolveManifestFiles(folderId, options);
+                    const manifestFile = manifestIndex.primary;
                     if (!manifestFile) {
                         return null;
                     }
-                    const fileId = manifestFile.id;
                     let manifestData = {};
                     try {
-                        const mediaResponse = await this.makeApiCall(`/files/${fileId}?alt=media`, { method: 'GET', signal: options.signal }, false);
+                        const mediaResponse = await this.makeApiCall(`/files/${manifestFile.id}?alt=media`, { method: 'GET', signal: options.signal }, false);
                         const text = await mediaResponse.text();
                         manifestData = text ? JSON.parse(text) : {};
                     } catch (error) {
                         if (/403|404/.test(error.message || '')) {
                             state.syncLog?.log({ event: 'manifest:fetch:forbidden', level: 'error', details: `Drive denied manifest content for ${folderId}: ${error.message}` });
-                            return { entries: {}, requiresFullResync: true, cloudVersion: Date.now(), manifestFileId: fileId };
+                            return {
+                                entries: {},
+                                requiresFullResync: true,
+                                cloudVersion: Date.now(),
+                                manifestFileId: manifestFile.id,
+                                manifestDuplicates: manifestIndex.duplicates.map(file => file.id),
+                                stateDuplicates: [],
+                                stateFileId: null
+                            };
                         }
                         throw error;
                     }
-                    const cloudVersion = Number(manifestData.cloudVersion || manifestFile.appProperties?.orbital8CloudVersion || Date.now());
+                    let cloudVersion = Number(manifestData.cloudVersion || manifestFile.appProperties?.orbital8CloudVersion || Date.now());
+                    let updatedAt = manifestData.updatedAt || manifestFile.modifiedTime || null;
+                    let stateFileId = null;
+                    let stateDuplicates = [];
+                    try {
+                        const marker = await this.loadFolderUpdateMarker(folderId, { ...options, manifestFileId: manifestFile.id });
+                        if (marker) {
+                            if (marker.cloudVersion != null) {
+                                cloudVersion = Number(marker.cloudVersion);
+                            }
+                            if (marker.updatedAt) {
+                                updatedAt = marker.updatedAt;
+                            }
+                            stateFileId = marker.stateFileId || null;
+                            stateDuplicates = marker.stateDuplicates || [];
+                        }
+                    } catch (markerError) {
+                        state.syncLog?.log({ event: 'manifest:marker:error', level: 'warn', details: `Failed to load update marker for ${folderId}: ${markerError.message}` });
+                    }
                     return {
                         entries: manifestData.entries || {},
                         requiresFullResync: Boolean(manifestData.requiresFullResync),
                         cloudVersion,
-                        manifestFileId: fileId
+                        manifestFileId: manifestFile.id,
+                        stateFileId,
+                        updatedAt,
+                        manifestDuplicates: manifestIndex.duplicates.map(file => file.id),
+                        stateDuplicates: stateDuplicates
                     };
                 } catch (error) {
                     if (/403|404/.test(error.message || '')) {
@@ -3436,13 +3662,14 @@
             }
             async saveFolderManifest(folderId, manifest, options = {}) {
                 const cloudVersion = manifest.cloudVersion ?? Date.now();
+                const updatedAt = manifest.updatedAt || new Date().toISOString();
                 const payload = {
                     folderId,
                     provider: 'googledrive',
                     cloudVersion,
                     requiresFullResync: Boolean(manifest.requiresFullResync),
                     entries: manifest.entries || {},
-                    updatedAt: new Date().toISOString()
+                    updatedAt
                 };
                 const metadata = {
                     name: '.orbital8-state.json',
@@ -3451,32 +3678,70 @@
                     appProperties: { orbital8CloudVersion: String(cloudVersion) }
                 };
                 const headers = { 'Content-Type': 'application/json' };
-                let fileId = manifest.manifestFileId || options.manifestFileId || null;
+                const manifestIndex = await this.resolveManifestFiles(folderId, options);
+                let fileId = manifest.manifestFileId || options.manifestFileId || manifestIndex.primary?.id || null;
+                const manifestDuplicates = manifestIndex.duplicates.map(file => file.id);
                 if (!fileId) {
-                    const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', { method: 'POST', body: JSON.stringify(metadata) });
+                    const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', {
+                        method: 'POST',
+                        body: JSON.stringify(metadata),
+                        signal: options.signal
+                    });
                     fileId = createResponse.id;
                 } else {
-                    await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
+                    await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ appProperties: metadata.appProperties }),
+                        signal: options.signal
+                    });
                 }
                 const uploadUrl = `/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-                await this.makeApiCall(uploadUrl, { method: 'PATCH', body: JSON.stringify(payload), headers, signal: options.signal }, false);
+                const manifestUpload = this.makeApiCall(uploadUrl, {
+                    method: 'PATCH',
+                    body: JSON.stringify(payload),
+                    headers,
+                    signal: options.signal
+                }, false);
+                const updateLookup = await this.resolveUpdateMarkerFiles(folderId, options);
+                const stateFileId = manifest.stateFileId || options.stateFileId || updateLookup.primary?.id || null;
+                const markerPromise = this.saveFolderUpdateMarker(folderId, { cloudVersion, updatedAt }, {
+                    stateFileId,
+                    stateDuplicates: updateLookup.duplicates.map(file => file.id),
+                    lookup: updateLookup,
+                    signal: options.signal
+                });
+                const [markerResult] = await Promise.all([markerPromise, manifestUpload]);
                 state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted Drive manifest for ${folderId}`, data: { provider: 'googledrive', entries: Object.keys(payload.entries || {}).length, cloudVersion } });
-                return { cloudVersion, manifestFileId: fileId };
+                return {
+                    cloudVersion,
+                    manifestFileId: fileId,
+                    stateFileId: markerResult?.stateFileId || stateFileId || null,
+                    updatedAt,
+                    manifestDuplicates,
+                    stateDuplicates: markerResult?.stateDuplicates || []
+                };
             }
             async updateFolderVersionMarker(folderId, version, options = {}) {
+                const updatedAt = new Date().toISOString();
+                const markerPromise = this.saveFolderUpdateMarker(folderId, { cloudVersion: version, updatedAt }, {
+                    stateFileId: options.stateFileId,
+                    signal: options.signal
+                });
                 let fileId = options.manifestFileId;
                 if (!fileId) {
-                    const manifest = await this.loadFolderManifest(folderId, { signal: options.signal });
-                    fileId = manifest?.manifestFileId;
+                    const manifest = await this.resolveManifestFiles(folderId, { signal: options.signal });
+                    fileId = manifest.primary?.id || null;
                 }
                 if (!fileId) {
-                    await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false });
-                    return;
+                    await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false, updatedAt }, options);
+                    return markerPromise;
                 }
                 await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
                     method: 'PATCH',
-                    body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(version) } })
+                    body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(version) } }),
+                    signal: options.signal
                 });
+                return markerPromise;
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -3611,17 +3876,42 @@
                 }
                 return { folders: [], files: allFiles };
             }
+            async loadFolderUpdateMarker(folderId, options = {}) {
+                try {
+                    const response = await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
+                    const data = await response.json();
+                    const cloudVersion = data.cloudVersion != null ? Number(data.cloudVersion) : null;
+                    return {
+                        cloudVersion: Number.isNaN(cloudVersion) ? null : cloudVersion,
+                        updatedAt: data.updatedAt || null,
+                        stateFileId: `state/${folderId}.json`,
+                        stateDuplicates: []
+                    };
+                } catch (error) {
+                    if (/404/.test(String(error.message))) {
+                        return { cloudVersion: null, updatedAt: null, stateFileId: null, stateDuplicates: [] };
+                    }
+                    throw error;
+                }
+            }
             async loadFolderManifest(folderId, options = {}) {
                 try {
                     const manifestResponse = await this.makeApiCall(`/me/drive/special/approot:/manifests/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
                     const manifestData = await manifestResponse.json();
                     let cloudVersion = manifestData.cloudVersion ?? null;
+                    let updatedAt = manifestData.updatedAt || null;
+                    let stateFileId = null;
+                    let stateDuplicates = [];
                     try {
-                        const stateResponse = await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
-                        const stateData = await stateResponse.json();
-                        if (stateData && stateData.cloudVersion != null) {
-                            cloudVersion = stateData.cloudVersion;
+                        const marker = await this.loadFolderUpdateMarker(folderId, options);
+                        if (marker.cloudVersion != null) {
+                            cloudVersion = marker.cloudVersion;
                         }
+                        if (marker.updatedAt) {
+                            updatedAt = marker.updatedAt;
+                        }
+                        stateFileId = marker.stateFileId;
+                        stateDuplicates = marker.stateDuplicates || [];
                     } catch (stateError) {
                         if (!/404/.test(String(stateError.message))) {
                             throw stateError;
@@ -3630,7 +3920,10 @@
                     return {
                         entries: manifestData.entries || {},
                         requiresFullResync: Boolean(manifestData.requiresFullResync),
-                        cloudVersion: Number(cloudVersion ?? Date.now())
+                        cloudVersion: Number(cloudVersion ?? Date.now()),
+                        updatedAt,
+                        stateFileId,
+                        stateDuplicates
                     };
                 } catch (error) {
                     if (/404/.test(String(error.message))) {
@@ -3649,12 +3942,13 @@
             async saveFolderManifest(folderId, manifest, options = {}) {
                 const headers = { 'Content-Type': 'application/json' };
                 const cloudVersion = manifest.cloudVersion ?? Date.now();
+                const updatedAt = manifest.updatedAt || new Date().toISOString();
                 const manifestPayload = {
                     folderId,
                     cloudVersion,
                     requiresFullResync: Boolean(manifest.requiresFullResync),
                     entries: manifest.entries || {},
-                    updatedAt: new Date().toISOString()
+                    updatedAt
                 };
                 await this.makeApiCall(`/me/drive/special/approot:/manifests/${folderId}.json:/content`, {
                     method: 'PUT',
@@ -3665,19 +3959,20 @@
                 await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
                     method: 'PUT',
                     headers,
-                    body: JSON.stringify({ folderId, cloudVersion, updatedAt: new Date().toISOString() }),
+                    body: JSON.stringify({ folderId, cloudVersion, updatedAt }),
                     signal: options.signal
                 });
                 state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted OneDrive manifest for ${folderId}`, data: { provider: 'onedrive', entries: Object.keys(manifestPayload.entries || {}).length, cloudVersion } });
-                return { cloudVersion };
+                return { cloudVersion, updatedAt, stateFileId: `state/${folderId}.json`, stateDuplicates: [] };
             }
             async updateFolderVersionMarker(folderId, version, options = {}) {
                 const headers = { 'Content-Type': 'application/json' };
                 try {
+                    const updatedAt = new Date().toISOString();
                     await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
                         method: 'PUT',
                         headers,
-                        body: JSON.stringify({ folderId, cloudVersion: version, updatedAt: new Date().toISOString() }),
+                        body: JSON.stringify({ folderId, cloudVersion: version, updatedAt }),
                         signal: options.signal
                     });
                 } catch (error) {
@@ -3936,10 +4231,17 @@
 
                 if (coordinator) {
                     preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
+                    await this.pruneExtraManifestFiles({ preparation });
                 }
 
                 if (preparation?.mode === 'delta') {
                     await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
+                    return;
+                }
+
+                if (preparation?.mode === 'cache' && !preparation?.cacheValidation?.confirmed) {
+                    state.syncLog?.log({ event: 'foldersync:cache-bypass', level: 'warn', details: `Skipped cache hydration for ${folderId}; remote marker unconfirmed.` });
+                    await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full', reason: 'marker-unconfirmed' } });
                     return;
                 }
 
@@ -3956,7 +4258,12 @@
                 state.sessionVisitedFolders.add(sessionKey);
 
                 if (preparation?.mode === 'cache') {
-                    state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
+                    const markerConfirmed = preparation?.cacheValidation?.confirmed ?? false;
+                    const level = markerConfirmed ? 'info' : 'warn';
+                    const message = markerConfirmed
+                        ? `Hydrated ${folderId} from cache with verified remote marker.`
+                        : `Hydrated ${folderId} from cache without marker confirmation.`;
+                    state.syncLog?.log({ event: 'foldersync:cache-hit', level, details: message, data: { markerConfirmed } });
                 } else if (coordinator) {
                     const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
                     coordinator.queueBackgroundProbe(folderId, { localManifest });
@@ -3966,6 +4273,38 @@
                     const pending = state.pendingBackgroundProbe;
                     state.pendingBackgroundProbe = null;
                     await this.applyDeltaFromCoordinator(pending);
+                }
+            },
+            async pruneExtraManifestFiles({ preparation = null, remoteManifestResponse = null } = {}) {
+                if (!state.provider || typeof state.provider.cleanupManifestDuplicates !== 'function') { return; }
+                const folderId = state.currentFolder?.id;
+                if (!folderId) { return; }
+                const duplicates = new Set();
+                const addDuplicates = (list) => {
+                    if (!Array.isArray(list)) return;
+                    list.forEach(id => { if (id) duplicates.add(id); });
+                };
+                addDuplicates(preparation?.cacheValidation?.manifestDuplicates);
+                addDuplicates(preparation?.remoteManifest?.manifestDuplicates);
+                addDuplicates(remoteManifestResponse?.manifestDuplicates);
+                if (duplicates.size === 0) { return; }
+                const keepId = remoteManifestResponse?.manifestFileId
+                    || preparation?.remoteManifest?.manifestFileId
+                    || preparation?.cacheValidation?.manifestFileId
+                    || preparation?.localManifest?.manifestFileId
+                    || null;
+                if (!keepId) { return; }
+                const targets = Array.from(duplicates).filter(id => id && id !== keepId);
+                if (targets.length === 0) { return; }
+                try {
+                    await state.provider.cleanupManifestDuplicates(folderId, {
+                        keepId,
+                        duplicates: targets,
+                        signal: state.activeRequests?.signal
+                    });
+                    state.syncLog?.log({ event: 'manifest:cleanup', level: 'info', details: `Pruned ${targets.length} duplicate manifest file(s) for ${folderId}.` });
+                } catch (error) {
+                    state.syncLog?.log({ event: 'manifest:cleanup:error', level: 'warn', details: `Failed to prune duplicate manifests for ${folderId}: ${error.message}` });
                 }
             },
             normalizeFileMetadata(file) {
@@ -4077,6 +4416,7 @@
                 const remoteManifest = preparation?.remoteManifest || null;
                 const folderState = preparation?.folderState || null;
                 const coordinator = state.folderSyncCoordinator;
+                await this.pruneExtraManifestFiles({ preparation });
 
                 if (!background) {
                     Utils.showScreen('loading-screen');
@@ -4137,12 +4477,17 @@
                     await state.dbManager.saveFolderCache(folderId, state.imageFiles);
 
                     const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
+                    manifestRecord.stateFileId = manifestRecord.stateFileId || preparation?.cacheValidation?.stateFileId || preparation?.localManifest?.stateFileId || null;
+                    if (!manifestRecord.updatedAt && preparation?.cacheValidation?.remoteMarker?.updatedAt) {
+                        manifestRecord.updatedAt = preparation.cacheValidation.remoteMarker.updatedAt;
+                    }
                     manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
                     const diffSummary = { changed: changedIds.length, removed: removedIds.length };
                     await coordinator?.persistManifest(folderId, manifestRecord, {
                         cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
                         localVersion: folderState?.localVersion ?? null,
-                        lastDiffSummary: diffSummary
+                        lastDiffSummary: diffSummary,
+                        updatedAt: manifestRecord.updatedAt || preparation?.cacheValidation?.remoteMarker?.updatedAt || null
                     });
                     const updatedCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? 0;
                     await coordinator?.persistFolderState(folderId, {
@@ -4267,7 +4612,8 @@
                                     requiresFullResync: false,
                                     cloudVersion: preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? 0,
                                     localVersion: preparation?.folderState?.localVersion ?? 0,
-                                    manifestFileId: preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
+                                    manifestFileId: preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null,
+                                    stateFileId: preparation?.remoteManifest?.stateFileId || preparation?.localManifest?.stateFileId || preparation?.cacheValidation?.stateFileId || null
                                 }, { signal: state.activeRequests?.signal });
                                 state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
                             } catch (error) {
@@ -4277,17 +4623,30 @@
                         }
 
                         const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                        const remoteUpdatedAt = remoteManifestResponse?.updatedAt
+                            || preparation?.remoteManifest?.updatedAt
+                            || preparation?.cacheValidation?.remoteMarker?.updatedAt
+                            || new Date().toISOString();
+                        const stateFileId = remoteManifestResponse?.stateFileId
+                            || preparation?.remoteManifest?.stateFileId
+                            || preparation?.cacheValidation?.stateFileId
+                            || preparation?.localManifest?.stateFileId
+                            || null;
+                        await this.pruneExtraManifestFiles({ preparation, remoteManifestResponse });
                         const manifestPayload = {
                             entries: manifestEntries,
                             requiresFullResync: manifestRequiresRescan,
                             cloudVersion: remoteCloudVersion,
                             localVersion: preparation?.folderState?.localVersion ?? remoteCloudVersion,
-                            manifestFileId: remoteManifestResponse?.manifestFileId || preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null
+                            manifestFileId: remoteManifestResponse?.manifestFileId || preparation?.remoteManifest?.manifestFileId || preparation?.localManifest?.manifestFileId || null,
+                            stateFileId,
+                            updatedAt: remoteUpdatedAt
                         };
                         await coordinator.persistManifest(folderId, manifestPayload, {
                             cloudVersion: manifestPayload.cloudVersion,
                             localVersion: manifestPayload.localVersion,
-                            lastDiffSummary: { new: newIds.length, updated: updatedIds.length, removed: removedIds.length }
+                            lastDiffSummary: { new: newIds.length, updated: updatedIds.length, removed: removedIds.length },
+                            updatedAt: remoteUpdatedAt
                         });
                         await coordinator.persistFolderState(folderId, {
                             cloudVersion: manifestPayload.cloudVersion,
