@@ -417,12 +417,16 @@
     <section class="panel" id="controlPanel">
       <h2>Repository</h2>
       <div class="field">
-        <label for="ownerInput">Owner</label>
-        <input id="ownerInput" type="text" placeholder="e.g. openai" />
+        <label for="repoSelect">Repository</label>
+        <select id="repoSelect" disabled>
+          <option value="">Save a GitHub token to load repositories</option>
+        </select>
       </div>
       <div class="field">
-        <label for="repoInput">Repository</label>
-        <input id="repoInput" type="text" placeholder="e.g. codex-recall" />
+        <label for="branchSelect">Branch</label>
+        <select id="branchSelect" disabled>
+          <option value="">Select a repository first</option>
+        </select>
       </div>
       <div class="field">
         <label for="branchFilterInput">Head branch filter (regex)</label>
@@ -490,8 +494,8 @@
     const TOKEN_KEY = 'codexrecall.pat';
     const SETTINGS_KEY = 'codexrecall.settings';
 
-    const ownerInput = document.getElementById('ownerInput');
-    const repoInput = document.getElementById('repoInput');
+    const repoSelect = document.getElementById('repoSelect');
+    const branchSelect = document.getElementById('branchSelect');
     const branchFilterInput = document.getElementById('branchFilterInput');
     const sinceInput = document.getElementById('sinceInput');
     const maxPrsInput = document.getElementById('maxPrsInput');
@@ -517,38 +521,86 @@
       filteredEntries: [],
       owner: '',
       repo: '',
+      repos: [],
+      branches: [],
+      selectedRepo: '',
+      selectedBranch: '',
+      pendingRepoSelection: '',
+      pendingBranchSelection: '',
       isLoading: false,
+      isFetchingRepos: false,
+      isFetchingBranches: false,
       token: null
     };
 
     function loadSettings() {
       const storedSettings = localStorage.getItem(SETTINGS_KEY);
+      let normalizedSettings = {
+        repoFullName: '',
+        branch: '',
+        branchFilter: '',
+        since: '',
+        maxPrs: '100'
+      };
+      let shouldPersistNormalized = false;
       if (storedSettings) {
         try {
-          const parsed = JSON.parse(storedSettings);
-          ownerInput.value = parsed.owner || '';
-          repoInput.value = parsed.repo || '';
-          branchFilterInput.value = parsed.branchFilter || '';
-          sinceInput.value = parsed.since || '';
-          maxPrsInput.value = parsed.maxPrs || '100';
+          const parsed = JSON.parse(storedSettings) || {};
+          const repoFullName = parsed.repoFullName || (parsed.owner && parsed.repo ? `${parsed.owner}/${parsed.repo}` : '');
+          if (repoFullName && repoFullName !== parsed.repoFullName) {
+            shouldPersistNormalized = true;
+          }
+          normalizedSettings = {
+            repoFullName,
+            branch: parsed.branch || '',
+            branchFilter: parsed.branchFilter || '',
+            since: parsed.since || '',
+            maxPrs: parsed.maxPrs || '100'
+          };
         } catch (err) {
           console.warn('Failed to parse settings', err);
         }
+      }
+      branchFilterInput.value = normalizedSettings.branchFilter || '';
+      branchFilterInput.dataset.mode = branchFilterInput.value ? 'manual' : 'auto';
+      sinceInput.value = normalizedSettings.since || '';
+      maxPrsInput.value = normalizedSettings.maxPrs || '100';
+      state.selectedRepo = normalizedSettings.repoFullName || '';
+      state.pendingRepoSelection = state.selectedRepo;
+      state.selectedBranch = normalizedSettings.branch || '';
+      state.pendingBranchSelection = state.selectedBranch;
+      if (shouldPersistNormalized && normalizedSettings) {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalizedSettings));
       }
       const storedToken = localStorage.getItem(TOKEN_KEY);
       if (storedToken) {
         state.token = storedToken;
       }
       updateTokenStatus();
+      if (state.token) {
+        hydrateRepositories();
+      } else {
+        disableRepoControls('Save a GitHub token to load repositories');
+      }
     }
 
     function persistSettings() {
+      const repoFullName = state.selectedRepo || repoSelect.value || '';
+      let owner = '';
+      let repo = '';
+      if (repoFullName.includes('/')) {
+        [owner, repo] = repoFullName.split('/', 2);
+      }
+      const maxPrsValue = (maxPrsInput.value || '').trim() || '100';
+      maxPrsInput.value = maxPrsValue;
       const payload = {
-        owner: ownerInput.value.trim(),
-        repo: repoInput.value.trim(),
+        repoFullName,
+        branch: state.selectedBranch || branchSelect.value || '',
         branchFilter: branchFilterInput.value.trim(),
         since: sinceInput.value.trim(),
-        maxPrs: maxPrsInput.value.trim()
+        maxPrs: maxPrsValue,
+        owner,
+        repo
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(payload));
     }
@@ -575,6 +627,7 @@
         localStorage.setItem(TOKEN_KEY, token);
         state.token = token;
         updateTokenStatus();
+        hydrateRepositories();
       }
     });
 
@@ -584,6 +637,7 @@
         localStorage.removeItem(TOKEN_KEY);
         state.token = null;
         updateTokenStatus();
+        disableRepoControls('Save a GitHub token to load repositories');
       }
     });
 
@@ -596,6 +650,16 @@
       loadRequests({force: true});
     });
 
+    repoSelect.addEventListener('change', () => {
+      state.pendingBranchSelection = '';
+      state.selectedBranch = '';
+      selectRepository(repoSelect.value, { userInitiated: true });
+    });
+
+    branchSelect.addEventListener('change', () => {
+      applyBranchSelection(branchSelect.value, { userInitiated: true });
+    });
+
     searchInput.addEventListener('input', () => {
       applyFilters();
       render();
@@ -604,6 +668,22 @@
     statusFilter.addEventListener('change', () => {
       applyFilters();
       render();
+    });
+
+    branchFilterInput.addEventListener('input', () => {
+      branchFilterInput.dataset.mode = 'manual';
+    });
+
+    branchFilterInput.addEventListener('change', () => {
+      persistSettings();
+    });
+
+    sinceInput.addEventListener('change', () => {
+      persistSettings();
+    });
+
+    maxPrsInput.addEventListener('change', () => {
+      persistSettings();
     });
 
     exportBtn.addEventListener('click', () => {
@@ -659,22 +739,251 @@
       }
     }
 
+    function setStatusIdle(message, options) {
+      if (state.isLoading) return;
+      setStatus(message, options);
+    }
+
     function setButtonsDisabled(disabled) {
       loadBtn.disabled = disabled;
       refreshBtn.disabled = disabled;
     }
+
+    function disableRepoControls(message) {
+      repoSelect.innerHTML = '';
+      const repoOption = document.createElement('option');
+      repoOption.value = '';
+      repoOption.textContent = message;
+      repoSelect.appendChild(repoOption);
+      repoSelect.disabled = true;
+      branchSelect.innerHTML = '';
+      const branchOption = document.createElement('option');
+      branchOption.value = '';
+      branchOption.textContent = 'Select a repository first';
+      branchSelect.appendChild(branchOption);
+      branchSelect.disabled = true;
+      state.repos = [];
+      state.branches = [];
+      state.owner = '';
+      state.repo = '';
+      state.selectedRepo = '';
+      state.selectedBranch = '';
+    }
+
+    async function hydrateRepositories() {
+      if (!state.token) {
+        disableRepoControls('Save a GitHub token to load repositories');
+        return;
+      }
+      if (state.isFetchingRepos) return;
+      state.isFetchingRepos = true;
+      repoSelect.disabled = true;
+      repoSelect.innerHTML = '';
+      const loadingOption = document.createElement('option');
+      loadingOption.value = '';
+      loadingOption.textContent = 'Loading repositories…';
+      repoSelect.appendChild(loadingOption);
+      setStatusIdle('Loading repositories…', { spinner: true });
+      let error = null;
+      try {
+        const repos = await fetchUserRepositories();
+        state.repos = repos.slice().sort((a, b) => {
+          const aDate = Date.parse(a.pushed_at || 0) || 0;
+          const bDate = Date.parse(b.pushed_at || 0) || 0;
+          return bDate - aDate;
+        });
+        populateRepoSelect(state.repos);
+      } catch (err) {
+        error = err;
+        console.error('Failed to load repositories', err);
+        disableRepoControls('Unable to load repositories');
+        setStatusIdle(`Error loading repositories: ${err.message}`, { tone: 'error' });
+      } finally {
+        state.isFetchingRepos = false;
+        if (!error) {
+          setStatusIdle('');
+        }
+      }
+    }
+
+    function populateRepoSelect(repos) {
+      repoSelect.innerHTML = '';
+      if (!repos.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No repositories found';
+        repoSelect.appendChild(option);
+        repoSelect.disabled = true;
+        disableBranchControls('Select a repository first');
+        setStatusIdle('No repositories available for this token.', { tone: 'error' });
+        return;
+      }
+      for (const repo of repos) {
+        const option = document.createElement('option');
+        option.value = repo.full_name;
+        option.textContent = repo.full_name;
+        repoSelect.appendChild(option);
+      }
+      repoSelect.disabled = false;
+      const desiredRepo = state.pendingRepoSelection && repos.some(repo => repo.full_name === state.pendingRepoSelection)
+        ? state.pendingRepoSelection
+        : (state.selectedRepo && repos.some(repo => repo.full_name === state.selectedRepo)
+          ? state.selectedRepo
+          : repos[0].full_name);
+      state.pendingRepoSelection = '';
+      if (desiredRepo) {
+        selectRepository(desiredRepo, { userInitiated: false, fromHydration: true });
+      } else {
+        disableBranchControls('Select a repository first');
+      }
+    }
+
+    function disableBranchControls(message) {
+      branchSelect.innerHTML = '';
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = message;
+      branchSelect.appendChild(option);
+      branchSelect.disabled = true;
+      state.branches = [];
+      state.selectedBranch = '';
+    }
+
+    function selectRepository(fullName, { userInitiated = false, fromHydration = false } = {}) {
+      if (!fullName) {
+        disableBranchControls('Select a repository first');
+        state.selectedRepo = '';
+        state.owner = '';
+        state.repo = '';
+        persistSettings();
+        return;
+      }
+      if (repoSelect.value !== fullName) {
+        repoSelect.value = fullName;
+      }
+      if (fullName === state.selectedRepo && !userInitiated && !fromHydration) {
+        return;
+      }
+      state.selectedRepo = fullName;
+      if (!fullName.includes('/')) {
+        console.warn('Invalid repository selection', fullName);
+        return;
+      }
+      const [owner, repo] = fullName.split('/', 2);
+      state.owner = owner;
+      state.repo = repo;
+      persistSettings();
+      hydrateBranches({ owner, repo, fromHydration, userInitiated });
+    }
+
+    async function hydrateBranches({ owner, repo, fromHydration = false, userInitiated = false } = {}) {
+      if (!owner || !repo) {
+        disableBranchControls('Select a repository first');
+        return;
+      }
+      state.isFetchingBranches = true;
+      branchSelect.disabled = true;
+      branchSelect.innerHTML = '';
+      const loadingOption = document.createElement('option');
+      loadingOption.value = '';
+      loadingOption.textContent = 'Loading branches…';
+      branchSelect.appendChild(loadingOption);
+      setStatusIdle('Loading branches…', { spinner: true });
+      let error = null;
+      try {
+        const branches = await fetchRepositoryBranches(owner, repo);
+        state.branches = branches;
+        populateBranchSelect(branches, { fromHydration, userInitiated });
+      } catch (err) {
+        error = err;
+        console.error('Failed to load branches', err);
+        disableBranchControls('Unable to load branches');
+        setStatusIdle(`Error loading branches: ${err.message}`, { tone: 'error' });
+      } finally {
+        state.isFetchingBranches = false;
+        if (!error) {
+          setStatusIdle('');
+        }
+      }
+    }
+
+    function populateBranchSelect(branches, { fromHydration = false, userInitiated = false } = {}) {
+      branchSelect.innerHTML = '';
+      if (!branches.length) {
+        disableBranchControls('No branches available');
+        persistSettings();
+        return;
+      }
+      for (const branch of branches) {
+        const option = document.createElement('option');
+        option.value = branch.name;
+        const parts = [branch.name];
+        if (branch.committedDate) {
+          try {
+            parts.push(`updated ${new Date(branch.committedDate).toLocaleString()}`);
+          } catch (err) {
+            parts.push(`updated ${branch.committedDate}`);
+          }
+        }
+        option.textContent = parts.join(' · ');
+        branchSelect.appendChild(option);
+      }
+      branchSelect.disabled = false;
+      const desiredBranch = fromHydration
+        ? (state.pendingBranchSelection || state.selectedBranch)
+        : state.selectedBranch;
+      const availableNames = branches.map(branch => branch.name);
+      const fallbackBranch = branches[0].name;
+      const branchToSelect = desiredBranch && availableNames.includes(desiredBranch)
+        ? desiredBranch
+        : fallbackBranch;
+      state.pendingBranchSelection = '';
+      applyBranchSelection(branchToSelect, { fromHydration, userInitiated });
+    }
+
+    function applyBranchSelection(branchName, { fromHydration = false, userInitiated = false } = {}) {
+      const value = branchName || '';
+      if (branchSelect.value !== value) {
+        branchSelect.value = value;
+      }
+      state.selectedBranch = value;
+      if (value) {
+        applyAutoBranchFilter(value, { force: userInitiated });
+      }
+      persistSettings();
+    }
+
+    function applyAutoBranchFilter(branchName, { force = false } = {}) {
+      if (!branchName) return;
+      const mode = branchFilterInput.dataset.mode || 'auto';
+      if (mode === 'manual' && !force) {
+        return;
+      }
+      const regex = `^${escapeRegexLiteral(branchName)}$`;
+      branchFilterInput.value = regex;
+      branchFilterInput.dataset.mode = 'auto';
+    }
+
+    function escapeRegexLiteral(str) {
+      return str.replace(/[-\/\^$*+?.()|[\]{}]/g, '\$&');
+    }
+
 
     async function loadRequests({ force = false } = {}) {
       if (!state.token) {
         alert('Save a GitHub token first.');
         return;
       }
-      const owner = ownerInput.value.trim();
-      const repo = repoInput.value.trim();
-      if (!owner || !repo) {
-        alert('Enter both owner and repository.');
+      const repoFullName = state.selectedRepo || repoSelect.value;
+      if (!repoFullName) {
+        alert('Select a repository first.');
         return;
       }
+      if (!repoFullName.includes('/')) {
+        alert('Repository selection is invalid.');
+        return;
+      }
+      const [owner, repo] = repoFullName.split('/', 2);
       state.owner = owner;
       state.repo = repo;
       const cachedChecklist = !force ? loadCachedChecklist() : null;
@@ -874,6 +1183,65 @@
         throw new Error(`GitHub API error ${res.status}: ${text}`);
       }
       return res.json();
+    }
+
+    async function fetchUserRepositories() {
+      const results = [];
+      let page = 1;
+      while (true) {
+        const batch = await githubRest(`/user/repos?sort=pushed&per_page=100&page=${page}`);
+        if (!Array.isArray(batch) || !batch.length) break;
+        results.push(...batch);
+        if (batch.length < 100) break;
+        page += 1;
+      }
+      return results;
+    }
+
+    async function fetchRepositoryBranches(owner, repo) {
+      const branches = [];
+      let cursor = null;
+      while (true) {
+        const data = await githubGraphQL({
+          query: `query($owner:String!, $repo:String!, $cursor:String){
+            repository(owner:$owner, name:$repo){
+              refs(refPrefix:"refs/heads/", first:100, after:$cursor, orderBy:{field:ALPHABETICAL, direction:ASC}){
+                nodes{
+                  name
+                  target{
+                    __typename
+                    ... on Commit{
+                      pushedDate
+                      committedDate
+                    }
+                  }
+                }
+                pageInfo{ hasNextPage endCursor }
+              }
+            }
+          }`,
+          variables: { owner, repo, cursor }
+        });
+        const refs = data?.repository?.refs;
+        if (!refs) break;
+        const nodes = refs.nodes || [];
+        for (const node of nodes) {
+          const target = node.target || {};
+          const committedDate = target.pushedDate || target.committedDate || null;
+          branches.push({
+            name: node.name,
+            committedDate
+          });
+        }
+        if (!refs.pageInfo?.hasNextPage) break;
+        cursor = refs.pageInfo.endCursor;
+      }
+      branches.sort((a, b) => {
+        const aTime = Date.parse(a.committedDate || 0) || 0;
+        const bTime = Date.parse(b.committedDate || 0) || 0;
+        return bTime - aTime;
+      });
+      return branches;
     }
 
     function applyFilters() {
