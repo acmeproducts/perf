@@ -6838,23 +6838,47 @@
                 STACKS.forEach(stackName => {
                     const pill = document.getElementById(`pill-${stackName}`);
                     if (pill) {
-                        pill.addEventListener('click', async (e) => {
-                            e.stopPropagation();
+                        let pointerActivated = false;
+                        const activatePill = async (event) => {
+                            if (event) {
+                                if (typeof event.preventDefault === 'function') { event.preventDefault(); }
+                                event.stopPropagation();
+                            }
                             if (state.haptic) { state.haptic.triggerFeedback('pillTap'); }
 
+                            const wasDifferentStack = state.currentStack !== stackName;
+                            const comingFromSortMode = !state.isFocusMode;
+
                             if (stackName === 'trash') {
-                                if (state.currentStack !== stackName) {
+                                if (wasDifferentStack) {
                                     await UI.switchToStack(stackName);
+                                    if (comingFromSortMode) {
+                                        Grid.open(stackName);
+                                    }
                                 } else {
                                     Grid.open(stackName);
                                 }
-                            } else if (state.currentStack === stackName) {
+                            } else if (!wasDifferentStack) {
                                 Grid.open(stackName);
                             } else {
-                                UI.switchToStack(stackName);
+                                return UI.switchToStack(stackName);
                             }
 
                             UI.acknowledgePillCounter(stackName);
+                        };
+
+                        pill.addEventListener('pointerup', async (event) => {
+                            pointerActivated = true;
+                            try {
+                                await activatePill(event);
+                            } finally {
+                                setTimeout(() => { pointerActivated = false; }, 150);
+                            }
+                        });
+
+                        pill.addEventListener('click', (event) => {
+                            if (pointerActivated) return;
+                            activatePill(event);
                         });
                     }
                 });
