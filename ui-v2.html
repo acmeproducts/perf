@@ -1091,17 +1091,26 @@
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set()
         };
-        const buildFolderContext = (overrides = {}) => {
-            const folderId = overrides.folderId ?? (state.currentFolder ? state.currentFolder.id : null);
+        const getCurrentFolderContext = (overrides = {}) => {
             const providerType = overrides.providerType ?? state.providerType ?? null;
-            const context = {
-                providerType,
-                folderId: folderId ?? null
-            };
-            if (overrides.folderKey) {
-                context.folderKey = overrides.folderKey;
+            let folderId = overrides.folderId ?? state.currentFolder?.id ?? null;
+
+            if (!folderId && overrides.folderKey) {
+                const parts = String(overrides.folderKey).split('::');
+                folderId = parts.length > 1 ? parts.slice(1).join('::') : parts[0] || null;
             }
-            return context;
+
+            if (!folderId) {
+                return null;
+            }
+
+            const folderKey = overrides.folderKey || `${providerType || 'unknown'}::${folderId}`;
+
+            return {
+                providerType,
+                folderId,
+                folderKey
+            };
         };
         const Utils = {
             elements: {},
@@ -1878,15 +1887,21 @@
             async saveMetadata(fileId, metadata, context = {}) {
                 if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
+                if (!folderKey) {
+                    const error = new Error(`Cannot save metadata for ${fileId} without a folder scope.`);
+                    console.warn('[DBManager] saveMetadata aborted:', { fileId, context, message: error.message });
+                    return Promise.reject(error);
+                }
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
-                    if (folderKey) {
-                        record.folderKey = folderKey;
-                        record.provider = context.providerType || null;
-                        record.folderId = context.folderId || null;
-                    }
+                    const record = {
+                        id: fileId,
+                        metadata,
+                        folderKey,
+                        provider: context.providerType || null,
+                        folderId: context.folderId || null
+                    };
                     const request = store.put(record);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
@@ -3017,7 +3032,12 @@
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
                 Object.assign(file, updates);
-                await state.dbManager.saveMetadata(file.id, file, buildFolderContext());
+                const context = getCurrentFolderContext();
+                if (!context) {
+                    console.warn('[GoogleDriveProvider] Missing folder context during updateUserMetadata.', { fileId, updates });
+                    return;
+                }
+                await state.dbManager.saveMetadata(file.id, file, context);
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
             }
 
@@ -3378,10 +3398,15 @@
                         return;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, buildFolderContext({ folderId }));
+                    const syncContext = getCurrentFolderContext({ folderId });
+                    if (!syncContext) {
+                        console.warn('[App] Missing folder context while syncing metadata from cloud.', { folderId });
+                    } else {
+                        for (const updatedId of updatedIds) {
+                            const updatedFile = mergedFiles.find(file => file.id === updatedId);
+                            if (updatedFile) {
+                                await state.dbManager.saveMetadata(updatedId, updatedFile, syncContext);
+                            }
                         }
                     }
                     if (removedIds.length > 0) {
@@ -3427,10 +3452,15 @@
                         return;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, buildFolderContext({ folderId }));
+                    const backgroundContext = getCurrentFolderContext({ folderId });
+                    if (!backgroundContext) {
+                        console.warn('[App] Missing folder context during background refresh metadata save.', { folderId });
+                    } else {
+                        for (const updatedId of updatedIds) {
+                            const updatedFile = mergedFiles.find(file => file.id === updatedId);
+                            if (updatedFile) {
+                                await state.dbManager.saveMetadata(updatedId, updatedFile, backgroundContext);
+                            }
                         }
                     }
                     if (removedIds.length > 0) {
@@ -3451,7 +3481,8 @@
             },
             async processAllMetadata(files, isFirstLoad = false) {
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
-                 for (let i = 0; i < files.length; i++) {
+                const folderContext = getCurrentFolderContext();
+                for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     try {
                         const metadata = await state.dbManager.getMetadata(file.id);
@@ -3460,7 +3491,11 @@
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file);
                             Object.assign(file, defaultMetadata);
-                            await state.dbManager.saveMetadata(file.id, defaultMetadata, buildFolderContext());
+                            if (folderContext) {
+                                await state.dbManager.saveMetadata(file.id, defaultMetadata, folderContext);
+                            } else {
+                                console.warn('[App] Missing folder context while initializing metadata.', { fileId: file.id });
+                            }
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -3522,7 +3557,12 @@
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
                     Object.assign(file, updates);
-                    await state.dbManager.saveMetadata(file.id, file, buildFolderContext());
+                    const context = getCurrentFolderContext();
+                    if (!context) {
+                        console.warn('[App] Missing folder context during updateUserMetadata.', { fileId, updates });
+                        return;
+                    }
+                    await state.dbManager.saveMetadata(file.id, file, context);
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
@@ -3591,7 +3631,12 @@
                         finalMetadata.metadataStatus = 'loaded';
                         finalMetadata.extractedMetadata = metadata;
                     }
-                    await state.dbManager.saveMetadata(file.id, finalMetadata, buildFolderContext());
+                    const context = getCurrentFolderContext();
+                    if (!context) {
+                        console.warn('[App] Missing folder context during processFileMetadata.', { fileId: file.id });
+                        return;
+                    }
+                    await state.dbManager.saveMetadata(file.id, finalMetadata, context);
                     Object.assign(file, finalMetadata);
                 } catch (error) {
                     if (error.name === 'AbortError') return;
@@ -3599,7 +3644,12 @@
                     file.metadataStatus = 'error';
                     file.extractedMetadata = { 'Error': error.message };
                     file.prompt = `Metadata Error: ${error.message}`;
-                    await state.dbManager.saveMetadata(file.id, file, buildFolderContext());
+                    const context = getCurrentFolderContext();
+                    if (!context) {
+                        console.warn('[App] Missing folder context while persisting metadata error state.', { fileId: file.id });
+                        return;
+                    }
+                    await state.dbManager.saveMetadata(file.id, file, context);
                 }
             }
         };
@@ -4268,13 +4318,19 @@
                 
                 const newStack = [...topItems, ...bottomItems];
                 const timestamp = Date.now();
-                
+
                 newStack.forEach((file, i) => {
                     file.stackSequence = timestamp - i;
                 });
 
+                const context = getCurrentFolderContext();
+                if (!context) {
+                    console.warn('[Core] Missing folder context while persisting reordered stack.');
+                    return;
+                }
+
                 for(const file of newStack) {
-                    await state.dbManager.saveMetadata(file.id, file, buildFolderContext());
+                    await state.dbManager.saveMetadata(file.id, file, context);
                 }
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
 
@@ -4339,8 +4395,13 @@
             });
 
             if (state.dbManager && typeof state.dbManager.saveMetadata === 'function') {
+                const context = getCurrentFolderContext();
+                if (!context) {
+                    console.warn('[persistGroupDropOrder] Missing folder context while saving reordered items.');
+                    return;
+                }
                 for (const file of newStackOrder) {
-                    await state.dbManager.saveMetadata(file.id, file, buildFolderContext());
+                    await state.dbManager.saveMetadata(file.id, file, context);
                 }
                 if (state.currentFolder?.id && typeof state.dbManager.saveFolderCache === 'function') {
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
