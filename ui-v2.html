@@ -1078,7 +1078,7 @@
         });
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
-            syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, currentFolder: { id: null, name: '' },
+            syncManager: null, folderSyncCoordinator: null, syncLog: null, visualCues: null, haptic: null, export: null, currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
@@ -1089,7 +1089,8 @@
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
             activeRequests: new AbortController(),
-            sessionVisitedFolders: new Set()
+            sessionVisitedFolders: new Set(),
+            pendingBackgroundProbe: null
         };
         const getCurrentFolderContext = (overrides = {}) => {
             const providerType = overrides.providerType ?? state.providerType ?? null;
@@ -2126,6 +2127,372 @@
                     this.deleteFolderManifest(context),
                     fileIds.length > 0 ? Promise.all(fileIds.map(id => this.deleteMetadata(id))) : this.deleteMetadataByFolder(context)
                 ]);
+            }
+        }
+        class FolderSyncCoordinator {
+            constructor({ dbManager, logger } = {}) {
+                this.dbManager = dbManager || null;
+                this.logger = logger || null;
+                this.provider = null;
+                this.providerType = null;
+                this.lastSyncAppliedCount = 0;
+                this.deltaHandler = null;
+                this.backgroundProbes = new Map();
+                this.backgroundProbeDelay = 500;
+            }
+            setDbManager(dbManager) { this.dbManager = dbManager; }
+            setLogger(logger) { this.logger = logger; }
+            setProviderContext({ provider, providerType }) {
+                this.provider = provider || null;
+                this.providerType = providerType || null;
+                this.logger?.log({
+                    event: 'foldersync:context',
+                    level: 'info',
+                    details: this.provider ? `Coordinator bound to ${providerType}` : 'Cleared provider context.'
+                });
+            }
+            setDeltaHandler(callback) { this.deltaHandler = typeof callback === 'function' ? callback : null; }
+            buildContext(folderId) {
+                return { providerType: this.providerType || state.providerType || null, folderId };
+            }
+            async prepareFolder(folderId, options = {}) {
+                const { forceFullResync = false } = options;
+                if (!this.dbManager) {
+                    return { mode: 'full', reason: 'no-db' };
+                }
+                const context = this.buildContext(folderId);
+                const [folderState, localManifest] = await Promise.all([
+                    this.dbManager.getFolderState(context),
+                    this.dbManager.getFolderManifest(context)
+                ]);
+
+                if (forceFullResync) {
+                    this.logger?.log({ event: 'foldersync:prepare', level: 'warn', details: `Full resync forced for ${folderId}.` });
+                    if (localManifest) {
+                        await this.dbManager.saveFolderManifest({ ...localManifest, ...context, requiresFullResync: true });
+                    }
+                    return { mode: 'full', folderState, localManifest, reason: 'force' };
+                }
+
+                if (!folderState || !localManifest) {
+                    this.logger?.log({ event: 'foldersync:coldstart', level: 'warn', details: `No cached state for ${folderId}; performing full scan.` });
+                    return { mode: 'full', folderState, localManifest, reason: 'cold-start' };
+                }
+
+                if (localManifest.requiresFullResync) {
+                    this.logger?.log({ event: 'foldersync:manifest-flag', level: 'warn', details: `Manifest flagged full resync for ${folderId}.` });
+                    return { mode: 'full', folderState, localManifest, reason: 'manifest-flag' };
+                }
+
+                const localVersion = Number(folderState.localVersion || 0);
+                const cloudVersion = Number(folderState.cloudVersion || 0);
+                if (localVersion >= cloudVersion) {
+                    this.logger?.log({
+                        event: 'foldersync:hydrate-cache',
+                        level: 'info',
+                        details: `localVersion (${localVersion}) ≥ cloudVersion (${cloudVersion}); hydrating from cache.`,
+                        data: { folderId }
+                    });
+                    this.queueBackgroundProbe(folderId, { localManifest, folderState });
+                    return { mode: 'cache', folderState, localManifest };
+                }
+
+                const remoteManifest = await this.fetchRemoteManifest(folderId, { expectVersion: cloudVersion });
+                if (!remoteManifest) {
+                    return { mode: 'full', folderState, localManifest, reason: 'missing-remote' };
+                }
+                if (remoteManifest.requiresFullResync) {
+                    await this.dbManager.saveFolderManifest({ ...localManifest, ...context, requiresFullResync: true, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion });
+                    return { mode: 'full', folderState, localManifest, remoteManifest, reason: 'remote-flag' };
+                }
+
+                const diff = this.computeManifestDiff(localManifest, remoteManifest);
+                if (!diff.hasChanges && Number(remoteManifest.cloudVersion || 0) <= localVersion) {
+                    await this.dbManager.saveFolderState({ ...folderState, ...context, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion, localVersion });
+                    this.queueBackgroundProbe(folderId, { localManifest, folderState: { ...folderState, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion } });
+                    return { mode: 'cache', folderState: { ...folderState, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion }, localManifest };
+                }
+
+                this.logger?.log({
+                    event: 'foldersync:delta-ready',
+                    level: 'info',
+                    details: `Delta required: ${diff.changedIds.length} changed, ${diff.removedIds.length} removed.`,
+                    data: { folderId, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion }
+                });
+                return { mode: 'delta', folderState, localManifest, remoteManifest, diff };
+            }
+            async fetchRemoteManifest(folderId, options = {}) {
+                if (!this.provider || typeof this.provider.loadFolderManifest !== 'function') {
+                    this.logger?.log({ event: 'manifest:fetch:skip', level: 'warn', details: `Provider missing manifest loader for ${folderId}.` });
+                    return null;
+                }
+                try {
+                    const manifest = await this.provider.loadFolderManifest(folderId, options);
+                    if (manifest) {
+                        this.logger?.log({
+                            event: 'manifest:fetch',
+                            level: 'info',
+                            details: `Fetched manifest for ${folderId}.`,
+                            data: { cloudVersion: manifest.cloudVersion ?? null, entries: Object.keys(manifest.entries || {}).length }
+                        });
+                    }
+                    return manifest;
+                } catch (error) {
+                    this.logger?.log({
+                        event: 'manifest:fetch:error',
+                        level: 'error',
+                        details: `Manifest fetch failed for ${folderId}: ${error.message}`,
+                        data: { status: error.status || null }
+                    });
+                    return null;
+                }
+            }
+            computeManifestDiff(localManifest, remoteManifest) {
+                const localEntries = (localManifest && localManifest.entries) || {};
+                const remoteEntries = (remoteManifest && remoteManifest.entries) || {};
+                const changedIds = [];
+                const removedIds = [];
+                const remoteKeys = Object.keys(remoteEntries);
+                for (const fileId of remoteKeys) {
+                    const remoteData = remoteEntries[fileId];
+                    const localData = localEntries[fileId];
+                    if (!localData) {
+                        changedIds.push(fileId);
+                        continue;
+                    }
+                    if (localData.changeNumber !== remoteData.changeNumber || localData.stack !== remoteData.stack || localData.notesHash !== remoteData.notesHash || (localData.flags || '') !== (remoteData.flags || '')) {
+                        changedIds.push(fileId);
+                    }
+                }
+                const remoteSet = new Set(remoteKeys);
+                Object.keys(localEntries).forEach(fileId => {
+                    if (!remoteSet.has(fileId)) {
+                        removedIds.push(fileId);
+                    }
+                });
+                return { changedIds, removedIds, hasChanges: changedIds.length > 0 || removedIds.length > 0 };
+            }
+            buildManifestFromFiles(folderId, files = []) {
+                const entries = {};
+                files.forEach(file => {
+                    entries[file.id] = {
+                        changeNumber: this.computeChangeNumber(file),
+                        stack: file.stack || file.appProperties?.slideboxStack || 'in',
+                        notesHash: this.hashString(file.notes || file.appProperties?.notes || ''),
+                        lastCloudUpdate: file.modifiedTime || file.createdTime || new Date().toISOString(),
+                        flags: this.computeFlags(file)
+                    };
+                });
+                this.logger?.log({
+                    event: 'manifest:build',
+                    level: 'info',
+                    details: `Built manifest with ${Object.keys(entries).length} entries for ${folderId}.`
+                });
+                return entries;
+            }
+            computeChangeNumber(file) {
+                if (file.changeNumber != null) {
+                    const numeric = Number(file.changeNumber);
+                    if (!Number.isNaN(numeric)) return numeric;
+                }
+                if (file.version != null) {
+                    const numeric = Number(file.version);
+                    if (!Number.isNaN(numeric)) return numeric;
+                }
+                const timestamp = Date.parse(file.modifiedTime || file.createdTime || 0);
+                return Number.isNaN(timestamp) ? Date.now() : timestamp;
+            }
+            computeFlags(file) {
+                const flags = [];
+                const stack = file.stack || file.appProperties?.slideboxStack;
+                if (stack === 'trash') flags.push('trash');
+                if (file.favorite === true || file.appProperties?.favorite === 'true') flags.push('fav');
+                return flags.join(',');
+            }
+            hashString(value) {
+                if (!value) return '0';
+                let hash = 0;
+                for (let i = 0; i < value.length; i++) {
+                    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+                    hash |= 0;
+                }
+                return String(hash >>> 0);
+            }
+            queueBackgroundProbe(folderId, context = {}) {
+                if (this.backgroundProbes.has(folderId)) {
+                    clearTimeout(this.backgroundProbes.get(folderId));
+                }
+                const timer = setTimeout(() => {
+                    this.backgroundProbes.delete(folderId);
+                    this.backgroundProbe(folderId, context).catch(error => {
+                        this.logger?.log({ event: 'foldersync:probe:error', level: 'error', details: `Probe failed: ${error.message}` });
+                    });
+                }, this.backgroundProbeDelay);
+                this.backgroundProbes.set(folderId, timer);
+            }
+            async backgroundProbe(folderId, context = {}) {
+                const localManifest = context.localManifest || await this.dbManager?.getFolderManifest(this.buildContext(folderId));
+                if (!localManifest) return null;
+                const remoteManifest = await this.fetchRemoteManifest(folderId, { allowCreate: false, signal: context.signal });
+                if (!remoteManifest) return null;
+                if (remoteManifest.requiresFullResync) {
+                    const dbContext = { ...this.buildContext(folderId), manifestFileId: remoteManifest.manifestFileId };
+                    await this.dbManager?.saveFolderManifest({ ...dbContext, entries: remoteManifest.entries || {}, cloudVersion: remoteManifest.cloudVersion ?? Date.now(), localVersion: remoteManifest.cloudVersion ?? null, requiresFullResync: true });
+                    this.deltaHandler?.({ folderId, diff: { changedIds: [], removedIds: [], hasChanges: false }, remoteManifest, localManifest, forceFullResync: true });
+                    return { diff: { changedIds: [], removedIds: [], hasChanges: false }, remoteManifest };
+                }
+                const diff = this.computeManifestDiff(localManifest, remoteManifest);
+                this.logger?.log({
+                    event: 'foldersync:probe',
+                    level: diff.hasChanges ? 'warn' : 'info',
+                    details: diff.hasChanges ? `Background probe found ${diff.changedIds.length} updates (${diff.removedIds.length} removals).` : 'Background probe confirmed cache is fresh.',
+                    data: { folderId, cloudVersion: remoteManifest.cloudVersion ?? null }
+                });
+                if (diff.hasChanges && this.deltaHandler) {
+                    this.deltaHandler({ folderId, diff, remoteManifest, localManifest });
+                }
+                return { diff, remoteManifest };
+            }
+            async persistManifest(folderId, manifestRecord, extras = {}) {
+                if (!this.dbManager) return null;
+                const context = this.buildContext(folderId);
+                const payload = {
+                    ...context,
+                    entries: manifestRecord.entries || {},
+                    cloudVersion: manifestRecord.cloudVersion ?? extras.cloudVersion ?? null,
+                    localVersion: manifestRecord.localVersion ?? extras.localVersion ?? null,
+                    requiresFullResync: Boolean(manifestRecord.requiresFullResync),
+                    lastRemoteUpdate: manifestRecord.lastRemoteUpdate || Date.now(),
+                    lastDiffSummary: extras.lastDiffSummary || null
+                };
+                if (manifestRecord.manifestFileId) {
+                    payload.manifestFileId = manifestRecord.manifestFileId;
+                }
+                const saved = await this.dbManager.saveFolderManifest(payload);
+                return saved;
+            }
+            async persistFolderState(folderId, updates = {}) {
+                if (!this.dbManager) return null;
+                const context = this.buildContext(folderId);
+                const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
+                const payload = {
+                    ...existing,
+                    ...context,
+                    folderId,
+                    localVersion: updates.localVersion ?? existing.localVersion ?? 0,
+                    cloudVersion: updates.cloudVersion ?? existing.cloudVersion ?? 0,
+                    lastLocalMutation: updates.lastLocalMutation ?? existing.lastLocalMutation ?? null,
+                    lastCloudAck: updates.lastCloudAck ?? existing.lastCloudAck ?? null
+                };
+                return await this.dbManager.saveFolderState(payload);
+            }
+            async markRequiresFullResync(folderId, reason = 'manual') {
+                this.logger?.log({ event: 'foldersync:flag', level: 'warn', details: `Flagging ${folderId} for full resync (${reason}).` });
+                const context = this.buildContext(folderId);
+                const existing = await this.dbManager.getFolderManifest(context);
+                await this.dbManager.saveFolderManifest({ ...existing, ...context, requiresFullResync: true });
+            }
+            async applyLocalManifestUpdates(folderId, files = [], options = {}) {
+                if (!this.dbManager || !Array.isArray(files) || files.length === 0) {
+                    return null;
+                }
+                const providerType = options.providerType || this.providerType || state.providerType || null;
+                const context = { providerType, folderId };
+                const manifestRecord = await this.dbManager.getFolderManifest(context) || { ...context, folderId, entries: {}, requiresFullResync: false };
+                const entries = { ...(manifestRecord.entries || {}) };
+                const timestamp = options.timestamp || Date.now();
+                const isoTimestamp = new Date(timestamp).toISOString();
+                const updatedIds = [];
+                files.forEach(file => {
+                    if (!file || !file.id) return;
+                    const existing = entries[file.id] || {};
+                    const notesValue = file.notes ?? file.appProperties?.notes ?? '';
+                    const stackValue = file.stack || file.appProperties?.slideboxStack || existing.stack || 'in';
+                    const changeNumber = Number(file.localUpdatedAt || file.changeNumber || existing.changeNumber || timestamp);
+                    entries[file.id] = {
+                        ...existing,
+                        changeNumber,
+                        stack: stackValue,
+                        notesHash: this.hashString(notesValue),
+                        lastCloudUpdate: file.modifiedTime || existing.lastCloudUpdate || isoTimestamp,
+                        flags: this.computeFlags({ ...file, stack: stackValue })
+                    };
+                    updatedIds.push(file.id);
+                });
+                const manifestPayload = {
+                    ...manifestRecord,
+                    ...context,
+                    folderId,
+                    entries,
+                    requiresFullResync: Boolean(manifestRecord.requiresFullResync),
+                    cloudVersion: options.targetVersion ?? manifestRecord.cloudVersion ?? null,
+                    localVersion: options.targetVersion ?? manifestRecord.localVersion ?? null,
+                    manifestFileId: manifestRecord.manifestFileId || options.manifestFileId || null,
+                    lastRemoteUpdate: timestamp,
+                    lastDiffSummary: manifestRecord.lastDiffSummary || null
+                };
+                await this.dbManager.saveFolderManifest(manifestPayload);
+                let remoteResponse = null;
+                if (this.provider && typeof this.provider.saveFolderManifest === 'function') {
+                    try {
+                        remoteResponse = await this.provider.saveFolderManifest(folderId, {
+                            entries,
+                            requiresFullResync: manifestPayload.requiresFullResync,
+                            cloudVersion: options.targetVersion ?? manifestPayload.cloudVersion ?? Date.now(),
+                            localVersion: options.targetVersion ?? manifestPayload.localVersion ?? null,
+                            manifestFileId: manifestPayload.manifestFileId
+                        }, { manifestFileId: manifestPayload.manifestFileId });
+                        if (remoteResponse?.manifestFileId) {
+                            manifestPayload.manifestFileId = remoteResponse.manifestFileId;
+                        }
+                        if (remoteResponse?.cloudVersion != null) {
+                            manifestPayload.cloudVersion = remoteResponse.cloudVersion;
+                        } else if (options.targetVersion != null) {
+                            manifestPayload.cloudVersion = options.targetVersion;
+                        }
+                        if (remoteResponse?.localVersion != null) {
+                            manifestPayload.localVersion = remoteResponse.localVersion;
+                        } else if (options.targetVersion != null) {
+                            manifestPayload.localVersion = options.targetVersion;
+                        }
+                        await this.dbManager.saveFolderManifest(manifestPayload);
+                        this.logger?.log({ event: 'manifest:update', level: 'info', details: `Updated manifest entries for ${updatedIds.length} item(s) in ${folderId}.`, data: { updatedIds } });
+                    } catch (error) {
+                        this.logger?.log({ event: 'manifest:update:error', level: 'error', details: `Failed to update manifest for ${folderId}: ${error.message}` });
+                        await this.dbManager.saveFolderManifest({ ...manifestPayload, requiresFullResync: true });
+                        throw error;
+                    }
+                } else {
+                    this.logger?.log({ event: 'manifest:update:local', level: 'info', details: `Cached manifest update for ${updatedIds.length} item(s) in ${folderId}.`, data: { updatedIds } });
+                }
+                return { manifestFileId: manifestPayload.manifestFileId, cloudVersion: manifestPayload.cloudVersion };
+            }
+            async recordLocalFlush(folderId, options = {}) {
+                const timestamp = options.timestamp || Date.now();
+                const context = this.buildContext(folderId);
+                const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
+                let nextVersion = Number(existing.localVersion || 0) + 1;
+                if (options.targetVersion != null) {
+                    const numericTarget = Number(options.targetVersion);
+                    if (!Number.isNaN(numericTarget) && numericTarget > Number(existing.localVersion || 0)) {
+                        nextVersion = numericTarget;
+                    }
+                }
+                await this.dbManager.saveFolderState({ ...existing, ...context, folderId, localVersion: nextVersion, cloudVersion: nextVersion, lastLocalMutation: timestamp, lastCloudAck: timestamp });
+                let manifestRecord = null;
+                if ((!options.remoteContext || !options.remoteContext.manifestFileId) && this.dbManager) {
+                    manifestRecord = await this.dbManager.getFolderManifest(context);
+                }
+                if (this.provider && typeof this.provider.updateFolderVersionMarker === 'function') {
+                    try {
+                        const remoteContext = { ...(options.remoteContext || {}), manifestFileId: manifestRecord?.manifestFileId };
+                        await this.provider.updateFolderVersionMarker(folderId, nextVersion, remoteContext);
+                        this.logger?.log({ event: 'foldersync:version:bump', level: 'info', details: `Pushed folder version ${nextVersion} to cloud.`, data: { folderId } });
+                    } catch (error) {
+                        this.logger?.log({ event: 'foldersync:version:error', level: 'error', details: `Failed to push folder version: ${error.message}` });
+                    }
+                }
+                return nextVersion;
             }
         }
         class SyncActivityLogger {
@@ -3446,6 +3813,8 @@
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
                 state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
+                state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
+                state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
 
                 if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
@@ -3500,12 +3869,16 @@
                 if(state.syncManager) state.syncManager.stop();
                 state.provider = null;
                 state.providerType = null;
+                state.syncManager?.setProviderContext({ provider: null, providerType: null });
+                state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
                 Utils.showScreen('provider-screen');
             },
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
                 try {
                     state.providerType = providerType;
                     state.provider = providerInstance;
+                    state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
+                    state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
@@ -3707,6 +4080,19 @@
                     }
                     this.returnToFolderSelection();
                 }
+            },
+            async applyDeltaFromCoordinator(payload) {
+                if (!payload) return;
+                if (payload.forceFullResync) {
+                    await this.loadImages({ forceFullResync: true });
+                    return;
+                }
+                if (!payload.diff?.hasChanges) return;
+                if (payload.folderId !== state.currentFolder?.id) {
+                    state.pendingBackgroundProbe = payload;
+                    return;
+                }
+                await this.loadImages({ forceFullResync: true });
             },
             async refreshFolderInBackground() {
                 try {
@@ -6262,6 +6648,8 @@
                 state.dbManager = new DBManager();
                 await state.dbManager.init();
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
+                state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
+                state.folderSyncCoordinator.setDeltaHandler((payload) => App.applyDeltaFromCoordinator(payload));
                 state.metadataExtractor = new MetadataExtractor();
                 Utils.showScreen('provider-screen');
                 Events.init();
