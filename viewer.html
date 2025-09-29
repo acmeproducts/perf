@@ -488,8 +488,8 @@
       <div class="entries" id="entry-list"></div>
     </section>
   </div>
+  <script src="codex-checklist-shared.js"></script>
   <script>
-    const STORAGE_KEY = 'viewer_entries_state_v1';
 
     const defaultEntries = [
       {
@@ -530,6 +530,8 @@
       }
     ];
 
+    const codex = window.CodexChecklist;
+
     const dom = {
       entryList: document.getElementById('entry-list'),
       refreshButton: document.getElementById('refresh-button'),
@@ -539,31 +541,97 @@
       statusBar: document.getElementById('status-bar')
     };
 
-    let entries = loadState();
     const openEntries = new Set();
 
-    function loadState() {
-      try {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) {
-            return parsed;
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to load saved state', error);
+    let currentChecklist = initializeCurrentChecklist();
+    let entries = cloneEntries(currentChecklist?.payload?.entries || defaultEntries);
+    if (!entries.length) {
+      entries = cloneEntries(defaultEntries);
+    }
+
+    let pendingSaveKey = null;
+
+    function initializeCurrentChecklist() {
+      if (!codex) return null;
+      if (codex.current) return codex.current;
+      const latest = codex.loadLatest();
+      if (latest) {
+        codex.setCurrent(latest, { dispatchEvent: false, bubble: false });
+        return codex.current;
       }
-      return JSON.parse(JSON.stringify(defaultEntries));
+      return null;
+    }
+
+    function formatLabel(info) {
+      if (!info) return 'unknown repository';
+      return `${info.owner}/${info.repo}`;
+    }
+
+    function cloneEntries(data) {
+      try {
+        return JSON.parse(JSON.stringify(Array.isArray(data) ? data : []));
+      } catch (error) {
+        console.warn('Failed to clone entries', error);
+        return Array.isArray(data) ? data.slice() : [];
+      }
+    }
+
+    function adoptChecklist(update) {
+      if (!update || !update.payload || !Array.isArray(update.payload.entries)) {
+        return false;
+      }
+      const key = codex?.keyFor ? codex.keyFor(update.owner, update.repo) : update.key;
+      currentChecklist = {
+        owner: update.owner,
+        repo: update.repo,
+        key: key || update.key,
+        payload: {
+          savedAt: update.payload.savedAt,
+          entries: cloneEntries(update.payload.entries)
+        },
+        source: update.source || null
+      };
+      entries = cloneEntries(update.payload.entries);
+      openEntries.clear();
+      renderEntries();
+      return true;
     }
 
     function saveState() {
+      if (!codex) {
+        setStatus('Shared checklist utilities unavailable. Cannot save.', true);
+        return;
+      }
+      if (!currentChecklist) {
+        setStatus('No checklist selected. Load data in the checklist view first.', true);
+        return;
+      }
+      const key = codex.keyFor(currentChecklist.owner, currentChecklist.repo);
+      const payload = {
+        savedAt: new Date().toISOString(),
+        entries: cloneEntries(entries)
+      };
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-        setStatus('Saved current entries to local storage.');
+        localStorage.setItem(key, JSON.stringify(payload));
+        currentChecklist = {
+          owner: currentChecklist.owner,
+          repo: currentChecklist.repo,
+          key,
+          payload
+        };
+        pendingSaveKey = key;
+        codex.broadcastUpdate({
+          owner: currentChecklist.owner,
+          repo: currentChecklist.repo,
+          payload,
+          source: 'viewer'
+        });
+        setStatus(`Saved checklist for ${formatLabel(currentChecklist)}.`);
       } catch (error) {
         console.error('Unable to save state', error);
         setStatus('Unable to save state. Check storage availability.', true);
+      } finally {
+        pendingSaveKey = null;
       }
     }
 
@@ -985,24 +1053,37 @@
     }
 
     function handleRefresh() {
-      entries = loadState();
-      openEntries.clear();
-      renderEntries();
-      setStatus('Reloaded entries from saved state.');
+      if (!codex || !currentChecklist) {
+        setStatus('No saved checklist available. Load data in the checklist view first.', true);
+        return;
+      }
+      const reloaded = codex.loadChecklist(currentChecklist.owner, currentChecklist.repo);
+      if (reloaded && adoptChecklist(reloaded)) {
+        setStatus(`Reloaded ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} from ${formatLabel(reloaded)}.`);
+      } else {
+        setStatus('No saved data found for the current repository.', true);
+      }
     }
 
     function handleExport() {
-      const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
+      const payload = currentChecklist ? {
+        owner: currentChecklist.owner,
+        repo: currentChecklist.repo,
+        savedAt: currentChecklist.payload?.savedAt || new Date().toISOString(),
+        entries
+      } : { entries };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      link.download = `viewer-entries-${timestamp}.json`;
+      const label = currentChecklist ? `${currentChecklist.owner}-${currentChecklist.repo}` : 'viewer-entries';
+      link.download = `checklist-${label}-${timestamp}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setStatus('Exported entries as JSON.');
+      setStatus('Exported checklist as JSON.');
     }
 
     function handleImport(event) {
@@ -1012,13 +1093,40 @@
       reader.onload = e => {
         try {
           const parsed = JSON.parse(e.target.result);
-          if (!Array.isArray(parsed)) {
-            throw new Error('JSON must be an array of entries.');
+          let importedEntries;
+          let importedChecklist = null;
+          if (Array.isArray(parsed)) {
+            importedEntries = parsed;
+          } else if (parsed && Array.isArray(parsed.entries)) {
+            importedEntries = parsed.entries;
+            if (parsed.owner && parsed.repo) {
+              importedChecklist = {
+                owner: parsed.owner,
+                repo: parsed.repo,
+                payload: {
+                  savedAt: parsed.savedAt || new Date().toISOString(),
+                  entries: cloneEntries(parsed.entries)
+                },
+                source: 'import'
+              };
+            }
+          } else {
+            throw new Error('JSON must be an array or object containing an entries array.');
           }
-          entries = parsed;
+          entries = cloneEntries(importedEntries);
           openEntries.clear();
           renderEntries();
-          setStatus(`Imported ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'} from JSON.`);
+          if (importedChecklist) {
+            currentChecklist = {
+              owner: importedChecklist.owner,
+              repo: importedChecklist.repo,
+              key: codex ? codex.keyFor(importedChecklist.owner, importedChecklist.repo) : null,
+              payload: importedChecklist.payload
+            };
+            setStatus(`Imported ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} for ${formatLabel(importedChecklist)}. Save to persist.`, false);
+          } else {
+            setStatus(`Imported ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} from JSON. Save to persist changes.`, false);
+          }
         } catch (error) {
           console.error('Import failed', error);
           setStatus('Import failed: ' + error.message, true);
@@ -1026,6 +1134,28 @@
       };
       reader.readAsText(file);
       event.target.value = '';
+    }
+
+    if (codex) {
+      window.addEventListener('codexrecall:checklist-updated', event => {
+        const update = event.detail;
+        if (!update || !update.payload || !Array.isArray(update.payload.entries)) return;
+        if (pendingSaveKey && update.key === pendingSaveKey) return;
+        const wasAdopted = adoptChecklist(update);
+        if (!wasAdopted) return;
+        const isSameRepo = currentChecklist && update.owner === currentChecklist.owner && update.repo === currentChecklist.repo;
+        if (isSameRepo) {
+          setStatus(`Checklist refreshed with ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.`);
+        } else {
+          setStatus(`Switched to ${formatLabel(update)} (${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}).`);
+        }
+      });
+    }
+
+    if (currentChecklist && entries.length) {
+      setStatus(`Loaded ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} from ${formatLabel(currentChecklist)}.`);
+    } else {
+      setStatus('No checklist loaded yet. Use the Codex checklist view or import JSON to begin.');
     }
 
     dom.entryList.addEventListener('click', handleEntryClick);
