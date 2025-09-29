@@ -382,6 +382,32 @@
       transform: translateY(-1px);
     }
 
+    .file-links {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-left: 8px;
+      font-size: 0.82rem;
+    }
+
+    .file-links a {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid rgba(79, 70, 229, 0.18);
+      background: rgba(79, 70, 229, 0.1);
+      color: var(--accent);
+      text-decoration: none;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .file-links a:hover {
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+
     .inline-editor,
     .inline-editor-area {
       width: 100%;
@@ -482,6 +508,10 @@
         <button type="button" id="refresh-button">↻ Refresh</button>
         <label for="import-input">⬆ Import JSON<input id="import-input" type="file" accept="application/json" /></label>
         <button type="button" id="export-button">⬇ Export JSON</button>
+        <button type="button" id="export-text-button">⬇ Export TXT</button>
+        <button type="button" id="export-markdown-button">⬇ Export Markdown</button>
+        <button type="button" id="export-csv-button">⬇ Export CSV</button>
+        <button type="button" id="export-pdf-button">⬇ Export PDF</button>
         <button type="button" id="save-button">💾 Save JSON</button>
       </div>
       <div id="status-bar" role="status" aria-live="polite"></div>
@@ -536,12 +566,26 @@
       entryList: document.getElementById('entry-list'),
       refreshButton: document.getElementById('refresh-button'),
       exportButton: document.getElementById('export-button'),
+      exportTextButton: document.getElementById('export-text-button'),
+      exportMarkdownButton: document.getElementById('export-markdown-button'),
+      exportCsvButton: document.getElementById('export-csv-button'),
+      exportPdfButton: document.getElementById('export-pdf-button'),
       saveButton: document.getElementById('save-button'),
       importInput: document.getElementById('import-input'),
       statusBar: document.getElementById('status-bar')
     };
 
     const openEntries = new Set();
+
+    const derivedState = {
+      repoContext: null,
+      normalizedEntries: [],
+      jsonPayload: null,
+      textContent: '',
+      markdownContent: '',
+      csvContent: '',
+      pdfBlob: null
+    };
 
     let currentChecklist = initializeCurrentChecklist();
     let entries = cloneEntries(currentChecklist?.payload?.entries || defaultEntries);
@@ -574,6 +618,369 @@
         console.warn('Failed to clone entries', error);
         return Array.isArray(data) ? data.slice() : [];
       }
+    }
+
+    function normalizeEntriesForExport(data) {
+      return cloneEntries(data).map(entry => {
+        const normalized = {
+          id: entry?.id ?? '',
+          title: entry?.title ?? '',
+          summary: entry?.summary ?? '',
+          timestamp: entry?.timestamp ?? '',
+          docRef: entry?.docRef ?? '',
+          include: entry?.include !== false,
+          pr: {
+            label: entry?.pr?.label ?? '',
+            url: entry?.pr?.url ?? ''
+          },
+          sections: []
+        };
+        if (Array.isArray(entry?.sections)) {
+          normalized.sections = entry.sections.map(section => ({
+            title: section?.title ?? '',
+            lines: Array.isArray(section?.lines) ? section.lines.map(line => line ?? '') : []
+          }));
+        }
+        return normalized;
+      });
+    }
+
+    function deriveRepoContext(normalizedEntries) {
+      let owner = currentChecklist?.owner || null;
+      let repo = currentChecklist?.repo || null;
+      let branch = currentChecklist?.payload?.branch
+        || currentChecklist?.payload?.defaultBranch
+        || currentChecklist?.payload?.branchName
+        || currentChecklist?.payload?.currentBranch
+        || null;
+
+      if ((!owner || !repo) && Array.isArray(normalizedEntries)) {
+        for (const entry of normalizedEntries) {
+          const prUrl = entry?.pr?.url;
+          if (!prUrl) continue;
+          try {
+            const parsed = new URL(prUrl);
+            const parts = parsed.pathname.split('/').filter(Boolean);
+            if (parts.length >= 2) {
+              owner = owner || parts[0];
+              repo = repo || parts[1];
+            }
+            if (owner && repo) break;
+          } catch (error) {
+            console.warn('Unable to parse PR URL for repo context', prUrl, error);
+          }
+        }
+      }
+
+      if (!branch) {
+        branch = 'main';
+      }
+
+      if (!owner || !repo) {
+        return null;
+      }
+
+      return {
+        owner,
+        repo,
+        branch,
+        pagesHost: `${owner.toLowerCase()}.github.io`
+      };
+    }
+
+    function buildTextExport(normalizedEntries, repoContext) {
+      const lines = [];
+      if (repoContext) {
+        lines.push(`Repository: ${repoContext.owner}/${repoContext.repo}`);
+        lines.push(`Branch: ${repoContext.branch}`);
+        lines.push('');
+      }
+      normalizedEntries.forEach(entry => {
+        lines.push(`#${entry.id || 'N/A'} ${entry.title || ''}`.trim());
+        lines.push(`Summary: ${entry.summary || ''}`);
+        lines.push(`Timestamp: ${entry.timestamp || ''}`);
+        lines.push(`Doc: ${entry.docRef || ''}`);
+        lines.push(`Include: ${entry.include ? 'Yes' : 'No'}`);
+        if (entry.pr?.url || entry.pr?.label) {
+          const label = entry.pr.label ? `${entry.pr.label}: ` : '';
+          lines.push(`PR: ${label}${entry.pr.url || ''}`.trim());
+        }
+        entry.sections.forEach(section => {
+          if (!section.title && !section.lines.length) return;
+          lines.push(`  ${section.title || 'Section'}`.trim());
+          section.lines.forEach(line => {
+            lines.push('    - ' + (line || ''));
+          });
+        });
+        lines.push('');
+      });
+      return lines.join('\n');
+    }
+
+    function buildMarkdownExport(normalizedEntries, repoContext) {
+      const lines = [];
+      if (repoContext) {
+        lines.push(`# Checklist for ${repoContext.owner}/${repoContext.repo}`);
+        lines.push(`*Branch:* \`${repoContext.branch}\``);
+        lines.push('');
+      }
+      normalizedEntries.forEach(entry => {
+        lines.push(`## #${entry.id || 'N/A'} ${entry.title || ''}`.trim());
+        lines.push(`- **Include:** ${entry.include ? 'Yes' : 'No'}`);
+        if (entry.summary) {
+          lines.push(`- **Summary:** ${entry.summary}`);
+        }
+        if (entry.timestamp) {
+          lines.push(`- **Timestamp:** ${entry.timestamp}`);
+        }
+        if (entry.docRef) {
+          lines.push(`- **Doc:** ${entry.docRef}`);
+        }
+        if (entry.pr?.url || entry.pr?.label) {
+          const label = entry.pr.label || entry.pr.url;
+          const url = entry.pr.url || '';
+          if (url) {
+            lines.push(`- **PR:** [${label}](${url})`);
+          } else if (label) {
+            lines.push(`- **PR:** ${label}`);
+          }
+        }
+        if (entry.sections.length) {
+          lines.push('');
+          entry.sections.forEach(section => {
+            if (section.title) {
+              lines.push(`### ${section.title}`);
+            }
+            section.lines.forEach(line => {
+              lines.push(`- ${line || ''}`);
+            });
+            lines.push('');
+          });
+        }
+        lines.push('');
+      });
+      return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+    }
+
+    function csvEscape(value) {
+      const stringValue = String(value ?? '');
+      if (/[",\n]/.test(stringValue)) {
+        return '"' + stringValue.replace(/"/g, '""') + '"';
+      }
+      return stringValue;
+    }
+
+    function buildCsvExport(normalizedEntries) {
+      const headers = ['Entry ID', 'Include', 'Title', 'Summary', 'Timestamp', 'Doc Ref', 'PR Label', 'PR URL', 'Section', 'Line Index', 'Line'];
+      const rows = [headers.join(',')];
+      normalizedEntries.forEach(entry => {
+        if (!entry.sections.length) {
+          rows.push([
+            csvEscape(entry.id),
+            csvEscape(entry.include ? 'Yes' : 'No'),
+            csvEscape(entry.title),
+            csvEscape(entry.summary),
+            csvEscape(entry.timestamp),
+            csvEscape(entry.docRef),
+            csvEscape(entry.pr?.label || ''),
+            csvEscape(entry.pr?.url || ''),
+            csvEscape(''),
+            csvEscape(''),
+            csvEscape('')
+          ].join(','));
+          return;
+        }
+        entry.sections.forEach(section => {
+          const sectionTitle = section.title || '';
+          if (!section.lines.length) {
+            rows.push([
+              csvEscape(entry.id),
+              csvEscape(entry.include ? 'Yes' : 'No'),
+              csvEscape(entry.title),
+              csvEscape(entry.summary),
+              csvEscape(entry.timestamp),
+              csvEscape(entry.docRef),
+              csvEscape(entry.pr?.label || ''),
+              csvEscape(entry.pr?.url || ''),
+              csvEscape(sectionTitle),
+              csvEscape(''),
+              csvEscape('')
+            ].join(','));
+            return;
+          }
+          section.lines.forEach((line, index) => {
+            rows.push([
+              csvEscape(entry.id),
+              csvEscape(entry.include ? 'Yes' : 'No'),
+              csvEscape(entry.title),
+              csvEscape(entry.summary),
+              csvEscape(entry.timestamp),
+              csvEscape(entry.docRef),
+              csvEscape(entry.pr?.label || ''),
+              csvEscape(entry.pr?.url || ''),
+              csvEscape(sectionTitle),
+              csvEscape(index + 1),
+              csvEscape(line || '')
+            ].join(','));
+          });
+        });
+      });
+      return rows.join('\n');
+    }
+
+    function escapePdfText(value) {
+      return String(value ?? '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    }
+
+    function createPdfBlob(textContent) {
+      const sanitized = String(textContent || '').replace(/\r\n?/g, '\n');
+      const lines = sanitized.split('\n');
+      const contentParts = ['BT', '/F1 10 Tf', '50 780 Td'];
+      lines.forEach((line, index) => {
+        if (index === 0) {
+          contentParts.push(`(${escapePdfText(line)}) Tj`);
+        } else {
+          contentParts.push('0 -14 Td');
+          contentParts.push(`(${escapePdfText(line)}) Tj`);
+        }
+      });
+      contentParts.push('ET');
+      const contentStream = contentParts.join('\n');
+      const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+      const contentLength = encoder ? encoder.encode(contentStream).length : contentStream.length;
+      const objects = [
+        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n',
+        `4 0 obj\n<< /Length ${contentLength} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
+        '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'
+      ];
+      const pdfParts = ['%PDF-1.4\n'];
+      const offsets = [];
+      const measure = value => encoder ? encoder.encode(value).length : value.length;
+      let byteLength = measure(pdfParts[0]);
+      objects.forEach(obj => {
+        offsets.push(byteLength);
+        pdfParts.push(obj);
+        byteLength += measure(obj);
+      });
+      const xrefPosition = byteLength;
+      let xref = `xref\n0 ${objects.length + 1}\n`;
+      xref += '0000000000 65535 f \n';
+      offsets.forEach(offset => {
+        xref += offset.toString().padStart(10, '0') + ' 00000 n \n';
+      });
+      pdfParts.push(xref);
+      byteLength += measure(xref);
+      const trailer = `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPosition}\n%%EOF`;
+      pdfParts.push(trailer);
+      return new Blob(pdfParts, { type: 'application/pdf' });
+    }
+
+    function sanitizeForFilename(value) {
+      return String(value ?? '').replace(/[^A-Za-z0-9._-]+/g, '-');
+    }
+
+    function getDownloadLabel() {
+      if (currentChecklist) {
+        const owner = sanitizeForFilename(currentChecklist.owner);
+        const repo = sanitizeForFilename(currentChecklist.repo);
+        const branchValue = derivedState.repoContext?.branch ? `-${sanitizeForFilename(derivedState.repoContext.branch)}` : '';
+        return `${owner}-${repo}${branchValue}`;
+      }
+      return 'viewer-entries';
+    }
+
+    function downloadFile(content, { type, extension }) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const label = getDownloadLabel();
+      const blob = content instanceof Blob ? content : new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `checklist-${label}-${timestamp}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    function encodePathSegments(path) {
+      return path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+    }
+
+    function extractFileReferences(text) {
+      if (!text) return [];
+      const found = new Set();
+      const matches = text.matchAll(/(?:File(?:name)?|Path|Page|Asset)[:\s]+([^|\n]+)/gi);
+      for (const match of matches) {
+        const candidate = match[1].trim();
+        if (candidate) {
+          candidate.split(/[,\s]+/).forEach(item => {
+            const cleaned = item.replace(/^[`'"(\[]+/, '').replace(/[`'"),\]]+$/, '');
+            if (isValidFileReference(cleaned)) {
+              found.add(cleaned);
+            }
+          });
+        }
+      }
+      text.split(/\s+/).forEach(token => {
+        const cleaned = token.replace(/^[`'"(\[]+/, '').replace(/[`'"),.;:>\]]+$/, '');
+        if (isValidFileReference(cleaned)) {
+          found.add(cleaned);
+        }
+      });
+      return Array.from(found);
+    }
+
+    function isValidFileReference(candidate) {
+      if (!candidate) return false;
+      if (candidate.includes('://')) return false;
+      if (candidate.includes('<') || candidate.includes('>')) return false;
+      if (!/\./.test(candidate)) return false;
+      return /^[A-Za-z0-9_.\/\-]+$/.test(candidate);
+    }
+
+    function createFileLinks(path, repoContext) {
+      if (!repoContext) return [];
+      const normalizedPath = path.replace(/^[./]+/, '');
+      if (!normalizedPath) return [];
+      const encodedPath = encodePathSegments(normalizedPath);
+      const githubUrl = `https://github.com/${repoContext.owner}/${repoContext.repo}/blob/${encodeURIComponent(repoContext.branch)}/${encodedPath}`;
+      const pagesUrl = `https://${repoContext.pagesHost}/${repoContext.repo}/${encodedPath}`;
+      const githubLink = document.createElement('a');
+      githubLink.href = githubUrl;
+      githubLink.target = '_blank';
+      githubLink.rel = 'noopener noreferrer';
+      githubLink.textContent = 'GitHub';
+      githubLink.title = `Open ${normalizedPath} on GitHub (${repoContext.branch})`;
+
+      const pagesLink = document.createElement('a');
+      pagesLink.href = pagesUrl;
+      pagesLink.target = '_blank';
+      pagesLink.rel = 'noopener noreferrer';
+      pagesLink.textContent = 'Pages';
+      pagesLink.title = `Open ${normalizedPath} on GitHub Pages`;
+      return [githubLink, pagesLink];
+    }
+
+    function updateDerivedState() {
+      derivedState.normalizedEntries = normalizeEntriesForExport(entries);
+      derivedState.repoContext = deriveRepoContext(derivedState.normalizedEntries);
+      const repoContext = derivedState.repoContext;
+      const normalizedEntries = derivedState.normalizedEntries;
+      const payload = currentChecklist ? {
+        owner: currentChecklist.owner,
+        repo: currentChecklist.repo,
+        branch: repoContext?.branch,
+        savedAt: currentChecklist.payload?.savedAt || new Date().toISOString(),
+        entries: cloneEntries(normalizedEntries)
+      } : { entries: cloneEntries(normalizedEntries) };
+      derivedState.jsonPayload = payload;
+      derivedState.textContent = buildTextExport(normalizedEntries, repoContext);
+      derivedState.markdownContent = buildMarkdownExport(normalizedEntries, repoContext);
+      derivedState.csvContent = buildCsvExport(normalizedEntries);
+      derivedState.pdfBlob = createPdfBlob(derivedState.textContent);
     }
 
     function adoptChecklist(update) {
@@ -647,6 +1054,8 @@
     }
 
     function renderEntries() {
+      updateDerivedState();
+      const repoContext = derivedState.repoContext;
       dom.entryList.innerHTML = '';
       if (!entries.length) {
         const emptyState = document.createElement('div');
@@ -779,6 +1188,22 @@
               openButton.title = 'Open link in new tab';
               lineEl.appendChild(openButton);
             });
+
+            if (repoContext) {
+              const fileRefs = extractFileReferences(line);
+              if (fileRefs.length) {
+                const linksWrapper = document.createElement('span');
+                linksWrapper.className = 'file-links';
+                fileRefs.forEach(path => {
+                  createFileLinks(path, repoContext).forEach(link => {
+                    linksWrapper.appendChild(link);
+                  });
+                });
+                if (linksWrapper.childNodes.length) {
+                  lineEl.appendChild(linksWrapper);
+                }
+              }
+            }
 
             sectionBody.appendChild(lineEl);
           });
@@ -1065,25 +1490,35 @@
       }
     }
 
-    function handleExport() {
-      const payload = currentChecklist ? {
-        owner: currentChecklist.owner,
-        repo: currentChecklist.repo,
-        savedAt: currentChecklist.payload?.savedAt || new Date().toISOString(),
-        entries
-      } : { entries };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const label = currentChecklist ? `${currentChecklist.owner}-${currentChecklist.repo}` : 'viewer-entries';
-      link.download = `checklist-${label}-${timestamp}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+    function handleExportJson() {
+      updateDerivedState();
+      const payload = derivedState.jsonPayload;
+      downloadFile(JSON.stringify(payload, null, 2), { type: 'application/json', extension: 'json' });
       setStatus('Exported checklist as JSON.');
+    }
+
+    function handleExportText() {
+      updateDerivedState();
+      downloadFile(derivedState.textContent, { type: 'text/plain', extension: 'txt' });
+      setStatus('Exported checklist as plain text.');
+    }
+
+    function handleExportMarkdown() {
+      updateDerivedState();
+      downloadFile(derivedState.markdownContent, { type: 'text/markdown', extension: 'md' });
+      setStatus('Exported checklist as Markdown.');
+    }
+
+    function handleExportCsv() {
+      updateDerivedState();
+      downloadFile(derivedState.csvContent, { type: 'text/csv', extension: 'csv' });
+      setStatus('Exported checklist as CSV.');
+    }
+
+    function handleExportPdf() {
+      updateDerivedState();
+      downloadFile(derivedState.pdfBlob, { type: 'application/pdf', extension: 'pdf' });
+      setStatus('Exported checklist as PDF.');
     }
 
     function handleImport(event) {
@@ -1161,7 +1596,11 @@
     dom.entryList.addEventListener('click', handleEntryClick);
     dom.entryList.addEventListener('dblclick', handleDoubleClick);
     dom.refreshButton.addEventListener('click', handleRefresh);
-    dom.exportButton.addEventListener('click', handleExport);
+    dom.exportButton.addEventListener('click', handleExportJson);
+    dom.exportTextButton.addEventListener('click', handleExportText);
+    dom.exportMarkdownButton.addEventListener('click', handleExportMarkdown);
+    dom.exportCsvButton.addEventListener('click', handleExportCsv);
+    dom.exportPdfButton.addEventListener('click', handleExportPdf);
     dom.saveButton.addEventListener('click', saveState);
     dom.importInput.addEventListener('change', handleImport);
 
