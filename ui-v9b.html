@@ -363,6 +363,7 @@
             position: relative; background-color: #f3f4f6; border-radius: 8px; cursor: pointer;
             display: flex; align-items: center; justify-content: center; overflow: hidden;
         }
+        .grid-item.drop-target { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.6); }
         .grid-item::before { content: ""; display: block; padding-top: 100%; }
         .grid-image {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;
@@ -371,6 +372,24 @@
         .grid-image[data-src] { opacity: 0; }
         .grid-image.loaded { opacity: 1; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
+
+        .grid-drag-handle {
+            position: absolute; top: 6px; right: 6px; width: 28px; height: 28px;
+            display: flex; align-items: center; justify-content: center; border-radius: 6px;
+            background: rgba(17, 24, 39, 0.7); color: #f9fafb; font-size: 16px; line-height: 1;
+            border: none; cursor: grab; touch-action: none; z-index: 3;
+        }
+        .grid-drag-handle:hover { background: rgba(59, 130, 246, 0.9); }
+        .grid-drag-handle:focus { outline: 2px solid #bfdbfe; outline-offset: 2px; }
+        .grid-drag-handle:active { cursor: grabbing; }
+
+        .grid-drag-ghost {
+            position: fixed; pointer-events: none; opacity: 0.9; transform: translate3d(0,0,0);
+            z-index: 9999; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+            border-radius: 8px; overflow: hidden;
+        }
+        .grid-drag-ghost .filename-overlay { opacity: 1; }
+        .grid-drag-ghost .grid-drag-handle { display: none; }
 
         .filename-overlay {
             position: absolute;
@@ -1037,6 +1056,15 @@
 
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
+        const createDefaultGridDragSession = () => ({
+            active: false,
+            pointerId: null,
+            ghost: null,
+            offsetX: 0,
+            offsetY: 0,
+            dropTarget: null,
+            selectedIds: []
+        });
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
@@ -1045,7 +1073,8 @@
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
-            grid: { stack: null, selected: [], filtered: [], isDirty: false,
+            grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
+                dragSession: createDefaultGridDragSession(),
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
@@ -5264,6 +5293,8 @@
             }
         };
         const Grid = {
+            _dragMoveHandler: null,
+            _dragEndHandler: null,
             open(stack) {
                 Utils.showModal('grid-modal');
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
@@ -5273,13 +5304,15 @@
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
                 state.grid.selected = []; state.grid.filtered = [];
                 Utils.elements.gridContainer.innerHTML = '';
+                this.clearDragState();
                 this.initializeLazyLoad(stack);
                 this.updateSelectionUI();
                 Core.updateStackCounts();
             },
-            
+
             async close() {
                 try {
+                    this.clearDragState();
                     if (state.grid.isDirty) {
                         await this.reorderStackOnClose();
                     }
@@ -5354,6 +5387,7 @@
                     overlay.textContent = file.name;
                     div.appendChild(img);
                     div.appendChild(overlay);
+                    div.appendChild(this.createDragHandle(div, file.id));
                     container.appendChild(div);
                 });
                 container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
@@ -5366,7 +5400,179 @@
                     if (lazyState.observer) { lazyState.observer.observe(sentinel); }
                 }
             },
-            
+
+            createDragHandle(gridItem, fileId) {
+                const handle = document.createElement('button');
+                handle.type = 'button';
+                handle.className = 'grid-drag-handle';
+                handle.textContent = '⠿';
+                handle.setAttribute('aria-label', 'Drag to reorder');
+                handle.addEventListener('pointerdown', event => {
+                    event.stopPropagation();
+                    this.startDrag(event, fileId, gridItem);
+                });
+                handle.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                });
+                return handle;
+            },
+
+            startDrag(event, fileId, gridItem) {
+                if (state.grid.isDragging) { return; }
+                if (!state.grid.stack) { return; }
+                if (event.pointerType === 'mouse' && event.button !== 0) { return; }
+
+                if (!state.grid.selected.includes(fileId)) {
+                    this.deselectAll();
+                    state.grid.selected = [fileId];
+                    gridItem.classList.add('selected');
+                    this.updateSelectionUI();
+                }
+
+                const selectedIds = state.grid.selected.length > 0 ? [...state.grid.selected] : [fileId];
+                const rect = gridItem.getBoundingClientRect();
+                const ghost = gridItem.cloneNode(true);
+                ghost.classList.add('grid-drag-ghost');
+                ghost.style.width = `${rect.width}px`;
+                ghost.style.height = `${rect.height}px`;
+                ghost.style.left = `${rect.left}px`;
+                ghost.style.top = `${rect.top}px`;
+                ghost.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
+                document.body.appendChild(ghost);
+                document.body.style.userSelect = 'none';
+
+                state.grid.isDragging = true;
+                state.grid.dragSession = {
+                    ...createDefaultGridDragSession(),
+                    active: true,
+                    pointerId: event.pointerId ?? null,
+                    ghost,
+                    offsetX: event.clientX - rect.left,
+                    offsetY: event.clientY - rect.top,
+                    selectedIds
+                };
+
+                this._dragMoveHandler = this.handlePointerMove.bind(this);
+                this._dragEndHandler = this.handlePointerRelease.bind(this);
+                window.addEventListener('pointermove', this._dragMoveHandler, { passive: false });
+                window.addEventListener('pointerup', this._dragEndHandler);
+                window.addEventListener('pointercancel', this._dragEndHandler);
+
+                this.updateGhostPosition(event.clientX, event.clientY);
+                if (event.cancelable) { event.preventDefault(); }
+            },
+
+            handlePointerMove(event) {
+                const session = state.grid.dragSession;
+                if (!session.active) { return; }
+                if (session.pointerId !== null && event.pointerId !== session.pointerId) { return; }
+
+                if (event.cancelable) { event.preventDefault(); }
+                this.updateGhostPosition(event.clientX, event.clientY);
+
+                const element = document.elementFromPoint(event.clientX, event.clientY);
+                const tile = element ? element.closest('.grid-item') : null;
+                if (tile && tile.id === 'grid-sentinel') {
+                    this.setDropTarget(null);
+                } else {
+                    this.setDropTarget(tile);
+                }
+            },
+
+            async handlePointerRelease(event) {
+                const session = state.grid.dragSession;
+                if (!session.active) { return; }
+                if (session.pointerId !== null && event.pointerId !== session.pointerId) { return; }
+
+                this.detachDragListeners();
+
+                if (event.type === 'pointercancel') {
+                    this.clearDragState();
+                    return;
+                }
+
+                if (event.cancelable) { event.preventDefault(); }
+
+                if (!session.dropTarget) {
+                    this.clearDragState();
+                    return;
+                }
+
+                const dropTargetId = session.dropTarget.dataset.fileId;
+                if (!dropTargetId || session.selectedIds.includes(dropTargetId)) {
+                    this.clearDragState();
+                    return;
+                }
+
+                const allFiles = state.grid.lazyLoadState.allFiles || [];
+                let targetIndex = allFiles.findIndex(file => file.id === dropTargetId);
+                if (targetIndex === -1) { targetIndex = allFiles.length; }
+
+                try {
+                    await persistGroupDropOrder(session.selectedIds, targetIndex);
+                } catch (error) {
+                    console.error('Error reordering grid items:', error);
+                    Utils.showToast(`Error reordering items: ${error.message}`, 'error', true);
+                } finally {
+                    this.clearDragState();
+                }
+            },
+
+            detachDragListeners() {
+                if (this._dragMoveHandler) {
+                    window.removeEventListener('pointermove', this._dragMoveHandler);
+                    this._dragMoveHandler = null;
+                }
+                if (this._dragEndHandler) {
+                    window.removeEventListener('pointerup', this._dragEndHandler);
+                    window.removeEventListener('pointercancel', this._dragEndHandler);
+                    this._dragEndHandler = null;
+                }
+            },
+
+            updateGhostPosition(x, y) {
+                const session = state.grid.dragSession;
+                if (!session.ghost) { return; }
+                const left = x - session.offsetX;
+                const top = y - session.offsetY;
+                session.ghost.style.transform = `translate(${left}px, ${top}px)`;
+                session.ghost.style.left = `${left}px`;
+                session.ghost.style.top = `${top}px`;
+            },
+
+            setDropTarget(tile) {
+                const session = state.grid.dragSession;
+                if (session.dropTarget === tile) { return; }
+                if (session.dropTarget) {
+                    session.dropTarget.classList.remove('drop-target');
+                }
+                if (tile && tile !== session.ghost && tile.id !== 'grid-sentinel') {
+                    tile.classList.add('drop-target');
+                    session.dropTarget = tile;
+                } else {
+                    session.dropTarget = null;
+                }
+            },
+
+            clearDragState() {
+                const session = state.grid.dragSession;
+                if (session.dropTarget) {
+                    session.dropTarget.classList.remove('drop-target');
+                }
+                if (session.ghost && session.ghost.parentNode) {
+                    session.ghost.remove();
+                }
+                document.body.style.userSelect = '';
+                this.resetDragSession();
+            },
+
+            resetDragSession() {
+                this.detachDragListeners();
+                state.grid.dragSession = createDefaultGridDragSession();
+                state.grid.isDragging = false;
+            },
+
             toggleSelection(e, fileId) {
                 const gridItem = e.currentTarget;
                 const index = state.grid.selected.indexOf(fileId);
@@ -5567,6 +5773,94 @@
                 Utils.showToast('Stack order updated', 'success');
             }
         };
+
+        async function persistGroupDropOrder(selectedIds, targetIndex) {
+            if (!Array.isArray(selectedIds) || selectedIds.length === 0) { return; }
+            const stackName = state.grid.stack;
+            if (!stackName) { return; }
+
+            const stackArray = state.stacks[stackName];
+            if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
+
+            const lazyState = state.grid.lazyLoadState || {};
+            const allFiles = Array.isArray(lazyState.allFiles) ? lazyState.allFiles : [];
+            const selectedSet = new Set(selectedIds);
+            const movingItems = [];
+            const remainingItems = [];
+
+            stackArray.forEach(file => {
+                if (selectedSet.has(file.id)) { movingItems.push(file); }
+                else { remainingItems.push(file); }
+            });
+
+            if (movingItems.length === 0) { return; }
+
+            const clampedIndex = Math.max(0, Math.min(Number.isFinite(targetIndex) ? targetIndex : 0, allFiles.length));
+            let insertionIndex = remainingItems.length;
+
+            if (clampedIndex < allFiles.length) {
+                let count = 0;
+                for (let i = 0; i < clampedIndex; i++) {
+                    const candidate = allFiles[i];
+                    if (candidate && !selectedSet.has(candidate.id)) { count += 1; }
+                }
+                insertionIndex = Math.min(count, remainingItems.length);
+            }
+
+            const newStackOrder = [
+                ...remainingItems.slice(0, insertionIndex),
+                ...movingItems,
+                ...remainingItems.slice(insertionIndex)
+            ];
+
+            const currentOrderIds = stackArray.map(file => file.id);
+            const newOrderIds = newStackOrder.map(file => file.id);
+            let hasChanges = currentOrderIds.length !== newOrderIds.length;
+            if (!hasChanges) {
+                for (let i = 0; i < currentOrderIds.length; i++) {
+                    if (currentOrderIds[i] !== newOrderIds[i]) { hasChanges = true; break; }
+                }
+            }
+            if (!hasChanges) { state.grid.isDirty = false; return; }
+
+            const timestamp = Date.now();
+            newStackOrder.forEach((file, idx) => {
+                file.stackSequence = timestamp - idx;
+            });
+
+            if (state.dbManager && typeof state.dbManager.saveMetadata === 'function') {
+                let context;
+                try {
+                    context = App.getCurrentFolderContext();
+                } catch (error) {
+                    console.error('[persistGroupDropOrder] Missing folder context while saving reordered items.', error);
+                    Utils.showToast('Unable to persist reordering because the folder context is missing.', 'error', true);
+                    return;
+                }
+                for (const file of newStackOrder) {
+                    await state.dbManager.saveMetadata(file.id, file, context);
+                }
+                if (state.currentFolder?.id && typeof state.dbManager.saveFolderCache === 'function') {
+                    await state.dbManager.saveFolderCache(context.folderId, state.imageFiles);
+                }
+            }
+
+            state.stacks[stackName] = newStackOrder;
+            if (state.grid.filtered.length > 0) {
+                const filteredIds = new Set(state.grid.filtered.map(file => file.id));
+                state.grid.filtered = newStackOrder.filter(file => filteredIds.has(file.id));
+            }
+
+            state.grid.lazyLoadState.allFiles = state.grid.filtered.length > 0 ? state.grid.filtered : newStackOrder;
+            state.grid.selected = selectedIds;
+            state.grid.isDirty = false;
+
+            Utils.elements.gridContainer.innerHTML = '';
+            Grid.initializeLazyLoad(stackName);
+            Grid.updateSelectionUI();
+            Core.updateStackCounts();
+        }
+
         const Details = {
             tagEditor: null,
             notesEditor: null,
