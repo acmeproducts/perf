@@ -2026,14 +2026,24 @@
                 if (!this.db || !record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
+                let existing = null;
+                try {
+                    existing = await this.getFolderState({ folderKey });
+                } catch (error) {
+                    existing = null;
+                }
                 const payload = {
                     folderKey,
-                    provider: record.providerType || record.provider || null,
-                    folderId: record.folderId,
-                    localVersion: record.localVersion ?? 0,
-                    cloudVersion: record.cloudVersion ?? 0,
-                    lastLocalMutation: record.lastLocalMutation || null,
-                    lastCloudAck: record.lastCloudAck || null,
+                    provider: record.providerType || record.provider || existing?.provider || null,
+                    folderId: record.folderId || existing?.folderId || null,
+                    localVersion: record.localVersion ?? existing?.localVersion ?? 0,
+                    cloudVersion: record.cloudVersion ?? existing?.cloudVersion ?? 0,
+                    lastLocalMutation: record.lastLocalMutation ?? existing?.lastLocalMutation ?? null,
+                    lastCloudAck: record.lastCloudAck ?? existing?.lastCloudAck ?? null,
+                    remoteUpdatedAt: record.remoteUpdatedAt ?? existing?.remoteUpdatedAt ?? null,
+                    remoteMarkerId: record.remoteMarkerId ?? existing?.remoteMarkerId ?? null,
+                    remoteMarkerPayload: record.remoteMarkerPayload ?? existing?.remoteMarkerPayload ?? null,
+                    lastMarkerSync: record.lastMarkerSync ?? existing?.lastMarkerSync ?? null,
                     updatedAt: Date.now()
                 };
                 return new Promise((resolve, reject) => {
@@ -3047,6 +3057,140 @@
                 await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
             }
 
+            async fetchFolderUpdateMarker(folderId, options = {}) {
+                const markerName = '.orbital8-updated.json';
+                const files = [];
+                let nextPageToken = null;
+                const query = `'${folderId}' in parents and trashed=false and name='${markerName}'`;
+                do {
+                    const params = new URLSearchParams({
+                        q: query,
+                        fields: 'files(id,name,modifiedTime,createdTime,md5Checksum),nextPageToken',
+                        pageSize: '5',
+                        spaces: 'drive'
+                    });
+                    if (nextPageToken) params.append('pageToken', nextPageToken);
+                    const response = await this.makeApiCall(`/files?${params.toString()}`, { signal: options.signal });
+                    files.push(...(response.files || []));
+                    nextPageToken = response.nextPageToken || null;
+                } while (nextPageToken);
+
+                if (files.length === 0) {
+                    return { remoteUpdatedAt: null, markerFileId: null, markerPayload: null, duplicatesDetected: false };
+                }
+
+                files.sort((a, b) => {
+                    const aTime = Date.parse(a.modifiedTime || a.createdTime || 0) || 0;
+                    const bTime = Date.parse(b.modifiedTime || b.createdTime || 0) || 0;
+                    return bTime - aTime;
+                });
+
+                const markerFile = files[0];
+                const duplicates = files.slice(1);
+                const response = await this.makeApiCall(`/files/${markerFile.id}?alt=media`, { method: 'GET', signal: options.signal }, false);
+                const text = await response.text();
+                let markerPayload = null;
+                try {
+                    markerPayload = JSON.parse(text || '{}');
+                } catch (error) {
+                    markerPayload = { raw: text };
+                }
+                const remoteUpdatedAt = markerPayload?.updatedAt || markerPayload?.timestamp || markerFile.modifiedTime || markerFile.createdTime || null;
+
+                return {
+                    remoteUpdatedAt,
+                    markerFileId: markerFile.id,
+                    markerPayload,
+                    duplicatesDetected: duplicates.length > 0,
+                    duplicateFileIds: duplicates.map(file => file.id)
+                };
+            }
+
+            async saveFolderUpdateMarker(folderId, marker = {}, options = {}) {
+                const { markerFileId: markerFileIdOverride, updatedAt: providedUpdatedAt, ...extra } = marker || {};
+                const payload = {
+                    folderId,
+                    updatedAt: providedUpdatedAt || new Date().toISOString(),
+                    ...extra
+                };
+                let markerFileId = markerFileIdOverride || options.markerFileId || null;
+                if (!markerFileId) {
+                    const existing = await this.fetchFolderUpdateMarker(folderId, { signal: options.signal }).catch(() => null);
+                    if (existing?.markerFileId) {
+                        markerFileId = existing.markerFileId;
+                    }
+                }
+
+                if (!markerFileId) {
+                    const metadata = await this.makeApiCall('/files', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            name: '.orbital8-updated.json',
+                            mimeType: 'application/json',
+                            parents: [folderId]
+                        }),
+                        signal: options.signal
+                    });
+                    markerFileId = metadata.id;
+                }
+
+                await this.makeApiCall(`/files/${markerFileId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        name: '.orbital8-updated.json',
+                        trashed: false
+                    }),
+                    signal: options.signal
+                });
+
+                await this.makeApiCall(`https://www.googleapis.com/upload/drive/v3/files/${markerFileId}?uploadType=media`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+                    body: JSON.stringify(payload),
+                    signal: options.signal
+                }, false);
+
+                return { markerFileId, markerPayload: payload, remoteUpdatedAt: payload.updatedAt };
+            }
+
+            async cleanupLegacyManifestFiles(folderId, options = {}) {
+                const query = `'${folderId}' in parents and trashed=false and name contains '.orbital8-state'`;
+                const files = [];
+                let nextPageToken = null;
+                do {
+                    const params = new URLSearchParams({
+                        q: query,
+                        fields: 'files(id,name,modifiedTime,createdTime),nextPageToken',
+                        pageSize: '10',
+                        spaces: 'drive'
+                    });
+                    if (nextPageToken) params.append('pageToken', nextPageToken);
+                    const response = await this.makeApiCall(`/files?${params.toString()}`, { signal: options.signal });
+                    files.push(...(response.files || []));
+                    nextPageToken = response.nextPageToken || null;
+                } while (nextPageToken);
+
+                if (files.length <= 1) {
+                    return { cleaned: false, kept: files[0]?.id || null, removed: [] };
+                }
+
+                files.sort((a, b) => {
+                    const aTime = Date.parse(a.modifiedTime || a.createdTime || 0) || 0;
+                    const bTime = Date.parse(b.modifiedTime || b.createdTime || 0) || 0;
+                    return bTime - aTime;
+                });
+
+                const keep = files[0];
+                const duplicates = files.slice(1);
+                await Promise.all(duplicates.map(file => this.makeApiCall(`/files/${file.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ trashed: true }),
+                    signal: options.signal
+                }).catch(() => null)));
+
+                return { cleaned: true, kept: keep.id, removed: duplicates.map(file => file.id) };
+            }
+
             async deleteFile(fileId) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ trashed: true }) });
                 return true;
@@ -3135,6 +3279,46 @@
                 }
                 return { folders: [], files: allFiles };
             }
+
+            async fetchFolderUpdateMarker(folderId, options = {}) {
+                const targetPath = `/me/drive/special/approot:/state/${folderId}.json:/content`;
+                try {
+                    const response = await this.makeApiCall(targetPath, { method: 'GET', signal: options.signal });
+                    const data = await response.json();
+                    return {
+                        remoteUpdatedAt: data?.updatedAt || null,
+                        markerFileId: `state/${folderId}.json`,
+                        markerPayload: data || null,
+                        duplicatesDetected: false
+                    };
+                } catch (error) {
+                    if (/404/.test(String(error.message))) {
+                        return { remoteUpdatedAt: null, markerFileId: null, markerPayload: null, duplicatesDetected: false };
+                    }
+                    throw error;
+                }
+            }
+
+            async saveFolderUpdateMarker(folderId, marker = {}, options = {}) {
+                const { markerFileId: markerFileIdOverride, updatedAt: providedUpdatedAt, ...extra } = marker || {};
+                const payload = {
+                    folderId,
+                    updatedAt: providedUpdatedAt || new Date().toISOString(),
+                    ...extra
+                };
+                await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    signal: options.signal
+                });
+                return {
+                    markerFileId: markerFileIdOverride || `state/${folderId}.json`,
+                    markerPayload: payload,
+                    remoteUpdatedAt: payload.updatedAt
+                };
+            }
+
             async getDownloadsFolder() {
                 const response = await this.makeApiCall('/me/drive/root/children');
                 const data = await response.json();
@@ -3325,7 +3509,8 @@
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
-                    
+
+                    await this.runProviderMigrations({ providerType, folderId });
                     await this.loadImages();
                     this.switchToCommonUI();
                     if(state.syncManager) state.syncManager.start();
@@ -3340,9 +3525,37 @@
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
+                const folderState = await state.dbManager.getFolderState({ providerType: state.providerType, folderId }).catch(() => null);
 
                 if (forceFullResync || isFirstSessionVisit || cachedFiles.length === 0) {
                     await this.syncFolderFromCloud(forceFullResync ? [] : cachedFiles, sessionKey);
+                    return;
+                }
+
+                const markerCheck = await this.checkLastUpdated({
+                    folderId,
+                    folderState: folderState || undefined
+                });
+
+                if (markerCheck?.remoteUpdatedAt !== undefined) {
+                    try {
+                        const payload = {
+                            ...(folderState || {}),
+                            providerType: state.providerType,
+                            folderId,
+                            remoteUpdatedAt: markerCheck.remoteUpdatedAt ?? null,
+                            remoteMarkerId: markerCheck.markerFileId ?? (folderState?.remoteMarkerId ?? null),
+                            remoteMarkerPayload: markerCheck.markerPayload ?? (folderState?.remoteMarkerPayload ?? null),
+                            lastMarkerSync: Date.now()
+                        };
+                        await state.dbManager.saveFolderState(payload);
+                    } catch (error) {
+                        console.warn('[App] Failed to persist remote marker state', error);
+                    }
+                }
+
+                if (markerCheck?.shouldSync) {
+                    await this.syncFolderFromCloud(cachedFiles, sessionKey);
                     return;
                 }
 
@@ -3351,6 +3564,51 @@
                 Utils.showScreen('app-container');
                 Core.initializeStacks();
                 Core.initializeImageDisplay();
+            },
+            async checkLastUpdated({ folderId, folderState }) {
+                if (!state.provider || typeof state.provider.fetchFolderUpdateMarker !== 'function') {
+                    return { shouldSync: false };
+                }
+
+                try {
+                    const result = await state.provider.fetchFolderUpdateMarker(folderId, { signal: state.activeRequests?.signal });
+                    const remoteUpdatedAt = result?.remoteUpdatedAt ?? null;
+                    const duplicatesDetected = Boolean(result?.duplicatesDetected);
+                    const previousUpdatedAt = folderState?.remoteUpdatedAt ?? null;
+                    const markerChanged = remoteUpdatedAt && previousUpdatedAt && remoteUpdatedAt !== previousUpdatedAt;
+                    const markerMissing = previousUpdatedAt && !remoteUpdatedAt;
+                    const missingBaseline = (!folderState || !previousUpdatedAt) && remoteUpdatedAt != null;
+
+                    if (duplicatesDetected) {
+                        console.warn('[App] Duplicate manifest markers detected for folder', { folderId, duplicates: result?.duplicateFileIds || [] });
+                    }
+
+                    return {
+                        shouldSync: duplicatesDetected || markerChanged || markerMissing || missingBaseline || Boolean(result?.error),
+                        remoteUpdatedAt,
+                        markerFileId: result?.markerFileId ?? null,
+                        markerPayload: result?.markerPayload ?? null,
+                        duplicatesDetected
+                    };
+                } catch (error) {
+                    console.warn('[App] Failed to check remote marker, forcing full sync', error);
+                    return { shouldSync: true };
+                }
+            },
+            async runProviderMigrations({ providerType, folderId }) {
+                if (!providerType || !folderId) return;
+                if (providerType !== 'googledrive') return;
+                if (!state.provider || typeof state.provider.cleanupLegacyManifestFiles !== 'function') return;
+
+                const storageKey = `orbital8_drive_manifest_cleanup_${folderId}`;
+                if (localStorage.getItem(storageKey)) return;
+
+                try {
+                    await state.provider.cleanupLegacyManifestFiles(folderId, { signal: state.activeRequests?.signal });
+                    localStorage.setItem(storageKey, '1');
+                } catch (error) {
+                    console.warn('[App] Failed to run Drive manifest cleanup migration', error);
+                }
             },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
