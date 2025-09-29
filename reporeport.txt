@@ -49,6 +49,14 @@ Executive Summary
    r2: prompt | spec
    rn: prompt | spec
 
+
+future recommendations 
+backlog items
+structure
+security
+scalability
+app sharing - assuming source folder has been shared within provider ecosystem and user has requisite authentication credentials
+
      
    ####$ material to create checklist #####
    
@@ -151,6 +159,9 @@ Line 4://Text// "Recently Used Tags"
 Line 5: <chips with an x>...
 All input text is black 
 Chips use standard format size, color, shape, font, behavior
+
+j2 bulk operations tag, notes, move, delete, export, folder, ( convert to icons with tool tips) functions stay Exactly the same unless explicitly called out in this document.
+
 K. Focus mode
 1.Stack Switcher 
 Single tap/click, Stack switcher Modal
@@ -167,7 +178,7 @@ Meta
 
 
 Close 
-3. Navigation
+3. focus Navigation
 Left
 back/left <move/display>
 -Flick
@@ -198,6 +209,10 @@ Move current image to storage provider recycle bin (toast confirm yes/no)
 Display next available image in stack or display no more images message
 
 
+Tags and notes (bulk in grid and single in details)
+Introduced reusable TagService, TagEditor, and NotesEditor utilities so chip input, inline removal, and note/rating edits update all targeted files instantly while keeping the shared tag cache in sync.
+
+Rewired the details panel’s Tags and Notes tabs to render the new editors with multi-selection messaging, ensuring updates apply across the active selection once per change.
 
 
 3. Official Development Standards
@@ -224,11 +239,14 @@ Do not change storage provider selection, auth, folder selection, UI navigation 
 3. Critical Function Checklist
 do not modify storage provider selection screen, auth, folder selection, look and feel of UI, no regressions. Please ensure comments are updated with timestamp and list of changes, please ensure footers are updated with correct version and updated timestamp matching comments
 
-1.  Unreliable Synchronization (OneDrive and Google Drive).
+3.  Unreliable Synchronization (OneDrive and Google Drive).
 Incremental Change: Background sync worker is event driven and fires immediately after any metadata change, rather than waiting for the session to end. This makes data saving reliable.
 Background worker to process its queue of pending changes sequentially (one at a time), waiting for a success confirmation before starting the next. This prevents race conditions during bulk operations.
 CURRENTLY MULTIPLE VERSIONS OF ORBITAL8-STATE.JSON EXIST FOR A GIVEN FOLDER IDENTIFY THIS BUG AND HOW TO CORRECT IT
-Huge deficiency
+Huge deficiency 
+1. update `FolderSyncCoordinator.prepareFolder` so the cold-start path (`!folderState || !localManifest`) calls `fetchRemoteManifest` and returns any discovered `manifestFileId` in the `preparation` payload (`folderSyncCoordinator.prepareFolder`).
+2. Adjust `syncFolderFromCloud` to honor that `manifestFileId` (and, if absent, to perform a one-off `loadFolderManifest`) before calling `state.provider.saveFolderManifest`, ensuring existing manifests are patched instead of recreated (`App.syncFolderFromCloud`).
+3. In the Google Drive provider (`saveFolderManifest`), add a safety fallback that, when both supplied IDs are empty, queries for the latest `.orbital8-state.json` in the target folder and reuses its ID; optionally log or queue cleanup for older duplicates to keep the folder tidy.
 
 
 4. UNIFIED CODE BASE provider-specific code into a unified DataManager with provider "adapters." EXCEPT FOR Storage Provider Selection, Auth, and Folder Selection.
@@ -238,10 +256,12 @@ Huge deficiency
 Updated Google Drive file listings and ID-based fetches to request webViewLink, persist a durable view URL, and keep the API download link for fallbacks. 
 Revised Google Drive fallback image selection to try the permanent link first and only use API downloads if necessary. 
 Ensured CSV exports reuse the permanent Google Drive URL format for the “Direct Image URL” column.
+
 7. Device b not showing changes made on device a
 The “Recycle/Trash” behavior and the mismatched priority counts both point to the same underlying sync gap: Device A is successfully pushing stack mutations (stack:move to "priority"/"out"), but it is not rehydrating the latest stack metadata from Google Drive after those pushes. Without a pull/rehydrate step, the UI never reflects remote changes (including priority counts), so Device A’s folder view remains stale even though it says “fetching from cloud.”
 Device B’s shorter log proves the backend is storing the new stack state, but Device A isn’t consuming it. The priority-count mismatch therefore isn’t a separate bug; it’s a symptom of the same missing inbound-sync/rehydration logic that also keeps the recycle stack from appearing.
 To confirm, we should log every inbound fetch (timestamp, request params, number of stack records returned), any filtering/merge decisions, and the resulting UI state (count per stack, last applied stackSequence). That instrumentation will tell us whether the pull never happens, the payload is empty, or the merge logic is discarding it.
+
 8. Major Syncing Requirements 
 analysis-v9-cross-browser-sync.md is centered on diagnosing stale metadata caused by reusing the same folder cloudVersion across browsers and recommends ensuring each flush bumps the version marker beyond what peers already cached.
 Requirement 1 – Fast cloud-vs-internal freshness check
@@ -249,6 +269,7 @@ The analysis calls out the need for monotonically increasing version markers but
 Document lightweight version gating 
 Requirement 2 – Incremental updates when the cloud is ahead
 The document notes that Browser B skipped the manifest diff entirely because it thought the versions matched, but it never prescribes how to scope downstream work so that, when the cloud version truly is ahead, only incremental additions/changes/deletes are applied locally. Detailing the expected delta-application flow (e.g., reusing manifest diffs and pruning deleted entries) would ensure the sync remains efficient once version bumps are reliable.
+
 9. Synch analysis
 # v9 cross-browser sync diagnosis
 ## Observed symptoms
@@ -273,12 +294,9 @@ In short, the folder version marker is not guaranteed to increase beyond the val
 - **Cons**: Requires manifest compare logic and storage of hashes. Slightly heavier computation and introduces extra state to sync.
 ## Recommendation
 Option 2 provides the quickest, least invasive fix: enforce `nextVersion > existing.cloudVersion` before pushing the marker. Pair it with an integration test that exercises two browser caches to ensure the second client downloads changes immediately.
-10. Tags and notes (bulk in grid and single in details)
-Introduced reusable TagService, TagEditor, and NotesEditor utilities so chip input, inline removal, and note/rating edits update all targeted files instantly while keeping the shared tag cache in sync.
+ting Tag control and wired it through the shared editors so dialog saves propagate notes and ratings to every selected image.
 
-Rewired the details panel’s Tags and Notes tabs to render the new editors with multi-selection messaging, ensuring updates apply across the active selection once per change.
 
-Added a bulk Notes action alongside the existing Tag control and wired it through the shared editors so dialog saves propagate notes and ratings to every selected image.
 11. Test plan
 To be done with google drive AND one drive
 
@@ -400,3 +418,11 @@ Load Folder: Verify that the folder loads successfully and the first image is di
 111. Flick the current image to the in/inbox stack.
 112. Click into the in/inbox stack.
 113. Verify that this same image is now displayed on center stage.
+
+
+
+
+
+#####
+future do not code only log
+bulk favorite - new indicate on thumbnail toggle status which is able to be tapped/clicked individually 
