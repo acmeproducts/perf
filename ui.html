@@ -559,10 +559,10 @@
             opacity: 0;
             pointer-events: none;
         }
-        .gesture-layer .tri.up { clip-path: polygon(0% 0%, 100% 0%, 50% 50%); background: transparent; }
-        .gesture-layer .tri.right { clip-path: polygon(100% 0%, 100% 100%, 50% 50%); background: transparent; }
-        .gesture-layer .tri.down { clip-path: polygon(0% 100%, 100% 100%, 50% 50%); background: transparent; }
-        .gesture-layer .tri.left { clip-path: polygon(0% 0%, 0% 100%, 50% 50%); background: transparent; }
+        .gesture-layer .tri.up { clip-path: polygon(0% 0%, 100% 0%, 50% 32%); background: transparent; }
+        .gesture-layer .tri.right { clip-path: polygon(100% 0%, 100% 100%, 68% 50%); background: transparent; }
+        .gesture-layer .tri.down { clip-path: polygon(0% 100%, 100% 100%, 50% 68%); background: transparent; }
+        .gesture-layer .tri.left { clip-path: polygon(0% 0%, 0% 100%, 32% 50%); background: transparent; }
         .gesture-layer .half.left {
             position: absolute;
             top: 12px;
@@ -3257,6 +3257,7 @@
             TAP_DURATION_THRESHOLD: 260,
             TRAIL_INTERVAL_MS: 12,
             TRAIL_LIFETIME_MS: 1050,
+            HUB_RADIUS_FACTOR: 0.18,
             trailThrottle: null,
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
@@ -3361,7 +3362,7 @@
                 if (!rect.width || !rect.height) return false;
                 const cx = rect.left + rect.width / 2;
                 const cy = rect.top + rect.height / 2;
-                const radius = Math.min(rect.width, rect.height) * 0.12;
+                const radius = Math.min(rect.width, rect.height) * this.HUB_RADIUS_FACTOR;
                 return Math.hypot(clientX - cx, clientY - cy) <= radius;
             },
             pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
@@ -3383,23 +3384,34 @@
                 if (!viewport) return null;
                 const rect = viewport.getBoundingClientRect();
                 if (!rect.width || !rect.height) return null;
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const radius = Math.min(rect.width, rect.height) * this.HUB_RADIUS_FACTOR;
+                if (Math.hypot(clientX - cx, clientY - cy) <= radius) return null;
                 const fx = (clientX - rect.left) / rect.width;
                 const fy = (clientY - rect.top) / rect.height;
                 const clamp = (val) => Math.max(0, Math.min(1, val));
                 const px = clamp(fx);
                 const py = clamp(fy);
-                const cx = 0.5, cy = 0.5;
-                const inUp = this.pointInTriangle(px, py, 0, 0, 1, 0, cx, cy);
-                const inRight = this.pointInTriangle(px, py, 1, 0, 1, 1, cx, cy);
-                const inDown = this.pointInTriangle(px, py, 0, 1, 1, 1, cx, cy);
-                const inLeft = this.pointInTriangle(px, py, 0, 0, 0, 1, cx, cy);
+                const normRadiusX = radius / rect.width;
+                const normRadiusY = radius / rect.height;
+                const centerX = 0.5;
+                const centerY = 0.5;
+                const apexUpY = Math.max(0, centerY - normRadiusY);
+                const apexDownY = Math.min(1, centerY + normRadiusY);
+                const apexLeftX = Math.max(0, centerX - normRadiusX);
+                const apexRightX = Math.min(1, centerX + normRadiusX);
+                const inUp = this.pointInTriangle(px, py, 0, 0, 1, 0, centerX, apexUpY);
+                const inRight = this.pointInTriangle(px, py, 1, 0, 1, 1, apexRightX, centerY);
+                const inDown = this.pointInTriangle(px, py, 0, 1, 1, 1, centerX, apexDownY);
+                const inLeft = this.pointInTriangle(px, py, 0, 0, 0, 1, apexLeftX, centerY);
                 if (inUp && !inRight && !inDown && !inLeft) return 'up';
                 if (inRight && !inUp && !inDown && !inLeft) return 'right';
                 if (inDown && !inUp && !inRight && !inLeft) return 'down';
                 if (inLeft && !inUp && !inRight && !inDown) return 'left';
                 if (inUp || inRight || inDown || inLeft) {
-                    const dx = px - 0.5;
-                    const dy = py - 0.5;
+                    const dx = px - centerX;
+                    const dy = py - centerY;
                     if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
                     return dy > 0 ? 'down' : 'up';
                 }
