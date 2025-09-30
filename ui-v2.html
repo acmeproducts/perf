@@ -440,25 +440,30 @@
         
         .tags-container { margin-bottom: 16px; }
         .tag-editor-container { display: flex; flex-direction: column; gap: 12px; }
-        .tags-container.tag-editor-container { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+        .tag-section { display: flex; flex-direction: column; gap: 6px; }
+        .tag-section-title {
+            font-size: 12px; font-weight: 600; color: #4b5563; text-transform: uppercase; letter-spacing: 0.04em;
+        }
         .tag-chip-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; }
         .tag-chip {
             display: inline-flex; align-items: center; background: #e0e7ff; color: #3730a3; padding: 4px 8px;
             border-radius: 12px; font-size: 13px; font-weight: 500; gap: 6px;
         }
+        .tag-chip--recent { background: #e5e7eb; color: #374151; }
+        .tag-chip-button {
+            background: transparent; border: none; color: inherit; cursor: pointer; font-size: inherit; padding: 0; display: flex;
+            align-items: center; gap: 6px;
+        }
+        .tag-chip-button:focus-visible {
+            outline: 2px solid #3b82f6; outline-offset: 2px;
+        }
         .tag-chip-remove {
-            background: transparent; border: none; color: #4338ca; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+            background: transparent; border: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
             width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%;
             transition: background-color 0.2s;
         }
-        .tag-chip-remove:hover { background: rgba(99, 102, 241, 0.1); }
-        .tag-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-        .tag-suggestions.hidden { display: none; }
-        .tag-suggestion {
-            background-color: #e5e7eb; color: #374151; padding: 4px 8px; border-radius: 6px;
-            font-size: 12px; cursor: pointer; transition: background-color 0.2s; border: none;
-        }
-        .tag-suggestion:hover { background-color: #d1d5db; }
+        .tag-chip-remove:hover { background: rgba(99, 102, 241, 0.12); }
+        .tag-chip--recent .tag-chip-remove:hover { background: rgba(107, 114, 128, 0.12); }
         .tag-editor-note { font-size: 12px; color: #6b7280; }
 
 
@@ -1341,6 +1346,21 @@
             normalizeIds(ids = []) {
                 return Array.from(new Set((ids || []).map(id => (id != null ? String(id) : '')).filter(Boolean)));
             },
+            normalizeTagValue(tag) {
+                const trimmed = (tag || '').trim();
+                if (!trimmed) return '';
+                return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+            },
+            normalizeTagList(tags = []) {
+                const normalized = [];
+                (tags || []).forEach(tag => {
+                    const value = this.normalizeTagValue(tag);
+                    if (value && !normalized.includes(value)) {
+                        normalized.push(value);
+                    }
+                });
+                return normalized;
+            },
             getFiles(ids = []) {
                 const normalized = this.normalizeIds(ids);
                 return normalized.map(id => state.imageFiles.find(file => file.id === id)).filter(Boolean);
@@ -1348,33 +1368,30 @@
             getDisplayTags(ids = []) {
                 const files = this.getFiles(ids);
                 const seen = new Set();
-                const tags = [];
                 files.forEach(file => {
-                    (file.tags || []).forEach(tag => {
-                        if (!seen.has(tag)) {
-                            seen.add(tag);
-                            tags.push(tag);
-                        }
-                        if (!state.tags.has(tag)) {
-                            state.tags.add(tag);
-                        }
+                    const normalizedTags = this.normalizeTagList(file.tags || []);
+                    file.tags = normalizedTags;
+                    normalizedTags.forEach(tag => {
+                        seen.add(tag);
+                        state.tags.add(tag);
                     });
                 });
-                return tags;
+                return Array.from(seen).sort((a, b) => a.localeCompare(b));
             },
             async addTag(tag, ids = []) {
-                const trimmed = (tag || '').trim();
+                const normalizedTag = this.normalizeTagValue(tag);
                 const targetIds = this.normalizeIds(ids);
-                if (!trimmed || targetIds.length === 0) {
+                if (!normalizedTag || targetIds.length === 0) {
                     return this.getDisplayTags(targetIds);
                 }
                 const files = this.getFiles(targetIds);
                 let changed = false;
                 const tasks = files.map(file => {
-                    const currentTags = Array.isArray(file.tags) ? file.tags : [];
-                    if (!currentTags.includes(trimmed)) {
+                    const currentTags = this.normalizeTagList(file.tags || []);
+                    if (!currentTags.includes(normalizedTag)) {
                         changed = true;
-                        const newTags = [...currentTags, trimmed];
+                        const newTags = [...currentTags, normalizedTag];
+                        file.tags = newTags;
                         return App.updateUserMetadata(file.id, { tags: newTags });
                     }
                     return null;
@@ -1382,22 +1399,23 @@
                 if (tasks.length > 0) {
                     await Promise.all(tasks);
                 }
-                if (changed && !state.tags.has(trimmed)) {
-                    state.tags.add(trimmed);
+                if (changed) {
+                    state.tags.add(normalizedTag);
                 }
                 return this.getDisplayTags(targetIds);
             },
             async removeTag(tag, ids = []) {
-                const trimmed = (tag || '').trim();
+                const normalizedTag = this.normalizeTagValue(tag);
                 const targetIds = this.normalizeIds(ids);
-                if (!trimmed || targetIds.length === 0) {
+                if (!normalizedTag || targetIds.length === 0) {
                     return this.getDisplayTags(targetIds);
                 }
                 const files = this.getFiles(targetIds);
                 const tasks = files.map(file => {
-                    const currentTags = Array.isArray(file.tags) ? file.tags : [];
-                    if (currentTags.includes(trimmed)) {
-                        const newTags = currentTags.filter(t => t !== trimmed);
+                    const currentTags = this.normalizeTagList(file.tags || []);
+                    if (currentTags.includes(normalizedTag)) {
+                        const newTags = currentTags.filter(t => t !== normalizedTag);
+                        file.tags = newTags;
                         return App.updateUserMetadata(file.id, { tags: newTags });
                     }
                     return null;
@@ -1408,18 +1426,23 @@
                 return this.getDisplayTags(targetIds);
             },
             getSessionTags() {
-                return Array.from(state.tags);
+                return Array.from(state.tags).sort((a, b) => a.localeCompare(b));
+            },
+            removeSessionTag(tag) {
+                const normalized = this.normalizeTagValue(tag);
+                if (!normalized) return;
+                state.tags.delete(normalized);
             }
         };
 
         class TagEditorInstance {
             constructor(options) {
-                const { container, input, suggestionContainer, targetIds = [], placeholder } = options;
+                const { container, input, recentContainer, targetIds = [], placeholder } = options;
                 this.container = container;
                 this.input = input;
-                this.suggestionContainer = suggestionContainer;
+                this.recentContainer = recentContainer;
                 this.targetIds = TagService.normalizeIds(targetIds);
-                this.placeholder = placeholder || 'Add tag and press Enter';
+                this.placeholder = placeholder || 'Enter tags separated by commas - non-# tags are auto-prefixed when you press Enter';
                 this.isProcessing = false;
                 this.handleKeydown = this.handleKeydown.bind(this);
             }
@@ -1431,13 +1454,13 @@
                     this.input.addEventListener('keydown', this.handleKeydown);
                 }
                 this.refresh();
-                this.renderSuggestions();
+                this.renderRecents();
             }
 
             setTargetIds(ids = []) {
                 this.targetIds = TagService.normalizeIds(ids);
                 this.refresh();
-                this.renderSuggestions();
+                this.renderRecents();
             }
 
             getTags() {
@@ -1451,7 +1474,9 @@
                     const value = this.input.value.trim();
                     if (!value) return;
                     this.input.value = '';
-                    await this.addTag(value);
+                    const values = value.split(',').map(v => v.trim()).filter(Boolean);
+                    if (values.length === 0) return;
+                    await this.addTag(values);
                 }
             }
 
@@ -1459,9 +1484,12 @@
                 if (this.isProcessing) return;
                 this.isProcessing = true;
                 try {
-                    await TagService.addTag(tag, this.targetIds);
+                    const tagsToAdd = Array.isArray(tag) ? tag : [tag];
+                    for (const rawTag of tagsToAdd) {
+                        await TagService.addTag(rawTag, this.targetIds);
+                    }
                     this.refresh();
-                    this.renderSuggestions();
+                    this.renderRecents();
                 } catch (error) {
                     Utils.showToast(`Failed to add tag: ${error.message}`, 'error', true);
                 } finally {
@@ -1476,7 +1504,7 @@
                 try {
                     await TagService.removeTag(tag, this.targetIds);
                     this.refresh();
-                    this.renderSuggestions();
+                    this.renderRecents();
                 } catch (error) {
                     Utils.showToast(`Failed to remove tag: ${error.message}`, 'error', true);
                 } finally {
@@ -1506,23 +1534,43 @@
                 });
             }
 
-            renderSuggestions() {
-                if (!this.suggestionContainer) return;
-                const tags = TagService.getSessionTags();
-                this.suggestionContainer.innerHTML = '';
+            renderRecents() {
+                if (!this.recentContainer) return;
+                const assigned = new Set(this.getTags());
+                const tags = TagService.getSessionTags().filter(tag => !assigned.has(tag));
+                this.recentContainer.innerHTML = '';
+                const section = this.recentContainer.closest('.tag-section');
                 if (tags.length === 0) {
-                    this.suggestionContainer.classList.add('hidden');
+                    this.recentContainer.style.display = 'none';
+                    if (section) section.style.display = 'none';
                     return;
                 }
-                this.suggestionContainer.classList.remove('hidden');
+                this.recentContainer.style.display = '';
+                if (section) section.style.display = '';
                 tags.forEach(tag => {
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.className = 'tag-suggestion';
-                    button.dataset.tag = tag;
-                    button.textContent = tag;
-                    button.addEventListener('click', () => this.addTag(tag));
-                    this.suggestionContainer.appendChild(button);
+                    const chip = document.createElement('div');
+                    chip.className = 'tag-chip tag-chip--recent';
+
+                    const applyButton = document.createElement('button');
+                    applyButton.type = 'button';
+                    applyButton.className = 'tag-chip-button';
+                    applyButton.textContent = tag;
+                    applyButton.addEventListener('click', () => this.addTag(tag));
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'tag-chip-remove';
+                    removeBtn.dataset.tag = tag;
+                    removeBtn.textContent = '×';
+                    removeBtn.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        TagService.removeSessionTag(tag);
+                        this.renderRecents();
+                    });
+
+                    chip.appendChild(applyButton);
+                    chip.appendChild(removeBtn);
+                    this.recentContainer.appendChild(chip);
                 });
             }
 
@@ -1533,8 +1581,11 @@
                 if (this.container) {
                     this.container.innerHTML = '';
                 }
-                if (this.suggestionContainer) {
-                    this.suggestionContainer.innerHTML = '';
+                if (this.recentContainer) {
+                    this.recentContainer.innerHTML = '';
+                    this.recentContainer.style.display = '';
+                    const section = this.recentContainer.closest('.tag-section');
+                    if (section) section.style.display = '';
                 }
             }
         }
@@ -5273,26 +5324,47 @@
                 const targetIds = this.getTargetFileIds(file?.id);
                 container.classList.add('tag-editor-container');
                 container.innerHTML = '';
-                const message = document.createElement('div');
-                message.className = 'tag-editor-note';
-                message.textContent = targetIds.length > 1 ? `Changes apply to ${targetIds.length} selected images.` : 'Changes apply to this image.';
-                container.appendChild(message);
+
+                const assignedSection = document.createElement('div');
+                assignedSection.className = 'tag-section';
+                const assignedTitle = document.createElement('div');
+                assignedTitle.className = 'tag-section-title';
+                assignedTitle.textContent = 'Assigned Tags';
                 const chipList = document.createElement('div');
                 chipList.className = 'tag-chip-list';
-                container.appendChild(chipList);
+                assignedSection.appendChild(assignedTitle);
+                assignedSection.appendChild(chipList);
+
                 const input = document.createElement('input');
                 input.type = 'text';
                 input.className = 'tag-input';
-                input.placeholder = 'Add tag and press Enter';
+                input.placeholder = 'Enter tags separated by commas - non-# tags are auto-prefixed when you press Enter';
+
+                const recentSection = document.createElement('div');
+                recentSection.className = 'tag-section';
+                const recentTitle = document.createElement('div');
+                recentTitle.className = 'tag-section-title';
+                recentTitle.textContent = 'Recently Used Tags';
+                const recentList = document.createElement('div');
+                recentList.className = 'tag-chip-list';
+                recentSection.appendChild(recentTitle);
+                recentSection.appendChild(recentList);
+
+                const message = document.createElement('div');
+                message.className = 'tag-editor-note';
+                message.textContent = targetIds.length > 1 ? `Changes apply to ${targetIds.length} selected images.` : 'Changes apply to this image.';
+
+                container.appendChild(assignedSection);
                 container.appendChild(input);
-                const suggestions = document.createElement('div');
-                suggestions.className = 'tag-suggestions';
-                container.appendChild(suggestions);
+                container.appendChild(recentSection);
+                container.appendChild(message);
+
                 this.tagEditor = TagEditor.create({
                     container: chipList,
                     input,
-                    suggestionContainer: suggestions,
-                    targetIds
+                    recentContainer: recentList,
+                    targetIds,
+                    placeholder: input.placeholder
                 });
                 input.focus();
             },
@@ -5453,17 +5525,23 @@
                 this.show('tag', {
                     title: 'Edit Tags',
                     content: `<div class="tag-editor-container">
+                                <div class="tag-section">
+                                    <div class="tag-section-title">Assigned Tags</div>
+                                    <div id="bulk-tag-chips" class="tag-chip-list"></div>
+                                </div>
+                                <input type="text" id="bulk-tag-input" class="tag-input" placeholder="Enter tags separated by commas - non-# tags are auto-prefixed when you press Enter">
+                                <div class="tag-section">
+                                    <div class="tag-section-title">Recently Used Tags</div>
+                                    <div id="bulk-tag-recents" class="tag-chip-list"></div>
+                                </div>
                                 <div class="tag-editor-note">${scopeText}</div>
-                                <div id="bulk-tag-chips" class="tag-chip-list"></div>
-                                <input type="text" id="bulk-tag-input" class="tag-input" placeholder="Add tag and press Enter">
-                                <div id="bulk-tag-suggestions" class="tag-suggestions"></div>
                              </div>`,
                     hideConfirm: true,
                     cancelText: 'Close'
                 });
                 const chipsContainer = document.getElementById('bulk-tag-chips');
                 const input = document.getElementById('bulk-tag-input');
-                const suggestions = document.getElementById('bulk-tag-suggestions');
+                const recents = document.getElementById('bulk-tag-recents');
                 if (this.tagEditor) {
                     this.tagEditor.destroy();
                     this.tagEditor = null;
@@ -5471,8 +5549,9 @@
                 this.tagEditor = TagEditor.create({
                     container: chipsContainer,
                     input,
-                    suggestionContainer: suggestions,
-                    targetIds: selectedIds
+                    recentContainer: recents,
+                    targetIds: selectedIds,
+                    placeholder: input ? input.placeholder : undefined
                 });
                 if (input) input.focus();
             },
