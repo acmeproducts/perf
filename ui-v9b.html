@@ -1,4 +1,4 @@
-<!-- Release: 2024-05-06T00:00:00Z | R1 Baseline Convergence | Footer standardization & schema alignment -->
+<!-- Release: 2024-05-08T00:00:00Z | V9b UI Improvements | Footer standardization and … -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1038,9 +1038,9 @@
         // ===== ORBITAL8 Goji Version - App Root =====
         
         const RELEASE_METADATA = Object.freeze({
-            name: 'R1 Baseline Convergence',
-            timestamp: '2024-05-06T00:00:00Z',
-            summary: 'Footer standardization & schema alignment'
+            name: 'V9b UI Improvements',
+            timestamp: '2024-05-08T00:00:00Z',
+            summary: 'Footer standardization and …'
         });
 
         const Templates = {
@@ -1049,15 +1049,16 @@
                 const metadataText = [
                     RELEASE_METADATA.name,
                     RELEASE_METADATA.timestamp,
-                    RELEASE_METADATA.summary
-                ].filter(Boolean).join(' • ');
+                    'View Synch Log',
+                    'Reset Cloud'
+                ].filter(Boolean).join(' | ');
 
                 return `
                     <footer id="master-footer${suffix}" class="master-footer" data-master-footer role="contentinfo">
                         <span class="footer-meta" aria-label="Release metadata">${metadataText}</span>
                         <span class="footer-actions">
-                            <button type="button" class="footer-link" data-footer-role="sync-log">View Sync Log</button>
-                            <button type="button" class="footer-link" data-footer-role="reset-folder">Reset from Cloud</button>
+                            <button type="button" class="footer-link" data-footer-role="sync-log">View Synch Log</button>
+                            <button type="button" class="footer-link" data-footer-role="reset-folder">Reset Cloud</button>
                         </span>
                     </footer>
                 `.trim();
@@ -5107,7 +5108,8 @@
                     state.currentStackPosition = 0;
                 }
 
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) {
                     this.showEmptyState();
                     return;
@@ -5260,7 +5262,8 @@
                 const currentStackName = state.currentStack;
                 const currentStackArray = state.stacks[currentStackName];
                 if (!currentStackArray || currentStackArray.length === 0) return;
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) return;
 
                 state.isImageTransitioning = true;
@@ -5320,11 +5323,18 @@
                             }
                         }
                     } else {
-                        state.currentStackPosition = 0;
+                        let nextIndex = previousPosition;
+                        if (nextIndex >= updatedStack.length) {
+                            nextIndex = updatedStack.length - 1;
+                        }
+                        if (nextIndex < 0) {
+                            nextIndex = 0;
+                        }
+                        state.currentStackPosition = nextIndex;
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
-                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: true });
+                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
                 } catch (error) {
                     Utils.showToast(`Failed to delete ${currentFile.name}`, 'error', true);
                 } finally {
@@ -5353,9 +5363,6 @@
                 Utils.showModal('grid-modal');
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
                 state.grid.stack = stack;
-                if (Utils.elements.gridContent) {
-                    Utils.elements.gridContent.scrollTop = 0;
-                }
                 state.grid.isDirty = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
@@ -6426,7 +6433,8 @@
             hubPressActive: false,
             overlay: null,
             lastHubTap: { time: 0, x: 0, y: 0 },
-            tapHandled: false,
+            activePointerId: null,
+            activePointerType: null,
             DOUBLE_TAP_MAX_INTERVAL: 320,
             DOUBLE_TAP_MAX_DISTANCE: 28,
             TAP_DISTANCE_THRESHOLD: 26,
@@ -6441,13 +6449,12 @@
                 this.initGestureOverlay();
             },
             setupEventListeners() {
-                Utils.elements.imageViewport.addEventListener('mousedown', this.handleStart.bind(this));
-                document.addEventListener('mousemove', this.handleMove.bind(this));
-                document.addEventListener('mouseup', this.handleEnd.bind(this));
-                Utils.elements.imageViewport.addEventListener('touchstart', this.handleStart.bind(this), { passive: false });
-                document.addEventListener('touchmove', this.handleMove.bind(this), { passive: false });
-                document.addEventListener('touchend', this.handleEnd.bind(this), { passive: false });
-                document.addEventListener('touchcancel', this.handleEnd.bind(this), { passive: false });
+                const viewport = Utils.elements.imageViewport;
+                if (!viewport) return;
+                viewport.addEventListener('pointerdown', this.handleStart.bind(this));
+                document.addEventListener('pointermove', this.handleMove.bind(this));
+                document.addEventListener('pointerup', this.handleEnd.bind(this));
+                document.addEventListener('pointercancel', this.handleEnd.bind(this));
             },
             setupPinchZoom() {
                 Utils.elements.centerImage.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
@@ -6627,14 +6634,19 @@
                 }
             },
             handleStart(e) {
-                this.tapHandled = false;
-                if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
+                const pointer = this.getPointerDetails(e);
+                if (pointer.type === 'touch' && state.isPinching) return;
                 if (state.currentScale > 1.1) return;
-                const point = e.touches ? e.touches[0] : e;
-                const hubInteraction = this.isInHub(point.clientX, point.clientY);
+                if (pointer.type === 'touch' && e.isPrimary === false) return;
+                if (this.activePointerId !== null && this.activePointerId !== pointer.id) return;
+                if (this.activePointerType && this.activePointerType !== pointer.type) return;
+                if (pointer.type === 'touch' && e.touches && e.touches.length > 1) return;
+                const hubInteraction = this.isInHub(pointer.clientX, pointer.clientY);
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
-                this.startPos = { x: point.clientX, y: point.clientY };
-                this.currentPos = { x: point.clientX, y: point.clientY };
+                this.activePointerId = pointer.id;
+                this.activePointerType = pointer.type;
+                this.startPos = { x: pointer.clientX, y: pointer.clientY };
+                this.currentPos = { x: pointer.clientX, y: pointer.clientY };
                 this.startTimestamp = performance.now();
                 this.gestureStarted = false;
                 state.isDragging = true;
@@ -6642,19 +6654,28 @@
                 if (!hubInteraction) {
                     Utils.elements.centerImage.classList.add('dragging');
                 }
-                this.spawnRipple(point.clientX, point.clientY);
-                this.queueTrail(point.clientX, point.clientY);
+                this.spawnRipple(pointer.clientX, pointer.clientY);
+                this.queueTrail(pointer.clientX, pointer.clientY);
             },
             handleMove(e) {
                 if (!state.isDragging) return;
+                if (this.activePointerId === null) return;
+                if (e.pointerId !== undefined && e.pointerId !== this.activePointerId) return;
+                if (this.activePointerType === 'touch' && state.isPinching) {
+                    state.isDragging = false;
+                    Utils.elements.centerImage.classList.remove('dragging');
+                    this.hideAllEdgeGlows();
+                    this.resetActivePointer();
+                    return;
+                }
                 if (e.touches && e.touches.length > 1) {
                     state.isDragging = false; Utils.elements.centerImage.classList.remove('dragging');
-                    this.hideAllEdgeGlows(); return;
+                    this.hideAllEdgeGlows(); this.resetActivePointer(); return;
                 }
                 e.preventDefault();
-                const point = e.touches ? e.touches[0] : e;
-                this.currentPos = { x: point.clientX, y: point.clientY };
-                this.queueTrail(point.clientX, point.clientY);
+                const pointer = this.getPointerDetails(e);
+                this.currentPos = { x: pointer.clientX, y: pointer.clientY };
+                this.queueTrail(pointer.clientX, pointer.clientY);
                 if (this.hubPressActive) { return; }
                 if (state.imageFiles.length === 0) return;
                 const deltaX = this.currentPos.x - this.startPos.x;
@@ -6671,11 +6692,13 @@
                 }
             },
             handleEnd(e) {
-                if (!state.isDragging) return;
+                const matchesPointer = this.isActivePointer(e);
+                if (!matchesPointer) return;
+                if (!state.isDragging) { this.resetActivePointer(); return; }
                 state.isDragging = false;
                 Utils.elements.centerImage.classList.remove('dragging');
-                const point = e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e;
-                if (point) { this.currentPos = { x: point.clientX, y: point.clientY }; }
+                const pointer = this.getPointerDetails(e, true);
+                if (pointer) { this.currentPos = { x: pointer.clientX, y: pointer.clientY }; }
                 this.spawnTrail(this.currentPos.x, this.currentPos.y);
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
@@ -6705,6 +6728,7 @@
                     this.hideAllEdgeGlows();
                     this.hubPressActive = false;
                     this.gestureStarted = false;
+                    this.resetActivePointer();
                     return;
                 }
 
@@ -6724,15 +6748,53 @@
                         }
                     }
                 } else if (!this.gestureStarted && isTap) {
-                    if (!this.tapHandled) {
-                        this.tapHandled = true;
-                        this.spawnRipple(this.currentPos.x, this.currentPos.y);
-                        this.handleTap(this.currentPos.x, this.currentPos.y);
-                    }
+                    this.spawnRipple(this.currentPos.x, this.currentPos.y);
+                    this.handleTap(this.currentPos.x, this.currentPos.y);
                 }
                 this.hideAllEdgeGlows();
                 this.hubPressActive = false;
                 this.gestureStarted = false;
+                this.resetActivePointer();
+            },
+            getPointerDetails(e, preferChangedTouches = false) {
+                if (e.pointerId !== undefined) {
+                    return {
+                        id: e.pointerId,
+                        type: e.pointerType || 'mouse',
+                        clientX: e.clientX,
+                        clientY: e.clientY
+                    };
+                }
+                const touchList = preferChangedTouches ? e.changedTouches : e.touches;
+                if (touchList && touchList.length) {
+                    const touch = touchList[0];
+                    return {
+                        id: touch.identifier,
+                        type: 'touch',
+                        clientX: touch.clientX,
+                        clientY: touch.clientY
+                    };
+                }
+                return {
+                    id: 'mouse',
+                    type: 'mouse',
+                    clientX: e.clientX,
+                    clientY: e.clientY
+                };
+            },
+            isActivePointer(e) {
+                if (this.activePointerId === null) return false;
+                if (e.pointerId !== undefined) {
+                    return e.pointerId === this.activePointerId;
+                }
+                if (e.changedTouches && e.changedTouches.length) {
+                    return Array.from(e.changedTouches).some(t => t.identifier === this.activePointerId);
+                }
+                return this.activePointerId === 'mouse';
+            },
+            resetActivePointer() {
+                this.activePointerId = null;
+                this.activePointerType = null;
             },
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
@@ -7194,7 +7256,21 @@
                     const pill = document.getElementById(`pill-${stackName}`);
                     if (pill) {
                         let pointerActivated = false;
+                        let activePointerId = null;
+                        let pointerCaptureTarget = null;
+                        const releasePointer = (event) => {
+                            if (event && typeof event.pointerId === 'number' && pointerCaptureTarget && typeof pointerCaptureTarget.releasePointerCapture === 'function') {
+                                try { pointerCaptureTarget.releasePointerCapture(event.pointerId); } catch (error) { /* noop */ }
+                            }
+                            pointerCaptureTarget = null;
+                            activePointerId = null;
+                            setTimeout(() => { pointerActivated = false; }, 150);
+                        };
                         const activatePill = async (event) => {
+                            const pointerId = (event && typeof event.pointerId === 'number') ? event.pointerId : null;
+                            if (pointerId !== null && activePointerId !== null && pointerId !== activePointerId) {
+                                return;
+                            }
                             const isPointerInvocation = Boolean(
                                 pointerActivated ||
                                 (event && (
@@ -7231,13 +7307,35 @@
                             UI.acknowledgePillCounter(stackName);
                         };
 
-                        pill.addEventListener('pointerup', async (event) => {
+                        pill.addEventListener('pointerdown', (event) => {
                             pointerActivated = true;
+                            if (typeof event.pointerId === 'number') {
+                                activePointerId = event.pointerId;
+                                const target = event.target;
+                                const canCapture = target && typeof target.setPointerCapture === 'function';
+                                if (canCapture) {
+                                    try {
+                                        target.setPointerCapture(event.pointerId);
+                                        pointerCaptureTarget = target;
+                                    } catch (error) {
+                                        pointerCaptureTarget = null;
+                                    }
+                                } else {
+                                    pointerCaptureTarget = null;
+                                }
+                            }
+                        });
+
+                        pill.addEventListener('pointerup', async (event) => {
                             try {
                                 await activatePill(event);
                             } finally {
-                                setTimeout(() => { pointerActivated = false; }, 150);
+                                releasePointer(event);
                             }
+                        });
+
+                        pill.addEventListener('pointercancel', (event) => {
+                            releasePointer(event);
                         });
 
                         pill.addEventListener('click', (event) => {
