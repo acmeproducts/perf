@@ -1097,6 +1097,7 @@
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
+            isReturningToFolders: false,
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
@@ -4810,17 +4811,37 @@
                 Utils.showScreen('app-container');
             },
             async returnToFolderSelection() {
+                if (state.isReturningToFolders) return;
+
+                state.isReturningToFolders = true;
+                const { backButton, backButtonSpinner } = Utils.elements;
+
+                if (backButton) {
+                    backButton.disabled = true;
+                }
+                if (backButtonSpinner) {
+                    backButtonSpinner.style.display = 'inline-block';
+                }
+
                 try {
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
-                    state.activeRequests.abort(); 
+                    state.activeRequests.abort();
                     this.resetViewState();
                     Utils.showScreen('folder-screen');
                     await Folders.load();
                 } catch(error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
                     Utils.showScreen('folder-screen');
+                } finally {
+                    if (backButton) {
+                        backButton.disabled = false;
+                    }
+                    if (backButtonSpinner) {
+                        backButtonSpinner.style.display = 'none';
+                    }
+                    state.isReturningToFolders = false;
                 }
             },
             resetViewState() {
@@ -6511,6 +6532,8 @@
                 Utils.elements.actionConfirm.disabled = true; Utils.elements.actionCancel.textContent = "Close";
             },
             executeFolderMove() {
+                if (state.isReturningToFolders) return;
+
                 state.folderMoveMode = { active: true, files: [...state.grid.selected], };
                 this.hide(); Grid.close(); App.returnToFolderSelection();
                 Utils.showToast(`Select destination folder for ${state.folderMoveMode.files.length} images`, 'info', true);
@@ -7052,6 +7075,8 @@
             },
 
             async handleFolderMoveSelection(folderId, folderName) {
+                if (state.isReturningToFolders) return;
+
                 const filesToMove = state.folderMoveMode.files;
                 Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
                 try {
@@ -7261,7 +7286,10 @@
                 Utils.elements.authBackButton.addEventListener('click', async () => { await App.backToProviderSelection(); });
             },
             setupFolderManagement() {
-                Utils.elements.backButton.addEventListener('click', () => App.returnToFolderSelection());
+                Utils.elements.backButton.addEventListener('click', () => {
+                    if (state.isReturningToFolders) return;
+                    App.returnToFolderSelection();
+                });
 
                 Utils.elements.folderBackButton.addEventListener('click', async () => { await App.backToProviderSelection(); });
                 Utils.elements.folderLogoutButton.addEventListener('click', async () => {
@@ -7294,6 +7322,7 @@
                 Utils.elements.cancelLoading.addEventListener('click', () => {
                     if (state.metadataExtractor) { state.metadataExtractor.abort(); }
                     state.activeRequests.abort();
+                    if (state.isReturningToFolders) return;
                     App.returnToFolderSelection();
                     Utils.showToast('Loading cancelled', 'info', true);
                 });
@@ -7340,7 +7369,10 @@
                         Utils.elements.selectAnotherFolderBtn.style.display = 'block';
                     }
                 });
-                Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => { App.returnToFolderSelection(); });
+                Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => {
+                    if (state.isReturningToFolders) return;
+                    App.returnToFolderSelection();
+                });
             },
             setupPillCounters() {
                 let skipNextGridOpen = false;
@@ -7594,7 +7626,10 @@
                         }
                         switch (e.key) {
                             case 'Tab': e.preventDefault(); UI.cycleThroughPills(); break;
-                            case 'Escape': await App.returnToFolderSelection(); break;
+                            case 'Escape':
+                                if (state.isReturningToFolders) break;
+                                await App.returnToFolderSelection();
+                                break;
                         }
                     } catch (error) {
                         Utils.showToast(`Keyboard command failed: ${error.message}`, 'error', true);
