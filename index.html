@@ -866,7 +866,7 @@
                 
                 <div class="grid-row-2">
                     <span class="selection-count">
-                        <span id="selection-text">0 selected</span>
+                        <span id="selection-text">No items selected</span>
                         <button id="deselect-all-btn" class="deselect-all-btn">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -2984,7 +2984,11 @@
                 const anchorSource = stack === state.currentStack ? Core.getCurrentFile() : (state.stacks[stack]?.[0] || null);
                 state.grid.anchorId = anchorSource ? anchorSource.id : null;
                 state.grid.filtered = [];
-                state.grid.selected = state.grid.anchorId ? [state.grid.anchorId] : [];
+                const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
+                const availableIds = new Set(stackFiles.map(file => file.id));
+                state.grid.selected = Array.isArray(state.grid.selected)
+                    ? state.grid.selected.filter(id => availableIds.has(id))
+                    : [];
                 Utils.elements.gridContainer.innerHTML = '';
                 this.clearDragState();
                 this.initializeLazyLoad(stack);
@@ -3082,12 +3086,14 @@
                 if (!anchorId) { return; }
                 const items = Array.isArray(files) ? files : state.grid.lazyLoadState.allFiles || [];
                 const hasAnchor = Array.isArray(items) && items.some(file => file && file.id === anchorId);
-                if (hasAnchor) {
-                    const filtered = state.grid.selected.filter(id => id !== anchorId);
-                    state.grid.selected = [anchorId, ...filtered];
-                } else {
-                    state.grid.selected = state.grid.selected.filter(id => id !== anchorId);
+                const currentSelection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                if (!hasAnchor) {
+                    state.grid.selected = currentSelection.filter(id => id !== anchorId);
+                    return;
                 }
+                if (!currentSelection.includes(anchorId)) { return; }
+                const filtered = currentSelection.filter(id => id !== anchorId);
+                state.grid.selected = [anchorId, ...filtered];
             },
 
             applySelectionToRenderedTiles() {
@@ -3350,10 +3356,12 @@
             },
             
             updateSelectionUI() {
-                const count = state.grid.selected.length;
+                const selection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                const count = selection.length;
                 const buttons = [Utils.elements.tagSelected, Utils.elements.notesSelected, Utils.elements.moveSelected,
                                Utils.elements.deleteSelected, Utils.elements.exportSelected, Utils.elements.folderSelected];
-                Utils.elements.selectionText.textContent = `${count} selected`;
+                const label = count === 0 ? 'No items selected' : `${count} item${count === 1 ? '' : 's'} selected`;
+                Utils.elements.selectionText.textContent = label;
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
             

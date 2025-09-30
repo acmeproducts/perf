@@ -1091,7 +1091,7 @@
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
-            grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
+            grid: { stack: null, selected: [], filtered: [], anchorId: null, isDirty: false, isDragging: false,
                 dragSession: createDefaultGridDragSession(),
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
@@ -5356,14 +5356,17 @@
                 state.grid.isDirty = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
-                state.grid.selected = []; state.grid.filtered = [];
-                const activeFiles = state.stacks[stack] || [];
-                if (activeFiles.length > 0) {
-                    state.grid.selected = [activeFiles[0].id];
-                }
+                const anchorSource = stack === state.currentStack ? Core.getCurrentFile() : (state.stacks[stack]?.[0] || null);
+                state.grid.anchorId = anchorSource ? anchorSource.id : null;
+                state.grid.filtered = [];
+                const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
+                const availableIds = new Set(stackFiles.map(file => file.id));
+                state.grid.selected = Array.isArray(state.grid.selected)
+                    ? state.grid.selected.filter(id => availableIds.has(id))
+                    : [];
                 Utils.elements.gridContainer.innerHTML = '';
                 this.clearDragState();
-                this.initializeLazyLoad(stack, activeFiles);
+                this.initializeLazyLoad(stack);
                 this.updateSelectionUI();
                 Core.updateStackCounts();
             },
@@ -5385,6 +5388,7 @@
                     }
                     await Core.displayCurrentImage();
                     state.grid.stack = null; state.grid.selected = [];
+                    state.grid.anchorId = null;
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
                 }
@@ -5394,15 +5398,35 @@
                 if (entries[0].isIntersecting) { this.renderBatch(); }
             },
 
-            initializeLazyLoad(stack, filesOverride = null) {
+            initializeLazyLoad(stack, filesOverride = null, options = {}) {
+                const { preserveFilter = false } = options;
                 const lazyState = state.grid.lazyLoadState;
-                const sourceFiles = Array.isArray(filesOverride)
-                    ? filesOverride
-                    : (state.grid.filtered.length > 0 ? state.grid.filtered : state.stacks[stack]);
-                lazyState.allFiles = sourceFiles;
+                const usingOverride = Array.isArray(filesOverride);
+                let baseFiles;
+
+                if (usingOverride) {
+                    baseFiles = filesOverride.slice();
+                } else if (state.grid.filtered.length > 0) {
+                    baseFiles = state.grid.filtered.slice();
+                } else {
+                    baseFiles = (state.stacks[stack] || []).slice();
+                }
+
+                const ordered = this.orderWithAnchor(baseFiles);
+                lazyState.allFiles = ordered.slice();
                 lazyState.renderedCount = 0;
-                Utils.elements.selectAllBtn.textContent = sourceFiles.length;
+                Utils.elements.selectAllBtn.textContent = ordered.length;
+
+                if (usingOverride && !preserveFilter) {
+                    state.grid.filtered = ordered.slice();
+                } else if (!usingOverride && state.grid.filtered.length > 0 && !preserveFilter) {
+                    state.grid.filtered = ordered.slice();
+                }
+
+                Utils.elements.gridContainer.innerHTML = '';
+                this.ensureAnchorSelection(ordered);
                 this.renderBatch();
+                this.applySelectionToRenderedTiles();
                 if (lazyState.observer) lazyState.observer.disconnect();
                 lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), {
                     root: Utils.elements.gridContent, rootMargin: "400px"
@@ -5415,6 +5439,47 @@
                 const lazyState = state.grid.lazyLoadState;
                 if (lazyState.observer) { lazyState.observer.disconnect(); lazyState.observer = null; }
                 lazyState.allFiles = []; lazyState.renderedCount = 0;
+            },
+
+            orderWithAnchor(files = []) {
+                const list = Array.isArray(files) ? [...files] : [];
+                const anchorId = state.grid.anchorId;
+                if (!anchorId) { return list; }
+                const anchorIndex = list.findIndex(file => file && file.id === anchorId);
+                if (anchorIndex > 0) {
+                    const [anchorFile] = list.splice(anchorIndex, 1);
+                    list.unshift(anchorFile);
+                }
+                return list;
+            },
+
+            ensureAnchorSelection(files = null) {
+                const anchorId = state.grid.anchorId;
+                if (!anchorId) { return; }
+                const items = Array.isArray(files) ? files : (state.grid.lazyLoadState.allFiles || []);
+                const hasAnchor = Array.isArray(items) && items.some(file => file && file.id === anchorId);
+                const currentSelection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                if (!hasAnchor) {
+                    state.grid.selected = currentSelection.filter(id => id !== anchorId);
+                    return;
+                }
+                if (!currentSelection.includes(anchorId)) { return; }
+                const filtered = currentSelection.filter(id => id !== anchorId);
+                state.grid.selected = [anchorId, ...filtered];
+            },
+
+            applySelectionToRenderedTiles() {
+                const container = Utils.elements.gridContainer;
+                if (!container) { return; }
+                const selectedSet = new Set(Array.isArray(state.grid.selected) ? state.grid.selected : []);
+                container.querySelectorAll('.grid-item').forEach(tile => {
+                    const id = tile.dataset.fileId;
+                    if (selectedSet.has(id)) {
+                        tile.classList.add('selected');
+                    } else {
+                        tile.classList.remove('selected');
+                    }
+                });
             },
 
             renderBatch() {
@@ -5482,9 +5547,9 @@
                 if (event.pointerType === 'mouse' && event.button !== 0) { return; }
 
                 if (!state.grid.selected.includes(fileId)) {
-                    this.deselectAll();
                     state.grid.selected = [fileId];
-                    gridItem.classList.add('selected');
+                    this.ensureAnchorSelection();
+                    this.applySelectionToRenderedTiles();
                     this.updateSelectionUI();
                 }
 
@@ -5623,57 +5688,67 @@
             },
 
             toggleSelection(e, fileId) {
-                const gridItem = e.currentTarget;
-                const index = state.grid.selected.indexOf(fileId);
-                if (index === -1) { state.grid.selected.push(fileId); gridItem.classList.add('selected');
-                } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
+                const isSelected = state.grid.selected.includes(fileId);
+                if (isSelected) {
+                    if (fileId === state.grid.anchorId) { return; }
+                    state.grid.selected = state.grid.selected.filter(id => id !== fileId);
+                } else {
+                    state.grid.selected = [...state.grid.selected.filter(id => id !== fileId), fileId];
+                }
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
                 state.grid.isDirty = true;
                 this.updateSelectionUI();
             },
-            
+
             updateSelectionUI() {
-                const count = state.grid.selected.length;
+                const selection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                const count = selection.length;
                 const buttons = [Utils.elements.tagSelected, Utils.elements.notesSelected, Utils.elements.moveSelected,
                                Utils.elements.deleteSelected, Utils.elements.exportSelected, Utils.elements.folderSelected];
-                Utils.elements.selectionText.textContent = `${count} selected`;
+                const label = count === 0 ? 'No items selected' : `${count} item${count === 1 ? '' : 's'} selected`;
+                Utils.elements.selectionText.textContent = label;
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
-            
+
             selectAll() {
-                const filesToSelect = state.grid.lazyLoadState.allFiles;
+                const filesToSelect = state.grid.lazyLoadState.allFiles || [];
                 state.grid.selected = filesToSelect.map(f => f.id);
-                document.querySelectorAll('#grid-container .grid-item').forEach(item => {
-                    item.classList.add('selected');
-                });
+                this.ensureAnchorSelection(filesToSelect);
+                this.applySelectionToRenderedTiles();
                 state.grid.isDirty = true;
                 this.updateSelectionUI();
             },
-            
+
             deselectAll() {
-                document.querySelectorAll('#grid-container .grid-item.selected').forEach(item => item.classList.remove('selected') );
                 state.grid.selected = [];
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
             },
-            
+
             performSearch() {
                 const query = Utils.elements.omniSearch.value.trim();
                 Utils.elements.clearSearchBtn.style.display = query ? 'inline-flex' : 'none';
                 if (!query) { this.resetSearch(); return; }
 
                 const results = this.searchImages(query);
-                state.grid.filtered = results;
+                const orderedResults = this.orderWithAnchor(results);
+                state.grid.filtered = orderedResults.slice();
 
-                if (results.length === 0) {
+                if (orderedResults.length === 0) {
                     state.grid.selected = [];
                     Utils.elements.gridEmptyState.classList.remove('hidden');
                     Utils.elements.selectAllBtn.textContent = '0';
                 } else {
-                    state.grid.selected = results.map(file => file.id);
+                    state.grid.selected = orderedResults.map(file => file.id);
                     Utils.elements.gridEmptyState.classList.add('hidden');
                 }
 
                 Utils.elements.gridContainer.innerHTML = '';
-                this.initializeLazyLoad(state.grid.stack, results);
+                this.initializeLazyLoad(state.grid.stack, orderedResults);
+                this.ensureAnchorSelection(orderedResults);
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
@@ -5686,7 +5761,9 @@
                 Utils.elements.gridContainer.innerHTML = '';
                 this.initializeLazyLoad(state.grid.stack);
                 Core.updateStackCounts();
-                this.deselectAll();
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
+                this.updateSelectionUI();
             },
 
             syncWithStack(stackName, options = {}) {
@@ -5696,26 +5773,41 @@
                 if (removedIds.length > 0) {
                     state.grid.selected = state.grid.selected.filter(id => !removedIds.includes(id));
                     state.grid.filtered = state.grid.filtered.filter(file => !removedIds.includes(file.id));
+                    if (state.grid.anchorId && removedIds.includes(state.grid.anchorId)) {
+                        state.grid.anchorId = null;
+                    }
                 }
 
                 if (state.grid.stack !== stackName) {
                     return;
                 }
 
-                const activeFiles = state.grid.filtered.length > 0
-                    ? state.grid.filtered
-                    : (state.stacks[stackName] || []);
+                const useFiltered = state.grid.filtered.length > 0;
+                const activeFiles = useFiltered
+                    ? state.grid.filtered.slice()
+                    : (state.stacks[stackName] || []).slice();
 
-                if (preselectFirst) {
-                    if (activeFiles.length > 0) {
-                        state.grid.selected = [activeFiles[0].id];
-                    } else {
-                        state.grid.selected = [];
-                    }
+                const availableIds = new Set(activeFiles.map(file => file.id));
+                let nextSelection = Array.isArray(state.grid.selected)
+                    ? state.grid.selected.filter(id => availableIds.has(id))
+                    : [];
+
+                if (preselectFirst && nextSelection.length === 0 && activeFiles.length > 0) {
+                    nextSelection = [activeFiles[0].id];
                 }
 
+                if (state.grid.anchorId && !availableIds.has(state.grid.anchorId)) {
+                    const anchorFallback = activeFiles[0] || null;
+                    state.grid.anchorId = anchorFallback ? anchorFallback.id : null;
+                }
+
+                state.grid.selected = nextSelection;
+
                 Utils.elements.gridContainer.innerHTML = '';
-                this.initializeLazyLoad(stackName, activeFiles);
+                const preserveFilter = useFiltered;
+                this.initializeLazyLoad(stackName, useFiltered ? activeFiles : null, { preserveFilter });
+                this.ensureAnchorSelection(activeFiles);
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
