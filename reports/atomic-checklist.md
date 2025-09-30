@@ -234,3 +234,19 @@ For each active stack, the following gestures operate correctly:
 - **10.5.7** All tag modal text input renders black text.
 - **10.5.8** Tag modal layout and behavior identical between details tab and bulk tab.
 
+## 11. Use Case Validation
+### 11.1 Normal Operation Use Cases
+- **11.1.1** Authenticated launch restores the most recently opened folder view with correct stack context.
+- **11.1.2** Navigating between stacks updates stage, grid, and counters without desync.
+- **11.1.3** Applying search filters updates visible items while preserving selection and focus state.
+- **11.1.4** Editing metadata (tags, notes, favorites) reflects immediately in both stage and grid views.
+- **11.1.5** Exporting selected items succeeds without interfering with ongoing browsing actions.
+- **11.1.6** Closing and reopening the app preserves pending changes and resumes normal operation seamlessly.
+
+### 11.2 Cross-Device Change Propagation
+- **11.2.1** Device A commits metadata and ordering changes for a folder before Device B opens it for the first time, and Device B loads those changes on initial entry.
+- **11.2.2** Device B's first session caches folder metadata without preventing subsequent updates from Device A.
+- **11.2.3** Additional metadata or ordering changes made on Device A after Device B's initial visit are persisted to the shared manifest.
+- **11.2.4** When Device B re-enters the same folder, it refreshes metadata, sort order, and deletions to match Device A's latest state.
+- **11.2.5** Device B surfaces conflicts or sync errors when expected updates from Device A cannot be applied automatically.
+
