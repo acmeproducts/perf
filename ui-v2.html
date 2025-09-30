@@ -1341,6 +1341,27 @@
             normalizeIds(ids = []) {
                 return Array.from(new Set((ids || []).map(id => (id != null ? String(id) : '')).filter(Boolean)));
             },
+            normalizeTagValue(tag) {
+                const trimmed = (tag || '').trim();
+                if (!trimmed) return '';
+                const prefixed = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+                const match = prefixed.match(/[A-Za-z]/);
+                if (!match) {
+                    return prefixed;
+                }
+                const index = prefixed.indexOf(match[0]);
+                return `${prefixed.slice(0, index)}${match[0].toLowerCase()}${prefixed.slice(index + 1)}`;
+            },
+            normalizeTagList(tags = []) {
+                const normalized = [];
+                (tags || []).forEach(tag => {
+                    const value = this.normalizeTagValue(tag);
+                    if (value && !normalized.includes(value)) {
+                        normalized.push(value);
+                    }
+                });
+                return normalized;
+            },
             getFiles(ids = []) {
                 const normalized = this.normalizeIds(ids);
                 return normalized.map(id => state.imageFiles.find(file => file.id === id)).filter(Boolean);
@@ -1350,7 +1371,9 @@
                 const seen = new Set();
                 const tags = [];
                 files.forEach(file => {
-                    (file.tags || []).forEach(tag => {
+                    const normalizedTags = this.normalizeTagList(file.tags || []);
+                    file.tags = normalizedTags;
+                    normalizedTags.forEach(tag => {
                         if (!seen.has(tag)) {
                             seen.add(tag);
                             tags.push(tag);
@@ -1363,18 +1386,19 @@
                 return tags;
             },
             async addTag(tag, ids = []) {
-                const trimmed = (tag || '').trim();
+                const normalizedTag = this.normalizeTagValue(tag);
                 const targetIds = this.normalizeIds(ids);
-                if (!trimmed || targetIds.length === 0) {
+                if (!normalizedTag || targetIds.length === 0) {
                     return this.getDisplayTags(targetIds);
                 }
                 const files = this.getFiles(targetIds);
                 let changed = false;
                 const tasks = files.map(file => {
-                    const currentTags = Array.isArray(file.tags) ? file.tags : [];
-                    if (!currentTags.includes(trimmed)) {
+                    const currentTags = this.normalizeTagList(file.tags || []);
+                    if (!currentTags.includes(normalizedTag)) {
                         changed = true;
-                        const newTags = [...currentTags, trimmed];
+                        const newTags = [...currentTags, normalizedTag];
+                        file.tags = newTags;
                         return App.updateUserMetadata(file.id, { tags: newTags });
                     }
                     return null;
@@ -1382,22 +1406,23 @@
                 if (tasks.length > 0) {
                     await Promise.all(tasks);
                 }
-                if (changed && !state.tags.has(trimmed)) {
-                    state.tags.add(trimmed);
+                if (changed && !state.tags.has(normalizedTag)) {
+                    state.tags.add(normalizedTag);
                 }
                 return this.getDisplayTags(targetIds);
             },
             async removeTag(tag, ids = []) {
-                const trimmed = (tag || '').trim();
+                const normalizedTag = this.normalizeTagValue(tag);
                 const targetIds = this.normalizeIds(ids);
-                if (!trimmed || targetIds.length === 0) {
+                if (!normalizedTag || targetIds.length === 0) {
                     return this.getDisplayTags(targetIds);
                 }
                 const files = this.getFiles(targetIds);
                 const tasks = files.map(file => {
-                    const currentTags = Array.isArray(file.tags) ? file.tags : [];
-                    if (currentTags.includes(trimmed)) {
-                        const newTags = currentTags.filter(t => t !== trimmed);
+                    const currentTags = this.normalizeTagList(file.tags || []);
+                    if (currentTags.includes(normalizedTag)) {
+                        const newTags = currentTags.filter(t => t !== normalizedTag);
+                        file.tags = newTags;
                         return App.updateUserMetadata(file.id, { tags: newTags });
                     }
                     return null;
