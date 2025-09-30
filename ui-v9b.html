@@ -4988,8 +4988,9 @@
             async processFileMetadata(file) {
                 if (file.metadataStatus === 'loaded' || file.metadataStatus === 'loading' || file.metadataStatus === 'error') return;
                 file.metadataStatus = 'loading';
-                const context = App.getCurrentFolderContext();
+                let context;
                 try {
+                    context = App.getCurrentFolderContext();
                     const metadata = await state.metadataExtractor.fetchMetadata(file);
                     let finalMetadata = { ...file };
                     if (metadata.error) {
@@ -5004,12 +5005,17 @@
                     Object.assign(file, finalMetadata);
                 } catch (error) {
                     if (error.name === 'AbortError') return;
-                    console.warn(`Background metadata extraction failed for ${file.name}: ${error.message}`);
-                    file.metadataStatus = 'error';
-                    file.extractedMetadata = { 'Error': error.message };
-                    file.prompt = `Metadata Error: ${error.message}`;
+                    const message = error?.message || 'Unknown error';
+                    console.warn(`Background metadata extraction failed for ${file.name}: ${message}`);
+                    const fallbackMetadata = {
+                        ...file,
+                        metadataStatus: 'error',
+                        extractedMetadata: { 'Error': message },
+                        prompt: `Metadata Error: ${message}`
+                    };
+                    Object.assign(file, fallbackMetadata);
                     try {
-                        await state.dbManager.saveMetadata(file.id, file, context);
+                        await state.dbManager.saveMetadata(file.id, fallbackMetadata, context);
                     } catch (ctxError) {
                         console.error(`Failed to persist fallback metadata for ${file.name}:`, ctxError);
                     }
