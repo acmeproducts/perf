@@ -354,16 +354,6 @@
         }
         .search-helper-close:hover, .search-helper-close:focus-visible { color: #6b7280; }
         .search-helper-close:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
-        .search-helper-recent {
-            display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
-        }
-        .search-helper-recent.hidden { display: none; }
-        .modifier-pill {
-            background: #e5e7eb; border: none; border-radius: 9999px; padding: 4px 10px; font-size: 12px; color: #374151;
-            cursor: pointer;
-        }
-        .modifier-pill:hover, .modifier-pill:focus-visible { background: #d1d5db; }
-        .modifier-pill:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
         .search-helper-popup a {
             display: block; font-size: 12px; color: #3b82f6; text-decoration: none; padding: 4px 8px;
             border-radius: 4px; cursor: pointer;
@@ -910,7 +900,6 @@
                                     <svg style="width: 14px; height: 14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                 </button>
                             </div>
-                            <div class="search-helper-recent hidden" id="search-helper-recent"></div>
                             <a class="modifier-link" data-modifier="#favorite">#favorite</a>
                             <a class="modifier-link" data-modifier="#quality:5">#quality:1-5</a>
                             <a class="modifier-link" data-modifier="#content:5">#content:1-5</a>
@@ -1218,7 +1207,6 @@
                     searchHelperIcon: document.getElementById('search-helper-icon'),
                     searchHelperPopup: document.getElementById('search-helper-popup'),
                     searchHelperClose: document.getElementById('search-helper-close'),
-                    searchHelperRecent: document.getElementById('search-helper-recent'),
                     
                     tagSelected: document.getElementById('tag-selected'),
                     notesSelected: document.getElementById('notes-selected'),
@@ -4994,12 +4982,13 @@
             performSearch() {
                 const searchInput = Utils.elements.omniSearch;
                 const query = searchInput.value.trim();
-                Utils.elements.clearSearchBtn.style.display = query ? 'inline-flex' : 'none';
-                state.grid.selected = [];
+
                 if (!query) { this.resetSearch(); return; }
 
                 const results = this.searchImages(query);
                 state.grid.filtered = results;
+                state.grid.selected = results.map(file => file.id);
+                this.updateSelectionUI();
 
                 Utils.elements.gridContainer.innerHTML = '';
                 if (results.length === 0) {
@@ -5009,7 +4998,6 @@
                 }
 
                 this.initializeLazyLoad(state.grid.stack, results);
-                this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
 
@@ -5068,6 +5056,14 @@
                 const terms = lowerCaseQuery.split(/\s+/).filter(t => t);
 
                 const modifiers = terms.filter(t => t.startsWith('#'));
+
+                const hasEmptyModifier = modifiers.some(mod => {
+                    const normalized = TagService.normalizeTagValue(mod);
+                    return !normalized || normalized === '#';
+                });
+                if (hasEmptyModifier) {
+                    return [];
+                }
                 const exclusions = terms.filter(t => t.startsWith('-')).map(t => t.substring(1));
                 const inclusions = terms.filter(t => !t.startsWith('#') && !t.startsWith('-'));
 
@@ -6473,8 +6469,7 @@
                     searchHelper,
                     searchHelperIcon,
                     searchHelperPopup,
-                    searchHelperClose,
-                    searchHelperRecent
+                    searchHelperClose
                 } = Utils.elements;
 
                 const modifierLinks = document.querySelectorAll('.modifier-link');
@@ -6487,47 +6482,21 @@
                     Grid.performSearch();
                 };
 
-                if (!searchHelper || !searchHelperIcon || !searchHelperPopup) {
-                    modifierLinks.forEach(link => {
-                        link.addEventListener('click', (event) => {
-                            event.preventDefault();
-                            const modifier = link.dataset.modifier;
-                            if (!modifier) return;
-                            appendModifierToInput(modifier);
-                        });
-                    });
-                    return;
-                }
+                if (searchHelper && searchHelperIcon && searchHelperPopup) {
+                    const setHelperState = (isOpen) => {
+                        const open = Boolean(isOpen);
+                        searchHelper.classList.toggle('is-open', open);
+                        searchHelperPopup.setAttribute('aria-hidden', String(!open));
+                        searchHelperIcon.setAttribute('aria-expanded', String(open));
+                    };
+                    const closeHelper = (focusIcon = false) => {
+                        setHelperState(false);
+                        if (focusIcon) {
+                            searchHelperIcon.focus();
+                        }
+                    };
+                    const openHelper = () => setHelperState(true);
 
-                const hoverMedia = window.matchMedia('(hover: hover)');
-                const setHelperState = (isOpen) => {
-                    const open = Boolean(isOpen);
-                    searchHelper.classList.toggle('is-open', open);
-                    searchHelperPopup.setAttribute('aria-hidden', String(!open));
-                    searchHelperIcon.setAttribute('aria-expanded', String(open));
-                };
-                const resetRecentModifier = () => {
-                    if (!searchHelperRecent) return;
-                    searchHelperRecent.innerHTML = '';
-                    searchHelperRecent.classList.add('hidden');
-                };
-                const closeHelper = (focusIcon = false) => {
-                    setHelperState(false);
-                    resetRecentModifier();
-                    if (focusIcon && searchHelperIcon) {
-                        searchHelperIcon.focus();
-                    }
-                };
-                const openHelper = () => setHelperState(true);
-
-                if (hoverMedia.matches) {
-                    searchHelper.addEventListener('mouseenter', openHelper);
-                    searchHelperIcon.addEventListener('focus', openHelper);
-                    searchHelperIcon.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        openHelper();
-                    });
-                } else {
                     searchHelperIcon.addEventListener('click', (event) => {
                         event.preventDefault();
                         if (searchHelper.classList.contains('is-open')) {
@@ -6536,67 +6505,46 @@
                             openHelper();
                         }
                     });
-                }
 
-                if (searchHelperClose) {
-                    searchHelperClose.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        closeHelper(true);
-                    });
-                }
-
-                const showRecentModifier = (modifier) => {
-                    if (!searchHelperRecent) return;
-                    const pill = document.createElement('button');
-                    pill.type = 'button';
-                    pill.className = 'modifier-pill';
-                    pill.textContent = modifier;
-                    pill.addEventListener('click', () => {
-                        closeHelper(true);
-                    });
-                    searchHelperRecent.innerHTML = '';
-                    searchHelperRecent.appendChild(pill);
-                    searchHelperRecent.classList.remove('hidden');
-                };
-
-                const handleModifierSelection = (modifier) => {
-                    appendModifierToInput(modifier);
-                    if (hoverMedia.matches) {
-                        showRecentModifier(modifier);
-                        openHelper();
-                    } else {
-                        closeHelper();
+                    if (searchHelperClose) {
+                        searchHelperClose.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            closeHelper(true);
+                        });
                     }
-                };
 
-                modifierLinks.forEach(link => {
-                    link.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        const modifier = link.dataset.modifier;
-                        if (!modifier) return;
-                        handleModifierSelection(modifier);
+                    document.addEventListener('click', (event) => {
+                        if (!searchHelper.contains(event.target)) {
+                            closeHelper();
+                        }
                     });
-                });
 
-                document.addEventListener('click', (event) => {
-                    if (!searchHelper.contains(event.target)) {
-                        closeHelper();
-                    }
-                });
+                    const handleEscape = (event) => {
+                        if (event.key === 'Escape') {
+                            closeHelper(true);
+                        }
+                    };
+                    searchHelperIcon.addEventListener('keydown', handleEscape);
+                    searchHelperPopup.addEventListener('keydown', handleEscape);
 
-                const handleEscape = (event) => {
-                    if (event.key === 'Escape') {
-                        closeHelper(true);
-                    }
-                };
-                searchHelperIcon.addEventListener('keydown', handleEscape);
-                searchHelperPopup.addEventListener('keydown', handleEscape);
-
-                const handleMediaChange = () => closeHelper();
-                if (typeof hoverMedia.addEventListener === 'function') {
-                    hoverMedia.addEventListener('change', handleMediaChange);
-                } else if (typeof hoverMedia.addListener === 'function') {
-                    hoverMedia.addListener(handleMediaChange);
+                    modifierLinks.forEach(link => {
+                        link.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            const modifier = link.dataset.modifier;
+                            if (!modifier) return;
+                            appendModifierToInput(modifier);
+                            closeHelper();
+                        });
+                    });
+                } else {
+                    modifierLinks.forEach(link => {
+                        link.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            const modifier = link.dataset.modifier;
+                            if (!modifier) return;
+                            appendModifierToInput(modifier);
+                        });
+                    });
                 }
             },
             setupActionButtons() {
@@ -6666,7 +6614,7 @@
                 await state.dbManager.init();
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
                 state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
-                state.folderSyncCoordinator.setDeltaHandler(App.applyDeltaFromCoordinator.bind(App));
+                state.folderSyncCoordinator.setDeltaHandler(payload => App.applyDeltaFromCoordinator(payload));
                 state.metadataExtractor = new MetadataExtractor();
                 Utils.showScreen('provider-screen');
                 Events.init();
