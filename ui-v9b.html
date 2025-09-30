@@ -7202,7 +7202,21 @@
                     const pill = document.getElementById(`pill-${stackName}`);
                     if (pill) {
                         let pointerActivated = false;
+                        let activePointerId = null;
+                        let pointerCaptureTarget = null;
+                        const releasePointer = (event) => {
+                            if (event && typeof event.pointerId === 'number' && pointerCaptureTarget && typeof pointerCaptureTarget.releasePointerCapture === 'function') {
+                                try { pointerCaptureTarget.releasePointerCapture(event.pointerId); } catch (error) { /* noop */ }
+                            }
+                            pointerCaptureTarget = null;
+                            activePointerId = null;
+                            setTimeout(() => { pointerActivated = false; }, 150);
+                        };
                         const activatePill = async (event) => {
+                            const pointerId = (event && typeof event.pointerId === 'number') ? event.pointerId : null;
+                            if (pointerId !== null && activePointerId !== null && pointerId !== activePointerId) {
+                                return;
+                            }
                             const isPointerInvocation = Boolean(
                                 pointerActivated ||
                                 (event && (
@@ -7239,13 +7253,35 @@
                             UI.acknowledgePillCounter(stackName);
                         };
 
-                        pill.addEventListener('pointerup', async (event) => {
+                        pill.addEventListener('pointerdown', (event) => {
                             pointerActivated = true;
+                            if (typeof event.pointerId === 'number') {
+                                activePointerId = event.pointerId;
+                                const target = event.target;
+                                const canCapture = target && typeof target.setPointerCapture === 'function';
+                                if (canCapture) {
+                                    try {
+                                        target.setPointerCapture(event.pointerId);
+                                        pointerCaptureTarget = target;
+                                    } catch (error) {
+                                        pointerCaptureTarget = null;
+                                    }
+                                } else {
+                                    pointerCaptureTarget = null;
+                                }
+                            }
+                        });
+
+                        pill.addEventListener('pointerup', async (event) => {
                             try {
                                 await activatePill(event);
                             } finally {
-                                setTimeout(() => { pointerActivated = false; }, 150);
+                                releasePointer(event);
                             }
+                        });
+
+                        pill.addEventListener('pointercancel', (event) => {
+                            releasePointer(event);
                         });
 
                         pill.addEventListener('click', (event) => {
