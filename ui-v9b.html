@@ -382,14 +382,13 @@
         .grid-drag-handle:hover { background: rgba(59, 130, 246, 0.9); }
         .grid-drag-handle:focus { outline: 2px solid #bfdbfe; outline-offset: 2px; }
         .grid-drag-handle:active { cursor: grabbing; }
-
-        .grid-drag-ghost {
-            position: fixed; pointer-events: none; opacity: 0.9; transform: translate3d(0,0,0);
-            z-index: 9999; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
-            border-radius: 8px; overflow: hidden;
+        .grid-item.dragging {
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.6);
+            opacity: 0.9;
         }
-        .grid-drag-ghost .filename-overlay { opacity: 1; }
-        .grid-drag-ghost .grid-drag-handle { display: none; }
+        .grid-item.dragging .grid-drag-handle {
+            background: rgba(59, 130, 246, 0.9);
+        }
 
         .filename-overlay {
             position: absolute;
@@ -1059,11 +1058,9 @@
         const createDefaultGridDragSession = () => ({
             active: false,
             pointerId: null,
-            ghost: null,
-            offsetX: 0,
-            offsetY: 0,
             dropTarget: null,
-            selectedIds: []
+            selectedIds: [],
+            dragElements: []
         });
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
@@ -5431,15 +5428,20 @@
                 }
 
                 const selectedIds = state.grid.selected.length > 0 ? [...state.grid.selected] : [fileId];
-                const rect = gridItem.getBoundingClientRect();
-                const ghost = gridItem.cloneNode(true);
-                ghost.classList.add('grid-drag-ghost');
-                ghost.style.width = `${rect.width}px`;
-                ghost.style.height = `${rect.height}px`;
-                ghost.style.left = `${rect.left}px`;
-                ghost.style.top = `${rect.top}px`;
-                ghost.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
-                document.body.appendChild(ghost);
+                const draggedElements = [];
+                const selectedSet = new Set(selectedIds);
+                if (Utils.elements.gridContainer) {
+                    Utils.elements.gridContainer.querySelectorAll('.grid-item').forEach(tile => {
+                        if (selectedSet.has(tile.dataset.fileId)) {
+                            tile.classList.add('dragging');
+                            draggedElements.push(tile);
+                        }
+                    });
+                }
+                if (draggedElements.length === 0) {
+                    gridItem.classList.add('dragging');
+                    draggedElements.push(gridItem);
+                }
                 document.body.style.userSelect = 'none';
 
                 state.grid.isDragging = true;
@@ -5447,10 +5449,8 @@
                     ...createDefaultGridDragSession(),
                     active: true,
                     pointerId: event.pointerId ?? null,
-                    ghost,
-                    offsetX: event.clientX - rect.left,
-                    offsetY: event.clientY - rect.top,
-                    selectedIds
+                    selectedIds,
+                    dragElements: draggedElements
                 };
 
                 this._dragMoveHandler = this.handlePointerMove.bind(this);
@@ -5459,7 +5459,6 @@
                 window.addEventListener('pointerup', this._dragEndHandler);
                 window.addEventListener('pointercancel', this._dragEndHandler);
 
-                this.updateGhostPosition(event.clientX, event.clientY);
                 if (event.cancelable) { event.preventDefault(); }
             },
 
@@ -5469,7 +5468,6 @@
                 if (session.pointerId !== null && event.pointerId !== session.pointerId) { return; }
 
                 if (event.cancelable) { event.preventDefault(); }
-                this.updateGhostPosition(event.clientX, event.clientY);
 
                 const element = document.elementFromPoint(event.clientX, event.clientY);
                 const tile = element ? element.closest('.grid-item') : null;
@@ -5531,23 +5529,13 @@
                 }
             },
 
-            updateGhostPosition(x, y) {
-                const session = state.grid.dragSession;
-                if (!session.ghost) { return; }
-                const left = x - session.offsetX;
-                const top = y - session.offsetY;
-                session.ghost.style.transform = `translate(${left}px, ${top}px)`;
-                session.ghost.style.left = `${left}px`;
-                session.ghost.style.top = `${top}px`;
-            },
-
             setDropTarget(tile) {
                 const session = state.grid.dragSession;
                 if (session.dropTarget === tile) { return; }
                 if (session.dropTarget) {
                     session.dropTarget.classList.remove('drop-target');
                 }
-                if (tile && tile !== session.ghost && tile.id !== 'grid-sentinel') {
+                if (tile && tile.id !== 'grid-sentinel') {
                     tile.classList.add('drop-target');
                     session.dropTarget = tile;
                 } else {
@@ -5560,8 +5548,8 @@
                 if (session.dropTarget) {
                     session.dropTarget.classList.remove('drop-target');
                 }
-                if (session.ghost && session.ghost.parentNode) {
-                    session.ghost.remove();
+                if (session.dragElements && session.dragElements.length) {
+                    session.dragElements.forEach(el => el.classList.remove('dragging'));
                 }
                 document.body.style.userSelect = '';
                 this.resetDragSession();
