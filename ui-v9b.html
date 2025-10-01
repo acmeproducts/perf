@@ -4319,7 +4319,8 @@
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
                 const coordinator = state.folderSyncCoordinator;
                 let preparation = null;
@@ -4402,8 +4403,36 @@
                     state.syncLog?.log({ event: 'manifest:cleanup:error', level: 'warn', details: `Failed to prune duplicate manifests for ${folderId}: ${error.message}` });
                 }
             },
+            markFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (!Object.prototype.hasOwnProperty.call(file, '__metadataNormalized')) {
+                    Object.defineProperty(file, '__metadataNormalized', {
+                        value: true,
+                        enumerable: false,
+                        configurable: true,
+                        writable: false
+                    });
+                }
+                return file;
+            },
+            ensureFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
+                return this.normalizeFileMetadata(file);
+            },
+            normalizeCachedFiles(files = []) {
+                if (!Array.isArray(files) || files.length === 0) {
+                    return files || [];
+                }
+                return files.map(file => this.ensureFileMetadataNormalized(file));
+            },
             normalizeFileMetadata(file) {
                 if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
                 const normalized = {
                     ...file,
                     appProperties: { ...(file.appProperties || {}) }
@@ -4435,8 +4464,6 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
-                DriveLinkHelper.normalizeFileLinks(normalized, normalized.providerType || file.providerType || state.providerType);
-                return normalized;
             },
             computeMetadataSignature(file) {
                 if (!file) return 'null';
