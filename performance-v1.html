@@ -3867,7 +3867,8 @@
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
                 const coordinator = state.folderSyncCoordinator;
                 let preparation = null;
@@ -3906,8 +3907,36 @@
                     await this.applyDeltaFromCoordinator(pending);
                 }
             },
+            markFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (!Object.prototype.hasOwnProperty.call(file, '__metadataNormalized')) {
+                    Object.defineProperty(file, '__metadataNormalized', {
+                        value: true,
+                        enumerable: false,
+                        configurable: true,
+                        writable: false
+                    });
+                }
+                return file;
+            },
+            ensureFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
+                return this.normalizeFileMetadata(file);
+            },
+            normalizeCachedFiles(files = []) {
+                if (!Array.isArray(files) || files.length === 0) {
+                    return files || [];
+                }
+                return files.map(file => this.ensureFileMetadataNormalized(file));
+            },
             normalizeFileMetadata(file) {
                 if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
                 const normalized = {
                     ...file,
                     appProperties: { ...(file.appProperties || {}) }
@@ -3939,6 +3968,7 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
+                this.markFileMetadataNormalized(normalized);
                 return normalized;
             },
             computeMetadataSignature(file) {
