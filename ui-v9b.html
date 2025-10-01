@@ -2107,47 +2107,75 @@
                 this.dbCloseHandler = () => this.handleDisconnect('close');
                 this.dbVersionChangeHandler = () => this.handleDisconnect('versionchange');
             }
-            sanitizeMetadataForStorage(metadata) {
+            sanitizeForStorage(input, options = {}) {
+                const {
+                    stripMetadataPromise = true,
+                    treatUndefinedAsNull = false
+                } = options;
                 const seen = new WeakSet();
                 const isBlob = (value) => typeof Blob !== 'undefined' && value instanceof Blob;
                 const isFile = (value) => typeof File !== 'undefined' && value instanceof File;
                 const isTypedArray = (value) => ArrayBuffer.isView(value) && !(value instanceof DataView);
-                const sanitize = (input) => {
-                    if (!input || typeof input !== 'object') {
-                        return input;
-                    }
-                    if (input instanceof Date || isBlob(input) || isFile(input) || isTypedArray(input) || input instanceof ArrayBuffer) {
-                        return input;
-                    }
-                    if (seen.has(input)) {
+                const isPlainObject = (value) => {
+                    if (!value || typeof value !== 'object') return false;
+                    const proto = Object.getPrototypeOf(value);
+                    return proto === Object.prototype || proto === null;
+                };
+                const sanitize = (value) => {
+                    if (typeof value === 'function') {
                         return undefined;
                     }
-                    seen.add(input);
-                    if (Array.isArray(input)) {
-                        return input
+                    if (value === null || typeof value !== 'object') {
+                        return value;
+                    }
+                    if (isBlob(value) || isFile(value) || isTypedArray(value) || value instanceof ArrayBuffer || value instanceof Date) {
+                        return value;
+                    }
+                    if (seen.has(value)) {
+                        return undefined;
+                    }
+                    seen.add(value);
+                    if (typeof value.then === 'function') {
+                        return undefined;
+                    }
+                    if (typeof Node !== 'undefined' && value instanceof Node) {
+                        return undefined;
+                    }
+                    if (Array.isArray(value)) {
+                        const sanitizedArray = value
                             .map(item => sanitize(item))
                             .filter(item => item !== undefined);
+                        return sanitizedArray;
                     }
                     const sanitized = {};
-                    for (const [key, value] of Object.entries(input)) {
-                        if (key === '__metadataPromise') {
+                    for (const [key, nested] of Object.entries(value)) {
+                        if (stripMetadataPromise && key === '__metadataPromise') {
                             continue;
                         }
-                        if (typeof value === 'function') {
+                        if (typeof nested === 'function') {
                             continue;
                         }
-                        if (value && typeof value === 'object' && typeof value.then === 'function') {
-                            continue;
-                        }
-                        const sanitizedValue = sanitize(value);
+                        const sanitizedValue = sanitize(nested);
                         if (sanitizedValue !== undefined) {
                             sanitized[key] = sanitizedValue;
                         }
                     }
+                    if (!isPlainObject(value) && Object.keys(sanitized).length === 0) {
+                        return undefined;
+                    }
                     return sanitized;
                 };
-                const sanitizedMetadata = sanitize(metadata);
-                return sanitizedMetadata === undefined ? null : sanitizedMetadata;
+                const sanitizedResult = sanitize(input);
+                if (treatUndefinedAsNull && sanitizedResult === undefined) {
+                    return null;
+                }
+                return sanitizedResult;
+            }
+            sanitizeMetadataForStorage(metadata) {
+                return this.sanitizeForStorage(metadata, { stripMetadataPromise: true, treatUndefinedAsNull: true });
+            }
+            sanitizeFileForStorage(file) {
+                return this.sanitizeForStorage(file, { stripMetadataPromise: true });
             }
             async init(force = false) {
                 if (!force && this.initPromise) {
@@ -2341,10 +2369,16 @@
                 }), null);
             }
             async saveFolderCache(folderId, files) {
+                const sanitizedFiles = Array.isArray(files)
+                    ? files
+                        .map(file => this.sanitizeFileForStorage(file))
+                        .filter(file => file !== undefined && file !== null)
+                    : [];
                 return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
+                    const record = { folderId, files: sanitizedFiles, timestamp: Date.now() };
+                    const request = store.put(record);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
                 }));
