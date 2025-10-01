@@ -1,4 +1,4 @@
-<!-- Release: 2024-05-06T00:00:00Z | R1 Baseline Convergence | Footer standardization & schema alignment -->
+<!-- Release: 2024-06-14T00:00:00Z | V9b UI Improvements | Footer standardization and … -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -132,8 +132,9 @@
             position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
             background: rgba(0, 0, 0, 0.8); color: white; padding: 12px 20px; border-radius: 8px;
             font-size: 14px; font-weight: 500; z-index: 2000; opacity: 0; transition: opacity 0.3s ease; backdrop-filter: blur(10px);
+            pointer-events: none;
         }
-        .toast.show { opacity: 1; }
+        .toast.show { opacity: 1; pointer-events: auto; }
         .toast.success { background: rgba(16, 185, 129, 0.9); }
         .toast.info { background: rgba(59, 130, 246, 0.9); }
         .toast.error { background: rgba(239, 68, 68, 0.9); }
@@ -202,7 +203,9 @@
             cursor: pointer; z-index: 10; min-width: 50px; text-align: center;
         }
         .pill-counter.visible { opacity: 0.9; }
-        .pill-counter.active { font-weight: 700; background: white; opacity: 1; border: 3px solid black; }
+        .pill-counter.active {
+            background: white; opacity: 1; border: 3px solid black; color: #111827;
+        }
         .pill-counter:not(.active) { background: rgba(128, 128, 128, 0.4); border: none; }
         .pill-counter:hover { opacity: 1; transform: scale(1.05); }
         .pill-counter.top { top: 10px; left: 50%; transform: translateX(-50%); }
@@ -555,11 +558,6 @@
             letter-spacing: 0.01em;
             white-space: nowrap;
         }
-        .master-footer .footer-actions {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
         .master-footer .footer-link {
             background: transparent;
             border: none;
@@ -869,10 +867,10 @@
         <div class="edge-glow left" id="edge-left"></div>
         <div class="edge-glow right" id="edge-right"></div>
         
-        <div class="pill-counter top" id="pill-priority" data-stack="priority">0</div>
-        <div class="pill-counter bottom-center" id="pill-trash" data-stack="trash">0</div>
-        <div class="pill-counter left active" id="pill-in" data-stack="in">0</div>
-        <div class="pill-counter right" id="pill-out" data-stack="out">0</div>
+        <div class="pill-counter top" id="pill-priority" data-stack="priority" aria-live="polite">0</div>
+        <div class="pill-counter bottom-center" id="pill-trash" data-stack="trash" aria-live="polite">0</div>
+        <div class="pill-counter left active" id="pill-in" data-stack="in" aria-live="polite">0</div>
+        <div class="pill-counter right" id="pill-out" data-stack="out" aria-live="polite">0</div>
         
         <div class="empty-state hidden" id="empty-state">
             <div class="empty-message">No more images in this stack</div>
@@ -1072,27 +1070,26 @@
         // ===== ORBITAL8 Goji Version - App Root =====
         
         const RELEASE_METADATA = Object.freeze({
-            name: 'R1 Baseline Convergence',
-            timestamp: '2024-05-06T00:00:00Z',
-            summary: 'Footer standardization & schema alignment'
+            name: 'V9b UI Improvements',
+            timestamp: '2024-06-14T00:00:00Z',
+            summary: 'Footer standardization and …'
         });
 
         const Templates = {
             masterFooter(instance = 0) {
                 const suffix = instance === 0 ? '' : `-${instance}`;
-                const metadataText = [
+                const metadataSegments = [
                     RELEASE_METADATA.name,
-                    RELEASE_METADATA.timestamp,
-                    RELEASE_METADATA.summary
-                ].filter(Boolean).join(' • ');
+                    RELEASE_METADATA.timestamp ? `<time datetime="${RELEASE_METADATA.timestamp}" class="footer-release-timestamp">${RELEASE_METADATA.timestamp}</time>` : null,
+                    `<a href="#" class="footer-link" data-footer-role="sync-log">View Synch Log</a>`,
+                    `<a href="#" class="footer-link" data-footer-role="reset-folder">Reset Cloud</a>`
+                ].filter(Boolean);
+
+                const metadataText = metadataSegments.join(' | ');
 
                 return `
                     <footer id="master-footer${suffix}" class="master-footer" data-master-footer role="contentinfo">
                         <span class="footer-meta" aria-label="Release metadata">${metadataText}</span>
-                        <span class="footer-actions">
-                            <button type="button" class="footer-link" data-footer-role="sync-log">View Sync Log</button>
-                            <button type="button" class="footer-link" data-footer-role="reset-folder">Reset from Cloud</button>
-                        </span>
                     </footer>
                 `.trim();
             }
@@ -1125,16 +1122,91 @@
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
-            grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
+            grid: { stack: null, selected: [], filtered: [], anchorId: null, isDirty: false, isDragging: false,
                 dragSession: createDefaultGridDragSession(),
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
+            isReturningToFolders: false,
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null,
             modalLayout: {}
+        };
+        // Centralized helper to keep Google Drive URL handling consistent across the app.
+        const DriveLinkHelper = {
+            isDriveApiDownloadUrl(url) {
+                if (typeof url !== 'string') return false;
+                return /googleapis\.com\/drive|drive\.googleusercontent\.com|drive\.google\.com\/uc\?/i.test(url);
+            },
+            isGoogleDriveFile(file, providerType = null) {
+                if (!file) return false;
+                const type = providerType || file.providerType || state.providerType || null;
+                if (type === 'googledrive') return true;
+                const candidateUrls = [
+                    file.webViewLink,
+                    file.webContentLink,
+                    file.driveApiDownloadUrl,
+                    file.viewUrl,
+                    file.downloadUrl
+                ];
+                return candidateUrls.some(url => {
+                    if (typeof url !== 'string' || url.length === 0) return false;
+                    if (this.isDriveApiDownloadUrl(url)) return true;
+                    return /drive\.google\.com\/file\//i.test(url);
+                });
+            },
+            computePermanentViewUrl(file) {
+                if (!file) return null;
+                const candidates = [file.viewUrl, file.webViewLink]
+                    .filter(url => typeof url === 'string' && url.length > 0 && !this.isDriveApiDownloadUrl(url));
+                if (candidates.length > 0) {
+                    return candidates[0];
+                }
+                if (typeof file.id === 'string' && file.id.length > 0) {
+                    return `https://drive.google.com/file/d/${file.id}/view`;
+                }
+                return null;
+            },
+            resolveApiDownloadUrl(file) {
+                if (!file) return null;
+                const candidates = [
+                    file.driveApiDownloadUrl,
+                    file.webContentLink,
+                    this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null
+                ];
+                return candidates.find(url => typeof url === 'string' && url.length > 0) || null;
+            },
+            getPermanentViewUrl(file, providerType = null) {
+                if (!file) return null;
+                const hint = providerType || file.providerType || state.providerType || null;
+                if (!this.isGoogleDriveFile(file, hint)) {
+                    return typeof file.viewUrl === 'string' && file.viewUrl.length > 0 ? file.viewUrl : null;
+                }
+                const normalized = this.normalizeFileLinks(file, hint);
+                if (normalized && typeof normalized.viewUrl === 'string' && normalized.viewUrl.length > 0) {
+                    return normalized.viewUrl;
+                }
+                return this.computePermanentViewUrl(normalized || file);
+            },
+            normalizeFileLinks(file, providerType = null) {
+                if (!this.isGoogleDriveFile(file, providerType)) {
+                    return file;
+                }
+                const permanentLink = this.computePermanentViewUrl(file);
+                const apiDownloadUrl = this.resolveApiDownloadUrl(file);
+                if (apiDownloadUrl) {
+                    file.driveApiDownloadUrl = apiDownloadUrl;
+                } else if (file.driveApiDownloadUrl === undefined) {
+                    file.driveApiDownloadUrl = null;
+                }
+                if (permanentLink) {
+                    file.viewUrl = permanentLink;
+                    file.downloadUrl = permanentLink;
+                }
+                return file;
+            }
         };
         const Utils = {
             elements: {},
@@ -1309,7 +1381,7 @@
             },
             
             getPreferredImageUrl(file) {
-                if (state.providerType === 'googledrive') {
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s1000');
                     }
@@ -1323,13 +1395,10 @@
             },
 
             getFallbackImageUrl(file) {
-                if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
                     if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = [file.driveApiDownloadUrl, file.webContentLink, !hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
                     return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
@@ -2032,9 +2101,17 @@
         class DBManager {
             constructor() {
                 this.db = null;
+                this.initPromise = null;
+                this.reconnectPromise = null;
+                this.reconnecting = false;
+                this.dbCloseHandler = () => this.handleDisconnect('close');
+                this.dbVersionChangeHandler = () => this.handleDisconnect('versionchange');
             }
-            async init() {
-                return new Promise((resolve, reject) => {
+            async init(force = false) {
+                if (!force && this.initPromise) {
+                    return this.initPromise;
+                }
+                const openPromise = new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 4);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
@@ -2078,11 +2155,131 @@
                         }
                     };
                     request.onsuccess = (event) => {
-                        this.db = event.target.result;
-                        resolve();
+                        const db = event.target.result;
+                        this.bindDatabase(db);
+                        resolve(db);
                     };
-                    request.onerror = (event) => reject(event.target.error);
+                    request.onblocked = () => {
+                        reject(this.createReconnectionError('IndexedDB upgrade blocked by another session.'));
+                    };
+                    request.onerror = (event) => {
+                        const error = event.target.error || new Error('Failed to open IndexedDB.');
+                        if (this.shouldReconnect(error) || error?.name === 'VersionError') {
+                            error.reconnectPending = true;
+                        }
+                        reject(error);
+                    };
                 });
+                const wrapped = openPromise.then(db => db).catch(error => {
+                    if (this.initPromise === wrapped) {
+                        this.initPromise = null;
+                    }
+                    throw error;
+                });
+                this.initPromise = wrapped;
+                return wrapped;
+            }
+            bindDatabase(db) {
+                if (!db) return;
+                this.db = db;
+                this.reconnecting = false;
+                db.onclose = this.dbCloseHandler;
+                db.onversionchange = this.dbVersionChangeHandler;
+            }
+            handleDisconnect(reason = 'unknown') {
+                if (this.db) {
+                    try {
+                        this.db.onclose = null;
+                        this.db.onversionchange = null;
+                        this.db.close();
+                    } catch (error) {
+                        // Ignore close errors.
+                    }
+                }
+                this.db = null;
+                this.reconnecting = true;
+                this.initPromise = null;
+                if (this.reconnectPromise) {
+                    return this.reconnectPromise;
+                }
+                const reconnect = this.init(true).catch(error => {
+                    if (!error?.reconnectPending) {
+                        console.warn('DBManager: Reconnection attempt failed.', { reason, error });
+                    }
+                    throw error;
+                });
+                this.reconnectPromise = reconnect;
+                reconnect.catch(() => { /* handled above */ });
+                reconnect.finally(() => {
+                    if (this.reconnectPromise === reconnect) {
+                        this.reconnectPromise = null;
+                    }
+                });
+                return reconnect;
+            }
+            createReconnectionError(message = 'IndexedDB reconnection pending.') {
+                const error = new Error(message);
+                error.name = 'IndexedDBReconnecting';
+                error.reconnectPending = true;
+                return error;
+            }
+            shouldReconnect(error) {
+                if (!error || error.reconnectPending) return false;
+                const name = error.name || '';
+                if (name === 'InvalidStateError' || name === 'TransactionInactiveError') return true;
+                const message = String(error.message || '').toLowerCase();
+                return message.includes('connection is closing') || message.includes('the connection is closing') || message.includes('database connection is closing');
+            }
+            async ensureConnection() {
+                try {
+                    await (this.initPromise || this.init());
+                } catch (error) {
+                    if (error?.reconnectPending || this.shouldReconnect(error)) {
+                        const reconnectionError = this.createReconnectionError(error.message);
+                        reconnectionError.cause = error;
+                        throw reconnectionError;
+                    }
+                    throw error;
+                }
+                if (!this.db) {
+                    if (this.reconnecting) {
+                        throw this.createReconnectionError();
+                    }
+                    return null;
+                }
+                if (typeof this.db.closePending === 'boolean' && this.db.closePending) {
+                    this.handleDisconnect('close-pending');
+                    throw this.createReconnectionError('IndexedDB connection is closing.');
+                }
+                return this.db;
+            }
+            async performWithReconnect(executor, fallbackValue) {
+                let attempt = 0;
+                let lastError = null;
+                while (attempt < 2) {
+                    try {
+                        await this.ensureConnection();
+                        if (!this.db) {
+                            return fallbackValue;
+                        }
+                        return await executor();
+                    } catch (error) {
+                        lastError = error;
+                        if (error?.reconnectPending) {
+                            throw error;
+                        }
+                        if (attempt === 0 && this.shouldReconnect(error)) {
+                            this.handleDisconnect('operation-error');
+                            attempt += 1;
+                            continue;
+                        }
+                        throw error;
+                    }
+                }
+                if (lastError) {
+                    throw lastError;
+                }
+                return fallbackValue;
             }
             resolveFolderKey(input) {
                 if (!input) return null;
@@ -2093,47 +2290,42 @@
                 return `${providerType || 'unknown'}::${folderId}`;
             }
             async getFolderCache(folderId) {
-                if (!this.db) return null;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readonly');
                     const store = transaction.objectStore('folderCache');
                     const request = store.get(folderId);
                     request.onsuccess = () => resolve(request.result ? request.result.files : null);
                     request.onerror = () => reject(request.error);
-                });
+                }), null);
             }
             async saveFolderCache(folderId, files) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
                     const request = store.put({ folderId, files, timestamp: Date.now() });
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async deleteFolderCache(folderId) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
                     const request = store.delete(folderId);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async getMetadata(fileId) {
-                if (!this.db) return null;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readonly');
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
                     request.onsuccess = () => resolve(request.result ? request.result.metadata : null);
                     request.onerror = () => reject(request.error);
-                });
+                }), null);
             }
             async saveMetadata(fileId, metadata, context = {}) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) {
                     const warning = `DBManager.saveMetadata: Missing folder context for ${fileId}.`;
@@ -2141,7 +2333,7 @@
                     throw new Error(warning);
                 }
                 const normalizedContext = typeof context === 'object' && context !== null ? context : {};
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const record = {
@@ -2154,23 +2346,21 @@
                     const request = store.put(record);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async deleteMetadata(fileId) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const request = store.delete(fileId);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async deleteMetadataByFolder(context) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const index = store.index('folderKey');
@@ -2181,10 +2371,9 @@
                         keys.forEach(key => store.delete(key));
                     };
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async addToSyncQueue(operation) {
-                if (!this.db) return null;
                 const entry = {
                     fileId: operation.fileId,
                     updates: operation.updates || {},
@@ -2198,17 +2387,16 @@
                     providerType: operation.providerType || null,
                     folderKey: operation.folderKey || null
                 };
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     const request = store.add(entry);
                     request.onsuccess = () => resolve(request.result);
                     request.onerror = () => reject(request.error);
-                });
+                }), null);
             }
             async readSyncQueue() {
-                if (!this.db) return [];
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readonly');
                     const store = transaction.objectStore('syncQueue');
                     const request = store.getAll();
@@ -2218,22 +2406,20 @@
                         resolve(results);
                     };
                     request.onerror = () => reject(request.error);
-                });
+                }), []);
             }
             async deleteFromSyncQueue(ids) {
-                if (!this.db) return;
                 const targetIds = Array.isArray(ids) ? ids : [ids];
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     targetIds.forEach(id => { store.delete(id); });
                     transaction.oncomplete = () => resolve();
                     transaction.onerror = () => reject(transaction.error);
-                });
+                }));
             }
             async updateSyncQueueEntry(id, updates) {
-                if (!this.db) return false;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     const getRequest = store.get(id);
@@ -2246,27 +2432,25 @@
                         putRequest.onerror = () => reject(putRequest.error);
                     };
                     getRequest.onerror = () => reject(getRequest.error);
-                });
+                }), false);
             }
             async markPendingFlush(ids, pending = true) {
-                if (!this.db) return;
                 const targetIds = Array.isArray(ids) ? ids : [ids];
                 await Promise.all(targetIds.map(id => this.updateSyncQueueEntry(id, { pendingFlush: pending })));
             }
             async getFolderState(context) {
-                if (!this.db) return null;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return null;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readonly');
                     const store = transaction.objectStore('folderState');
                     const request = store.get(folderKey);
                     request.onsuccess = () => resolve(request.result || null);
                     request.onerror = () => reject(request.error);
-                });
+                }), null);
             }
             async saveFolderState(record) {
-                if (!this.db || !record) return;
+                if (!record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
                 const payload = {
@@ -2279,40 +2463,38 @@
                     lastCloudAck: record.lastCloudAck || null,
                     updatedAt: Date.now()
                 };
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
                     const store = transaction.objectStore('folderState');
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async deleteFolderState(context) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
                     const store = transaction.objectStore('folderState');
                     const request = store.delete(folderKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async getFolderManifest(context) {
-                if (!this.db) return null;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return null;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readonly');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.get(folderKey);
                     request.onsuccess = () => resolve(request.result || null);
                     request.onerror = () => reject(request.error);
-                });
+                }), null);
             }
             async saveFolderManifest(record) {
-                if (!this.db || !record) return;
+                if (!record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
                 const payload = {
@@ -2336,25 +2518,24 @@
                 if (record.remoteUpdatedAt || record.updatedAt) {
                     payload.remoteUpdatedAt = record.remoteUpdatedAt || record.updatedAt;
                 }
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readwrite');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async deleteFolderManifest(context) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return new Promise((resolve, reject) => {
+                return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readwrite');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.delete(folderKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                });
+                }));
             }
             async clearFolderData(context, fileIds = []) {
                 const folderKey = this.resolveFolderKey(context);
@@ -3000,6 +3181,12 @@
                     }
                     return result;
                 } catch (error) {
+                    if (error?.reconnectPending) {
+                        this.logger?.log({ event: 'sync:reconnect-wait', level: 'warn', details: 'IndexedDB reconnect in progress. Rescheduling sync loop.', data: { reason } });
+                        this.hasPendingWork = true;
+                        this.scheduleProcess('reconnect');
+                        return 'retry';
+                    }
                     this.logger?.log({ event: 'sync:error', level: 'error', details: `Queue processing failed: ${error.message}` });
                     return 'error';
                 } finally {
@@ -3660,9 +3847,7 @@
                     const files = response.files
                         .filter(file => file.mimeType && file.mimeType.startsWith('image/'))
                         .map(file => {
-                            const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                            const apiDownloadUrl = file.webContentLink || null;
-                            return {
+                            const normalized = {
                                 id: file.id,
                                 name: file.name,
                                 type: 'file',
@@ -3671,12 +3856,14 @@
                                 createdTime: file.createdTime,
                                 modifiedTime: file.modifiedTime,
                                 thumbnailLink: file.thumbnailLink,
-                                downloadUrl: viewUrl,
-                                viewUrl,
-                                driveApiDownloadUrl: apiDownloadUrl,
+                                downloadUrl: file.webContentLink || null,
+                                viewUrl: file.viewUrl || file.webViewLink || null,
+                                webViewLink: file.webViewLink,
+                                webContentLink: file.webContentLink,
                                 appProperties: file.appProperties || {},
                                 parents: file.parents
                             };
+                            return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                         });
                     allFiles.push(...files);
                     nextPageToken = response.nextPageToken;
@@ -3839,14 +4026,12 @@
                     .filter(result => result.status === 'fulfilled')
                     .map(result => {
                         const file = result.value;
-                        const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                        const apiDownloadUrl = file.webContentLink || file.driveApiDownloadUrl || null;
-                        return {
+                        const normalized = {
                             ...file,
-                            downloadUrl: viewUrl,
-                            viewUrl,
-                            driveApiDownloadUrl: apiDownloadUrl
+                            downloadUrl: file.webContentLink || file.downloadUrl || null,
+                            viewUrl: file.viewUrl || file.webViewLink || null
                         };
+                        return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                     });
             }
             async drillIntoFolder(folder) {
@@ -4179,12 +4364,12 @@
                 } return '';
             }
             getDirectImageURL(image) {
-                if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof image.downloadUrl === 'string' && image.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [image.viewUrl, image.webViewLink, hasViewStyleDownload ? image.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                if (DriveLinkHelper.isGoogleDriveFile(image, state.providerType)) {
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(image, state.providerType);
                     return permanentLink || `https://drive.google.com/file/d/${image.id}/view`;
-                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
+                } else if (state.providerType === 'onedrive') {
+                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
+                }
                 return '';
             }
             downloadCSV(data) {
@@ -4312,7 +4497,8 @@
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
                 const coordinator = state.folderSyncCoordinator;
                 let preparation = null;
@@ -4395,8 +4581,36 @@
                     state.syncLog?.log({ event: 'manifest:cleanup:error', level: 'warn', details: `Failed to prune duplicate manifests for ${folderId}: ${error.message}` });
                 }
             },
+            markFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (!Object.prototype.hasOwnProperty.call(file, '__metadataNormalized')) {
+                    Object.defineProperty(file, '__metadataNormalized', {
+                        value: true,
+                        enumerable: false,
+                        configurable: true,
+                        writable: false
+                    });
+                }
+                return file;
+            },
+            ensureFileMetadataNormalized(file) {
+                if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
+                return this.normalizeFileMetadata(file);
+            },
+            normalizeCachedFiles(files = []) {
+                if (!Array.isArray(files) || files.length === 0) {
+                    return files || [];
+                }
+                return files.map(file => this.ensureFileMetadataNormalized(file));
+            },
             normalizeFileMetadata(file) {
                 if (!file) return file;
+                if (file.__metadataNormalized) {
+                    return file;
+                }
                 const normalized = {
                     ...file,
                     appProperties: { ...(file.appProperties || {}) }
@@ -4428,6 +4642,15 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
+                const providerHint = normalized.providerType || file.providerType || state.providerType || null;
+                // Normalize Drive links so we keep a stable viewing link while retaining the API download URL separately.
+                DriveLinkHelper.normalizeFileLinks(normalized, providerHint);
+                if (providerHint) {
+                    normalized.providerType = providerHint;
+                } else if (normalized.providerType == null) {
+                    normalized.providerType = state.providerType || null;
+                }
+                this.markFileMetadataNormalized(normalized);
                 return normalized;
             },
             computeMetadataSignature(file) {
@@ -4446,6 +4669,7 @@
                 });
             },
             mergeCloudWithCache(cloudFiles, cachedFiles, options = {}) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const forceUpdateIds = new Set(options.forceUpdateIds || []);
                 const cachedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
                 const merged = [];
@@ -4499,6 +4723,7 @@
                 };
             },
             async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const diff = preparation?.diff || { changedIds: [], removedIds: [] };
                 const remoteManifest = preparation?.remoteManifest || null;
@@ -4637,7 +4862,8 @@
                 }
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
+                let cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 await this.applyDeltaSync({
                     cachedFiles,
                     sessionKey,
@@ -4646,6 +4872,7 @@
                 });
             },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
@@ -4764,7 +4991,8 @@
             async refreshFolderInBackground() {
                 try {
                     const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    cachedFiles = this.normalizeCachedFiles(cachedFiles);
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
                     const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
@@ -4844,17 +5072,37 @@
                 Utils.showScreen('app-container');
             },
             async returnToFolderSelection() {
+                if (state.isReturningToFolders) return;
+
+                state.isReturningToFolders = true;
+                const { backButton, backButtonSpinner } = Utils.elements;
+
+                if (backButton) {
+                    backButton.disabled = true;
+                }
+                if (backButtonSpinner) {
+                    backButtonSpinner.style.display = 'inline-block';
+                }
+
                 try {
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
-                    state.activeRequests.abort(); 
+                    state.activeRequests.abort();
                     this.resetViewState();
                     Utils.showScreen('folder-screen');
                     await Folders.load();
                 } catch(error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
                     Utils.showScreen('folder-screen');
+                } finally {
+                    if (backButton) {
+                        backButton.disabled = false;
+                    }
+                    if (backButtonSpinner) {
+                        backButtonSpinner.style.display = 'none';
+                    }
+                    state.isReturningToFolders = false;
                 }
             },
             resetViewState() {
@@ -4994,7 +5242,7 @@
                 const providerType = state.providerType;
                 try {
                     state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const cachedFiles = this.normalizeCachedFiles((await state.dbManager.getFolderCache(folderId)) || []);
                     const fileIds = cachedFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
                     await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset');
@@ -5085,7 +5333,7 @@
                 });
                 this.updateStackCounts();
             },
-            
+
             sortFiles(files) {
                 return [...files].sort((a, b) => {
                     const seqA = a.stackSequence || 0;
@@ -5096,18 +5344,31 @@
                     return (a.name || '').localeCompare(b.name || '');
                 });
             },
-            
+
             updateStackCounts() {
                 STACKS.forEach(stack => {
                     const count = state.stacks[stack] ? state.stacks[stack].length : 0;
                     const pill = document.getElementById(`pill-${stack}`);
                     if (pill) {
-                        pill.textContent = count > 999 ? ':)' : count;
+                        const label = STACK_NAMES[stack] || stack;
+                        const displayCount = count > 999 ? ':)' : count;
+                        pill.textContent = displayCount;
+                        pill.setAttribute('aria-label', `${label} stack (${count} item${count === 1 ? '' : 's'})`);
                         pill.classList.toggle('visible', count > 0);
                     }
                 });
             },
-            
+
+            getCurrentFile() {
+                const stackName = state.currentStack;
+                if (!stackName) { return null; }
+                const stack = state.stacks[stackName];
+                if (!Array.isArray(stack) || stack.length === 0) { return null; }
+                const position = typeof state.currentStackPosition === 'number' ? state.currentStackPosition : 0;
+                if (position < 0 || position >= stack.length) { return null; }
+                return stack[position] || null;
+            },
+
             initializeImageDisplay() {
                 if (state.imageFiles.length === 0) {
                     this.showEmptyState();
@@ -5154,7 +5415,8 @@
                     state.currentStackPosition = 0;
                 }
 
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) {
                     this.showEmptyState();
                     return;
@@ -5332,7 +5594,8 @@
                 const currentStackName = state.currentStack;
                 const currentStackArray = state.stacks[currentStackName];
                 if (!currentStackArray || currentStackArray.length === 0) return;
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) return;
 
                 state.isImageTransitioning = true;
@@ -5392,11 +5655,18 @@
                             }
                         }
                     } else {
-                        state.currentStackPosition = 0;
+                        let nextIndex = previousPosition;
+                        if (nextIndex >= updatedStack.length) {
+                            nextIndex = updatedStack.length - 1;
+                        }
+                        if (nextIndex < 0) {
+                            nextIndex = 0;
+                        }
+                        state.currentStackPosition = nextIndex;
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
-                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: true });
+                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
                 } catch (error) {
                     Utils.showToast(`Failed to delete ${currentFile.name}`, 'error', true);
                 } finally {
@@ -5428,14 +5698,23 @@
                 state.grid.isDirty = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
-                state.grid.selected = []; state.grid.filtered = [];
-                const activeFiles = state.stacks[stack] || [];
-                if (activeFiles.length > 0) {
-                    state.grid.selected = [activeFiles[0].id];
+                const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
+                let anchorSource = null;
+                if (stack === state.currentStack) {
+                    anchorSource = Core.getCurrentFile();
                 }
+                if (!anchorSource && stackFiles.length > 0) {
+                    anchorSource = stackFiles[0];
+                }
+                state.grid.anchorId = anchorSource ? anchorSource.id : null;
+                state.grid.filtered = [];
+                const availableIds = new Set(stackFiles.map(file => file.id));
+                state.grid.selected = Array.isArray(state.grid.selected)
+                    ? state.grid.selected.filter(id => availableIds.has(id))
+                    : [];
                 Utils.elements.gridContainer.innerHTML = '';
                 this.clearDragState();
-                this.initializeLazyLoad(stack, activeFiles);
+                this.initializeLazyLoad(stack);
                 this.updateSelectionUI();
                 Core.updateStackCounts();
             },
@@ -5457,6 +5736,7 @@
                     }
                     await Core.displayCurrentImage();
                     state.grid.stack = null; state.grid.selected = [];
+                    state.grid.anchorId = null;
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
                 }
@@ -5466,15 +5746,35 @@
                 if (entries[0].isIntersecting) { this.renderBatch(); }
             },
 
-            initializeLazyLoad(stack, filesOverride = null) {
+            initializeLazyLoad(stack, filesOverride = null, options = {}) {
+                const { preserveFilter = false } = options;
                 const lazyState = state.grid.lazyLoadState;
-                const sourceFiles = Array.isArray(filesOverride)
-                    ? filesOverride
-                    : (state.grid.filtered.length > 0 ? state.grid.filtered : state.stacks[stack]);
-                lazyState.allFiles = sourceFiles;
+                const usingOverride = Array.isArray(filesOverride);
+                let baseFiles;
+
+                if (usingOverride) {
+                    baseFiles = filesOverride.slice();
+                } else if (state.grid.filtered.length > 0) {
+                    baseFiles = state.grid.filtered.slice();
+                } else {
+                    baseFiles = (state.stacks[stack] || []).slice();
+                }
+
+                const ordered = this.orderWithAnchor(baseFiles);
+                lazyState.allFiles = ordered.slice();
                 lazyState.renderedCount = 0;
-                Utils.elements.selectAllBtn.textContent = sourceFiles.length;
+                Utils.elements.selectAllBtn.textContent = ordered.length;
+
+                if (usingOverride && !preserveFilter) {
+                    state.grid.filtered = ordered.slice();
+                } else if (!usingOverride && state.grid.filtered.length > 0 && !preserveFilter) {
+                    state.grid.filtered = ordered.slice();
+                }
+
+                Utils.elements.gridContainer.innerHTML = '';
+                this.ensureAnchorSelection(ordered);
                 this.renderBatch();
+                this.applySelectionToRenderedTiles();
                 if (lazyState.observer) lazyState.observer.disconnect();
                 lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), {
                     root: Utils.elements.gridContent, rootMargin: "400px"
@@ -5487,6 +5787,47 @@
                 const lazyState = state.grid.lazyLoadState;
                 if (lazyState.observer) { lazyState.observer.disconnect(); lazyState.observer = null; }
                 lazyState.allFiles = []; lazyState.renderedCount = 0;
+            },
+
+            orderWithAnchor(files = []) {
+                const list = Array.isArray(files) ? [...files] : [];
+                const anchorId = state.grid.anchorId;
+                if (!anchorId) { return list; }
+                const anchorIndex = list.findIndex(file => file && file.id === anchorId);
+                if (anchorIndex > 0) {
+                    const [anchorFile] = list.splice(anchorIndex, 1);
+                    list.unshift(anchorFile);
+                }
+                return list;
+            },
+
+            ensureAnchorSelection(files = null) {
+                const anchorId = state.grid.anchorId;
+                if (!anchorId) { return; }
+                const items = Array.isArray(files) ? files : (state.grid.lazyLoadState.allFiles || []);
+                const hasAnchor = Array.isArray(items) && items.some(file => file && file.id === anchorId);
+                const currentSelection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                if (!hasAnchor) {
+                    state.grid.selected = currentSelection.filter(id => id !== anchorId);
+                    return;
+                }
+                if (!currentSelection.includes(anchorId)) { return; }
+                const filtered = currentSelection.filter(id => id !== anchorId);
+                state.grid.selected = [anchorId, ...filtered];
+            },
+
+            applySelectionToRenderedTiles() {
+                const container = Utils.elements.gridContainer;
+                if (!container) { return; }
+                const selectedSet = new Set(Array.isArray(state.grid.selected) ? state.grid.selected : []);
+                container.querySelectorAll('.grid-item').forEach(tile => {
+                    const id = tile.dataset.fileId;
+                    if (selectedSet.has(id)) {
+                        tile.classList.add('selected');
+                    } else {
+                        tile.classList.remove('selected');
+                    }
+                });
             },
 
             renderBatch() {
@@ -5554,9 +5895,9 @@
                 if (event.pointerType === 'mouse' && event.button !== 0) { return; }
 
                 if (!state.grid.selected.includes(fileId)) {
-                    this.deselectAll();
                     state.grid.selected = [fileId];
-                    gridItem.classList.add('selected');
+                    this.ensureAnchorSelection();
+                    this.applySelectionToRenderedTiles();
                     this.updateSelectionUI();
                 }
 
@@ -5695,57 +6036,67 @@
             },
 
             toggleSelection(e, fileId) {
-                const gridItem = e.currentTarget;
-                const index = state.grid.selected.indexOf(fileId);
-                if (index === -1) { state.grid.selected.push(fileId); gridItem.classList.add('selected');
-                } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
+                const isSelected = state.grid.selected.includes(fileId);
+                if (isSelected) {
+                    if (fileId === state.grid.anchorId) { return; }
+                    state.grid.selected = state.grid.selected.filter(id => id !== fileId);
+                } else {
+                    state.grid.selected = [...state.grid.selected.filter(id => id !== fileId), fileId];
+                }
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
                 state.grid.isDirty = true;
                 this.updateSelectionUI();
             },
-            
+
             updateSelectionUI() {
-                const count = state.grid.selected.length;
+                const selection = Array.isArray(state.grid.selected) ? state.grid.selected : [];
+                const count = selection.length;
                 const buttons = [Utils.elements.tagSelected, Utils.elements.notesSelected, Utils.elements.moveSelected,
                                Utils.elements.deleteSelected, Utils.elements.exportSelected, Utils.elements.folderSelected];
-                Utils.elements.selectionText.textContent = `${count} selected`;
+                const label = count === 0 ? 'No items selected' : `${count} item${count === 1 ? '' : 's'} selected`;
+                Utils.elements.selectionText.textContent = label;
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
-            
+
             selectAll() {
-                const filesToSelect = state.grid.lazyLoadState.allFiles;
+                const filesToSelect = state.grid.lazyLoadState.allFiles || [];
                 state.grid.selected = filesToSelect.map(f => f.id);
-                document.querySelectorAll('#grid-container .grid-item').forEach(item => {
-                    item.classList.add('selected');
-                });
+                this.ensureAnchorSelection(filesToSelect);
+                this.applySelectionToRenderedTiles();
                 state.grid.isDirty = true;
                 this.updateSelectionUI();
             },
-            
+
             deselectAll() {
-                document.querySelectorAll('#grid-container .grid-item.selected').forEach(item => item.classList.remove('selected') );
                 state.grid.selected = [];
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
             },
-            
+
             performSearch() {
                 const query = Utils.elements.omniSearch.value.trim();
                 Utils.elements.clearSearchBtn.style.display = query ? 'inline-flex' : 'none';
                 if (!query) { this.resetSearch(); return; }
 
                 const results = this.searchImages(query);
-                state.grid.filtered = results;
+                const orderedResults = this.orderWithAnchor(results);
+                state.grid.filtered = orderedResults.slice();
 
-                if (results.length === 0) {
+                if (orderedResults.length === 0) {
                     state.grid.selected = [];
                     Utils.elements.gridEmptyState.classList.remove('hidden');
                     Utils.elements.selectAllBtn.textContent = '0';
                 } else {
-                    state.grid.selected = results.map(file => file.id);
+                    state.grid.selected = orderedResults.map(file => file.id);
                     Utils.elements.gridEmptyState.classList.add('hidden');
                 }
 
                 Utils.elements.gridContainer.innerHTML = '';
-                this.initializeLazyLoad(state.grid.stack, results);
+                this.initializeLazyLoad(state.grid.stack, orderedResults);
+                this.ensureAnchorSelection(orderedResults);
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
@@ -5758,7 +6109,9 @@
                 Utils.elements.gridContainer.innerHTML = '';
                 this.initializeLazyLoad(state.grid.stack);
                 Core.updateStackCounts();
-                this.deselectAll();
+                this.ensureAnchorSelection();
+                this.applySelectionToRenderedTiles();
+                this.updateSelectionUI();
             },
 
             syncWithStack(stackName, options = {}) {
@@ -5768,26 +6121,41 @@
                 if (removedIds.length > 0) {
                     state.grid.selected = state.grid.selected.filter(id => !removedIds.includes(id));
                     state.grid.filtered = state.grid.filtered.filter(file => !removedIds.includes(file.id));
+                    if (state.grid.anchorId && removedIds.includes(state.grid.anchorId)) {
+                        state.grid.anchorId = null;
+                    }
                 }
 
                 if (state.grid.stack !== stackName) {
                     return;
                 }
 
-                const activeFiles = state.grid.filtered.length > 0
-                    ? state.grid.filtered
-                    : (state.stacks[stackName] || []);
+                const useFiltered = state.grid.filtered.length > 0;
+                const activeFiles = useFiltered
+                    ? state.grid.filtered.slice()
+                    : (state.stacks[stackName] || []).slice();
 
-                if (preselectFirst) {
-                    if (activeFiles.length > 0) {
-                        state.grid.selected = [activeFiles[0].id];
-                    } else {
-                        state.grid.selected = [];
-                    }
+                const availableIds = new Set(activeFiles.map(file => file.id));
+                let nextSelection = Array.isArray(state.grid.selected)
+                    ? state.grid.selected.filter(id => availableIds.has(id))
+                    : [];
+
+                if (preselectFirst && nextSelection.length === 0 && activeFiles.length > 0) {
+                    nextSelection = [activeFiles[0].id];
                 }
 
+                if (state.grid.anchorId && !availableIds.has(state.grid.anchorId)) {
+                    const anchorFallback = activeFiles[0] || null;
+                    state.grid.anchorId = anchorFallback ? anchorFallback.id : null;
+                }
+
+                state.grid.selected = nextSelection;
+
                 Utils.elements.gridContainer.innerHTML = '';
-                this.initializeLazyLoad(stackName, activeFiles);
+                const preserveFilter = useFiltered;
+                this.initializeLazyLoad(stackName, useFiltered ? activeFiles : null, { preserveFilter });
+                this.ensureAnchorSelection(activeFiles);
+                this.applySelectionToRenderedTiles();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
             },
@@ -5886,7 +6254,7 @@
                 
                 const newStack = [...topItems, ...bottomItems];
                 const timestamp = Date.now();
-                
+
                 newStack.forEach((file, i) => {
                     file.stackSequence = timestamp - i;
                 });
@@ -5898,6 +6266,9 @@
                 await state.dbManager.saveFolderCache(context.folderId, state.imageFiles);
 
                 state.stacks[state.grid.stack] = newStack;
+                if (state.grid.filtered.length === 0) {
+                    state.grid.anchorId = newStack[0] ? newStack[0].id : null;
+                }
                 state.currentStackPosition = 0;
                 Utils.showToast('Stack order updated', 'success');
             }
@@ -5975,6 +6346,10 @@
             }
 
             state.stacks[stackName] = newStackOrder;
+            if (state.grid.filtered.length === 0) {
+                const newAnchor = newStackOrder[0] ? newStackOrder[0].id : null;
+                state.grid.anchorId = newAnchor;
+            }
             if (state.grid.filtered.length > 0) {
                 const filteredIds = new Set(state.grid.filtered.map(file => file.id));
                 state.grid.filtered = newStackOrder.filter(file => filteredIds.has(file.id));
@@ -6041,8 +6416,11 @@
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (state.providerType === 'googledrive') { Utils.elements.detailFilenameLink.href = `https://drive.google.com/file/d/${file.id}/view`;
-                } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                    Utils.elements.detailFilenameLink.href = DriveLinkHelper.getPermanentViewUrl(file, state.providerType) || '#';
+                } else {
+                    Utils.elements.detailFilenameLink.href = file.downloadUrl || '#';
+                }
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
                 Utils.elements.detailDate.textContent = date;
@@ -6501,6 +6879,8 @@
                 Utils.elements.actionConfirm.disabled = true; Utils.elements.actionCancel.textContent = "Close";
             },
             executeFolderMove() {
+                if (state.isReturningToFolders) return;
+
                 state.folderMoveMode = { active: true, files: [...state.grid.selected], };
                 this.hide(); Grid.close(); App.returnToFolderSelection();
                 Utils.showToast(`Select destination folder for ${state.folderMoveMode.files.length} images`, 'info', true);
@@ -6515,7 +6895,8 @@
             hubPressActive: false,
             overlay: null,
             lastHubTap: { time: 0, x: 0, y: 0 },
-            tapHandled: false,
+            activePointerId: null,
+            activePointerType: null,
             DOUBLE_TAP_MAX_INTERVAL: 320,
             DOUBLE_TAP_MAX_DISTANCE: 28,
             TAP_DISTANCE_THRESHOLD: 26,
@@ -6530,13 +6911,12 @@
                 this.initGestureOverlay();
             },
             setupEventListeners() {
-                Utils.elements.imageViewport.addEventListener('mousedown', this.handleStart.bind(this));
-                document.addEventListener('mousemove', this.handleMove.bind(this));
-                document.addEventListener('mouseup', this.handleEnd.bind(this));
-                Utils.elements.imageViewport.addEventListener('touchstart', this.handleStart.bind(this), { passive: false });
-                document.addEventListener('touchmove', this.handleMove.bind(this), { passive: false });
-                document.addEventListener('touchend', this.handleEnd.bind(this), { passive: false });
-                document.addEventListener('touchcancel', this.handleEnd.bind(this), { passive: false });
+                const viewport = Utils.elements.imageViewport;
+                if (!viewport) return;
+                viewport.addEventListener('pointerdown', this.handleStart.bind(this));
+                document.addEventListener('pointermove', this.handleMove.bind(this));
+                document.addEventListener('pointerup', this.handleEnd.bind(this));
+                document.addEventListener('pointercancel', this.handleEnd.bind(this));
             },
             setupPinchZoom() {
                 Utils.elements.centerImage.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
@@ -6716,14 +7096,19 @@
                 }
             },
             handleStart(e) {
-                this.tapHandled = false;
-                if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
+                const pointer = this.getPointerDetails(e);
+                if (pointer.type === 'touch' && state.isPinching) return;
                 if (state.currentScale > 1.1) return;
-                const point = e.touches ? e.touches[0] : e;
-                const hubInteraction = this.isInHub(point.clientX, point.clientY);
+                if (pointer.type === 'touch' && e.isPrimary === false) return;
+                if (this.activePointerId !== null && this.activePointerId !== pointer.id) return;
+                if (this.activePointerType && this.activePointerType !== pointer.type) return;
+                if (pointer.type === 'touch' && e.touches && e.touches.length > 1) return;
+                const hubInteraction = this.isInHub(pointer.clientX, pointer.clientY);
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
-                this.startPos = { x: point.clientX, y: point.clientY };
-                this.currentPos = { x: point.clientX, y: point.clientY };
+                this.activePointerId = pointer.id;
+                this.activePointerType = pointer.type;
+                this.startPos = { x: pointer.clientX, y: pointer.clientY };
+                this.currentPos = { x: pointer.clientX, y: pointer.clientY };
                 this.startTimestamp = performance.now();
                 this.gestureStarted = false;
                 state.isDragging = true;
@@ -6731,19 +7116,28 @@
                 if (!hubInteraction) {
                     Utils.elements.centerImage.classList.add('dragging');
                 }
-                this.spawnRipple(point.clientX, point.clientY);
-                this.queueTrail(point.clientX, point.clientY);
+                this.spawnRipple(pointer.clientX, pointer.clientY);
+                this.queueTrail(pointer.clientX, pointer.clientY);
             },
             handleMove(e) {
                 if (!state.isDragging) return;
+                if (this.activePointerId === null) return;
+                if (e.pointerId !== undefined && e.pointerId !== this.activePointerId) return;
+                if (this.activePointerType === 'touch' && state.isPinching) {
+                    state.isDragging = false;
+                    Utils.elements.centerImage.classList.remove('dragging');
+                    this.hideAllEdgeGlows();
+                    this.resetActivePointer();
+                    return;
+                }
                 if (e.touches && e.touches.length > 1) {
                     state.isDragging = false; Utils.elements.centerImage.classList.remove('dragging');
-                    this.hideAllEdgeGlows(); return;
+                    this.hideAllEdgeGlows(); this.resetActivePointer(); return;
                 }
                 e.preventDefault();
-                const point = e.touches ? e.touches[0] : e;
-                this.currentPos = { x: point.clientX, y: point.clientY };
-                this.queueTrail(point.clientX, point.clientY);
+                const pointer = this.getPointerDetails(e);
+                this.currentPos = { x: pointer.clientX, y: pointer.clientY };
+                this.queueTrail(pointer.clientX, pointer.clientY);
                 if (this.hubPressActive) { return; }
                 if (state.imageFiles.length === 0) return;
                 const deltaX = this.currentPos.x - this.startPos.x;
@@ -6760,11 +7154,13 @@
                 }
             },
             handleEnd(e) {
-                if (!state.isDragging) return;
+                const matchesPointer = this.isActivePointer(e);
+                if (!matchesPointer) return;
+                if (!state.isDragging) { this.resetActivePointer(); return; }
                 state.isDragging = false;
                 Utils.elements.centerImage.classList.remove('dragging');
-                const point = e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e;
-                if (point) { this.currentPos = { x: point.clientX, y: point.clientY }; }
+                const pointer = this.getPointerDetails(e, true);
+                if (pointer) { this.currentPos = { x: pointer.clientX, y: pointer.clientY }; }
                 this.spawnTrail(this.currentPos.x, this.currentPos.y);
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
@@ -6794,6 +7190,7 @@
                     this.hideAllEdgeGlows();
                     this.hubPressActive = false;
                     this.gestureStarted = false;
+                    this.resetActivePointer();
                     return;
                 }
 
@@ -6813,15 +7210,53 @@
                         }
                     }
                 } else if (!this.gestureStarted && isTap) {
-                    if (!this.tapHandled) {
-                        this.tapHandled = true;
-                        this.spawnRipple(this.currentPos.x, this.currentPos.y);
-                        this.handleTap(this.currentPos.x, this.currentPos.y);
-                    }
+                    this.spawnRipple(this.currentPos.x, this.currentPos.y);
+                    this.handleTap(this.currentPos.x, this.currentPos.y);
                 }
                 this.hideAllEdgeGlows();
                 this.hubPressActive = false;
                 this.gestureStarted = false;
+                this.resetActivePointer();
+            },
+            getPointerDetails(e, preferChangedTouches = false) {
+                if (e.pointerId !== undefined) {
+                    return {
+                        id: e.pointerId,
+                        type: e.pointerType || 'mouse',
+                        clientX: e.clientX,
+                        clientY: e.clientY
+                    };
+                }
+                const touchList = preferChangedTouches ? e.changedTouches : e.touches;
+                if (touchList && touchList.length) {
+                    const touch = touchList[0];
+                    return {
+                        id: touch.identifier,
+                        type: 'touch',
+                        clientX: touch.clientX,
+                        clientY: touch.clientY
+                    };
+                }
+                return {
+                    id: 'mouse',
+                    type: 'mouse',
+                    clientX: e.clientX,
+                    clientY: e.clientY
+                };
+            },
+            isActivePointer(e) {
+                if (this.activePointerId === null) return false;
+                if (e.pointerId !== undefined) {
+                    return e.pointerId === this.activePointerId;
+                }
+                if (e.changedTouches && e.changedTouches.length) {
+                    return Array.from(e.changedTouches).some(t => t.identifier === this.activePointerId);
+                }
+                return this.activePointerId === 'mouse';
+            },
+            resetActivePointer() {
+                this.activePointerId = null;
+                this.activePointerType = null;
             },
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
@@ -6987,6 +7422,8 @@
             },
 
             async handleFolderMoveSelection(folderId, folderName) {
+                if (state.isReturningToFolders) return;
+
                 const filesToMove = state.folderMoveMode.files;
                 Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
                 try {
@@ -7515,7 +7952,10 @@
                 Utils.elements.authBackButton.addEventListener('click', async () => { await App.backToProviderSelection(); });
             },
             setupFolderManagement() {
-                Utils.elements.backButton.addEventListener('click', () => App.returnToFolderSelection());
+                Utils.elements.backButton.addEventListener('click', () => {
+                    if (state.isReturningToFolders) return;
+                    App.returnToFolderSelection();
+                });
 
                 Utils.elements.folderBackButton.addEventListener('click', async () => { await App.backToProviderSelection(); });
                 Utils.elements.folderLogoutButton.addEventListener('click', async () => {
@@ -7548,6 +7988,7 @@
                 Utils.elements.cancelLoading.addEventListener('click', () => {
                     if (state.metadataExtractor) { state.metadataExtractor.abort(); }
                     state.activeRequests.abort();
+                    if (state.isReturningToFolders) return;
                     App.returnToFolderSelection();
                     Utils.showToast('Loading cancelled', 'info', true);
                 });
@@ -7594,7 +8035,10 @@
                         Utils.elements.selectAnotherFolderBtn.style.display = 'block';
                     }
                 });
-                Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => { App.returnToFolderSelection(); });
+                Utils.elements.selectAnotherFolderBtn.addEventListener('click', () => {
+                    if (state.isReturningToFolders) return;
+                    App.returnToFolderSelection();
+                });
             },
             setupPillCounters() {
                 let skipNextGridOpen = false;
@@ -7602,7 +8046,21 @@
                     const pill = document.getElementById(`pill-${stackName}`);
                     if (pill) {
                         let pointerActivated = false;
+                        let activePointerId = null;
+                        let pointerCaptureTarget = null;
+                        const releasePointer = (event) => {
+                            if (event && typeof event.pointerId === 'number' && pointerCaptureTarget && typeof pointerCaptureTarget.releasePointerCapture === 'function') {
+                                try { pointerCaptureTarget.releasePointerCapture(event.pointerId); } catch (error) { /* noop */ }
+                            }
+                            pointerCaptureTarget = null;
+                            activePointerId = null;
+                            setTimeout(() => { pointerActivated = false; }, 150);
+                        };
                         const activatePill = async (event) => {
+                            const pointerId = (event && typeof event.pointerId === 'number') ? event.pointerId : null;
+                            if (pointerId !== null && activePointerId !== null && pointerId !== activePointerId) {
+                                return;
+                            }
                             const isPointerInvocation = Boolean(
                                 pointerActivated ||
                                 (event && (
@@ -7619,33 +8077,49 @@
                             const wasDifferentStack = state.currentStack !== stackName;
                             const shouldSetSkipNext = wasDifferentStack && !isPointerInvocation;
 
-                            if (stackName === 'trash') {
-                                if (wasDifferentStack) {
-                                    skipNextGridOpen = shouldSetSkipNext;
-                                    await UI.switchToStack(stackName);
-                                }
-                                Grid.open(stackName);
-                            } else if (!wasDifferentStack) {
-                                const shouldSkip = skipNextGridOpen && !state.isFocusMode;
-                                skipNextGridOpen = false;
-                                if (!shouldSkip) {
-                                    Grid.open(stackName);
-                                }
-                            } else {
+                            if (wasDifferentStack) {
                                 skipNextGridOpen = shouldSetSkipNext;
                                 return UI.switchToStack(stackName);
+                            }
+
+                            const shouldSkip = skipNextGridOpen && !state.isFocusMode;
+                            skipNextGridOpen = false;
+                            if (!shouldSkip) {
+                                Grid.open(stackName);
                             }
 
                             UI.acknowledgePillCounter(stackName);
                         };
 
-                        pill.addEventListener('pointerup', async (event) => {
+                        pill.addEventListener('pointerdown', (event) => {
                             pointerActivated = true;
+                            if (typeof event.pointerId === 'number') {
+                                activePointerId = event.pointerId;
+                                const target = event.target;
+                                const canCapture = target && typeof target.setPointerCapture === 'function';
+                                if (canCapture) {
+                                    try {
+                                        target.setPointerCapture(event.pointerId);
+                                        pointerCaptureTarget = target;
+                                    } catch (error) {
+                                        pointerCaptureTarget = null;
+                                    }
+                                } else {
+                                    pointerCaptureTarget = null;
+                                }
+                            }
+                        });
+
+                        pill.addEventListener('pointerup', async (event) => {
                             try {
                                 await activatePill(event);
                             } finally {
-                                setTimeout(() => { pointerActivated = false; }, 150);
+                                releasePointer(event);
                             }
+                        });
+
+                        pill.addEventListener('pointercancel', (event) => {
+                            releasePointer(event);
                         });
 
                         pill.addEventListener('click', (event) => {
@@ -7812,7 +8286,10 @@
                         }
                         switch (e.key) {
                             case 'Tab': e.preventDefault(); UI.cycleThroughPills(); break;
-                            case 'Escape': await App.returnToFolderSelection(); break;
+                            case 'Escape':
+                                if (state.isReturningToFolders) break;
+                                await App.returnToFolderSelection();
+                                break;
                         }
                     } catch (error) {
                         Utils.showToast(`Keyboard command failed: ${error.message}`, 'error', true);

@@ -4538,7 +4538,8 @@
                     state.currentStackPosition = 0;
                 }
 
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) {
                     this.showEmptyState();
                     return;
@@ -4691,7 +4692,8 @@
                 const currentStackName = state.currentStack;
                 const currentStackArray = state.stacks[currentStackName];
                 if (!currentStackArray || currentStackArray.length === 0) return;
-                const currentFile = currentStackArray[state.currentStackPosition];
+                const previousPosition = state.currentStackPosition;
+                const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) return;
 
                 state.isImageTransitioning = true;
@@ -4727,11 +4729,18 @@
                         }
                         this.showEmptyState();
                     } else {
-                        state.currentStackPosition = 0;
+                        let nextIndex = previousPosition;
+                        if (nextIndex >= updatedStack.length) {
+                            nextIndex = updatedStack.length - 1;
+                        }
+                        if (nextIndex < 0) {
+                            nextIndex = 0;
+                        }
+                        state.currentStackPosition = nextIndex;
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
-                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: true });
+                    Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
                 } catch (error) {
                     Utils.showToast(`Failed to delete ${currentFile.name}`, 'error', true);
                 } finally {
@@ -6097,88 +6106,158 @@
                 this.switchToStack(nextStack);
             }
         };
-        const DraggableResizable = {
-            init(modal, header) {
-                if (!modal || !header) {
-                    const logger = (typeof state !== 'undefined' && state?.syncLog) ? state.syncLog : null;
-                    logger?.log({
-                        event: 'ui:draggable:init:error',
-                        level: 'error',
-                        details: 'Draggable init skipped due to missing modal/header reference.',
-                        data: {
-                            modalPresent: Boolean(modal),
-                            headerPresent: Boolean(header),
-                            modalId: modal && modal.id ? modal.id : null,
-                            headerId: header && header.id ? header.id : null
-                        }
+        const DraggableResizable = (() => {
+            const geometryStore = new WeakMap();
+
+            const getState = (modal) => {
+                if (!geometryStore.has(modal)) {
+                    geometryStore.set(modal, {
+                        lastGeometry: null,
+                        restoreGeometry: null,
+                        isMaximized: false
                     });
-                    return;
                 }
+                return geometryStore.get(modal);
+            };
 
-                let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-                let isDragging = false;
+            const captureGeometry = (modal) => ({
+                top: modal.style.top || '',
+                left: modal.style.left || '',
+                width: modal.style.width || '',
+                height: modal.style.height || '',
+                maxWidth: modal.style.maxWidth || '',
+                maxHeight: modal.style.maxHeight || '',
+                transform: modal.style.transform || ''
+            });
 
-                header.onmousedown = dragMouseDown;
+            const applyGeometry = (modal, geometry) => {
+                if (!geometry) return;
+                modal.style.top = geometry.top ?? '';
+                modal.style.left = geometry.left ?? '';
+                modal.style.width = geometry.width ?? '';
+                modal.style.height = geometry.height ?? '';
+                modal.style.maxWidth = geometry.maxWidth ?? '';
+                modal.style.maxHeight = geometry.maxHeight ?? '';
+                modal.style.transform = geometry.transform ?? '';
+            };
 
-                function dragMouseDown(e) {
-                    e = e || window.event;
-                    e.preventDefault();
-                    pos3 = e.clientX;
-                    pos4 = e.clientY;
-                    isDragging = true;
-                    document.onmouseup = closeDragElement;
-                    document.onmousemove = elementDrag;
+            const ensureGeometry = (modal) => {
+                const state = getState(modal);
+                if (!state.restoreGeometry) {
+                    const geometry = captureGeometry(modal);
+                    state.restoreGeometry = geometry;
+                    state.lastGeometry = geometry;
                 }
+                return state;
+            };
 
-                function elementDrag(e) {
-                    if (!isDragging) return;
-                    e = e || window.event;
-                    e.preventDefault();
-                    pos1 = pos3 - e.clientX;
-                    pos2 = pos4 - e.clientY;
-                    pos3 = e.clientX;
-                    pos4 = e.clientY;
-                    
-                    let newTop = modal.offsetTop - pos2;
-                    let newLeft = modal.offsetLeft - pos1;
-
-                    // Boundary checks
-                    const parent = modal.parentElement;
-                    if (newTop < 0) newTop = 0;
-                    if (newLeft < 0) newLeft = 0;
-                    if (newTop + modal.offsetHeight > parent.clientHeight) newTop = parent.clientHeight - modal.offsetHeight;
-                    if (newLeft + modal.offsetWidth > parent.clientWidth) newLeft = parent.clientWidth - modal.offsetWidth;
-
-                    modal.style.top = newTop + "px";
-                    modal.style.left = newLeft + "px";
-                }
-
-                function closeDragElement() {
-                    isDragging = false;
-                    document.onmouseup = null;
-                    document.onmousemove = null;
-                }
-
-                header.ondblclick = () => {
-                     if (modal.id === 'details-modal') {
-                        modal.style.top = '50%';
-                        modal.style.left = '50%';
-                        modal.style.transform = 'translate(-50%, -50%)';
-                        modal.style.width = '800px';
-                        modal.style.height = '95vh';
-                    } else if (modal.id === 'grid-modal') {
-                        modal.style.top = '0px';
-                        modal.style.left = '0px';
-                        modal.style.width = '100%';
-                        modal.style.height = '100%';
-                        modal.style.maxHeight = '100vh';
-                        modal.style.maxWidth = '100vw';
-                        modal.style.transform = 'none';
-                        Utils.elements.gridContent.scrollTop = 0;
+            return {
+                init(modal, header) {
+                    if (!modal || !header) {
+                        const logger = (typeof state !== 'undefined' && state?.syncLog) ? state.syncLog : null;
+                        logger?.log({
+                            event: 'ui:draggable:init:error',
+                            level: 'error',
+                            details: 'Draggable init skipped due to missing modal/header reference.',
+                            data: {
+                                modalPresent: Boolean(modal),
+                                headerPresent: Boolean(header),
+                                modalId: modal && modal.id ? modal.id : null,
+                                headerId: header && header.id ? header.id : null
+                            }
+                        });
+                        return;
                     }
-                };
-            }
-        };
+
+                    const state = ensureGeometry(modal);
+
+                    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+                    let isDragging = false;
+
+                    header.onmousedown = dragMouseDown;
+
+                    function dragMouseDown(e) {
+                        e = e || window.event;
+                        e.preventDefault();
+                        pos3 = e.clientX;
+                        pos4 = e.clientY;
+                        isDragging = true;
+                        ensureGeometry(modal);
+                        state.isMaximized = false;
+                        document.onmouseup = closeDragElement;
+                        document.onmousemove = elementDrag;
+                    }
+
+                    function elementDrag(e) {
+                        if (!isDragging) return;
+                        e = e || window.event;
+                        e.preventDefault();
+                        pos1 = pos3 - e.clientX;
+                        pos2 = pos4 - e.clientY;
+                        pos3 = e.clientX;
+                        pos4 = e.clientY;
+
+                        let newTop = modal.offsetTop - pos2;
+                        let newLeft = modal.offsetLeft - pos1;
+
+                        // Boundary checks
+                        const parent = modal.parentElement;
+                        if (newTop < 0) newTop = 0;
+                        if (newLeft < 0) newLeft = 0;
+                        if (newTop + modal.offsetHeight > parent.clientHeight) newTop = parent.clientHeight - modal.offsetHeight;
+                        if (newLeft + modal.offsetWidth > parent.clientWidth) newLeft = parent.clientWidth - modal.offsetWidth;
+
+                        modal.style.top = newTop + "px";
+                        modal.style.left = newLeft + "px";
+                    }
+
+                    function closeDragElement() {
+                        if (!isDragging) return;
+                        isDragging = false;
+                        state.lastGeometry = captureGeometry(modal);
+                        state.restoreGeometry = state.lastGeometry;
+                        document.onmouseup = null;
+                        document.onmousemove = null;
+                    }
+
+                    header.ondblclick = (event) => {
+                        event?.preventDefault?.();
+                        event?.stopPropagation?.();
+                        ensureGeometry(modal);
+
+                        if (!state.isMaximized) {
+                            state.restoreGeometry = state.lastGeometry || captureGeometry(modal);
+                            state.isMaximized = true;
+
+                            if (modal.id === 'details-modal') {
+                                modal.style.top = '50%';
+                                modal.style.left = '50%';
+                                modal.style.transform = 'translate(-50%, -50%)';
+                                modal.style.width = '800px';
+                                modal.style.height = '95vh';
+                                modal.style.maxWidth = '';
+                                modal.style.maxHeight = '';
+                            } else if (modal.id === 'grid-modal') {
+                                modal.style.top = '0px';
+                                modal.style.left = '0px';
+                                modal.style.width = '100%';
+                                modal.style.height = '100%';
+                                modal.style.maxHeight = '100vh';
+                                modal.style.maxWidth = '100vw';
+                                modal.style.transform = 'none';
+                                if (Utils?.elements?.gridContent) {
+                                    Utils.elements.gridContent.scrollTop = 0;
+                                }
+                            }
+                        } else {
+                            applyGeometry(modal, state.restoreGeometry);
+                            state.isMaximized = false;
+                            state.lastGeometry = captureGeometry(modal);
+                        }
+                    };
+                }
+            };
+        })();
         const Events = {
             init() {
                 this.setupProviderSelection(); this.setupSettings(); this.setupAuth();
