@@ -132,8 +132,9 @@
             position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
             background: rgba(0, 0, 0, 0.8); color: white; padding: 12px 20px; border-radius: 8px;
             font-size: 14px; font-weight: 500; z-index: 2000; opacity: 0; transition: opacity 0.3s ease; backdrop-filter: blur(10px);
+            pointer-events: none;
         }
-        .toast.show { opacity: 1; }
+        .toast.show { opacity: 1; pointer-events: auto; }
         .toast.success { background: rgba(16, 185, 129, 0.9); }
         .toast.info { background: rgba(59, 130, 246, 0.9); }
         .toast.error { background: rgba(239, 68, 68, 0.9); }
@@ -202,7 +203,9 @@
             cursor: pointer; z-index: 10; min-width: 50px; text-align: center;
         }
         .pill-counter.visible { opacity: 0.9; }
-        .pill-counter.active { font-weight: 700; background: white; opacity: 1; border: 3px solid black; }
+        .pill-counter.active {
+            background: white; opacity: 1; border: 3px solid black; color: #111827;
+        }
         .pill-counter:not(.active) { background: rgba(128, 128, 128, 0.4); border: none; }
         .pill-counter:hover { opacity: 1; transform: scale(1.05); }
         .pill-counter.top { top: 10px; left: 50%; transform: translateX(-50%); }
@@ -831,10 +834,10 @@
         <div class="edge-glow left" id="edge-left"></div>
         <div class="edge-glow right" id="edge-right"></div>
         
-        <div class="pill-counter top" id="pill-priority" data-stack="priority">0</div>
-        <div class="pill-counter bottom-center" id="pill-trash" data-stack="trash">0</div>
-        <div class="pill-counter left active" id="pill-in" data-stack="in">0</div>
-        <div class="pill-counter right" id="pill-out" data-stack="out">0</div>
+        <div class="pill-counter top" id="pill-priority" data-stack="priority" aria-live="polite">0</div>
+        <div class="pill-counter bottom-center" id="pill-trash" data-stack="trash" aria-live="polite">0</div>
+        <div class="pill-counter left active" id="pill-in" data-stack="in" aria-live="polite">0</div>
+        <div class="pill-counter right" id="pill-out" data-stack="out" aria-live="polite">0</div>
         
         <div class="empty-state hidden" id="empty-state">
             <div class="empty-message">No more images in this stack</div>
@@ -5060,7 +5063,7 @@
                 });
                 this.updateStackCounts();
             },
-            
+
             sortFiles(files) {
                 return [...files].sort((a, b) => {
                     const seqA = a.stackSequence || 0;
@@ -5071,18 +5074,31 @@
                     return (a.name || '').localeCompare(b.name || '');
                 });
             },
-            
+
             updateStackCounts() {
                 STACKS.forEach(stack => {
                     const count = state.stacks[stack] ? state.stacks[stack].length : 0;
                     const pill = document.getElementById(`pill-${stack}`);
                     if (pill) {
-                        pill.textContent = count > 999 ? ':)' : count;
+                        const label = STACK_NAMES[stack] || stack;
+                        const displayCount = count > 999 ? ':)' : count;
+                        pill.textContent = displayCount;
+                        pill.setAttribute('aria-label', `${label} stack (${count} item${count === 1 ? '' : 's'})`);
                         pill.classList.toggle('visible', count > 0);
                     }
                 });
             },
-            
+
+            getCurrentFile() {
+                const stackName = state.currentStack;
+                if (!stackName) { return null; }
+                const stack = state.stacks[stackName];
+                if (!Array.isArray(stack) || stack.length === 0) { return null; }
+                const position = typeof state.currentStackPosition === 'number' ? state.currentStackPosition : 0;
+                if (position < 0 || position >= stack.length) { return null; }
+                return stack[position] || null;
+            },
+
             initializeImageDisplay() {
                 if (state.imageFiles.length === 0) {
                     this.showEmptyState();
@@ -5387,10 +5403,16 @@
                 state.grid.isDirty = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
-                const anchorSource = stack === state.currentStack ? Core.getCurrentFile() : (state.stacks[stack]?.[0] || null);
+                const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
+                let anchorSource = null;
+                if (stack === state.currentStack) {
+                    anchorSource = Core.getCurrentFile();
+                }
+                if (!anchorSource && stackFiles.length > 0) {
+                    anchorSource = stackFiles[0];
+                }
                 state.grid.anchorId = anchorSource ? anchorSource.id : null;
                 state.grid.filtered = [];
-                const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
                 const availableIds = new Set(stackFiles.map(file => file.id));
                 state.grid.selected = Array.isArray(state.grid.selected)
                     ? state.grid.selected.filter(id => availableIds.has(id))
@@ -5937,7 +5959,7 @@
                 
                 const newStack = [...topItems, ...bottomItems];
                 const timestamp = Date.now();
-                
+
                 newStack.forEach((file, i) => {
                     file.stackSequence = timestamp - i;
                 });
@@ -5949,6 +5971,9 @@
                 await state.dbManager.saveFolderCache(context.folderId, state.imageFiles);
 
                 state.stacks[state.grid.stack] = newStack;
+                if (state.grid.filtered.length === 0) {
+                    state.grid.anchorId = newStack[0] ? newStack[0].id : null;
+                }
                 state.currentStackPosition = 0;
                 Utils.showToast('Stack order updated', 'success');
             }
@@ -6026,6 +6051,10 @@
             }
 
             state.stacks[stackName] = newStackOrder;
+            if (state.grid.filtered.length === 0) {
+                const newAnchor = newStackOrder[0] ? newStackOrder[0].id : null;
+                state.grid.anchorId = newAnchor;
+            }
             if (state.grid.filtered.length > 0) {
                 const filteredIds = new Set(state.grid.filtered.map(file => file.id));
                 state.grid.filtered = newStackOrder.filter(file => filteredIds.has(file.id));
@@ -7411,21 +7440,15 @@
                             const wasDifferentStack = state.currentStack !== stackName;
                             const shouldSetSkipNext = wasDifferentStack && !isPointerInvocation;
 
-                            if (stackName === 'trash') {
-                                if (wasDifferentStack) {
-                                    skipNextGridOpen = shouldSetSkipNext;
-                                    await UI.switchToStack(stackName);
-                                }
-                                Grid.open(stackName);
-                            } else if (!wasDifferentStack) {
-                                const shouldSkip = skipNextGridOpen && !state.isFocusMode;
-                                skipNextGridOpen = false;
-                                if (!shouldSkip) {
-                                    Grid.open(stackName);
-                                }
-                            } else {
+                            if (wasDifferentStack) {
                                 skipNextGridOpen = shouldSetSkipNext;
                                 return UI.switchToStack(stackName);
+                            }
+
+                            const shouldSkip = skipNextGridOpen && !state.isFocusMode;
+                            skipNextGridOpen = false;
+                            if (!shouldSkip) {
+                                Grid.open(stackName);
                             }
 
                             UI.acknowledgePillCounter(stackName);
