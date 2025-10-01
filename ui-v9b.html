@@ -1382,15 +1382,54 @@
             
             getPreferredImageUrl(file) {
                 if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
+                    if (permanentLink) { return permanentLink; }
+
+                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
+                    if (apiDownloadLink) { return apiDownloadLink; }
+
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s1000');
                     }
-                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                    return `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
                     }
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
+                }
+            },
+
+            setGridImageSrc(img, file) {
+                const placeholderSvg = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
+                const preferredUrl = this.getPreferredImageUrl(file);
+                const fallbackUrl = this.getFallbackImageUrl(file);
+
+                const applyPlaceholder = () => {
+                    img.src = placeholderSvg;
+                    img.dataset.src = placeholderSvg;
+                    img.classList.add('loaded');
+                };
+
+                img.dataset.src = preferredUrl || fallbackUrl || placeholderSvg;
+
+                img.onerror = () => {
+                    if (fallbackUrl && img.src !== fallbackUrl) {
+                        img.onerror = () => { applyPlaceholder(); };
+                        img.src = fallbackUrl;
+                        img.dataset.src = fallbackUrl;
+                        return;
+                    }
+                    applyPlaceholder();
+                };
+
+                if (preferredUrl) {
+                    img.src = preferredUrl;
+                } else if (fallbackUrl) {
+                    img.src = fallbackUrl;
+                    img.dataset.src = fallbackUrl;
+                } else {
+                    applyPlaceholder();
                 }
             },
 
@@ -5932,12 +5971,9 @@
                     if (state.grid.selected.includes(file.id)) { div.classList.add('selected'); }
                     const img = document.createElement('img');
                     img.className = 'grid-image'; img.alt = file.name || 'Image';
-                    img.dataset.src = Utils.getPreferredImageUrl(file);
+                    img.loading = 'lazy';
                     img.onload = () => img.classList.add('loaded');
-                    img.onerror = () => {
-                        img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
-                        img.classList.add('loaded');
-                    };
+                    Utils.setGridImageSrc(img, file);
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     const overlay = document.createElement('div');
                     overlay.className = 'filename-overlay';
@@ -5947,7 +5983,6 @@
                     div.appendChild(this.createDragHandle(div, file.id));
                     container.appendChild(div);
                 });
-                container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
                 lazyState.renderedCount += filesToRender.length;
 
                 if (lazyState.renderedCount < lazyState.allFiles.length) {
