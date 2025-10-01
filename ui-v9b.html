@@ -4603,6 +4603,7 @@
                 });
             },
             mergeCloudWithCache(cloudFiles, cachedFiles, options = {}) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const forceUpdateIds = new Set(options.forceUpdateIds || []);
                 const cachedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
                 const merged = [];
@@ -4656,6 +4657,7 @@
                 };
             },
             async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const diff = preparation?.diff || { changedIds: [], removedIds: [] };
                 const remoteManifest = preparation?.remoteManifest || null;
@@ -4794,7 +4796,8 @@
                 }
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
+                let cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 await this.applyDeltaSync({
                     cachedFiles,
                     sessionKey,
@@ -4803,6 +4806,7 @@
                 });
             },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
+                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
@@ -4921,7 +4925,8 @@
             async refreshFolderInBackground() {
                 try {
                     const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    cachedFiles = this.normalizeCachedFiles(cachedFiles);
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
                     const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
@@ -5171,7 +5176,7 @@
                 const providerType = state.providerType;
                 try {
                     state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const cachedFiles = this.normalizeCachedFiles((await state.dbManager.getFolderCache(folderId)) || []);
                     const fileIds = cachedFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
                     await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset');
