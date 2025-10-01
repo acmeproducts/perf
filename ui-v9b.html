@@ -1109,7 +1109,18 @@
                 if (!file) return false;
                 const type = providerType || file.providerType || state.providerType || null;
                 if (type === 'googledrive') return true;
-                return Boolean(file.webViewLink || file.webContentLink || file.driveApiDownloadUrl);
+                const candidateUrls = [
+                    file.webViewLink,
+                    file.webContentLink,
+                    file.driveApiDownloadUrl,
+                    file.viewUrl,
+                    file.downloadUrl
+                ];
+                return candidateUrls.some(url => {
+                    if (typeof url !== 'string' || url.length === 0) return false;
+                    if (this.isDriveApiDownloadUrl(url)) return true;
+                    return /drive\.google\.com\/file\//i.test(url);
+                });
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
@@ -1131,6 +1142,18 @@
                     this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null
                 ];
                 return candidates.find(url => typeof url === 'string' && url.length > 0) || null;
+            },
+            getPermanentViewUrl(file, providerType = null) {
+                if (!file) return null;
+                const hint = providerType || file.providerType || state.providerType || null;
+                if (!this.isGoogleDriveFile(file, hint)) {
+                    return typeof file.viewUrl === 'string' && file.viewUrl.length > 0 ? file.viewUrl : null;
+                }
+                const normalized = this.normalizeFileLinks(file, hint);
+                if (normalized && typeof normalized.viewUrl === 'string' && normalized.viewUrl.length > 0) {
+                    return normalized.viewUrl;
+                }
+                return this.computePermanentViewUrl(normalized || file);
             },
             normalizeFileLinks(file, providerType = null) {
                 if (!this.isGoogleDriveFile(file, providerType)) {
@@ -1338,9 +1361,9 @@
 
             getFallbackImageUrl(file) {
                 if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.computePermanentViewUrl(file);
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
                     if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = DriveLinkHelper.resolveApiDownloadUrl(file);
+                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
                     return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
@@ -4307,9 +4330,11 @@
             }
             getDirectImageURL(image) {
                 if (DriveLinkHelper.isGoogleDriveFile(image, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.computePermanentViewUrl(image);
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(image, state.providerType);
                     return permanentLink || `https://drive.google.com/file/d/${image.id}/view`;
-                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
+                } else if (state.providerType === 'onedrive') {
+                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
+                }
                 return '';
             }
             downloadCSV(data) {
@@ -4582,8 +4607,14 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
-                DriveLinkHelper.normalizeFileLinks(normalized, normalized.providerType || state.providerType || null);
-                normalized.providerType = normalized.providerType || state.providerType || null;
+                const providerHint = normalized.providerType || file.providerType || state.providerType || null;
+                // Normalize Drive links so we keep a stable viewing link while retaining the API download URL separately.
+                DriveLinkHelper.normalizeFileLinks(normalized, providerHint);
+                if (providerHint) {
+                    normalized.providerType = providerHint;
+                } else if (normalized.providerType == null) {
+                    normalized.providerType = state.providerType || null;
+                }
                 this.markFileMetadataNormalized(normalized);
                 return normalized;
             },
@@ -6288,8 +6319,11 @@
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) { Utils.elements.detailFilenameLink.href = DriveLinkHelper.computePermanentViewUrl(file) || '#';
-                } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                    Utils.elements.detailFilenameLink.href = DriveLinkHelper.getPermanentViewUrl(file, state.providerType) || '#';
+                } else {
+                    Utils.elements.detailFilenameLink.href = file.downloadUrl || '#';
+                }
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
                 Utils.elements.detailDate.textContent = date;
