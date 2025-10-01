@@ -1215,18 +1215,37 @@
                 if (!file) return null;
                 const fileId = typeof file.id === 'string' && file.id.length > 0 ? file.id : null;
                 const candidates = [
-                    this.resolveApiDownloadUrl(file),
                     file.viewUrl,
                     file.webViewLink,
                     file.webContentLink,
-                    file.downloadUrl
+                    file.downloadUrl,
+                    this.resolveApiDownloadUrl(file)
                 ];
+
+                const preferred = [];
+                const fallbacks = [];
 
                 for (const candidate of candidates) {
                     const normalized = this.normalizeToAssetUrl(candidate, fileId);
-                    if (normalized) {
+                    if (!normalized) { continue; }
+
+                    if (/drive\.google\.com\/uc\?/i.test(normalized) || /drive\.google\.com\/file\//i.test(normalized)) {
                         return normalized;
                     }
+
+                    if (/googleapis\.com\/drive|drive\.googleusercontent\.com/i.test(normalized)) {
+                        fallbacks.push(normalized);
+                    } else {
+                        preferred.push(normalized);
+                    }
+                }
+
+                if (preferred.length > 0) {
+                    return preferred[0];
+                }
+
+                if (fallbacks.length > 0) {
+                    return fallbacks[0];
                 }
 
                 if (fileId) {
@@ -5902,6 +5921,7 @@
             _dragMoveHandler: null,
             _dragEndHandler: null,
             open(stack) {
+                if (!stack) { return; }
                 Details.hide();
                 Utils.showModal('grid-modal');
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
@@ -5909,20 +5929,20 @@
                 state.grid.isDirty = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
+
                 const stackFiles = Array.isArray(state.stacks[stack]) ? state.stacks[stack] : [];
                 let anchorSource = null;
-                if (stack === state.currentStack) {
+                if (stack === state.currentStack && typeof Core?.getCurrentFile === 'function') {
                     anchorSource = Core.getCurrentFile();
                 }
                 if (!anchorSource && stackFiles.length > 0) {
                     anchorSource = stackFiles[0];
                 }
+
                 state.grid.anchorId = anchorSource ? anchorSource.id : null;
                 state.grid.filtered = [];
-                const availableIds = new Set(stackFiles.map(file => file.id));
-                state.grid.selected = Array.isArray(state.grid.selected)
-                    ? state.grid.selected.filter(id => availableIds.has(id))
-                    : [];
+                state.grid.selected = [];
+
                 Utils.elements.gridContainer.innerHTML = '';
                 this.clearDragState();
                 this.initializeLazyLoad(stack);
@@ -6578,31 +6598,43 @@
             currentTab: 'info',
             async show() {
                 try {
+                    const stack = state.stacks[state.currentStack] || [];
                     const currentFile = (typeof Core?.getCurrentFile === 'function')
                         ? Core.getCurrentFile()
-                        : state.stacks[state.currentStack]?.[state.currentStackPosition];
-                    if (!currentFile) return;
+                        : stack[state.currentStackPosition] || null;
+                    if (!currentFile) { return; }
+
                     const container = Utils.elements.detailsModal;
-                    if (!container) return;
-                    const metadataNeeded = currentFile.metadataStatus !== 'loaded';
-                    const metadataPromise = App.processFileMetadata(currentFile);
+                    if (!container) { return; }
+
+                    const needsMetadata = currentFile.metadataStatus !== 'loaded';
+                    if (needsMetadata) {
+                        this.populateMetadataTab(currentFile);
+                    }
+
                     this.populateAllTabs(currentFile);
-                    container.classList.remove('hidden');
+                    Utils.showModal('details-modal');
                     container.classList.add('visible');
                     if (DraggableResizable && typeof DraggableResizable.onShow === 'function') {
                         DraggableResizable.onShow('details-modal');
                     }
                     this.switchTab('info');
-                    if (metadataNeeded && metadataPromise && typeof metadataPromise.then === 'function') {
-                        metadataPromise.then(() => {
-                            const activeFile = Core.getCurrentFile ? Core.getCurrentFile() : currentFile;
-                            if (!container || container.classList.contains('hidden')) return;
-                            if (!activeFile || activeFile.id !== currentFile.id) return;
-                            this.populateAllTabs(activeFile);
-                        }).catch(error => {
-                            const message = error?.message || error;
+
+                    if (needsMetadata) {
+                        try {
+                            await App.processFileMetadata(currentFile);
+                            const refreshedStack = state.stacks[state.currentStack] || [];
+                            const refreshedFile = (typeof Core?.getCurrentFile === 'function')
+                                ? Core.getCurrentFile()
+                                : refreshedStack.find(file => file.id === currentFile.id) || currentFile;
+                            const containerStillVisible = !Utils.elements.detailsModal.classList.contains('hidden');
+                            if (containerStillVisible && refreshedFile) {
+                                this.populateAllTabs(refreshedFile);
+                            }
+                        } catch (metadataError) {
+                            const message = metadataError?.message || metadataError;
                             console.warn(`Metadata refresh failed while showing details: ${message}`);
-                        });
+                        }
                     }
                 } catch (error) {
                     Utils.showToast(`Error showing details: ${error.message}`, 'error', true);
@@ -6611,8 +6643,8 @@
             hide() {
                 const container = Utils.elements.detailsModal;
                 if (!container) return;
-                container.classList.add('hidden');
                 container.classList.remove('visible');
+                Utils.hideModal('details-modal');
             },
             switchTab(tabName) {
                 document.querySelectorAll('.tab-button').forEach(btn => { btn.classList.toggle('active', btn.dataset.tab === tabName); });
@@ -8240,7 +8272,11 @@
                 });
             },
             setupDetailsModal() {
-                Utils.elements.detailsButton.addEventListener('click', () => { Details.show(); });
+                Utils.elements.detailsButton.addEventListener('click', () => {
+                    const stack = state.stacks[state.currentStack] || [];
+                    if (stack.length === 0) { return; }
+                    Details.show();
+                });
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
             },
             setupFocusMode() {
