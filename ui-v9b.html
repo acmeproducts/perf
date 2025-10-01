@@ -1,4 +1,4 @@
-<!-- Release: 2024-05-08T00:00:00Z | V9b UI Improvements | Footer standardization and … -->
+<!-- Release: 2024-06-14T00:00:00Z | V9b UI Improvements | Footer standardization and … -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -520,11 +520,6 @@
             letter-spacing: 0.01em;
             white-space: nowrap;
         }
-        .master-footer .footer-actions {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
         .master-footer .footer-link {
             background: transparent;
             border: none;
@@ -1042,27 +1037,25 @@
         
         const RELEASE_METADATA = Object.freeze({
             name: 'V9b UI Improvements',
-            timestamp: '2024-05-08T00:00:00Z',
+            timestamp: '2024-06-14T00:00:00Z',
             summary: 'Footer standardization and …'
         });
 
         const Templates = {
             masterFooter(instance = 0) {
                 const suffix = instance === 0 ? '' : `-${instance}`;
-                const metadataText = [
+                const metadataSegments = [
                     RELEASE_METADATA.name,
-                    RELEASE_METADATA.timestamp,
-                    'View Synch Log',
-                    'Reset Cloud'
-                ].filter(Boolean).join(' | ');
+                    RELEASE_METADATA.timestamp ? `<time datetime="${RELEASE_METADATA.timestamp}" class="footer-release-timestamp">${RELEASE_METADATA.timestamp}</time>` : null,
+                    `<a href="#" class="footer-link" data-footer-role="sync-log">View Synch Log</a>`,
+                    `<a href="#" class="footer-link" data-footer-role="reset-folder">Reset Cloud</a>`
+                ].filter(Boolean);
+
+                const metadataText = metadataSegments.join(' | ');
 
                 return `
                     <footer id="master-footer${suffix}" class="master-footer" data-master-footer role="contentinfo">
                         <span class="footer-meta" aria-label="Release metadata">${metadataText}</span>
-                        <span class="footer-actions">
-                            <button type="button" class="footer-link" data-footer-role="sync-log">View Synch Log</button>
-                            <button type="button" class="footer-link" data-footer-role="reset-folder">Reset Cloud</button>
-                        </span>
                     </footer>
                 `.trim();
             }
@@ -1105,6 +1098,57 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null
+        };
+        // Centralized helper to keep Google Drive URL handling consistent across the app.
+        const DriveLinkHelper = {
+            isDriveApiDownloadUrl(url) {
+                if (typeof url !== 'string') return false;
+                return /googleapis\.com\/drive|drive\.googleusercontent\.com|drive\.google\.com\/uc\?/i.test(url);
+            },
+            isGoogleDriveFile(file, providerType = null) {
+                if (!file) return false;
+                const type = providerType || file.providerType || state.providerType || null;
+                if (type === 'googledrive') return true;
+                return Boolean(file.webViewLink || file.webContentLink || file.driveApiDownloadUrl);
+            },
+            computePermanentViewUrl(file) {
+                if (!file) return null;
+                const candidates = [file.viewUrl, file.webViewLink]
+                    .filter(url => typeof url === 'string' && url.length > 0 && !this.isDriveApiDownloadUrl(url));
+                if (candidates.length > 0) {
+                    return candidates[0];
+                }
+                if (typeof file.id === 'string' && file.id.length > 0) {
+                    return `https://drive.google.com/file/d/${file.id}/view`;
+                }
+                return null;
+            },
+            resolveApiDownloadUrl(file) {
+                if (!file) return null;
+                const candidates = [
+                    file.driveApiDownloadUrl,
+                    file.webContentLink,
+                    this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null
+                ];
+                return candidates.find(url => typeof url === 'string' && url.length > 0) || null;
+            },
+            normalizeFileLinks(file, providerType = null) {
+                if (!this.isGoogleDriveFile(file, providerType)) {
+                    return file;
+                }
+                const permanentLink = this.computePermanentViewUrl(file);
+                const apiDownloadUrl = this.resolveApiDownloadUrl(file);
+                if (apiDownloadUrl) {
+                    file.driveApiDownloadUrl = apiDownloadUrl;
+                } else if (file.driveApiDownloadUrl === undefined) {
+                    file.driveApiDownloadUrl = null;
+                }
+                if (permanentLink) {
+                    file.viewUrl = permanentLink;
+                    file.downloadUrl = permanentLink;
+                }
+                return file;
+            }
         };
         const Utils = {
             elements: {},
@@ -1279,7 +1323,7 @@
             },
             
             getPreferredImageUrl(file) {
-                if (state.providerType === 'googledrive') {
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s1000');
                     }
@@ -1293,13 +1337,10 @@
             },
 
             getFallbackImageUrl(file) {
-                if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                    const permanentLink = DriveLinkHelper.computePermanentViewUrl(file);
                     if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = [file.driveApiDownloadUrl, file.webContentLink, !hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                    const apiDownloadLink = DriveLinkHelper.resolveApiDownloadUrl(file);
                     return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
@@ -3630,9 +3671,7 @@
                     const files = response.files
                         .filter(file => file.mimeType && file.mimeType.startsWith('image/'))
                         .map(file => {
-                            const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                            const apiDownloadUrl = file.webContentLink || null;
-                            return {
+                            const normalized = {
                                 id: file.id,
                                 name: file.name,
                                 type: 'file',
@@ -3641,12 +3680,14 @@
                                 createdTime: file.createdTime,
                                 modifiedTime: file.modifiedTime,
                                 thumbnailLink: file.thumbnailLink,
-                                downloadUrl: viewUrl,
-                                viewUrl,
-                                driveApiDownloadUrl: apiDownloadUrl,
+                                downloadUrl: file.webContentLink || null,
+                                viewUrl: file.viewUrl || file.webViewLink || null,
+                                webViewLink: file.webViewLink,
+                                webContentLink: file.webContentLink,
                                 appProperties: file.appProperties || {},
                                 parents: file.parents
                             };
+                            return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                         });
                     allFiles.push(...files);
                     nextPageToken = response.nextPageToken;
@@ -3809,14 +3850,12 @@
                     .filter(result => result.status === 'fulfilled')
                     .map(result => {
                         const file = result.value;
-                        const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                        const apiDownloadUrl = file.webContentLink || file.driveApiDownloadUrl || null;
-                        return {
+                        const normalized = {
                             ...file,
-                            downloadUrl: viewUrl,
-                            viewUrl,
-                            driveApiDownloadUrl: apiDownloadUrl
+                            downloadUrl: file.webContentLink || file.downloadUrl || null,
+                            viewUrl: file.viewUrl || file.webViewLink || null
                         };
+                        return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                     });
             }
             async drillIntoFolder(folder) {
@@ -4149,10 +4188,8 @@
                 } return '';
             }
             getDirectImageURL(image) {
-                if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof image.downloadUrl === 'string' && image.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [image.viewUrl, image.webViewLink, hasViewStyleDownload ? image.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
+                if (DriveLinkHelper.isGoogleDriveFile(image, state.providerType)) {
+                    const permanentLink = DriveLinkHelper.computePermanentViewUrl(image);
                     return permanentLink || `https://drive.google.com/file/d/${image.id}/view`;
                 } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
                 return '';
@@ -4427,7 +4464,6 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
-                return this.markFileMetadataNormalized(normalized);
             },
             computeMetadataSignature(file) {
                 if (!file) return 'null';
@@ -6130,7 +6166,7 @@
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (state.providerType === 'googledrive') { Utils.elements.detailFilenameLink.href = `https://drive.google.com/file/d/${file.id}/view`;
+                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) { Utils.elements.detailFilenameLink.href = DriveLinkHelper.computePermanentViewUrl(file) || '#';
                 } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
