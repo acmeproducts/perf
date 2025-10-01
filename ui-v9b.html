@@ -2107,6 +2107,48 @@
                 this.dbCloseHandler = () => this.handleDisconnect('close');
                 this.dbVersionChangeHandler = () => this.handleDisconnect('versionchange');
             }
+            sanitizeMetadataForStorage(metadata) {
+                const seen = new WeakSet();
+                const isBlob = (value) => typeof Blob !== 'undefined' && value instanceof Blob;
+                const isFile = (value) => typeof File !== 'undefined' && value instanceof File;
+                const isTypedArray = (value) => ArrayBuffer.isView(value) && !(value instanceof DataView);
+                const sanitize = (input) => {
+                    if (!input || typeof input !== 'object') {
+                        return input;
+                    }
+                    if (input instanceof Date || isBlob(input) || isFile(input) || isTypedArray(input) || input instanceof ArrayBuffer) {
+                        return input;
+                    }
+                    if (seen.has(input)) {
+                        return undefined;
+                    }
+                    seen.add(input);
+                    if (Array.isArray(input)) {
+                        return input
+                            .map(item => sanitize(item))
+                            .filter(item => item !== undefined);
+                    }
+                    const sanitized = {};
+                    for (const [key, value] of Object.entries(input)) {
+                        if (key === '__metadataPromise') {
+                            continue;
+                        }
+                        if (typeof value === 'function') {
+                            continue;
+                        }
+                        if (value && typeof value === 'object' && typeof value.then === 'function') {
+                            continue;
+                        }
+                        const sanitizedValue = sanitize(value);
+                        if (sanitizedValue !== undefined) {
+                            sanitized[key] = sanitizedValue;
+                        }
+                    }
+                    return sanitized;
+                };
+                const sanitizedMetadata = sanitize(metadata);
+                return sanitizedMetadata === undefined ? null : sanitizedMetadata;
+            }
             async init(force = false) {
                 if (!force && this.initPromise) {
                     return this.initPromise;
@@ -2333,12 +2375,13 @@
                     throw new Error(warning);
                 }
                 const normalizedContext = typeof context === 'object' && context !== null ? context : {};
+                const sanitizedMetadata = this.sanitizeMetadataForStorage(metadata);
                 return this.performWithReconnect(() => new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const record = {
                         id: fileId,
-                        metadata,
+                        metadata: sanitizedMetadata,
                         folderKey,
                         provider: normalizedContext.providerType || null,
                         folderId: normalizedContext.folderId || null
