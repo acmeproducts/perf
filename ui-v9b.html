@@ -1157,12 +1157,24 @@
                     return /drive\.google\.com\/file\//i.test(url);
                 });
             },
-            buildUcUrl(candidateId, fallbackId = null) {
+            buildUcUrl(candidateId, fallbackId = null, preservedParams = null) {
                 const resolvedId = candidateId || fallbackId;
                 if (!resolvedId) return null;
                 const base = new URL('https://drive.google.com/uc');
                 base.searchParams.set('export', 'view');
                 base.searchParams.set('id', resolvedId);
+                if (preservedParams) {
+                    const entries = preservedParams instanceof URLSearchParams
+                        ? preservedParams
+                        : new URLSearchParams(preservedParams);
+                    for (const [key, value] of entries) {
+                        if (!key) continue;
+                        const lower = key.toLowerCase();
+                        if (lower === 'id' || lower === 'export') continue;
+                        if (value === undefined || value === null || value === '') continue;
+                        base.searchParams.set(key, value);
+                    }
+                }
                 return base.toString();
             },
             extractDriveFileId(candidate) {
@@ -1197,27 +1209,47 @@
             normalizeToAssetUrl(url, fileId = null) {
                 if (typeof url !== 'string' || url.length === 0) return null;
 
-                const isTokenizedGoogleusercontent = (candidate) => {
-                    if (typeof candidate !== 'string' || candidate.length === 0) return false;
-                    if (!/googleusercontent\.com/i.test(candidate)) return false;
+                const transientParams = new Set([
+                    'usp', 'pli', 'authuser', 'share', 'sharetype',
+                    'source', 'origin', 'shorturl', 'gd', 'gxids', 'hl', 'at', 'ouid'
+                ]);
+
+                const stripTransientParams = (candidate) => {
+                    if (typeof candidate !== 'string' || candidate.length === 0) {
+                        return candidate;
+                    }
+
                     try {
                         const parsed = new URL(candidate);
-                        if (!/googleusercontent\.com$/i.test(parsed.hostname) && !/googleusercontent\.com$/i.test(parsed.host)) {
-                            return false;
-                        }
-                        if (parsed.searchParams.has('token')) return true;
-                        return /token=/i.test(parsed.pathname);
-                    } catch (err) {
-                        return /token=/i.test(candidate);
-                    }
-                };
+                        let changed = false;
 
-                const finalize = (candidate) => {
-                    if (!candidate) return null;
-                    if (isTokenizedGoogleusercontent(candidate)) {
-                        return null;
+                        for (const param of transientParams) {
+                            if (parsed.searchParams.has(param)) {
+                                parsed.searchParams.delete(param);
+                                changed = true;
+                            }
+                        }
+
+                        if (parsed.searchParams.has('export') && parsed.searchParams.get('export') === 'download') {
+                            parsed.searchParams.set('export', 'view');
+                            changed = true;
+                        }
+
+                        if (parsed.hash) {
+                            parsed.hash = '';
+                            changed = true;
+                        }
+
+                        if (!parsed.searchParams.toString()) {
+                            parsed.search = '';
+                        }
+
+                        return changed ? parsed.toString() : candidate;
+                    } catch (err) {
+                        return candidate
+                            .replace(/([?&])(usp|pli|authuser|share|sharetype|source|origin|shorturl|gd|gxids|hl|at|ouid)=[^&#]*/gi, '')
+                            .replace(/[?&]$/, '');
                     }
-                    return candidate;
                 };
 
                 const ensureAltMedia = (candidate) => {
@@ -1229,12 +1261,72 @@
                     return candidate;
                 };
 
+                const collectPreservedParams = (candidate) => {
+                    const preserved = new URLSearchParams();
+                    if (typeof candidate !== 'string' || candidate.length === 0) {
+                        return preserved;
                     }
-                    return this.buildUcUrl(resolvedId, fileId);
+
+                    const appendParams = (searchParams) => {
+                        if (!searchParams) return;
+                        for (const [key, value] of searchParams) {
+                            if (!key) continue;
+                            const lower = key.toLowerCase();
+                            if (lower === 'id' || lower === 'export' || lower === 'alt') continue;
+                            if (transientParams.has(lower)) continue;
+                            if (value === undefined || value === null || value === '') continue;
+                            preserved.append(key, value);
+                        }
+                    };
+
+                    try {
+                        const parsed = new URL(candidate);
+                        appendParams(parsed.searchParams);
+                    } catch (err) {
+                        const queryMatch = candidate.match(/\?([^#]+)/);
+                        if (queryMatch && queryMatch[1]) {
+                            appendParams(new URLSearchParams(queryMatch[1]));
+                        }
+                    }
+
+                    return preserved;
                 };
 
                 const trimmed = url.trim();
                 const sanitized = stripTransientParams(trimmed);
+                const preservedParams = collectPreservedParams(sanitized);
+                const resolvedId = this.extractDriveFileId(sanitized) || fileId;
+
+                if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
+                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
+                    return ucUrl || sanitized;
+                }
+
+                if (/drive\.google\.com\/file\//i.test(sanitized) && resolvedId) {
+                    const base = `https://drive.google.com/file/d/${resolvedId}/view`;
+                    const query = preservedParams.toString();
+                    return query ? `${base}?${query}` : base;
+                }
+
+                if (/drive\.google\.com/i.test(sanitized) && resolvedId) {
+                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
+                    return ucUrl || sanitized;
+                }
+
+                if (/googleapis\.com\/drive/i.test(sanitized)) {
+                    return ensureAltMedia(sanitized);
+                }
+
+                if (/googleusercontent\.com/i.test(sanitized)) {
+                    return sanitized;
+                }
+
+                if (resolvedId) {
+                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
+                    return ucUrl || sanitized;
+                }
+
+                return sanitized;
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
@@ -1336,6 +1428,8 @@
                 const normalizedApiDownloadUrl = apiDownloadUrl ? this.normalizeToAssetUrl(apiDownloadUrl, fileId) : null;
                 if (normalizedApiDownloadUrl) {
                     file.driveApiDownloadUrl = normalizedApiDownloadUrl;
+                } else if (apiDownloadUrl) {
+                    file.driveApiDownloadUrl = apiDownloadUrl;
                 } else if (file.driveApiDownloadUrl === undefined) {
                     file.driveApiDownloadUrl = null;
                 }
