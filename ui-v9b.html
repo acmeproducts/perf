@@ -1557,10 +1557,47 @@
 
             getFallbackImageUrl(file) {
                 if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
-                    if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
-                    return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+                    const normalized = file
+                        ? (DriveLinkHelper.normalizeFileLinks({ ...file }, state.providerType) || { ...file })
+                        : null;
+                    const candidate = normalized || file || null;
+                    const fileId = candidate?.id || null;
+
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(candidate, state.providerType);
+                    const normalizedPermanent = DriveLinkHelper.normalizeToAssetUrl(permanentLink, fileId);
+
+                    const resolveUcCandidates = () => {
+                        const candidates = [
+                            normalizedPermanent,
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.viewUrl, fileId),
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webViewLink, fileId),
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webContentLink, fileId)
+                        ];
+                        for (const candidateUrl of candidates) {
+                            if (typeof candidateUrl === 'string' && /drive\.google\.com\/uc\?/i.test(candidateUrl)) {
+                                return candidateUrl;
+                            }
+                        }
+                        if (fileId) {
+                            const builtUc = DriveLinkHelper.normalizeToAssetUrl(`https://drive.google.com/uc?id=${fileId}`, fileId);
+                            if (typeof builtUc === 'string' && builtUc.length > 0) {
+                                return builtUc;
+                            }
+                        }
+                        return null;
+                    };
+
+                    const ucUrl = resolveUcCandidates();
+                    if (ucUrl) { return ucUrl; }
+
+                    const fallbackCandidates = [normalizedPermanent, permanentLink].filter(url =>
+                        typeof url === 'string' && url.length > 0 && !DriveLinkHelper.isDriveApiDownloadUrl(url)
+                    );
+                    if (fallbackCandidates.length > 0) {
+                        return fallbackCandidates[0];
+                    }
+
+                    return null;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
