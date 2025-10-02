@@ -1172,13 +1172,44 @@
             },
 
             getFallbackImageUrl(file) {
-                 if (state.providerType === 'googledrive') {
-                    return file.downloadUrl || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+                if (state.providerType === 'googledrive') {
+                    if (file.thumbnailLink) {
+                        return file.thumbnailLink.replace('=s220', '=s800');
+                    }
+                    if (file.thumbnail && file.thumbnail.url) {
+                        return file.thumbnail.url.replace('=s220', '=s800');
+                    }
+                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w800`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
             },
-            
+
+            defer(callback, options = {}) {
+                const { priority = 'normal', timeout = 120 } = options;
+                const run = () => {
+                    try {
+                        const result = callback();
+                        if (result && typeof result.then === 'function') {
+                            result.catch(error => console.error('Deferred task failed', error));
+                        }
+                    } catch (error) {
+                        console.error('Deferred task failed', error);
+                    }
+                };
+                if (priority === 'animation' && typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(run);
+                    return;
+                }
+                if (typeof requestIdleCallback === 'function') {
+                    const idleTimeout = priority === 'high' ? Math.min(timeout, 48) : timeout;
+                    requestIdleCallback(run, { timeout: idleTimeout });
+                } else {
+                    const delay = priority === 'high' ? 0 : priority === 'animation' ? 16 : 32;
+                    setTimeout(run, delay);
+                }
+            },
+
             formatFileSize(bytes) {
                 if (bytes === 0) return '0 Bytes';
                 const k = 1024;
@@ -2194,10 +2225,14 @@
                 } return '';
             }
             getDirectImageURL(image) {
-                if (state.providerType === 'googledrive') { return `https://drive.google.com/uc?id=${image.id}&export=view`;
-                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
+                if (state.providerType === 'googledrive') {
+                    return `https://drive.google.com/uc?id=${image.id}&export=view`;
+                } else if (state.providerType === 'onedrive') {
+                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
+                }
                 return '';
             }
+
             downloadCSV(data) {
                 const folderName = state.currentFolder.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
                 const stackName = state.grid.stack;
@@ -2635,7 +2670,7 @@
                         this.showEmptyState();
                         return;
                     }
-                    
+
                     Utils.elements.emptyState.classList.add('hidden');
                     state.currentStack = stackName;
                     state.currentStackPosition = 0;
@@ -2678,12 +2713,15 @@
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
 
+                    Utils.defer(() => {
+                        Core.updateImageCounters();
+                        Core.updateFavoriteButton();
+                    }, { priority: 'animation' });
+
                     if (currentFile.metadataStatus === 'pending') {
-                        App.processFileMetadata(currentFile);
+                        Utils.defer(() => App.processFileMetadata(currentFile), { priority: 'background', timeout: 300 });
                     }
-                    
-                    this.updateImageCounters();
-                    this.updateFavoriteButton();
+
                 } catch (error) {
                      Utils.showToast(`Error loading image: ${error.message}`, 'error', true);
                 }
@@ -2768,7 +2806,7 @@
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
                     }
-                    
+
                     this.updateStackCounts();
                     this.updateActiveProxTab();
                     await this.displayCurrentImage();
