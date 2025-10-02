@@ -1,0 +1,13 @@
+# UI Series vs thebaseline.html
+
+## 1. Image Navigation Performance
+- **Baseline (`thebaseline.html`)** keeps image navigation lean. `displayCurrentImage` pulls the active file, applies the image, updates the overlay, resets zoom/pan, and triggers metadata processing—without extra DOM churn or persistence work.【F:thebaseline.html†L2683-L2715】 Metadata extraction itself only caches results in memory/local storage, so subsequent navigations avoid repeated heavy work.【F:thebaseline.html†L2556-L2586】
+- **UI builds (`ui-v9b.html` and siblings)** do more on every navigation. `displayCurrentImage` walks the stack array, clamps the cursor, then updates multiple counters and favorite controls in addition to loading the image.【F:ui-v9b.html†L4680-L4718】 Their metadata pipeline clones objects and writes to the local database on every fetch, even for failures, which adds asynchronous overhead compared with the baseline cache-only approach.【F:ui-v9b.html†L4583-L4606】 These extra updates and writes accumulate as you flip through images, making the UI series feel slower than the baseline’s streamlined routine.
+
+## 2. Google Drive Image URLs & Fallbacks
+- The baseline loader always supplies a fallback Google Drive thumbnail (swapping to an 800 px rendition) when the primary 1000 px URL fails, preventing the `<img>` element from ever landing on the placeholder graphic.【F:thebaseline.html†L1107-L1138】 Its permanent link generator also forces the canonical `https://drive.google.com/uc?id=…&export=view` form, which stays stable for embedding and downloads.【F:thebaseline.html†L2242-L2247】
+- In the UI series, the fallback handler for Google Drive was left empty, so a failed 1000 px fetch leaves `img.src` undefined and immediately trips the secondary `onerror`, collapsing to the placeholder GIF even though a smaller thumbnail was available.【F:ui-v9b.html†L1219-L1261】 Their “direct” link logic prioritizes `viewUrl`, `webViewLink`, or the `/file/d/.../view` page, which is not a permanent raw asset URL and can require extra negotiation compared with the baseline’s `uc` link.【F:ui-v9b.html†L3832-L3839】 This combination explains why the UI builds eventually time out to the placeholder while the baseline keeps showing real thumbnails.
+
+## Takeaways
+1. Trim the navigation routine in the UI builds—defer non-critical DOM updates and database writes off the hot path—to regain the snappy image-to-image feel of the baseline.
+2. Restore the Google Drive fallback (`thumbnailLink`/`thumbnail?id=...`) and reuse the baseline’s `uc?id=...&export=view` link generator so Drive images never fall back to the placeholder and the share link remains stable.
