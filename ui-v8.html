@@ -1,4 +1,4 @@
-<!-- Release: 2024-06-14T00:00:00Z | V9b UI Improvements | Footer standardization and … -->
+<!-- Release: 2024-05-08T00:00:00Z | V9b from Commit 5ff4227 | Footer standardization and … -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -520,6 +520,11 @@
             letter-spacing: 0.01em;
             white-space: nowrap;
         }
+        .master-footer .footer-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
         .master-footer .footer-link {
             background: transparent;
             border: none;
@@ -1036,26 +1041,28 @@
         // ===== ORBITAL8 Goji Version - App Root =====
         
         const RELEASE_METADATA = Object.freeze({
-            name: 'V9b UI Improvements',
-            timestamp: '2024-06-14T00:00:00Z',
-            summary: 'Footer standardization and …'
+            name: 'V9b from Commit 5ff4227',
+            timestamp: '2024-05-08T00:00:00Z',
+            summary: 'Footer standardization and rollback'
         });
 
         const Templates = {
             masterFooter(instance = 0) {
                 const suffix = instance === 0 ? '' : `-${instance}`;
-                const metadataSegments = [
+                const metadataText = [
                     RELEASE_METADATA.name,
-                    RELEASE_METADATA.timestamp ? `<time datetime="${RELEASE_METADATA.timestamp}" class="footer-release-timestamp">${RELEASE_METADATA.timestamp}</time>` : null,
-                    `<a href="#" class="footer-link" data-footer-role="sync-log">View Synch Log</a>`,
-                    `<a href="#" class="footer-link" data-footer-role="reset-folder">Reset Cloud</a>`
-                ].filter(Boolean);
-
-                const metadataText = metadataSegments.join(' | ');
+                    RELEASE_METADATA.timestamp,
+                    'View Synch Log',
+                    'Reset Cloud'
+                ].filter(Boolean).join(' | ');
 
                 return `
                     <footer id="master-footer${suffix}" class="master-footer" data-master-footer role="contentinfo">
                         <span class="footer-meta" aria-label="Release metadata">${metadataText}</span>
+                        <span class="footer-actions">
+                            <button type="button" class="footer-link" data-footer-role="sync-log">View Synch Log</button>
+                            <button type="button" class="footer-link" data-footer-role="reset-folder">Reset Cloud</button>
+                        </span>
                     </footer>
                 `.trim();
             }
@@ -1098,80 +1105,6 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null
-        };
-        // Centralized helper to keep Google Drive URL handling consistent across the app.
-        const DriveLinkHelper = {
-            isDriveApiDownloadUrl(url) {
-                if (typeof url !== 'string') return false;
-                return /googleapis\.com\/drive|drive\.googleusercontent\.com|drive\.google\.com\/uc\?/i.test(url);
-            },
-            isGoogleDriveFile(file, providerType = null) {
-                if (!file) return false;
-                const type = providerType || file.providerType || state.providerType || null;
-                if (type === 'googledrive') return true;
-                const candidateUrls = [
-                    file.webViewLink,
-                    file.webContentLink,
-                    file.driveApiDownloadUrl,
-                    file.viewUrl,
-                    file.downloadUrl
-                ];
-                return candidateUrls.some(url => {
-                    if (typeof url !== 'string' || url.length === 0) return false;
-                    if (this.isDriveApiDownloadUrl(url)) return true;
-                    return /drive\.google\.com\/file\//i.test(url);
-                });
-            },
-            computePermanentViewUrl(file) {
-                if (!file) return null;
-                const candidates = [file.viewUrl, file.webViewLink]
-                    .filter(url => typeof url === 'string' && url.length > 0 && !this.isDriveApiDownloadUrl(url));
-                if (candidates.length > 0) {
-                    return candidates[0];
-                }
-                if (typeof file.id === 'string' && file.id.length > 0) {
-                    return `https://drive.google.com/file/d/${file.id}/view`;
-                }
-                return null;
-            },
-            resolveApiDownloadUrl(file) {
-                if (!file) return null;
-                const candidates = [
-                    file.driveApiDownloadUrl,
-                    file.webContentLink,
-                    this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null
-                ];
-                return candidates.find(url => typeof url === 'string' && url.length > 0) || null;
-            },
-            getPermanentViewUrl(file, providerType = null) {
-                if (!file) return null;
-                const hint = providerType || file.providerType || state.providerType || null;
-                if (!this.isGoogleDriveFile(file, hint)) {
-                    return typeof file.viewUrl === 'string' && file.viewUrl.length > 0 ? file.viewUrl : null;
-                }
-                const normalized = this.normalizeFileLinks(file, hint);
-                if (normalized && typeof normalized.viewUrl === 'string' && normalized.viewUrl.length > 0) {
-                    return normalized.viewUrl;
-                }
-                return this.computePermanentViewUrl(normalized || file);
-            },
-            normalizeFileLinks(file, providerType = null) {
-                if (!this.isGoogleDriveFile(file, providerType)) {
-                    return file;
-                }
-                const permanentLink = this.computePermanentViewUrl(file);
-                const apiDownloadUrl = this.resolveApiDownloadUrl(file);
-                if (apiDownloadUrl) {
-                    file.driveApiDownloadUrl = apiDownloadUrl;
-                } else if (file.driveApiDownloadUrl === undefined) {
-                    file.driveApiDownloadUrl = null;
-                }
-                if (permanentLink) {
-                    file.viewUrl = permanentLink;
-                    file.downloadUrl = permanentLink;
-                }
-                return file;
-            }
         };
         const Utils = {
             elements: {},
@@ -1346,7 +1279,7 @@
             },
             
             getPreferredImageUrl(file) {
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
+                if (state.providerType === 'googledrive') {
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s1000');
                     }
@@ -1360,10 +1293,13 @@
             },
 
             getFallbackImageUrl(file) {
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
+                if (state.providerType === 'googledrive') {
+                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
+                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
                     if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
+                    const apiDownloadLink = [file.driveApiDownloadUrl, file.webContentLink, !hasViewStyleDownload ? file.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
                     return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
@@ -2066,17 +2002,9 @@
         class DBManager {
             constructor() {
                 this.db = null;
-                this.initPromise = null;
-                this.reconnectPromise = null;
-                this.reconnecting = false;
-                this.dbCloseHandler = () => this.handleDisconnect('close');
-                this.dbVersionChangeHandler = () => this.handleDisconnect('versionchange');
             }
-            async init(force = false) {
-                if (!force && this.initPromise) {
-                    return this.initPromise;
-                }
-                const openPromise = new Promise((resolve, reject) => {
+            async init() {
+                return new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 4);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
@@ -2120,131 +2048,11 @@
                         }
                     };
                     request.onsuccess = (event) => {
-                        const db = event.target.result;
-                        this.bindDatabase(db);
-                        resolve(db);
+                        this.db = event.target.result;
+                        resolve();
                     };
-                    request.onblocked = () => {
-                        reject(this.createReconnectionError('IndexedDB upgrade blocked by another session.'));
-                    };
-                    request.onerror = (event) => {
-                        const error = event.target.error || new Error('Failed to open IndexedDB.');
-                        if (this.shouldReconnect(error) || error?.name === 'VersionError') {
-                            error.reconnectPending = true;
-                        }
-                        reject(error);
-                    };
+                    request.onerror = (event) => reject(event.target.error);
                 });
-                const wrapped = openPromise.then(db => db).catch(error => {
-                    if (this.initPromise === wrapped) {
-                        this.initPromise = null;
-                    }
-                    throw error;
-                });
-                this.initPromise = wrapped;
-                return wrapped;
-            }
-            bindDatabase(db) {
-                if (!db) return;
-                this.db = db;
-                this.reconnecting = false;
-                db.onclose = this.dbCloseHandler;
-                db.onversionchange = this.dbVersionChangeHandler;
-            }
-            handleDisconnect(reason = 'unknown') {
-                if (this.db) {
-                    try {
-                        this.db.onclose = null;
-                        this.db.onversionchange = null;
-                        this.db.close();
-                    } catch (error) {
-                        // Ignore close errors.
-                    }
-                }
-                this.db = null;
-                this.reconnecting = true;
-                this.initPromise = null;
-                if (this.reconnectPromise) {
-                    return this.reconnectPromise;
-                }
-                const reconnect = this.init(true).catch(error => {
-                    if (!error?.reconnectPending) {
-                        console.warn('DBManager: Reconnection attempt failed.', { reason, error });
-                    }
-                    throw error;
-                });
-                this.reconnectPromise = reconnect;
-                reconnect.catch(() => { /* handled above */ });
-                reconnect.finally(() => {
-                    if (this.reconnectPromise === reconnect) {
-                        this.reconnectPromise = null;
-                    }
-                });
-                return reconnect;
-            }
-            createReconnectionError(message = 'IndexedDB reconnection pending.') {
-                const error = new Error(message);
-                error.name = 'IndexedDBReconnecting';
-                error.reconnectPending = true;
-                return error;
-            }
-            shouldReconnect(error) {
-                if (!error || error.reconnectPending) return false;
-                const name = error.name || '';
-                if (name === 'InvalidStateError' || name === 'TransactionInactiveError') return true;
-                const message = String(error.message || '').toLowerCase();
-                return message.includes('connection is closing') || message.includes('the connection is closing') || message.includes('database connection is closing');
-            }
-            async ensureConnection() {
-                try {
-                    await (this.initPromise || this.init());
-                } catch (error) {
-                    if (error?.reconnectPending || this.shouldReconnect(error)) {
-                        const reconnectionError = this.createReconnectionError(error.message);
-                        reconnectionError.cause = error;
-                        throw reconnectionError;
-                    }
-                    throw error;
-                }
-                if (!this.db) {
-                    if (this.reconnecting) {
-                        throw this.createReconnectionError();
-                    }
-                    return null;
-                }
-                if (typeof this.db.closePending === 'boolean' && this.db.closePending) {
-                    this.handleDisconnect('close-pending');
-                    throw this.createReconnectionError('IndexedDB connection is closing.');
-                }
-                return this.db;
-            }
-            async performWithReconnect(executor, fallbackValue) {
-                let attempt = 0;
-                let lastError = null;
-                while (attempt < 2) {
-                    try {
-                        await this.ensureConnection();
-                        if (!this.db) {
-                            return fallbackValue;
-                        }
-                        return await executor();
-                    } catch (error) {
-                        lastError = error;
-                        if (error?.reconnectPending) {
-                            throw error;
-                        }
-                        if (attempt === 0 && this.shouldReconnect(error)) {
-                            this.handleDisconnect('operation-error');
-                            attempt += 1;
-                            continue;
-                        }
-                        throw error;
-                    }
-                }
-                if (lastError) {
-                    throw lastError;
-                }
-                return fallbackValue;
             }
             resolveFolderKey(input) {
                 if (!input) return null;
@@ -2255,42 +2063,47 @@
                 return `${providerType || 'unknown'}::${folderId}`;
             }
             async getFolderCache(folderId) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readonly');
                     const store = transaction.objectStore('folderCache');
                     const request = store.get(folderId);
                     request.onsuccess = () => resolve(request.result ? request.result.files : null);
                     request.onerror = () => reject(request.error);
-                }), null);
+                });
             }
             async saveFolderCache(folderId, files) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
                     const request = store.put({ folderId, files, timestamp: Date.now() });
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async deleteFolderCache(folderId) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
                     const request = store.delete(folderId);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async getMetadata(fileId) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readonly');
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
                     request.onsuccess = () => resolve(request.result ? request.result.metadata : null);
                     request.onerror = () => reject(request.error);
-                }), null);
+                });
             }
             async saveMetadata(fileId, metadata, context = {}) {
+                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) {
                     const warning = `DBManager.saveMetadata: Missing folder context for ${fileId}.`;
@@ -2298,7 +2111,7 @@
                     throw new Error(warning);
                 }
                 const normalizedContext = typeof context === 'object' && context !== null ? context : {};
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const record = {
@@ -2311,21 +2124,23 @@
                     const request = store.put(record);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async deleteMetadata(fileId) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const request = store.delete(fileId);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async deleteMetadataByFolder(context) {
+                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
                     const index = store.index('folderKey');
@@ -2336,9 +2151,10 @@
                         keys.forEach(key => store.delete(key));
                     };
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async addToSyncQueue(operation) {
+                if (!this.db) return null;
                 const entry = {
                     fileId: operation.fileId,
                     updates: operation.updates || {},
@@ -2352,16 +2168,17 @@
                     providerType: operation.providerType || null,
                     folderKey: operation.folderKey || null
                 };
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     const request = store.add(entry);
                     request.onsuccess = () => resolve(request.result);
                     request.onerror = () => reject(request.error);
-                }), null);
+                });
             }
             async readSyncQueue() {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return [];
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readonly');
                     const store = transaction.objectStore('syncQueue');
                     const request = store.getAll();
@@ -2371,20 +2188,22 @@
                         resolve(results);
                     };
                     request.onerror = () => reject(request.error);
-                }), []);
+                });
             }
             async deleteFromSyncQueue(ids) {
+                if (!this.db) return;
                 const targetIds = Array.isArray(ids) ? ids : [ids];
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     targetIds.forEach(id => { store.delete(id); });
                     transaction.oncomplete = () => resolve();
                     transaction.onerror = () => reject(transaction.error);
-                }));
+                });
             }
             async updateSyncQueueEntry(id, updates) {
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                if (!this.db) return false;
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
                     const store = transaction.objectStore('syncQueue');
                     const getRequest = store.get(id);
@@ -2397,25 +2216,27 @@
                         putRequest.onerror = () => reject(putRequest.error);
                     };
                     getRequest.onerror = () => reject(getRequest.error);
-                }), false);
+                });
             }
             async markPendingFlush(ids, pending = true) {
+                if (!this.db) return;
                 const targetIds = Array.isArray(ids) ? ids : [ids];
                 await Promise.all(targetIds.map(id => this.updateSyncQueueEntry(id, { pendingFlush: pending })));
             }
             async getFolderState(context) {
+                if (!this.db) return null;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return null;
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readonly');
                     const store = transaction.objectStore('folderState');
                     const request = store.get(folderKey);
                     request.onsuccess = () => resolve(request.result || null);
                     request.onerror = () => reject(request.error);
-                }), null);
+                });
             }
             async saveFolderState(record) {
-                if (!record) return;
+                if (!this.db || !record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
                 const payload = {
@@ -2428,38 +2249,40 @@
                     lastCloudAck: record.lastCloudAck || null,
                     updatedAt: Date.now()
                 };
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
                     const store = transaction.objectStore('folderState');
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async deleteFolderState(context) {
+                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
                     const store = transaction.objectStore('folderState');
                     const request = store.delete(folderKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async getFolderManifest(context) {
+                if (!this.db) return null;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return null;
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readonly');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.get(folderKey);
                     request.onsuccess = () => resolve(request.result || null);
                     request.onerror = () => reject(request.error);
-                }), null);
+                });
             }
             async saveFolderManifest(record) {
-                if (!record) return;
+                if (!this.db || !record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
                 const payload = {
@@ -2483,24 +2306,25 @@
                 if (record.remoteUpdatedAt || record.updatedAt) {
                     payload.remoteUpdatedAt = record.remoteUpdatedAt || record.updatedAt;
                 }
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readwrite');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async deleteFolderManifest(context) {
+                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return this.performWithReconnect(() => new Promise((resolve, reject) => {
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderManifests', 'readwrite');
                     const store = transaction.objectStore('folderManifests');
                     const request = store.delete(folderKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
-                }));
+                });
             }
             async clearFolderData(context, fileIds = []) {
                 const folderKey = this.resolveFolderKey(context);
@@ -3146,12 +2970,6 @@
                     }
                     return result;
                 } catch (error) {
-                    if (error?.reconnectPending) {
-                        this.logger?.log({ event: 'sync:reconnect-wait', level: 'warn', details: 'IndexedDB reconnect in progress. Rescheduling sync loop.', data: { reason } });
-                        this.hasPendingWork = true;
-                        this.scheduleProcess('reconnect');
-                        return 'retry';
-                    }
                     this.logger?.log({ event: 'sync:error', level: 'error', details: `Queue processing failed: ${error.message}` });
                     return 'error';
                 } finally {
@@ -3812,7 +3630,9 @@
                     const files = response.files
                         .filter(file => file.mimeType && file.mimeType.startsWith('image/'))
                         .map(file => {
-                            const normalized = {
+                            const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
+                            const apiDownloadUrl = file.webContentLink || null;
+                            return {
                                 id: file.id,
                                 name: file.name,
                                 type: 'file',
@@ -3821,14 +3641,12 @@
                                 createdTime: file.createdTime,
                                 modifiedTime: file.modifiedTime,
                                 thumbnailLink: file.thumbnailLink,
-                                downloadUrl: file.webContentLink || null,
-                                viewUrl: file.viewUrl || file.webViewLink || null,
-                                webViewLink: file.webViewLink,
-                                webContentLink: file.webContentLink,
+                                downloadUrl: viewUrl,
+                                viewUrl,
+                                driveApiDownloadUrl: apiDownloadUrl,
                                 appProperties: file.appProperties || {},
                                 parents: file.parents
                             };
-                            return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                         });
                     allFiles.push(...files);
                     nextPageToken = response.nextPageToken;
@@ -3991,12 +3809,14 @@
                     .filter(result => result.status === 'fulfilled')
                     .map(result => {
                         const file = result.value;
-                        const normalized = {
+                        const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
+                        const apiDownloadUrl = file.webContentLink || file.driveApiDownloadUrl || null;
+                        return {
                             ...file,
-                            downloadUrl: file.webContentLink || file.downloadUrl || null,
-                            viewUrl: file.viewUrl || file.webViewLink || null
+                            downloadUrl: viewUrl,
+                            viewUrl,
+                            driveApiDownloadUrl: apiDownloadUrl
                         };
-                        return DriveLinkHelper.normalizeFileLinks(normalized, 'googledrive');
                     });
             }
             async drillIntoFolder(folder) {
@@ -4329,12 +4149,12 @@
                 } return '';
             }
             getDirectImageURL(image) {
-                if (DriveLinkHelper.isGoogleDriveFile(image, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(image, state.providerType);
+                if (state.providerType === 'googledrive') {
+                    const hasViewStyleDownload = typeof image.downloadUrl === 'string' && image.downloadUrl.includes('https://drive.google.com/file/d/');
+                    const permanentLink = [image.viewUrl, image.webViewLink, hasViewStyleDownload ? image.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
                     return permanentLink || `https://drive.google.com/file/d/${image.id}/view`;
-                } else if (state.providerType === 'onedrive') {
-                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
-                }
+                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
                 return '';
             }
             downloadCSV(data) {
@@ -4607,16 +4427,7 @@
                 if (normalized.favorite == null) {
                     normalized.favorite = appProps.favorite === 'true';
                 }
-                const providerHint = normalized.providerType || file.providerType || state.providerType || null;
-                // Normalize Drive links so we keep a stable viewing link while retaining the API download URL separately.
-                DriveLinkHelper.normalizeFileLinks(normalized, providerHint);
-                if (providerHint) {
-                    normalized.providerType = providerHint;
-                } else if (normalized.providerType == null) {
-                    normalized.providerType = state.providerType || null;
-                }
-                this.markFileMetadataNormalized(normalized);
-                return normalized;
+                return this.markFileMetadataNormalized(normalized);
             },
             computeMetadataSignature(file) {
                 if (!file) return 'null';
@@ -4634,7 +4445,6 @@
                 });
             },
             mergeCloudWithCache(cloudFiles, cachedFiles, options = {}) {
-                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const forceUpdateIds = new Set(options.forceUpdateIds || []);
                 const cachedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
                 const merged = [];
@@ -4688,7 +4498,6 @@
                 };
             },
             async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
-                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const diff = preparation?.diff || { changedIds: [], removedIds: [] };
                 const remoteManifest = preparation?.remoteManifest || null;
@@ -4827,8 +4636,7 @@
                 }
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                let cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
-                cachedFiles = this.normalizeCachedFiles(cachedFiles);
+                const cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
                 await this.applyDeltaSync({
                     cachedFiles,
                     sessionKey,
@@ -4837,7 +4645,6 @@
                 });
             },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
-                cachedFiles = this.normalizeCachedFiles(cachedFiles);
                 const folderId = state.currentFolder.id;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
@@ -4956,8 +4763,7 @@
             async refreshFolderInBackground() {
                 try {
                     const folderId = state.currentFolder.id;
-                    let cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                    cachedFiles = this.normalizeCachedFiles(cachedFiles);
+                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
                     const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
@@ -5207,7 +5013,7 @@
                 const providerType = state.providerType;
                 try {
                     state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
-                    const cachedFiles = this.normalizeCachedFiles((await state.dbManager.getFolderCache(folderId)) || []);
+                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                     const fileIds = cachedFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
                     await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset');
@@ -6324,11 +6130,8 @@
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    Utils.elements.detailFilenameLink.href = DriveLinkHelper.getPermanentViewUrl(file, state.providerType) || '#';
-                } else {
-                    Utils.elements.detailFilenameLink.href = file.downloadUrl || '#';
-                }
+                if (state.providerType === 'googledrive') { Utils.elements.detailFilenameLink.href = `https://drive.google.com/file/d/${file.id}/view`;
+                } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
                 Utils.elements.detailDate.textContent = date;
