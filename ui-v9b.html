@@ -5377,7 +5377,7 @@
                 if (state.isReturningToFolders) return;
 
                 state.isReturningToFolders = true;
-                const { backButton, backButtonSpinner } = Utils.elements;
+                const { backButton, backButtonSpinner, emptyState } = Utils.elements;
 
                 if (backButton) {
                     backButton.disabled = true;
@@ -5385,6 +5385,10 @@
                 if (backButtonSpinner) {
                     backButtonSpinner.style.display = 'inline-block';
                 }
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                Utils.showScreen('folder-screen');
 
                 try {
                     const syncManager = state.syncManager;
@@ -5394,13 +5398,11 @@
                     const shouldFlush = Boolean(syncManager && (bufferedCount > 0 || hasQueuedWork || hasManifestUpdates));
 
                     if (shouldFlush) {
-                        Utils.showScreen('folder-screen');
                         await syncManager.flush({ reason: 'folder-switch' });
                     }
 
                     state.activeRequests.abort();
-                    this.resetViewState();
-                    Utils.showScreen('folder-screen');
+                    this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
                 } catch(error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
@@ -5415,13 +5417,36 @@
                     state.isReturningToFolders = false;
                 }
             },
-            resetViewState() {
+            resetViewState(options = {}) {
+                const { skipEmptyState = false } = options;
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
-                Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                state.currentStack = 'in';
+                state.currentStackPosition = 0;
                 Core.updateStackCounts();
-                Core.showEmptyState();
-                Utils.elements.emptyState.classList.add('hidden');
+
+                const { centerImage, emptyState, detailsButton } = Utils.elements;
+                if (centerImage) {
+                    centerImage.style.opacity = '0';
+                    centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                    if (skipEmptyState) {
+                        centerImage.alt = 'Select a folder to start';
+                    }
+                    requestAnimationFrame(() => {
+                        centerImage.style.opacity = '1';
+                    });
+                }
+
+                if (!skipEmptyState) {
+                    Core.showEmptyState();
+                }
+
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                if (detailsButton) {
+                    detailsButton.style.display = 'none';
+                }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
                 const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui' } = options;
