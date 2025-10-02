@@ -1219,7 +1219,7 @@
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
-                let imageUrl = this.getPreferredImageUrl(file);
+                const imageUrl = this.getPreferredImageUrl(file);
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -1227,8 +1227,8 @@
                     };
                     img.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
-                        let fallbackUrl = this.getFallbackImageUrl(file);
-                        
+                        const fallbackUrl = this.getFallbackImageUrl(file);
+
                         img.onerror = () => {
                             if (state.currentImageLoadId !== loadId) return;
                             img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
@@ -1240,7 +1240,6 @@
                     img.alt = file.name || 'Image';
                 });
             },
-            
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     if (file.thumbnailLink) {
@@ -1257,16 +1256,6 @@
 
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
-                    const directCandidates = [
-                        DriveLinkHelper.normalizeToAssetUrl(file.driveApiDownloadUrl, file.id),
-                        DriveLinkHelper.normalizeToAssetUrl(file.webContentLink, file.id),
-                        DriveLinkHelper.normalizeToAssetUrl(file.downloadUrl, file.id),
-                        DriveLinkHelper.normalizeToAssetUrl(file.viewUrl, file.id),
-                        DriveLinkHelper.normalizeToAssetUrl(file.webViewLink, file.id),
-                        DriveLinkHelper.buildUcDownloadUrl(file.id),
-                        DriveLinkHelper.buildApiDownloadUrl(file.id)
-                    ];
-                    return directCandidates.find(url => typeof url === 'string' && url.length > 0);
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -4373,7 +4362,7 @@
                 if (state.isReturningToFolders) return;
 
                 state.isReturningToFolders = true;
-                const { backButton, backButtonSpinner } = Utils.elements;
+                const { backButton, backButtonSpinner, emptyState } = Utils.elements;
 
                 if (backButton) {
                     backButton.disabled = true;
@@ -4381,14 +4370,15 @@
                 if (backButtonSpinner) {
                     backButtonSpinner.style.display = 'inline-block';
                 }
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                Utils.showScreen('folder-screen');
 
                 try {
-                    if (state.syncManager) {
-                        await state.syncManager.flush({ reason: 'folder-switch' });
                     }
                     state.activeRequests.abort();
-                    this.resetViewState();
-                    Utils.showScreen('folder-screen');
+                    this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
                 } catch(error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
@@ -4403,13 +4393,36 @@
                     state.isReturningToFolders = false;
                 }
             },
-            resetViewState() {
+            resetViewState(options = {}) {
+                const { skipEmptyState = false } = options;
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
-                Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                state.currentStack = 'in';
+                state.currentStackPosition = 0;
                 Core.updateStackCounts();
-                Core.showEmptyState();
-                Utils.elements.emptyState.classList.add('hidden');
+
+                const { centerImage, emptyState, detailsButton } = Utils.elements;
+                if (centerImage) {
+                    centerImage.style.opacity = '0';
+                    centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                    if (skipEmptyState) {
+                        centerImage.alt = 'Select a folder to start';
+                    }
+                    requestAnimationFrame(() => {
+                        centerImage.style.opacity = '1';
+                    });
+                }
+
+                if (!skipEmptyState) {
+                    Core.showEmptyState();
+                }
+
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                if (detailsButton) {
+                    detailsButton.style.display = 'none';
+                }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
                 const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui' } = options;
@@ -4890,12 +4903,17 @@
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
                 this.updateImageCounters();
+                const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
                     Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
                     Utils.elements.centerImage.alt = 'No images in this stack';
-                    Utils.elements.emptyState.classList.remove('hidden');
+                    if (skipEmptyState) {
+                        Utils.elements.emptyState.classList.add('hidden');
+                    } else {
+                        Utils.elements.emptyState.classList.remove('hidden');
+                        UI.updateEmptyStateButtons();
+                    }
                     Utils.elements.centerImage.style.opacity = '1';
-                    UI.updateEmptyStateButtons();
                 }, 200);
             }
         };
