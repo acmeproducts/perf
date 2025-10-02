@@ -1537,7 +1537,7 @@
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
-                let imageUrl = this.getPreferredImageUrl(file);
+                const imageUrl = this.getPreferredImageUrl(file);
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -1545,8 +1545,8 @@
                     };
                     img.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
-                        let fallbackUrl = this.getFallbackImageUrl(file);
-                        
+                        const fallbackUrl = this.getFallbackImageUrl(file);
+
                         img.onerror = () => {
                             if (state.currentImageLoadId !== loadId) return;
                             img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
@@ -1558,44 +1558,13 @@
                     img.alt = file.name || 'Image';
                 });
             },
-            
+
             getPreferredImageUrl(file) {
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const normalized = DriveLinkHelper.normalizeFileLinks(file, state.providerType) || file;
-                    const fileId = normalized.id || file.id || null;
-
-                    const permanentView = DriveLinkHelper.getPermanentViewUrl(normalized, state.providerType);
-                    if (typeof permanentView === 'string' && permanentView.length > 0) {
-                        return permanentView;
+                if (state.providerType === 'googledrive') {
+                    if (file.thumbnailLink) {
+                        return file.thumbnailLink.replace('=s220', '=s1000');
                     }
-
-                    const stableSources = [
-                        normalized.driveApiDownloadUrl,
-                        normalized.downloadUrl,
-                        normalized.viewUrl,
-                        normalized.webViewLink,
-                        normalized.webContentLink,
-                        fileId ? `https://drive.google.com/uc?id=${fileId}` : null,
-                        fileId ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media` : null
-                    ];
-
-                    for (const source of stableSources) {
-                        if (typeof source !== 'string' || source.length === 0) { continue; }
-                        const candidate = DriveLinkHelper.normalizeToAssetUrl(source, fileId);
-                        if (typeof candidate === 'string' && candidate.length > 0) {
-                            return candidate;
-                        }
-                    }
-
-                    if (normalized.thumbnailLink) {
-                        const highResThumb = normalized.thumbnailLink.replace('=s220', '=s1000');
-                        const normalizedThumb = DriveLinkHelper.normalizeToAssetUrl(highResThumb, fileId);
-                        if (typeof normalizedThumb === 'string' && normalizedThumb.length > 0) {
-                            return normalizedThumb;
-                        }
-                    }
-
-                    return null;
+                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1638,48 +1607,14 @@
             },
 
             getFallbackImageUrl(file) {
-                if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const normalized = file
-                        ? (DriveLinkHelper.normalizeFileLinks({ ...file }, state.providerType) || { ...file })
-                        : null;
-                    const candidate = normalized || file || null;
-                    const fileId = candidate?.id || null;
-
-                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(candidate, state.providerType);
-                    const normalizedPermanent = DriveLinkHelper.normalizeToAssetUrl(permanentLink, fileId);
-
-                    const resolveUcCandidates = () => {
-                        const candidates = [
-                            normalizedPermanent,
-                            DriveLinkHelper.normalizeToAssetUrl(candidate?.viewUrl, fileId),
-                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webViewLink, fileId),
-                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webContentLink, fileId)
-                        ];
-                        for (const candidateUrl of candidates) {
-                            if (typeof candidateUrl === 'string' && /drive\.google\.com\/uc\?/i.test(candidateUrl)) {
-                                return candidateUrl;
-                            }
-                        }
-                        if (fileId) {
-                            const builtUc = DriveLinkHelper.normalizeToAssetUrl(`https://drive.google.com/uc?id=${fileId}`, fileId);
-                            if (typeof builtUc === 'string' && builtUc.length > 0) {
-                                return builtUc;
-                            }
-                        }
-                        return null;
-                    };
-
-                    const ucUrl = resolveUcCandidates();
-                    if (ucUrl) { return ucUrl; }
-
-                    const fallbackCandidates = [normalizedPermanent, permanentLink].filter(url =>
-                        typeof url === 'string' && url.length > 0 && !DriveLinkHelper.isDriveApiDownloadUrl(url)
-                    );
-                    if (fallbackCandidates.length > 0) {
-                        return fallbackCandidates[0];
-                    }
-
-                    return null;
+                if (state.providerType === 'googledrive') {
+                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
+                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
+                    if (permanentLink) { return permanentLink; }
+                    const apiDownloadLink = [file.driveApiDownloadUrl, file.webContentLink, !hasViewStyleDownload ? file.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
+                    return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -6061,12 +5996,17 @@
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
                 this.updateImageCounters();
+                const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
                     Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
                     Utils.elements.centerImage.alt = 'No images in this stack';
-                    Utils.elements.emptyState.classList.remove('hidden');
+                    if (skipEmptyState) {
+                        Utils.elements.emptyState.classList.add('hidden');
+                    } else {
+                        Utils.elements.emptyState.classList.remove('hidden');
+                        UI.updateEmptyStateButtons();
+                    }
                     Utils.elements.centerImage.style.opacity = '1';
-                    UI.updateEmptyStateButtons();
                 }, 200);
             }
         };
