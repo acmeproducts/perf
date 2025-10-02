@@ -1157,12 +1157,24 @@
                     return /drive\.google\.com\/file\//i.test(url);
                 });
             },
-            buildUcUrl(candidateId, fallbackId = null) {
+            buildUcUrl(candidateId, fallbackId = null, preservedParams = null) {
                 const resolvedId = candidateId || fallbackId;
                 if (!resolvedId) return null;
                 const base = new URL('https://drive.google.com/uc');
                 base.searchParams.set('export', 'view');
                 base.searchParams.set('id', resolvedId);
+                if (preservedParams) {
+                    const entries = preservedParams instanceof URLSearchParams
+                        ? preservedParams
+                        : new URLSearchParams(preservedParams);
+                    for (const [key, value] of entries) {
+                        if (!key) continue;
+                        const lower = key.toLowerCase();
+                        if (lower === 'id' || lower === 'export') continue;
+                        if (value === undefined || value === null || value === '') continue;
+                        base.searchParams.set(key, value);
+                    }
+                }
                 return base.toString();
             },
             extractDriveFileId(candidate) {
@@ -1198,7 +1210,6 @@
                 if (typeof url !== 'string' || url.length === 0) return null;
 
                 const transientParams = new Set([
-                    'usp', 'pli', 'resourcekey', 'authuser', 'share', 'sharetype',
                     'source', 'origin', 'shorturl', 'gd', 'gxids', 'hl', 'at', 'ouid'
                 ]);
 
@@ -1206,7 +1217,6 @@
                     if (typeof candidate !== 'string' || candidate.length === 0) {
                         return candidate;
                     }
-
                     try {
                         const parsed = new URL(candidate);
                         let changed = false;
@@ -1235,32 +1245,9 @@
                         return changed ? parsed.toString() : candidate;
                     } catch (err) {
                         return candidate
-                            .replace(/([?&])(usp|pli|resourcekey|authuser|share|sharetype|source|origin|shorturl|gd|gxids|hl|at|ouid)=[^&#]*/gi, '')
+                            .replace(/([?&])(usp|pli|authuser|share|sharetype|source|origin|shorturl|gd|gxids|hl|at|ouid)=[^&#]*/gi, '')
                             .replace(/[?&]$/, '');
                     }
-                };
-
-                const isTokenizedGoogleusercontent = (candidate) => {
-                    if (typeof candidate !== 'string' || candidate.length === 0) return false;
-                    if (!/googleusercontent\.com/i.test(candidate)) return false;
-                    try {
-                        const parsed = new URL(candidate);
-                        if (!/googleusercontent\.com$/i.test(parsed.hostname) && !/googleusercontent\.com$/i.test(parsed.host)) {
-                            return false;
-                        }
-                        if (parsed.searchParams.has('token')) return true;
-                        return /token=/i.test(parsed.pathname);
-                    } catch (err) {
-                        return /token=/i.test(candidate);
-                    }
-                };
-
-                const finalize = (candidate) => {
-                    if (!candidate) return null;
-                    if (isTokenizedGoogleusercontent(candidate)) {
-                        return null;
-                    }
-                    return candidate;
                 };
 
                 const ensureAltMedia = (candidate) => {
@@ -1271,36 +1258,6 @@
                     }
                     return candidate;
                 };
-
-                const trimmed = url.trim();
-                const sanitized = stripTransientParams(trimmed);
-                const resolvedId = this.extractDriveFileId(sanitized) || fileId;
-
-                if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
-                    return finalize(this.buildUcUrl(resolvedId, fileId));
-                }
-
-                if (/drive\.google\.com\/file\//i.test(sanitized) && resolvedId) {
-                    return finalize(`https://drive.google.com/file/d/${resolvedId}/view`);
-                }
-
-                if (/drive\.google\.com/i.test(sanitized) && resolvedId) {
-                    return finalize(this.buildUcUrl(resolvedId, fileId));
-                }
-
-                if (/googleapis\.com\/drive/i.test(sanitized)) {
-                    return finalize(ensureAltMedia(sanitized));
-                }
-
-                if (/googleusercontent\.com/i.test(sanitized)) {
-                    return finalize(sanitized);
-                }
-
-                if (resolvedId) {
-                    return finalize(this.buildUcUrl(resolvedId, fileId));
-                }
-
-                return finalize(sanitized);
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
@@ -1402,6 +1359,8 @@
                 const normalizedApiDownloadUrl = apiDownloadUrl ? this.normalizeToAssetUrl(apiDownloadUrl, fileId) : null;
                 if (normalizedApiDownloadUrl) {
                     file.driveApiDownloadUrl = normalizedApiDownloadUrl;
+                } else if (apiDownloadUrl) {
+                    file.driveApiDownloadUrl = apiDownloadUrl;
                 } else if (file.driveApiDownloadUrl === undefined) {
                     file.driveApiDownloadUrl = null;
                 }
