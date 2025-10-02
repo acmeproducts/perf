@@ -1197,6 +1197,49 @@
             normalizeToAssetUrl(url, fileId = null) {
                 if (typeof url !== 'string' || url.length === 0) return null;
 
+                const transientParams = new Set([
+                    'usp', 'pli', 'resourcekey', 'authuser', 'share', 'sharetype',
+                    'source', 'origin', 'shorturl', 'gd', 'gxids', 'hl', 'at', 'ouid'
+                ]);
+
+                const stripTransientParams = (candidate) => {
+                    if (typeof candidate !== 'string' || candidate.length === 0) {
+                        return candidate;
+                    }
+
+                    try {
+                        const parsed = new URL(candidate);
+                        let changed = false;
+
+                        for (const param of transientParams) {
+                            if (parsed.searchParams.has(param)) {
+                                parsed.searchParams.delete(param);
+                                changed = true;
+                            }
+                        }
+
+                        if (parsed.searchParams.has('export') && parsed.searchParams.get('export') === 'download') {
+                            parsed.searchParams.set('export', 'view');
+                            changed = true;
+                        }
+
+                        if (parsed.hash) {
+                            parsed.hash = '';
+                            changed = true;
+                        }
+
+                        if (!parsed.searchParams.toString()) {
+                            parsed.search = '';
+                        }
+
+                        return changed ? parsed.toString() : candidate;
+                    } catch (err) {
+                        return candidate
+                            .replace(/([?&])(usp|pli|resourcekey|authuser|share|sharetype|source|origin|shorturl|gd|gxids|hl|at|ouid)=[^&#]*/gi, '')
+                            .replace(/[?&]$/, '');
+                    }
+                };
+
                 const isTokenizedGoogleusercontent = (candidate) => {
                     if (typeof candidate !== 'string' || candidate.length === 0) return false;
                     if (!/googleusercontent\.com/i.test(candidate)) return false;
@@ -1229,12 +1272,35 @@
                     return candidate;
                 };
 
-                    }
-                    return this.buildUcUrl(resolvedId, fileId);
-                };
-
                 const trimmed = url.trim();
                 const sanitized = stripTransientParams(trimmed);
+                const resolvedId = this.extractDriveFileId(sanitized) || fileId;
+
+                if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
+                    return finalize(this.buildUcUrl(resolvedId, fileId));
+                }
+
+                if (/drive\.google\.com\/file\//i.test(sanitized) && resolvedId) {
+                    return finalize(`https://drive.google.com/file/d/${resolvedId}/view`);
+                }
+
+                if (/drive\.google\.com/i.test(sanitized) && resolvedId) {
+                    return finalize(this.buildUcUrl(resolvedId, fileId));
+                }
+
+                if (/googleapis\.com\/drive/i.test(sanitized)) {
+                    return finalize(ensureAltMedia(sanitized));
+                }
+
+                if (/googleusercontent\.com/i.test(sanitized)) {
+                    return finalize(sanitized);
+                }
+
+                if (resolvedId) {
+                    return finalize(this.buildUcUrl(resolvedId, fileId));
+                }
+
+                return finalize(sanitized);
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
