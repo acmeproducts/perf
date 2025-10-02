@@ -1160,6 +1160,29 @@
             normalizeToAssetUrl(url, fileId = null) {
                 if (typeof url !== 'string' || url.length === 0) return null;
 
+                const isTokenizedGoogleusercontent = (candidate) => {
+                    if (typeof candidate !== 'string' || candidate.length === 0) return false;
+                    if (!/googleusercontent\.com/i.test(candidate)) return false;
+                    try {
+                        const parsed = new URL(candidate);
+                        if (!/googleusercontent\.com$/i.test(parsed.hostname) && !/googleusercontent\.com$/i.test(parsed.host)) {
+                            return false;
+                        }
+                        if (parsed.searchParams.has('token')) return true;
+                        return /token=/i.test(parsed.pathname);
+                    } catch (err) {
+                        return /token=/i.test(candidate);
+                    }
+                };
+
+                const finalize = (candidate) => {
+                    if (!candidate) return null;
+                    if (isTokenizedGoogleusercontent(candidate)) {
+                        return null;
+                    }
+                    return candidate;
+                };
+
                 const ensureAltMedia = (candidate) => {
                     if (!candidate) return null;
                     if (/[?&](alt|export)=media/i.test(candidate)) return candidate;
@@ -1205,34 +1228,34 @@
 
                 if (this.isDriveApiDownloadUrl(trimmed)) {
                     if (/drive\.google\.com\/uc\?/i.test(trimmed)) {
-                        return ensureUcParams(trimmed);
+                        return finalize(ensureUcParams(trimmed));
                     }
-                    return ensureAltMedia(trimmed);
+                    return finalize(ensureAltMedia(trimmed));
                 }
 
                 if (/drive\.google\.com\/uc\?/i.test(trimmed)) {
-                    return ensureUcParams(trimmed);
+                    return finalize(ensureUcParams(trimmed));
                 }
 
                 const fileMatch = trimmed.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
                 if (fileMatch) {
-                    return buildUcUrl(fileMatch[1]);
+                    return finalize(buildUcUrl(fileMatch[1]));
                 }
 
                 try {
                     const parsed = new URL(trimmed);
                     const resolvedId = parsed.searchParams.get('id') || parsed.searchParams.get('fileId') || fileId;
                     if (resolvedId) {
-                        return buildUcUrl(resolvedId);
+                        return finalize(buildUcUrl(resolvedId));
                     }
                 } catch (err) {
                     const idMatch = trimmed.match(/[?&]id=([^&#]+)/i);
                     if (idMatch) {
-                        return buildUcUrl(decodeURIComponent(idMatch[1]));
+                        return finalize(buildUcUrl(decodeURIComponent(idMatch[1])));
                     }
                 }
 
-                return buildUcUrl(fileId);
+                return finalize(buildUcUrl(fileId));
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
@@ -1495,24 +1518,39 @@
             getPreferredImageUrl(file) {
                 if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
                     const normalized = DriveLinkHelper.normalizeFileLinks(file, state.providerType) || file;
-                    const stableCandidates = [
-                        DriveLinkHelper.normalizeToAssetUrl(normalized.driveApiDownloadUrl, normalized.id),
-                        DriveLinkHelper.normalizeToAssetUrl(normalized.downloadUrl, normalized.id),
-                        DriveLinkHelper.getPermanentViewUrl(normalized, state.providerType)
+                    const fileId = normalized.id || file.id || null;
+
+                    const permanentView = DriveLinkHelper.getPermanentViewUrl(normalized, state.providerType);
+                    if (typeof permanentView === 'string' && permanentView.length > 0) {
+                        return permanentView;
+                    }
+
+                    const stableSources = [
+                        normalized.driveApiDownloadUrl,
+                        normalized.downloadUrl,
+                        normalized.viewUrl,
+                        normalized.webViewLink,
+                        normalized.webContentLink,
+                        fileId ? `https://drive.google.com/uc?id=${fileId}` : null,
+                        fileId ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media` : null
                     ];
 
-                    for (const candidate of stableCandidates) {
+                    for (const source of stableSources) {
+                        if (typeof source !== 'string' || source.length === 0) { continue; }
+                        const candidate = DriveLinkHelper.normalizeToAssetUrl(source, fileId);
                         if (typeof candidate === 'string' && candidate.length > 0) {
                             return candidate;
                         }
                     }
 
                     if (normalized.thumbnailLink) {
-                        return normalized.thumbnailLink.replace('=s220', '=s1000');
+                        const highResThumb = normalized.thumbnailLink.replace('=s220', '=s1000');
+                        const normalizedThumb = DriveLinkHelper.normalizeToAssetUrl(highResThumb, fileId);
+                        if (typeof normalizedThumb === 'string' && normalizedThumb.length > 0) {
+                            return normalizedThumb;
+                        }
                     }
-                    if (normalized.id) {
-                        return `https://www.googleapis.com/drive/v3/files/${normalized.id}?alt=media`;
-                    }
+
                     return null;
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
