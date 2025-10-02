@@ -1210,7 +1210,6 @@
                 if (typeof url !== 'string' || url.length === 0) return null;
 
                 const transientParams = new Set([
-                    'usp', 'pli', 'authuser', 'share', 'sharetype',
                     'source', 'origin', 'shorturl', 'gd', 'gxids', 'hl', 'at', 'ouid'
                 ]);
 
@@ -1218,7 +1217,6 @@
                     if (typeof candidate !== 'string' || candidate.length === 0) {
                         return candidate;
                     }
-
                     try {
                         const parsed = new URL(candidate);
                         let changed = false;
@@ -1260,73 +1258,6 @@
                     }
                     return candidate;
                 };
-
-                const collectPreservedParams = (candidate) => {
-                    const preserved = new URLSearchParams();
-                    if (typeof candidate !== 'string' || candidate.length === 0) {
-                        return preserved;
-                    }
-
-                    const appendParams = (searchParams) => {
-                        if (!searchParams) return;
-                        for (const [key, value] of searchParams) {
-                            if (!key) continue;
-                            const lower = key.toLowerCase();
-                            if (lower === 'id' || lower === 'export' || lower === 'alt') continue;
-                            if (transientParams.has(lower)) continue;
-                            if (value === undefined || value === null || value === '') continue;
-                            preserved.append(key, value);
-                        }
-                    };
-
-                    try {
-                        const parsed = new URL(candidate);
-                        appendParams(parsed.searchParams);
-                    } catch (err) {
-                        const queryMatch = candidate.match(/\?([^#]+)/);
-                        if (queryMatch && queryMatch[1]) {
-                            appendParams(new URLSearchParams(queryMatch[1]));
-                        }
-                    }
-
-                    return preserved;
-                };
-
-                const trimmed = url.trim();
-                const sanitized = stripTransientParams(trimmed);
-                const preservedParams = collectPreservedParams(sanitized);
-                const resolvedId = this.extractDriveFileId(sanitized) || fileId;
-
-                if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
-                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
-                    return ucUrl || sanitized;
-                }
-
-                if (/drive\.google\.com\/file\//i.test(sanitized) && resolvedId) {
-                    const base = `https://drive.google.com/file/d/${resolvedId}/view`;
-                    const query = preservedParams.toString();
-                    return query ? `${base}?${query}` : base;
-                }
-
-                if (/drive\.google\.com/i.test(sanitized) && resolvedId) {
-                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
-                    return ucUrl || sanitized;
-                }
-
-                if (/googleapis\.com\/drive/i.test(sanitized)) {
-                    return ensureAltMedia(sanitized);
-                }
-
-                if (/googleusercontent\.com/i.test(sanitized)) {
-                    return sanitized;
-                }
-
-                if (resolvedId) {
-                    const ucUrl = this.buildUcUrl(resolvedId, fileId, preservedParams);
-                    return ucUrl || sanitized;
-                }
-
-                return sanitized;
             },
             computePermanentViewUrl(file) {
                 if (!file) return null;
