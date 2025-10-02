@@ -1,4 +1,4 @@
-<!-- Orbital8-O-2025-10-12 base base base delstack fav trashcan broken 09:30 AM · V9 -->
+<!-- Baseline ui-v9b.html 02-Oct-25 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -694,7 +694,7 @@
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-10-12 09:30 AM · v9</div>
+        <div class="app-footer">baseline: 2025-10-12/02-Oct-25</div>
     </div>
     
     <!-- Unified Auth Screen -->
@@ -709,7 +709,7 @@
             <button class="button" id="auth-back-button" style="background: rgba(128,128,128,0.3);">← Back</button>
             <div id="auth-status" class="status info"></div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-10-12 09:30 AM · v9</div>
+        <div class="app-footer">baseline: 2025-10-12/02-Oct-25</div>
     </div>
     
     <!-- Unified Folder Screen -->
@@ -724,7 +724,7 @@
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
         </div>
-        <div class="app-footer">Orbital8-O-2025-10-12 09:30 AM · v9</div>
+        <div class="app-footer">baseline: 2025-10-12/02-Oct-25</div>
     </div>
     
     <!-- Loading Screen -->
@@ -738,7 +738,7 @@
             </div>
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
-        <div class="app-footer">Orbital8-O-2025-10-12 09:30 AM · v9</div>
+        <div class="app-footer">baseline: 2025-10-12/02-Oct-25</div>
     </div>
     
     <!-- Main App Container -->
@@ -808,7 +808,7 @@
         </button>
         
         <div id="toast" class="toast"></div>
-        <div class="app-footer">Orbital8-O-2025-10-12 09:30 AM · v9</div>
+        <div class="app-footer">baseline: 2025-10-12/02-Oct-25</div>
     </div>
     
     <!-- Enhanced Grid Modal -->
@@ -995,10 +995,79 @@
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
+            isReturningToFolders: false,
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null
+        };
+        const DriveLinkHelper = {
+            extractFileId(input) {
+                if (!input) return null;
+                if (typeof input === 'string' && !input.includes('://') && /^[a-zA-Z0-9_-]{10,}$/.test(input)) {
+                    return input;
+                }
+                try {
+                    const url = new URL(input);
+                    const idParam = url.searchParams.get('id') || url.searchParams.get('file_id');
+                    if (idParam) return idParam;
+                    const pathMatch = url.pathname.match(/\/file\/d\/([^/]+)/);
+                    if (pathMatch && pathMatch[1]) return pathMatch[1];
+                    const ucMatch = url.pathname.match(/\/uc(?:\/export)?\/download\/([^/?]+)/);
+                    if (ucMatch && ucMatch[1]) return ucMatch[1];
+                } catch (error) {
+                    return null;
+                }
+                return null;
+            },
+            buildUcDownloadUrl(fileId) {
+                if (!fileId) return null;
+                return `https://drive.google.com/uc?export=download&id=${fileId}`;
+            },
+            buildApiDownloadUrl(fileId) {
+                if (!fileId) return null;
+                return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+            },
+            normalizeToAssetUrl(rawUrl, fallbackId = null) {
+                if (!rawUrl || typeof rawUrl !== 'string') return null;
+                const directHosts = new RegExp('(?:^|\\.)googleusercontent\\.com$');
+                const fileId = fallbackId || this.extractFileId(rawUrl);
+                try {
+                    const parsed = new URL(rawUrl);
+                    const host = parsed.hostname;
+                    if (directHosts.test(host)) {
+                        return rawUrl;
+                    }
+                    if (host === 'drive.google.com') {
+                        if (parsed.pathname.startsWith('/uc')) {
+                            parsed.searchParams.set('export', 'download');
+                            if (!parsed.searchParams.get('id') && fileId) {
+                                parsed.searchParams.set('id', fileId);
+                            }
+                            return parsed.toString();
+                        }
+                        if (fileId) {
+                            return this.buildUcDownloadUrl(fileId);
+                        }
+                    }
+                    if (host === 'www.googleapis.com') {
+                        parsed.searchParams.set('alt', 'media');
+                        return parsed.toString();
+                    }
+                    if (fileId) {
+                        return this.buildUcDownloadUrl(fileId);
+                    }
+                } catch (error) {
+                    if (fileId) {
+                        return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                    }
+                    return null;
+                }
+                if (fileId) {
+                    return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                }
+                return null;
+            }
         };
         const Utils = {
             elements: {},
@@ -1150,7 +1219,7 @@
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
-                let imageUrl = this.getPreferredImageUrl(file);
+                const imageUrl = this.getPreferredImageUrl(file);
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -1158,8 +1227,8 @@
                     };
                     img.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
-                        let fallbackUrl = this.getFallbackImageUrl(file);
-                        
+                        const fallbackUrl = this.getFallbackImageUrl(file);
+
                         img.onerror = () => {
                             if (state.currentImageLoadId !== loadId) return;
                             img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
@@ -1171,7 +1240,6 @@
                     img.alt = file.name || 'Image';
                 });
             },
-            
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     if (file.thumbnailLink) {
@@ -1188,13 +1256,6 @@
 
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
-                    if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = [file.driveApiDownloadUrl, file.webContentLink, !hasViewStyleDownload ? file.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
-                    return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -4298,26 +4359,73 @@
                 Utils.showScreen('app-container');
             },
             async returnToFolderSelection() {
+                if (state.isReturningToFolders) return;
+
+                state.isReturningToFolders = true;
+                const { backButton, backButtonSpinner, emptyState } = Utils.elements;
+
+                if (backButton) {
+                    backButton.disabled = true;
+                }
+                if (backButtonSpinner) {
+                    backButtonSpinner.style.display = 'inline-block';
+                }
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                Utils.showScreen('folder-screen');
+
                 try {
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
-                    state.activeRequests.abort(); 
-                    this.resetViewState();
-                    Utils.showScreen('folder-screen');
+                    state.activeRequests.abort();
+                    state.activeRequests = new AbortController();
+                    this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
-                } catch(error) {
+                } catch (error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
                     Utils.showScreen('folder-screen');
+                } finally {
+                    if (backButton) {
+                        backButton.disabled = false;
+                    }
+                    if (backButtonSpinner) {
+                        backButtonSpinner.style.display = 'none';
+                    }
+                    state.isReturningToFolders = false;
                 }
             },
-            resetViewState() {
+            resetViewState(options = {}) {
+                const { skipEmptyState = false } = options;
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
-                Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                state.currentStack = 'in';
+                state.currentStackPosition = 0;
                 Core.updateStackCounts();
-                Core.showEmptyState();
-                Utils.elements.emptyState.classList.add('hidden');
+
+                const { centerImage, emptyState, detailsButton } = Utils.elements;
+                if (centerImage) {
+                    centerImage.style.opacity = '0';
+                    centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+                    if (skipEmptyState) {
+                        centerImage.alt = 'Select a folder to start';
+                    }
+                    requestAnimationFrame(() => {
+                        centerImage.style.opacity = '1';
+                    });
+                }
+
+                if (!skipEmptyState) {
+                    Core.showEmptyState();
+                }
+
+                if (emptyState) {
+                    emptyState.classList.add('hidden');
+                }
+                if (detailsButton) {
+                    detailsButton.style.display = 'none';
+                }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
                 const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui' } = options;
@@ -4798,12 +4906,17 @@
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
                 this.updateImageCounters();
+                const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
                     Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
                     Utils.elements.centerImage.alt = 'No images in this stack';
-                    Utils.elements.emptyState.classList.remove('hidden');
+                    if (skipEmptyState) {
+                        Utils.elements.emptyState.classList.add('hidden');
+                    } else {
+                        Utils.elements.emptyState.classList.remove('hidden');
+                        UI.updateEmptyStateButtons();
+                    }
                     Utils.elements.centerImage.style.opacity = '1';
-                    UI.updateEmptyStateButtons();
                 }, 200);
             }
         };
