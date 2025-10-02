@@ -1301,20 +1301,33 @@
                 if (!this.isGoogleDriveFile(file, providerType)) {
                     return file;
                 }
+
+                const fileId = typeof file.id === 'string' && file.id.length > 0 ? file.id : null;
                 const apiDownloadUrl = this.resolveApiDownloadUrl(file);
-                if (apiDownloadUrl) {
-                    file.driveApiDownloadUrl = apiDownloadUrl;
+                const normalizedApiDownloadUrl = apiDownloadUrl ? this.normalizeToAssetUrl(apiDownloadUrl, fileId) : null;
+                if (normalizedApiDownloadUrl) {
+                    file.driveApiDownloadUrl = normalizedApiDownloadUrl;
                 } else if (file.driveApiDownloadUrl === undefined) {
                     file.driveApiDownloadUrl = null;
                 }
 
                 const permanentLink = this.computePermanentViewUrl(file);
-                if (permanentLink) {
-                    file.viewUrl = permanentLink;
+                const normalizedViewLink = this.normalizeToAssetUrl(permanentLink || file.viewUrl, fileId);
+                if (normalizedViewLink) {
+                    file.viewUrl = normalizedViewLink;
                 }
 
-                const downloadCandidate = apiDownloadUrl || (this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null) || (this.isDriveApiDownloadUrl(permanentLink) ? permanentLink : null);
-                if (downloadCandidate && !this.isDriveApiDownloadUrl(file.downloadUrl)) {
+                const normalizedDownloadUrl = this.normalizeToAssetUrl(file.downloadUrl, fileId);
+                const normalizedWebViewLink = this.normalizeToAssetUrl(file.webViewLink, fileId);
+                let downloadCandidate = normalizedViewLink
+                    || (normalizedDownloadUrl && !this.isDriveApiDownloadUrl(normalizedDownloadUrl) ? normalizedDownloadUrl : null)
+                    || (normalizedWebViewLink && !this.isDriveApiDownloadUrl(normalizedWebViewLink) ? normalizedWebViewLink : null);
+
+                if (!downloadCandidate && fileId) {
+                    downloadCandidate = this.normalizeToAssetUrl(`https://drive.google.com/file/d/${fileId}/view`, fileId);
+                }
+
+                if (downloadCandidate) {
                     file.downloadUrl = downloadCandidate;
                 }
                 return file;
@@ -2343,7 +2356,7 @@
                     return this.initPromise;
                 }
                 const openPromise = new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2377,6 +2390,16 @@
                             const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
+                        if (oldVersion < 5 && db.objectStoreNames.contains('folderCache')) {
+                            try {
+                                const upgradeTransaction = request.transaction || event.target.transaction || null;
+                                if (upgradeTransaction) {
+                                    upgradeTransaction.objectStore('folderCache').clear();
+                                }
+                            } catch (error) {
+                                console.warn('DBManager: Failed to clear folderCache during upgrade.', error);
+                            }
                         }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
