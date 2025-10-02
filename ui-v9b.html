@@ -1192,7 +1192,6 @@
                 if (pathMatch) {
                     return pathMatch[1];
                 }
-
                 return null;
             },
             normalizeToAssetUrl(url, fileId = null) {
@@ -1207,35 +1206,35 @@
                     return candidate;
                 };
 
-                const ensureUcParams = (candidate, candidateId = null) => {
-                    const resolvedId = candidateId || this.extractDriveFileId(candidate) || fileId;
-                    if (!resolvedId) {
-                        return null;
                     }
                     return this.buildUcUrl(resolvedId, fileId);
                 };
 
                 const trimmed = url.trim();
+                const sanitized = stripTransientParams(trimmed);
 
-                if (this.isDriveApiDownloadUrl(trimmed)) {
-                    if (/drive\.google\.com\/uc\?/i.test(trimmed)) {
-                        return ensureUcParams(trimmed);
+                if (/googleusercontent\.com/i.test(sanitized)) {
+                    const explicitId = extractIdFromCandidate(sanitized);
+                    if (explicitId) {
+                        return buildUcUrl(explicitId);
                     }
-                    return ensureAltMedia(trimmed);
                 }
 
-                if (/drive\.google\.com\/uc\?/i.test(trimmed)) {
-                    return ensureUcParams(trimmed);
+                if (this.isDriveApiDownloadUrl(sanitized)) {
+                    if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
+                        return ensureUcParams(sanitized);
+                    }
+                    return ensureAltMedia(sanitized);
                 }
 
-                const fileMatch = trimmed.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
+                if (/drive\.google\.com\/uc\?/i.test(sanitized)) {
+                    return ensureUcParams(sanitized);
+                }
+
+                const fileMatch = sanitized.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
                 if (fileMatch) {
                     return this.buildUcUrl(fileMatch[1], fileId);
                 }
-
-                const resolvedId = this.extractDriveFileId(trimmed);
-                if (resolvedId) {
-                    return this.buildUcUrl(resolvedId, fileId);
                 }
 
                 return this.buildUcUrl(null, fileId);
@@ -1334,20 +1333,33 @@
                 if (!this.isGoogleDriveFile(file, providerType)) {
                     return file;
                 }
+
+                const fileId = typeof file.id === 'string' && file.id.length > 0 ? file.id : null;
                 const apiDownloadUrl = this.resolveApiDownloadUrl(file);
-                if (apiDownloadUrl) {
-                    file.driveApiDownloadUrl = apiDownloadUrl;
+                const normalizedApiDownloadUrl = apiDownloadUrl ? this.normalizeToAssetUrl(apiDownloadUrl, fileId) : null;
+                if (normalizedApiDownloadUrl) {
+                    file.driveApiDownloadUrl = normalizedApiDownloadUrl;
                 } else if (file.driveApiDownloadUrl === undefined) {
                     file.driveApiDownloadUrl = null;
                 }
 
                 const permanentLink = this.computePermanentViewUrl(file);
-                if (permanentLink) {
-                    file.viewUrl = permanentLink;
+                const normalizedViewLink = this.normalizeToAssetUrl(permanentLink || file.viewUrl, fileId);
+                if (normalizedViewLink) {
+                    file.viewUrl = normalizedViewLink;
                 }
 
-                const downloadCandidate = apiDownloadUrl || (this.isDriveApiDownloadUrl(file.downloadUrl) ? file.downloadUrl : null) || (this.isDriveApiDownloadUrl(permanentLink) ? permanentLink : null);
-                if (downloadCandidate && !this.isDriveApiDownloadUrl(file.downloadUrl)) {
+                const normalizedDownloadUrl = this.normalizeToAssetUrl(file.downloadUrl, fileId);
+                const normalizedWebViewLink = this.normalizeToAssetUrl(file.webViewLink, fileId);
+                let downloadCandidate = normalizedViewLink
+                    || (normalizedDownloadUrl && !this.isDriveApiDownloadUrl(normalizedDownloadUrl) ? normalizedDownloadUrl : null)
+                    || (normalizedWebViewLink && !this.isDriveApiDownloadUrl(normalizedWebViewLink) ? normalizedWebViewLink : null);
+
+                if (!downloadCandidate && fileId) {
+                    downloadCandidate = this.normalizeToAssetUrl(`https://drive.google.com/file/d/${fileId}/view`, fileId);
+                }
+
+                if (downloadCandidate) {
                     file.downloadUrl = downloadCandidate;
                 }
                 return file;
@@ -1590,10 +1602,47 @@
 
             getFallbackImageUrl(file) {
                 if (DriveLinkHelper.isGoogleDriveFile(file, state.providerType)) {
-                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(file, state.providerType);
-                    if (permanentLink) { return permanentLink; }
-                    const apiDownloadLink = file.driveApiDownloadUrl || DriveLinkHelper.resolveApiDownloadUrl(file);
-                    return apiDownloadLink || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+                    const normalized = file
+                        ? (DriveLinkHelper.normalizeFileLinks({ ...file }, state.providerType) || { ...file })
+                        : null;
+                    const candidate = normalized || file || null;
+                    const fileId = candidate?.id || null;
+
+                    const permanentLink = DriveLinkHelper.getPermanentViewUrl(candidate, state.providerType);
+                    const normalizedPermanent = DriveLinkHelper.normalizeToAssetUrl(permanentLink, fileId);
+
+                    const resolveUcCandidates = () => {
+                        const candidates = [
+                            normalizedPermanent,
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.viewUrl, fileId),
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webViewLink, fileId),
+                            DriveLinkHelper.normalizeToAssetUrl(candidate?.webContentLink, fileId)
+                        ];
+                        for (const candidateUrl of candidates) {
+                            if (typeof candidateUrl === 'string' && /drive\.google\.com\/uc\?/i.test(candidateUrl)) {
+                                return candidateUrl;
+                            }
+                        }
+                        if (fileId) {
+                            const builtUc = DriveLinkHelper.normalizeToAssetUrl(`https://drive.google.com/uc?id=${fileId}`, fileId);
+                            if (typeof builtUc === 'string' && builtUc.length > 0) {
+                                return builtUc;
+                            }
+                        }
+                        return null;
+                    };
+
+                    const ucUrl = resolveUcCandidates();
+                    if (ucUrl) { return ucUrl; }
+
+                    const fallbackCandidates = [normalizedPermanent, permanentLink].filter(url =>
+                        typeof url === 'string' && url.length > 0 && !DriveLinkHelper.isDriveApiDownloadUrl(url)
+                    );
+                    if (fallbackCandidates.length > 0) {
+                        return fallbackCandidates[0];
+                    }
+
+                    return null;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -2376,7 +2425,7 @@
                     return this.initPromise;
                 }
                 const openPromise = new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2410,6 +2459,16 @@
                             const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
+                        if (oldVersion < 5 && db.objectStoreNames.contains('folderCache')) {
+                            try {
+                                const upgradeTransaction = request.transaction || event.target.transaction || null;
+                                if (upgradeTransaction) {
+                                    upgradeTransaction.objectStore('folderCache').clear();
+                                }
+                            } catch (error) {
+                                console.warn('DBManager: Failed to clear folderCache during upgrade.', error);
+                            }
                         }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
