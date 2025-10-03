@@ -1069,6 +1069,131 @@
                 return null;
             }
         };
+        const DEFAULT_PROVIDER_CONFIG = {
+            type: 'default',
+            label: 'Provider',
+            connectLabel: 'Provider',
+            getPreferredImageUrl: (file = {}) => file.thumbnailLink || file.downloadUrl || '',
+            getFallbackImageUrl: (file = {}) => file.downloadUrl || '',
+            getDirectImageUrl: (file = {}) => file.webViewLink || file.webUrl || file.downloadUrl || '',
+            getDetailsUrl: (file = {}) => file.webViewLink || file.webUrl || file.downloadUrl || '#',
+            updateMetadata: async ({ provider, entry, payload }) => {
+                if (provider && typeof provider.updateFileMetadata === 'function') {
+                    await provider.updateFileMetadata(entry.fileId, payload);
+                }
+            }
+        };
+        const PROVIDERS = {
+            googledrive: {
+                type: 'googledrive',
+                label: 'Google Drive',
+                connectLabel: 'Drive',
+                getPreferredImageUrl: (file = {}) => {
+                    if (file.thumbnailLink) {
+                        return file.thumbnailLink.replace('=s220', '=s1000');
+                    }
+                    return file.id ? `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000` : '';
+                },
+                getFallbackImageUrl: (file = {}) => {
+                    if (file.downloadUrl) {
+                        return file.downloadUrl;
+                    }
+                    if (file.id) {
+                        return DriveLinkHelper.buildUcDownloadUrl(file.id) || `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                    }
+                    return '';
+                },
+                getDirectImageUrl: (file = {}) => {
+                    const hasViewStyleDownload = typeof file.downloadUrl === 'string' && file.downloadUrl.includes('https://drive.google.com/file/d/');
+                    const permanentLink = [file.viewUrl, file.webViewLink, hasViewStyleDownload ? file.downloadUrl : null]
+                        .find(url => typeof url === 'string' && url.length > 0);
+                    if (permanentLink) {
+                        return permanentLink;
+                    }
+                    return file.id ? `https://drive.google.com/file/d/${file.id}/view` : '';
+                },
+                getDetailsUrl: (file = {}) => {
+                    if (file.webViewLink) {
+                        return file.webViewLink;
+                    }
+                    return file.id ? `https://drive.google.com/file/d/${file.id}/view` : '#';
+                },
+                updateMetadata: async ({ processor, provider, entry, payload }) => {
+                    if (provider && typeof provider.updateFileMetadata === 'function' && processor) {
+                        await provider.updateFileMetadata(entry.fileId, processor.serializeGoogleMetadata(payload));
+                    }
+                }
+            },
+            onedrive: {
+                type: 'onedrive',
+                label: 'OneDrive',
+                connectLabel: 'OneDrive',
+                getPreferredImageUrl: (file = {}) => {
+                    if (file.thumbnails && file.thumbnails.large) {
+                        return file.thumbnails.large.url;
+                    }
+                    if (file.downloadUrl) {
+                        return file.downloadUrl;
+                    }
+                    return file.id ? `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content` : '';
+                },
+                getFallbackImageUrl: (file = {}) => {
+                    if (file.downloadUrl) {
+                        return file.downloadUrl;
+                    }
+                    return file.id ? `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content` : '';
+                },
+                getDirectImageUrl: (file = {}) => {
+                    if (file.downloadUrl) {
+                        return file.downloadUrl;
+                    }
+                    return file.id ? `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content` : '';
+                },
+                getDetailsUrl: (file = {}) => file.webUrl || file.downloadUrl || (file.id ? `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content` : '#'),
+                updateMetadata: async ({ processor, entry, payload }) => {
+                    if (processor && typeof processor.upsertOneDriveMetadata === 'function') {
+                        await processor.upsertOneDriveMetadata(entry.fileId, payload);
+                    }
+                }
+            }
+        };
+        const ProviderAdapter = {
+            get(type) {
+                return PROVIDERS[type] || DEFAULT_PROVIDER_CONFIG;
+            },
+            getLabel(type) {
+                return this.get(type).label || DEFAULT_PROVIDER_CONFIG.label;
+            },
+            getConnectLabel(type) {
+                const config = this.get(type);
+                return config.connectLabel || config.label || DEFAULT_PROVIDER_CONFIG.connectLabel;
+            },
+            getPreferredImageUrl(file, type = (file?.providerType || state.providerType)) {
+                const config = this.get(type);
+                const builder = config.getPreferredImageUrl || DEFAULT_PROVIDER_CONFIG.getPreferredImageUrl;
+                return builder(file);
+            },
+            getFallbackImageUrl(file, type = (file?.providerType || state.providerType)) {
+                const config = this.get(type);
+                const builder = config.getFallbackImageUrl || DEFAULT_PROVIDER_CONFIG.getFallbackImageUrl;
+                return builder(file);
+            },
+            getDirectImageUrl(file, type = (file?.providerType || state.providerType)) {
+                const config = this.get(type);
+                const builder = config.getDirectImageUrl || config.getDetailsUrl || DEFAULT_PROVIDER_CONFIG.getDirectImageUrl;
+                return builder(file);
+            },
+            getDetailsUrl(file, type = (file?.providerType || state.providerType)) {
+                const config = this.get(type);
+                const builder = config.getDetailsUrl || DEFAULT_PROVIDER_CONFIG.getDetailsUrl;
+                return builder(file);
+            },
+            async updateMetadata({ providerType = state.providerType, ...context }) {
+                const config = this.get(providerType);
+                const updater = config.updateMetadata || DEFAULT_PROVIDER_CONFIG.updateMetadata;
+                return updater({ providerType, ...context });
+            }
+        };
         const Utils = {
             elements: {},
             
@@ -1241,24 +1366,11 @@
                 });
             },
             getPreferredImageUrl(file) {
-                if (state.providerType === 'googledrive') {
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
-                    }
-                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
-                } else { // OneDrive
-                    if (file.thumbnails && file.thumbnails.large) {
-                        return file.thumbnails.large.url;
-                    }
-                    return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
-                }
+                return ProviderAdapter.getPreferredImageUrl(file);
             },
 
             getFallbackImageUrl(file) {
-                if (state.providerType === 'googledrive') {
-                } else { // OneDrive
-                    return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
-                }
+                return ProviderAdapter.getFallbackImageUrl(file);
             },
             
             formatFileSize(bytes) {
@@ -2903,13 +3015,13 @@
                 const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
                 const stackFragment = stackLabel ? ` (${stackLabel})` : '';
                 try {
-                    if (providerType === 'googledrive') {
-                        await provider.updateFileMetadata(entry.fileId, this.serializeGoogleMetadata(payload));
-                    } else if (providerType === 'onedrive') {
-                        await this.upsertOneDriveMetadata(entry.fileId, payload);
-                    } else if (typeof provider.updateFileMetadata === 'function') {
-                        await provider.updateFileMetadata(entry.fileId, payload);
-                    }
+                    await ProviderAdapter.updateMetadata({
+                        providerType,
+                        processor: this,
+                        provider,
+                        entry,
+                        payload
+                    });
                     if (metadataRecord && metadataRecord !== entry.metadataSnapshot) {
                         Object.assign(metadataRecord, updates, { localUpdatedAt: entry.localUpdatedAt });
                     }
@@ -3815,7 +3927,7 @@
                 const headers = [ 'Filename', 'Direct Image URL', 'Prompt', 'Negative Prompt', 'Model', 'Width', 'Height', 'Steps', 'Seed', 'CFG Scale', 'Size', 'Created Date', 'Modified Date', 'Tags', 'Notes', 'Quality Rating', 'Content Rating', 'Provider', 'Metadata (JSON)' ];
                 const rows = images.map(image => {
                     const meta = image.extractedMetadata || {}; const dims = meta._dimensions || {};
-                    return [ image.name || '', this.getDirectImageURL(image), this.extractMetadataValue(meta, ['prompt', 'Prompt', 'parameters']), this.extractMetadataValue(meta, ['negative_prompt', 'Negative Prompt']), this.extractMetadataValue(meta, ['model', 'Model']), dims.width || '', dims.height || '', this.extractMetadataValue(meta, ['steps', 'Steps']), this.extractMetadataValue(meta, ['seed', 'Seed']), this.extractMetadataValue(meta, ['cfg_scale', 'CFG Scale']), Utils.formatFileSize(image.size), image.createdTime ? new Date(image.createdTime).toISOString() : '', image.modifiedTime ? new Date(image.modifiedTime).toISOString() : '', (image.tags || []).join('; '), image.notes || '', image.qualityRating || 0, image.contentRating || 0, state.providerType || 'unknown', JSON.stringify(meta) ];
+                    return [ image.name || '', this.getDirectImageURL(image), this.extractMetadataValue(meta, ['prompt', 'Prompt', 'parameters']), this.extractMetadataValue(meta, ['negative_prompt', 'Negative Prompt']), this.extractMetadataValue(meta, ['model', 'Model']), dims.width || '', dims.height || '', this.extractMetadataValue(meta, ['steps', 'Steps']), this.extractMetadataValue(meta, ['seed', 'Seed']), this.extractMetadataValue(meta, ['cfg_scale', 'CFG Scale']), Utils.formatFileSize(image.size), image.createdTime ? new Date(image.createdTime).toISOString() : '', image.modifiedTime ? new Date(image.modifiedTime).toISOString() : '', (image.tags || []).join('; '), image.notes || '', image.qualityRating || 0, image.contentRating || 0, ProviderAdapter.getLabel(state.providerType) || state.providerType || 'unknown', JSON.stringify(meta) ];
                 });
                 return [headers, ...rows];
             }
@@ -3830,13 +3942,7 @@
                 } return '';
             }
             getDirectImageURL(image) {
-                if (state.providerType === 'googledrive') {
-                    const hasViewStyleDownload = typeof image.downloadUrl === 'string' && image.downloadUrl.includes('https://drive.google.com/file/d/');
-                    const permanentLink = [image.viewUrl, image.webViewLink, hasViewStyleDownload ? image.downloadUrl : null]
-                        .find(url => typeof url === 'string' && url.length > 0);
-                    return permanentLink || `https://drive.google.com/file/d/${image.id}/view`;
-                } else if (state.providerType === 'onedrive') { return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`; }
-                return '';
+                return ProviderAdapter.getDirectImageUrl(image);
             }
             downloadCSV(data) {
                 const folderName = state.currentFolder.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -3866,6 +3972,8 @@
             selectProvider(type) {
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
+                const providerLabel = ProviderAdapter.getLabel(type);
+                const connectLabel = ProviderAdapter.getConnectLabel(type);
                 state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
                 state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                 state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
@@ -3874,22 +3982,24 @@
                     Utils.showScreen('folder-screen');
                     Folders.load();
                 } else {
-                    Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
-                    Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
+                    Utils.elements.authTitle.textContent = providerLabel;
+                    Utils.elements.authSubtitle.textContent = `Connect to ${providerLabel}`;
                     Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
-                    Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
-                    Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
+                    Utils.elements.authButton.textContent = `Connect ${connectLabel}`;
+                    Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : `Click to sign in with your ${providerLabel} account`;
                     Utils.elements.authStatus.className = 'status info';
                     Utils.showScreen('auth-screen');
                 }
             },
             async authenticateCurrentUser() {
                 const isGoogle = state.providerType === 'googledrive';
+                const providerLabel = ProviderAdapter.getLabel(state.providerType);
+                const connectLabel = ProviderAdapter.getConnectLabel(state.providerType);
                 const provider = state.provider;
                 const { authButton, authStatus, gdriveClientSecret } = Utils.elements;
                 authButton.disabled = true;
                 authButton.textContent = 'Connecting...';
-                authStatus.textContent = `Connecting to ${isGoogle ? 'Google Drive' : 'OneDrive'}...`;
+                authStatus.textContent = `Connecting to ${providerLabel}...`;
                 authStatus.className = 'status info';
 
                 try {
@@ -3903,7 +4013,7 @@
                     }
                     if (success) {
                         state.provider = provider;
-                        authStatus.textContent = `✅ Connected to ${isGoogle ? 'Google Drive' : 'OneDrive'}!`;
+                        authStatus.textContent = `✅ Connected to ${providerLabel}!`;
                         authStatus.className = 'status success';
                         if (isGoogle) gdriveClientSecret.value = '';
                         setTimeout(() => {
@@ -3916,7 +4026,7 @@
                     authStatus.className = 'status error';
                 } finally {
                     authButton.disabled = false;
-                    authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
+                    authButton.textContent = `Connect ${connectLabel}`;
                 }
             },
             async backToProviderSelection() {
@@ -4500,7 +4610,7 @@
                 await persistState();
 
                 const provider = state.provider;
-                const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
+                const providerName = ProviderAdapter.getLabel(state.providerType) || 'provider';
                 if (!provider || typeof provider.deleteFile !== 'function') {
                     state.syncLog?.log({
                         event: 'provider:trash:error',
@@ -5254,8 +5364,7 @@
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (state.providerType === 'googledrive') { Utils.elements.detailFilenameLink.href = `https://drive.google.com/file/d/${file.id}/view`;
-                } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
+                Utils.elements.detailFilenameLink.href = ProviderAdapter.getDetailsUrl(file) || '#';
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
                 Utils.elements.detailDate.textContent = date;
@@ -5380,7 +5489,7 @@
                 this.addMetadataRow('MIME Type', file.mimeType || 'Unknown', false);
                 this.addMetadataRow('Created', file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown', false);
                 this.addMetadataRow('Modified', file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : 'Unknown', false);
-                this.addMetadataRow('Provider', state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive', false);
+                this.addMetadataRow('Provider', ProviderAdapter.getLabel(state.providerType), false);
             },
             addMetadataRow(key, value, needsCopyButton = false) {
                 const row = document.createElement('tr');
@@ -5512,7 +5621,7 @@
             },
             setupDeleteAction() {
                 const selectedCount = state.grid.selected.length;
-                const providerName = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
+                const providerName = ProviderAdapter.getLabel(state.providerType);
                 const message = `Are you sure you want to move ${selectedCount} image(s) to your ${providerName} trash? This can be recovered from the provider's website.`;
                 this.show('delete', { title: 'Confirm Delete', content: `<p style="color: #4b5563; margin-bottom: 16px;">${message}</p>`, confirmText: `Move to ${providerName} Trash`, confirmClass: 'btn-danger' });
             },
@@ -6112,7 +6221,8 @@
         const Folders = {
             async load() {
                 const { folderList, folderTitle } = Utils.elements;
-                folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
+                const providerLabel = ProviderAdapter.getLabel(state.providerType);
+                folderTitle.textContent = `${providerLabel} - Select Folder`;
                 folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 try {
                     const folders = await state.provider.getFolders();
