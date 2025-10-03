@@ -1071,6 +1071,31 @@
         };
         const Utils = {
             elements: {},
+
+            normalizeFavorite(value) {
+                if (value === true || value === false) {
+                    return value;
+                }
+                if (typeof value === 'string') {
+                    const normalized = value.trim().toLowerCase();
+                    if (normalized === 'true') return true;
+                    if (normalized === 'false') return false;
+                }
+                return Boolean(value);
+            },
+
+            isFavorite(input) {
+                if (input && typeof input === 'object') {
+                    if ('favorite' in input && input.favorite != null) {
+                        return this.normalizeFavorite(input.favorite);
+                    }
+                    if (input.appProperties && 'favorite' in input.appProperties) {
+                        return this.normalizeFavorite(input.appProperties.favorite);
+                    }
+                }
+                return this.normalizeFavorite(input);
+            },
+
             
             init() {
                 this.elements = {
@@ -2499,7 +2524,7 @@
                 const flags = [];
                 const stack = file.stack || file.appProperties?.slideboxStack;
                 if (stack === 'trash') flags.push('trash');
-                if (file.favorite === true || file.appProperties?.favorite === 'true') flags.push('fav');
+                if (Utils.isFavorite(file)) flags.push('fav');
                 return flags.join(',');
             }
             hashString(value) {
@@ -3068,7 +3093,7 @@
                     qualityRating: payload.qualityRating ?? 0,
                     contentRating: payload.contentRating ?? 0,
                     stackSequence: payload.stackSequence ?? 0,
-                    favorite: Boolean(payload.favorite),
+                    favorite: Utils.normalizeFavorite(payload.favorite),
                     localUpdatedAt: payload.localUpdatedAt || Date.now()
                 };
             }
@@ -4789,7 +4814,7 @@
                     }
                     return;
                 }
-                const isFavorite = Boolean(currentFile.favorite);
+                const isFavorite = Utils.isFavorite(currentFile);
                 if (Utils.elements.focusFavoriteBtn) {
                     Utils.elements.focusFavoriteBtn.classList.toggle('favorited', isFavorite);
                     Utils.elements.focusFavoriteBtn.setAttribute('aria-pressed', isFavorite ? 'true' : 'false');
@@ -5176,7 +5201,7 @@
                 const tagFilters = [];
                 modifiers.forEach(mod => {
                     if (mod === '#favorite') {
-                        results = results.filter(file => file.favorite === true);
+                        results = results.filter(file => Utils.isFavorite(file));
                     } else if (mod.startsWith('#quality:')) {
                         const rating = parseInt(mod.split(':')[1]);
                         if (!isNaN(rating)) {
@@ -6520,8 +6545,10 @@
                     try {
                         const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
                         if (!currentFile) return;
-                        const isFavorite = !currentFile.favorite;
-                        await App.updateUserMetadata(currentFile.id, { favorite: isFavorite });
+                        const currentlyFavorite = Utils.isFavorite(currentFile);
+                        const nextFavorite = !currentlyFavorite;
+                        await App.updateUserMetadata(currentFile.id, { favorite: nextFavorite });
+                        currentFile.favorite = nextFavorite;
                         Core.updateFavoriteButton();
                     } catch (error) {
                          Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
