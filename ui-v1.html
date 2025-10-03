@@ -174,6 +174,34 @@
         }
         .center-image.dragging { filter: brightness(0.9); cursor: grabbing; }
         .center-image.zoomable { pointer-events: auto; }
+
+        .filename-overlay {
+            position: absolute;
+            bottom: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 6px 14px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            z-index: 5;
+            max-width: 90%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: auto;
+            text-decoration: none;
+        }
+        .filename-overlay:hover {
+            background-color: rgba(0, 0, 0, 0.8);
+            color: var(--app-accent);
+        }
+        .filename-overlay.visible { opacity: 1; }
+
         
         .edge-glow { position: absolute; opacity: 0; transition: opacity 0.2s ease; z-index: 2; pointer-events: none; }
         .edge-glow.top { top: 0; left: 0; right: 0; height: 8px; background: linear-gradient(180deg, rgba(245, 158, 11, var(--glow)) 0%, transparent 100%); }
@@ -372,7 +400,7 @@
         .grid-image.loaded { opacity: 1; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
 
-        .filename-overlay {
+        .grid-filename-overlay {
             position: absolute;
             bottom: 0;
             left: 0;
@@ -387,7 +415,7 @@
             pointer-events: none;
         }
 
-        .grid-item:hover .filename-overlay {
+        .grid-item:hover .grid-filename-overlay {
             opacity: 1;
         }
         
@@ -512,10 +540,6 @@
         /* Focus Mode UI elements */
         .focus-mode-ui { display: none; }
         #focus-stack-name { top: 20px; left: 20px; }
-        #focus-filename-display {
-            top: 20px; left: 50%; transform: translateX(-50%);
-            color: #e5e7eb; font-size: 14px;
-        }
         #focus-image-count { bottom: 20px; left: 20px; color: #e5e7eb; }
         #focus-delete-btn { bottom: 20px; right: 20px; color: #e5e7eb; }
         #focus-favorite-btn {
@@ -541,13 +565,13 @@
             color: #ef4444; /* Solid red */
         }
 
-        #focus-filename-display,
         #focus-image-count { display: none !important; }
 
         /* Focus Mode state toggling */
         .app-container.focus-mode .pill-counter,
         .app-container.focus-mode #back-button,
-        .app-container.focus-mode #center-trash-btn { display: none; }
+        .app-container.focus-mode #center-trash-btn,
+        .app-container.focus-mode .filename-overlay { display: none; }
 
         .app-container.focus-mode .focus-mode-ui { display: flex; }
         
@@ -785,6 +809,8 @@
             <button class="new-images-button" id="select-another-stack-btn">Select Another Stack</button>
             <button class="new-images-button" id="select-another-folder-btn" style="margin-top: 12px;">Choose Different Folder</button>
         </div>
+        <a id="filename-overlay" class="filename-overlay" href="#" target="_blank"></a>
+
         
         <!-- Center Stage UI -->
         <div id="normal-image-count" class="ui-button"></div>
@@ -796,7 +822,6 @@
 
         <!-- Focus Mode UI -->
         <button id="focus-stack-name" class="ui-button focus-mode-ui"></button>
-        <div id="focus-filename-display" class="ui-button focus-mode-ui" style="background: transparent; border: none; cursor: default;"></div>
         <div id="focus-image-count" class="ui-button focus-mode-ui"></div>
         <button id="focus-favorite-btn" class="focus-mode-ui">
             <svg id="focus-favorite-icon" style="width: 28px; height: 28px;" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clip-rule="evenodd"/></svg>
@@ -1136,7 +1161,7 @@
                     
                     centerTrashBtn: document.getElementById('center-trash-btn'),
                     focusStackName: document.getElementById('focus-stack-name'),
-                    focusFilenameDisplay: document.getElementById('focus-filename-display'),
+                    filenameOverlay: document.getElementById('filename-overlay'),
                     focusImageCount: document.getElementById('focus-image-count'),
                     normalImageCount: document.getElementById('normal-image-count'),
                     focusDeleteBtn: document.getElementById('focus-delete-btn'),
@@ -4759,9 +4784,16 @@
                     Utils.elements.detailsButton.style.display = 'flex';
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
                     
-                    const folderName = state.currentFolder.name;
-                    const truncatedFolder = folderName.length > 20 ? folderName.substring(0, 20) + '...' : folderName;
-                    
+                    const folderName = state.currentFolder?.name || '';
+                    const truncatedFolder = folderName.length > 12 ? folderName.substring(0, 12) + '...' : folderName;
+                    const filenameWithoutExtension = (currentFile.name || '').replace(/\.[^/.]+$/, '');
+                    if (Utils.elements.filenameOverlay) {
+                        Utils.elements.filenameOverlay.textContent = `${truncatedFolder} / ${filenameWithoutExtension}`;
+                        const directUrl = state.export?.getDirectImageURL?.(currentFile);
+                        Utils.elements.filenameOverlay.href = directUrl || '#';
+                        Utils.elements.filenameOverlay.classList.add('visible');
+                    }
+
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
@@ -4970,6 +5002,9 @@
                 state.currentImageLoadId = null;
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
+                if (Utils.elements.filenameOverlay) {
+                    Utils.elements.filenameOverlay.classList.remove('visible');
+                }
                 this.updateImageCounters();
                 const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
@@ -5072,7 +5107,7 @@
                     };
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     const overlay = document.createElement('div');
-                    overlay.className = 'filename-overlay';
+                    overlay.className = 'grid-filename-overlay';
                     overlay.textContent = file.name;
                     div.appendChild(img);
                     div.appendChild(overlay);
