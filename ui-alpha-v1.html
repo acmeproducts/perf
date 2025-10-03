@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Goji Reviewer – Alpha v1</title>
+    <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js" defer></script>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #0f172a;
+            --bg-alt: #111d36;
+            --surface: #ffffff;
+            --surface-alt: rgba(255, 255, 255, 0.08);
+            --border: rgba(148, 163, 184, 0.25);
+            --text: #0f172a;
+            --text-inverse: #f8fafc;
+            --text-muted: rgba(248, 250, 252, 0.72);
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --radius-lg: 24px;
+            --radius-md: 16px;
+            font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top, #1f2937 0%, #0f172a 45%, #020617 100%);
+            color: var(--text-inverse);
+            display: flex;
+            justify-content: center;
+            align-items: stretch;
+        }
+
+        .shell {
+            width: min(1200px, 100%);
+            display: flex;
+            flex-direction: column;
+            padding: clamp(20px, 5vw, 48px);
+            gap: clamp(24px, 4vw, 48px);
+        }
+
+        header {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        header h1 {
+            font-size: clamp(1.5rem, 3.5vw, 2.8rem);
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        header p {
+            margin: 0;
+            color: var(--text-muted);
+            max-width: 48rem;
+            line-height: 1.6;
+        }
+
+        .progress {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .progress-step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            border-radius: 999px;
+            background: var(--surface-alt);
+            border: 1px solid transparent;
+            color: rgba(248, 250, 252, 0.6);
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .progress-step.active {
+            border-color: rgba(99, 102, 241, 0.35);
+            color: white;
+            background: rgba(99, 102, 241, 0.18);
+        }
+
+        .progress-step.complete {
+            border-color: rgba(34, 197, 94, 0.35);
+            color: rgba(34, 197, 94, 0.9);
+            background: rgba(34, 197, 94, 0.15);
+        }
+
+        .stage-wrapper {
+            position: relative;
+            flex: 1;
+            display: grid;
+        }
+
+        .stage {
+            display: none;
+            grid-template-columns: 1fr;
+            align-items: start;
+            gap: clamp(20px, 4vw, 36px);
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.06) 0%, rgba(15, 23, 42, 0.65) 60%, rgba(2, 6, 23, 0.95) 100%);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            border-radius: var(--radius-lg);
+            padding: clamp(24px, 5vw, 48px);
+            box-shadow: 0 40px 120px rgba(15, 23, 42, 0.5);
+            animation: fadeIn 0.4s ease;
+        }
+
+        .stage.active {
+            display: grid;
+        }
+
+        .stage header {
+            gap: 6px;
+        }
+
+        .stage header h2 {
+            font-size: clamp(1.4rem, 3vw, 2.1rem);
+            margin: 0;
+        }
+
+        .stage header p {
+            color: rgba(248, 250, 252, 0.7);
+        }
+
+        .card-grid {
+            display: grid;
+            gap: 18px;
+        }
+
+        .provider-card {
+            position: relative;
+            border-radius: var(--radius-md);
+            padding: 20px 22px;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(16px);
+            cursor: pointer;
+            transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+            display: grid;
+            gap: 8px;
+        }
+
+        .provider-card strong {
+            font-size: 1.05rem;
+        }
+
+        .provider-card span {
+            color: rgba(248, 250, 252, 0.65);
+            font-size: 0.9rem;
+        }
+
+        .provider-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(99, 102, 241, 0.5);
+            box-shadow: 0 24px 60px rgba(99, 102, 241, 0.25);
+        }
+
+        .provider-card.selected {
+            border-color: rgba(99, 102, 241, 0.65);
+            box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.4);
+        }
+
+        .stage section {
+            display: grid;
+            gap: 20px;
+        }
+
+        .input-stack {
+            display: grid;
+            gap: 12px;
+        }
+
+        label {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        input[type="search"] {
+            width: 100%;
+            border-radius: 14px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            padding: 14px 16px;
+            font-size: 1rem;
+            background: rgba(15, 23, 42, 0.85);
+            color: white;
+        }
+
+        input::placeholder {
+            color: rgba(148, 163, 184, 0.6);
+        }
+
+        .helper-text {
+            color: rgba(148, 163, 184, 0.78);
+            font-size: 0.9rem;
+        }
+
+        .status-line {
+            min-height: 1.4em;
+            font-size: 0.95rem;
+        }
+
+        .status-line.success { color: var(--success); }
+        .status-line.error { color: var(--danger); }
+        .status-line.muted { color: rgba(148, 163, 184, 0.75); }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        button {
+            font: inherit;
+        }
+
+        .btn {
+            border-radius: 14px;
+            padding: 14px 22px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .btn.primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            box-shadow: 0 20px 60px rgba(99, 102, 241, 0.35);
+        }
+
+        .btn.primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 26px 70px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn.secondary {
+            background: rgba(15, 23, 42, 0.6);
+            color: rgba(248, 250, 252, 0.9);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+        }
+
+        .btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .folder-list {
+            display: grid;
+            gap: 12px;
+            max-height: 320px;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+
+        .folder-pill {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            cursor: pointer;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+
+        .folder-pill:hover {
+            border-color: rgba(99, 102, 241, 0.45);
+        }
+
+        .folder-pill.selected {
+            border-color: rgba(99, 102, 241, 0.7);
+            background: rgba(99, 102, 241, 0.18);
+        }
+
+        .folder-pill small {
+            color: rgba(148, 163, 184, 0.75);
+        }
+
+        .workspace {
+            display: none;
+            grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+            gap: clamp(24px, 4vw, 40px);
+        }
+
+        .workspace.active {
+            display: grid;
+        }
+
+        .workspace-card {
+            background: rgba(15, 23, 42, 0.65);
+            border-radius: var(--radius-lg);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            padding: clamp(24px, 4vw, 40px);
+            display: grid;
+            gap: 24px;
+            box-shadow: 0 40px 120px rgba(15, 23, 42, 0.45);
+        }
+
+        .workspace-headline {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .workspace-headline h2 {
+            margin: 0;
+            font-size: clamp(1.4rem, 3vw, 2.2rem);
+        }
+
+        .hud {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .hud span {
+            border-radius: 999px;
+            padding: 10px 18px;
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            background: rgba(15, 23, 42, 0.55);
+            color: rgba(248, 250, 252, 0.75);
+            font-weight: 500;
+        }
+
+        .image-stage {
+            position: relative;
+            border-radius: var(--radius-md);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: rgba(2, 6, 23, 0.85);
+            min-height: 320px;
+            display: grid;
+            place-items: center;
+        }
+
+        .image-stage img {
+            max-width: 100%;
+            border-radius: var(--radius-md);
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.4);
+        }
+
+        .image-stage .ghost {
+            color: rgba(148, 163, 184, 0.65);
+        }
+
+        .mode-switch {
+            display: inline-flex;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.26);
+            background: rgba(15, 23, 42, 0.6);
+            padding: 6px;
+            gap: 6px;
+        }
+
+        .mode-switch button {
+            border: none;
+            border-radius: 999px;
+            padding: 10px 18px;
+            background: transparent;
+            color: rgba(148, 163, 184, 0.8);
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .mode-switch button.active {
+            background: rgba(99, 102, 241, 0.18);
+            color: white;
+            box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.4);
+        }
+
+        .tray {
+            display: grid;
+            gap: 14px;
+            background: rgba(15, 23, 42, 0.55);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: var(--radius-md);
+            padding: 18px 20px;
+        }
+
+        .tray-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .tray-actions button {
+            flex: 1;
+        }
+
+        .activity-log {
+            background: rgba(15, 23, 42, 0.55);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .activity-log h3 {
+            margin: 0;
+            font-size: 1.05rem;
+        }
+
+        .activity-log ul {
+            margin: 0;
+            padding-left: 20px;
+            color: rgba(148, 163, 184, 0.75);
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .loading-screen {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius-lg);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            padding: 48px;
+            background: rgba(15, 23, 42, 0.65);
+            gap: 18px;
+        }
+
+        .loading-screen.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 3px solid rgba(148, 163, 184, 0.35);
+            border-top-color: #818cf8;
+            animation: spin 0.9s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 960px) {
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <header>
+            <h1>Goji Reviewer Alpha</h1>
+            <p>Reconnect your Google Drive or OneDrive library using the trusted baseline flow, then review collections with a refined, focus-first canvas.</p>
+        </header>
+
+        <div class="progress" id="progress">
+            <div class="progress-step active" data-step="0">Choose provider</div>
+            <div class="progress-step" data-step="1">Authenticate</div>
+            <div class="progress-step" data-step="2">Pick a folder</div>
+        </div>
+
+        <div class="stage-wrapper">
+            <section class="stage active" id="provider-stage" data-step-content="0">
+                <header>
+                    <h2>Select a storage provider</h2>
+                    <p>We support the same connections as the baseline reviewer. Your credentials remain on this device.</p>
+                </header>
+                <section>
+                    <div class="card-grid">
+                        <button class="provider-card" data-provider="googledrive">
+                            <strong>Google Drive</strong>
+                            <span>Use the Goji reviewer OAuth client to access your shared project folders.</span>
+                        </button>
+                        <button class="provider-card" data-provider="onedrive">
+                            <strong>Microsoft OneDrive</strong>
+                            <span>Authorize with MSAL to reach the same enterprise drive listings as before.</span>
+                        </button>
+                    </div>
+                </section>
+                <footer class="actions">
+                    <button class="btn primary" id="to-auth" disabled>Continue</button>
+                </footer>
+            </section>
+
+            <section class="stage" id="auth-stage" data-step-content="1">
+                <header>
+                    <h2>Authenticate <span id="selected-provider">Google Drive</span></h2>
+                    <p id="auth-intro">Enter the Google Drive client secret we store locally to refresh your access token.</p>
+                </header>
+                <section>
+                    <div class="input-stack" id="auth-body"></div>
+                    <p class="helper-text status-line muted" id="auth-status"></p>
+                </section>
+                <footer class="actions">
+                    <button class="btn secondary" id="back-to-provider">Back</button>
+                    <button class="btn primary" id="auth-action" disabled>Connect</button>
+                </footer>
+            </section>
+
+            <section class="stage" id="folder-stage" data-step-content="2">
+                <header>
+                    <h2>Choose a folder to review</h2>
+                    <p>Search your available folders and pick where to begin. You can swap providers later.</p>
+                </header>
+                <section>
+                    <div class="input-stack">
+                        <label for="folder-search">Search folders</label>
+                        <input type="search" id="folder-search" placeholder="Start typing a folder name" />
+                    </div>
+                    <div class="folder-list" id="folder-list"></div>
+                    <p class="status-line muted" id="folder-status"></p>
+                    <p class="status-line muted" id="folder-empty" hidden>No folders yet. Authenticate first to load your library.</p>
+                </section>
+                <footer class="actions">
+                    <button class="btn secondary" id="back-to-auth">Back</button>
+                    <button class="btn primary" id="start-review" disabled>Start reviewing</button>
+                </footer>
+            </section>
+
+            <section class="loading-screen" id="loading-stage">
+                <div class="spinner" aria-hidden="true"></div>
+                <div>
+                    <strong>Preparing your workspace…</strong>
+                    <p style="margin: 6px 0 0; color: rgba(248, 250, 252, 0.7);">We’re syncing metadata and arranging the first asset.</p>
+                </div>
+            </section>
+        </div>
+
+        <main class="workspace" id="workspace">
+            <section class="workspace-card">
+                <div class="workspace-headline">
+                    <h2 id="workspace-title">Focus review</h2>
+                    <div class="hud" id="hud-status">
+                        <span>0 pri</span>
+                        <span>0 keep</span>
+                        <span>0 out</span>
+                        <span>0 trash</span>
+                    </div>
+                </div>
+                <div class="image-stage">
+                    <div class="ghost">Load a folder to begin reviewing.</div>
+                </div>
+                <div class="tray">
+                    <div>
+                        <strong id="tray-title">Need guidance?</strong>
+                        <p id="tray-description" style="margin: 6px 0 0; color: rgba(148, 163, 184, 0.78);">Use arrow keys or tap the quick actions below to classify each asset.</p>
+                    </div>
+                    <div class="tray-actions">
+                        <button class="btn secondary" id="tray-undo">Undo</button>
+                        <button class="btn primary" id="tray-next">Next</button>
+                    </div>
+                </div>
+            </section>
+            <aside class="workspace-card">
+                <div class="mode-switch">
+                    <button type="button" class="active" data-mode="focus">Focus mode</button>
+                    <button type="button" data-mode="sort">Sort grid</button>
+                </div>
+                <div class="activity-log">
+                    <h3>Activity stream</h3>
+                    <ul id="activity-log">
+                        <li>Connect to begin logging decisions.</li>
+                    </ul>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script>
+        (function handlePopupResponse() {
+            const params = new URLSearchParams(window.location.search);
+            const oauthCode = params.get('code');
+            const oauthError = params.get('error');
+            if ((oauthCode || oauthError) && window.opener && window.opener !== window) {
+                if (oauthError) {
+                    window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: oauthError }, window.location.origin);
+                } else {
+                    window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS', code: oauthCode }, window.location.origin);
+                }
+                window.close();
+            }
+        })();
+
+        class BaseProvider {
+            constructor(type) {
+                this.type = type;
+                this.isAuthenticated = false;
+            }
+
+            async authenticate() {
+                throw new Error('authenticate() must be implemented');
+            }
+
+            async getFolders() {
+                throw new Error('getFolders() must be implemented');
+            }
+        }
+
+        class GoogleDriveProvider extends BaseProvider {
+            constructor() {
+                super('googledrive');
+                this.clientId = '567988062464-fa6c1ovesqeudqs5398vv4mbo6q068p9.apps.googleusercontent.com';
+                this.redirectUri = window.location.origin + window.location.pathname;
+                this.scope = 'https://www.googleapis.com/auth/drive';
+                this.apiBase = 'https://www.googleapis.com/drive/v3';
+                this.accessToken = null;
+                this.refreshToken = null;
+                this.clientSecret = null;
+                this.loadStoredCredentials();
+            }
+
+            loadStoredCredentials() {
+                this.accessToken = localStorage.getItem('google_access_token');
+                this.refreshToken = localStorage.getItem('google_refresh_token');
+                this.clientSecret = localStorage.getItem('google_client_secret');
+                this.isAuthenticated = Boolean(this.accessToken && this.refreshToken && this.clientSecret);
+            }
+
+            storeCredentials() {
+                if (this.accessToken) localStorage.setItem('google_access_token', this.accessToken);
+                if (this.refreshToken) localStorage.setItem('google_refresh_token', this.refreshToken);
+                if (this.clientSecret) localStorage.setItem('google_client_secret', this.clientSecret);
+            }
+
+            clearStoredCredentials() {
+                localStorage.removeItem('google_access_token');
+                localStorage.removeItem('google_refresh_token');
+                localStorage.removeItem('google_client_secret');
+                this.isAuthenticated = false;
+            }
+
+            buildAuthUrl() {
+                const params = new URLSearchParams({
+                    client_id: this.clientId,
+                    redirect_uri: this.redirectUri,
+                    response_type: 'code',
+                    scope: this.scope,
+                    access_type: 'offline',
+                    prompt: 'consent',
+                });
+                return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+            }
+
+            async authenticate(clientSecret) {
+                if (clientSecret) {
+                    this.clientSecret = clientSecret;
+                    this.storeCredentials();
+                }
+                if (!this.clientSecret) {
+                    throw new Error('Client secret required to authenticate with Google Drive.');
+                }
+
+                if (this.accessToken && this.refreshToken) {
+                    try {
+                        await this.makeApiCall('/files?pageSize=1');
+                        this.isAuthenticated = true;
+                        return true;
+                    } catch (error) {
+                        // continue to OAuth flow
+                    }
+                }
+
+                return new Promise((resolve, reject) => {
+                    const popup = window.open(this.buildAuthUrl(), 'google-auth', 'width=520,height=640,scrollbars=yes,resizable=yes');
+                    if (!popup) {
+                        reject(new Error('Popup blocked. Allow popups and retry.'));
+                        return;
+                    }
+
+                    const checkClosed = setInterval(() => {
+                        if (popup.closed) {
+                            clearInterval(checkClosed);
+                            window.removeEventListener('message', messageHandler);
+                            reject(new Error('Authentication cancelled.'));
+                        }
+                    }, 800);
+
+                    const messageHandler = async (event) => {
+                        if (event.origin !== window.location.origin) return;
+                        if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+                            clearInterval(checkClosed);
+                            window.removeEventListener('message', messageHandler);
+                            popup.close();
+                            try {
+                                await this.exchangeCodeForTokens(event.data.code);
+                                this.isAuthenticated = true;
+                                resolve(true);
+                            } catch (err) {
+                                reject(err);
+                            }
+                        } else if (event.data?.type === 'GOOGLE_AUTH_ERROR') {
+                            clearInterval(checkClosed);
+                            window.removeEventListener('message', messageHandler);
+                            popup.close();
+                            reject(new Error(event.data.error || 'Google authentication failed.'));
+                        }
+                    };
+
+                    window.addEventListener('message', messageHandler);
+                });
+            }
+
+            async exchangeCodeForTokens(code) {
+                const response = await fetch('https://oauth2.googleapis.com/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        client_id: this.clientId,
+                        client_secret: this.clientSecret,
+                        code,
+                        grant_type: 'authorization_code',
+                        redirect_uri: this.redirectUri,
+                    }),
+                });
+                if (!response.ok) {
+                    throw new Error('Token exchange failed.');
+                }
+                const tokens = await response.json();
+                this.accessToken = tokens.access_token;
+                this.refreshToken = tokens.refresh_token;
+                this.storeCredentials();
+            }
+
+            async refreshAccessToken() {
+                if (!this.refreshToken || !this.clientSecret) {
+                    throw new Error('Missing refresh token; reconnect Google Drive.');
+                }
+                const response = await fetch('https://oauth2.googleapis.com/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        client_id: this.clientId,
+                        client_secret: this.clientSecret,
+                        refresh_token: this.refreshToken,
+                        grant_type: 'refresh_token',
+                    }),
+                });
+                if (!response.ok) {
+                    this.clearStoredCredentials();
+                    throw new Error('Failed to refresh Google Drive credentials.');
+                }
+                const tokens = await response.json();
+                this.accessToken = tokens.access_token;
+                this.storeCredentials();
+                return this.accessToken;
+            }
+
+            async makeApiCall(endpoint, options = {}, asJson = true) {
+                if (!this.accessToken) {
+                    throw new Error('Google Drive not authenticated.');
+                }
+                let url = endpoint;
+                if (!endpoint.startsWith('https://')) {
+                    if (endpoint.startsWith('/upload/drive/')) {
+                        url = `https://www.googleapis.com${endpoint}`;
+                    } else {
+                        url = `${this.apiBase}${endpoint}`;
+                    }
+                }
+                const headers = { 'Authorization': `Bearer ${this.accessToken}`, ...options.headers };
+                if (asJson && !('Content-Type' in headers)) {
+                    headers['Content-Type'] = 'application/json';
+                }
+                let response = await fetch(url, { ...options, headers });
+                if (response.status === 401 && this.refreshToken) {
+                    await this.refreshAccessToken();
+                    headers['Authorization'] = `Bearer ${this.accessToken}`;
+                    response = await fetch(url, { ...options, headers });
+                }
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`Google API error: ${response.status} ${response.statusText} - ${text}`);
+                }
+                return asJson ? response.json() : response;
+            }
+
+            async getFolders() {
+                const query = "mimeType='application/vnd.google-apps.folder' and trashed=false";
+                const response = await this.makeApiCall(`/files?q=${encodeURIComponent(query)}&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime desc&pageSize=200`);
+                return (response.files || []).map((folder) => ({
+                    id: folder.id,
+                    name: folder.name,
+                    modifiedTime: folder.modifiedTime,
+                    createdTime: folder.createdTime,
+                }));
+            }
+        }
+
+        class OneDriveProvider extends BaseProvider {
+            constructor() {
+                super('onedrive');
+                if (typeof msal === 'undefined') {
+                    throw new Error('Microsoft authentication library is unavailable.');
+                }
+                this.apiBase = 'https://graph.microsoft.com/v1.0';
+                this.scopes = ['Files.ReadWrite.All', 'User.Read'];
+                this.msalInstance = new msal.PublicClientApplication({
+                    auth: {
+                        clientId: 'b407fd45-c551-4dbb-9da5-cab3a2c5a949',
+                        authority: 'https://login.microsoftonline.com/common',
+                        redirectUri: window.location.origin + window.location.pathname,
+                    },
+                    cache: { cacheLocation: 'localStorage' },
+                });
+                const accounts = this.msalInstance.getAllAccounts();
+                if (accounts.length > 0) {
+                    this.msalInstance.setActiveAccount(accounts[0]);
+                    this.activeAccount = accounts[0];
+                    this.isAuthenticated = true;
+                } else {
+                    this.activeAccount = null;
+                }
+            }
+
+            async authenticate() {
+                try {
+                    const accounts = this.msalInstance.getAllAccounts();
+                    if (accounts.length > 0) {
+                        this.msalInstance.setActiveAccount(accounts[0]);
+                        this.activeAccount = accounts[0];
+                    } else {
+                        const loginResponse = await this.msalInstance.loginPopup({ scopes: this.scopes });
+                        this.activeAccount = loginResponse.account;
+                        this.msalInstance.setActiveAccount(this.activeAccount);
+                    }
+                    this.isAuthenticated = true;
+                    return true;
+                } catch (error) {
+                    this.isAuthenticated = false;
+                    throw new Error(`Authentication failed: ${error.message}`);
+                }
+            }
+
+            async getAccessToken() {
+                if (!this.activeAccount) {
+                    throw new Error('No active Microsoft account.');
+                }
+                try {
+                    const response = await this.msalInstance.acquireTokenSilent({ scopes: this.scopes, account: this.activeAccount });
+                    return response.accessToken;
+                } catch (silentError) {
+                    if (silentError instanceof msal.InteractionRequiredAuthError) {
+                        const response = await this.msalInstance.acquireTokenPopup({ scopes: this.scopes, account: this.activeAccount });
+                        return response.accessToken;
+                    }
+                    throw silentError;
+                }
+            }
+
+            async makeApiCall(endpoint, options = {}) {
+                const token = await this.getAccessToken();
+                const url = endpoint.startsWith('https://') ? endpoint : `${this.apiBase}${endpoint}`;
+                const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...options.headers };
+                const response = await fetch(url, { ...options, headers });
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`Microsoft Graph error: ${response.status} ${response.statusText} - ${text}`);
+                }
+                return response;
+            }
+
+            async getFolders() {
+                const response = await this.makeApiCall('/me/drive/root/children');
+                const data = await response.json();
+                return (data.value || [])
+                    .filter((item) => item.folder)
+                    .map((folder) => ({
+                        id: folder.id,
+                        name: folder.name,
+                        modifiedTime: folder.lastModifiedDateTime,
+                        createdTime: folder.createdDateTime,
+                        itemCount: folder.folder?.childCount ?? null,
+                    }))
+                    .sort((a, b) => a.name.localeCompare(b.name));
+            }
+        }
+
+        const dom = {
+            progressSteps: Array.from(document.querySelectorAll('.progress-step')),
+            providerStage: document.getElementById('provider-stage'),
+            authStage: document.getElementById('auth-stage'),
+            folderStage: document.getElementById('folder-stage'),
+            loadingStage: document.getElementById('loading-stage'),
+            workspace: document.getElementById('workspace'),
+            providerButtons: Array.from(document.querySelectorAll('.provider-card')),
+            toAuth: document.getElementById('to-auth'),
+            backToProvider: document.getElementById('back-to-provider'),
+            backToAuth: document.getElementById('back-to-auth'),
+            authBody: document.getElementById('auth-body'),
+            authStatus: document.getElementById('auth-status'),
+            authIntro: document.getElementById('auth-intro'),
+            authAction: document.getElementById('auth-action'),
+            selectedProviderText: document.getElementById('selected-provider'),
+            folderSearch: document.getElementById('folder-search'),
+            folderList: document.getElementById('folder-list'),
+            folderStatus: document.getElementById('folder-status'),
+            folderEmpty: document.getElementById('folder-empty'),
+            startReview: document.getElementById('start-review'),
+            workspaceTitle: document.getElementById('workspace-title'),
+            hudStatus: document.getElementById('hud-status'),
+            trayTitle: document.getElementById('tray-title'),
+            trayDescription: document.getElementById('tray-description'),
+            trayNext: document.getElementById('tray-next'),
+            trayUndo: document.getElementById('tray-undo'),
+            activityLog: document.getElementById('activity-log'),
+            modeButtons: Array.from(document.querySelectorAll('.mode-switch button')),
+        };
+
+        const state = {
+            activeStep: 0,
+            providerKey: null,
+            provider: null,
+            folders: [],
+            selectedFolder: null,
+            isAuthenticating: false,
+        };
+
+        function showStage(index) {
+            state.activeStep = index;
+            const stages = [dom.providerStage, dom.authStage, dom.folderStage];
+            stages.forEach((stage, idx) => stage.classList.toggle('active', idx === index));
+            dom.loadingStage.classList.remove('active');
+            dom.workspace.classList.toggle('active', index === 3);
+            dom.progressSteps.forEach((step, idx) => {
+                step.classList.toggle('active', idx === index);
+                step.classList.toggle('complete', idx < index);
+            });
+        }
+
+        function formatDate(iso) {
+            if (!iso) return '';
+            const date = new Date(iso);
+            if (Number.isNaN(date.getTime())) return '';
+            return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+        }
+
+        function formatFolderMeta(folder) {
+            if (typeof folder.itemCount === 'number') {
+                return `${folder.itemCount} item${folder.itemCount === 1 ? '' : 's'}`;
+            }
+            const timestamp = folder.modifiedTime || folder.createdTime;
+            return timestamp ? `Updated ${formatDate(timestamp)}` : 'Folder';
+        }
+
+        function resetFolders() {
+            dom.folderList.innerHTML = '';
+            dom.folderStatus.textContent = '';
+            dom.folderEmpty.hidden = false;
+            dom.startReview.disabled = true;
+            state.selectedFolder = null;
+        }
+
+        function renderAuth() {
+            dom.authBody.innerHTML = '';
+            dom.authStatus.textContent = '';
+            dom.authStatus.className = 'helper-text status-line muted';
+            dom.authAction.disabled = true;
+            dom.authAction.textContent = 'Connect';
+
+            const providerLabel = state.providerKey === 'onedrive' ? 'OneDrive' : 'Google Drive';
+            dom.selectedProviderText.textContent = providerLabel;
+
+            if (state.providerKey === 'googledrive') {
+                dom.authIntro.textContent = 'Enter the Google OAuth client secret from the baseline app. We keep it in local storage so refresh tokens continue working.';
+                const field = document.createElement('div');
+                field.className = 'input-stack';
+                const label = document.createElement('label');
+                label.setAttribute('for', 'google-client-secret');
+                label.textContent = 'Google OAuth client secret';
+                const input = document.createElement('input');
+                input.type = 'password';
+                input.id = 'google-client-secret';
+                input.placeholder = 'Paste your client secret';
+                input.value = state.provider?.clientSecret || '';
+                field.appendChild(label);
+                field.appendChild(input);
+                dom.authBody.appendChild(field);
+
+                const helper = document.createElement('p');
+                helper.className = 'helper-text';
+                helper.textContent = 'We never transmit this value to our servers. It only lives in this browser.';
+                dom.authBody.appendChild(helper);
+
+                const updateButton = () => {
+                    const hasSecret = input.value.trim().length > 0;
+                    dom.authAction.disabled = state.isAuthenticating || (!state.provider.isAuthenticated && !hasSecret);
+                };
+                input.addEventListener('input', updateButton);
+                updateButton();
+                dom.authAction.dataset.secretField = '#google-client-secret';
+                dom.authAction.textContent = state.provider.isAuthenticated ? 'Continue to folders' : 'Connect Google Drive';
+                if (state.provider.isAuthenticated) {
+                    dom.authStatus.textContent = 'Reusing stored Google session. Continue to refresh folders.';
+                    dom.authStatus.classList.add('success');
+                }
+            } else {
+                dom.authIntro.textContent = 'We use Microsoft\'s MSAL flow exactly like the baseline reviewer. Sign in with your enterprise account.';
+                const copy = document.createElement('p');
+                copy.className = 'helper-text';
+                copy.textContent = 'Cached sessions are reused when available. Popups stay in-browser for continuity.';
+                dom.authBody.appendChild(copy);
+                dom.authAction.disabled = state.isAuthenticating;
+                dom.authAction.textContent = state.provider.isAuthenticated ? 'Continue to folders' : 'Sign in with Microsoft';
+                delete dom.authAction.dataset.secretField;
+                if (state.provider.isAuthenticated) {
+                    dom.authStatus.textContent = 'Microsoft account already connected. Continue to load folders.';
+                    dom.authStatus.classList.add('success');
+                }
+            }
+        }
+
+        function renderFolders() {
+            dom.folderList.innerHTML = '';
+            const query = dom.folderSearch.value.trim().toLowerCase();
+            const filtered = state.folders.filter((folder) => folder.name.toLowerCase().includes(query));
+            dom.folderEmpty.hidden = filtered.length > 0;
+            if (filtered.length === 0) {
+                dom.folderStatus.textContent = state.folders.length === 0 ? 'No folders available. Try refreshing the connection.' : 'No matches for your search.';
+                dom.startReview.disabled = true;
+                return;
+            }
+            dom.folderStatus.textContent = filtered.length === state.folders.length ? `Showing ${filtered.length} folders` : `Showing ${filtered.length} of ${state.folders.length} folders`;
+            filtered.forEach((folder) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'folder-pill';
+                button.innerHTML = `<span>${folder.name}</span><small>${formatFolderMeta(folder)}</small>`;
+                if (state.selectedFolder && state.selectedFolder.id === folder.id) {
+                    button.classList.add('selected');
+                }
+                button.addEventListener('click', () => {
+                    state.selectedFolder = folder;
+                    dom.workspaceTitle.textContent = `Reviewing: ${folder.name}`;
+                    dom.startReview.disabled = false;
+                    renderFolders();
+                });
+                dom.folderList.appendChild(button);
+            });
+        }
+
+        async function loadFolders() {
+            if (!state.provider) return;
+            dom.folderStatus.textContent = 'Fetching folders…';
+            dom.folderStatus.className = 'status-line muted';
+            dom.folderEmpty.hidden = true;
+            dom.folderList.innerHTML = '';
+            dom.startReview.disabled = true;
+            try {
+                state.folders = await state.provider.getFolders();
+                if (state.folders.length === 0) {
+                    dom.folderStatus.textContent = 'No folders returned. Check your permissions.';
+                    dom.folderEmpty.hidden = false;
+                } else {
+                    dom.folderStatus.textContent = `Showing ${state.folders.length} folders`;
+                    dom.folderStatus.className = 'status-line muted';
+                    renderFolders();
+                }
+            } catch (error) {
+                dom.folderStatus.textContent = error.message || 'Failed to load folders.';
+                dom.folderStatus.className = 'status-line error';
+                dom.folderEmpty.hidden = false;
+            }
+        }
+
+        async function handleAuth() {
+            if (!state.provider) return;
+            state.isAuthenticating = true;
+            dom.authAction.disabled = true;
+            const providerLabel = state.providerKey === 'onedrive' ? 'OneDrive' : 'Google Drive';
+            const loadingText = `Connecting to ${providerLabel}…`;
+            dom.authStatus.textContent = loadingText;
+            dom.authStatus.className = 'status-line muted';
+            const defaultText = dom.authAction.textContent;
+            dom.authAction.textContent = loadingText;
+            try {
+                if (state.providerKey === 'googledrive') {
+                    const selector = dom.authAction.dataset.secretField;
+                    const input = selector ? document.querySelector(selector) : null;
+                    const secret = input ? input.value.trim() : '';
+                    await state.provider.authenticate(secret);
+                } else {
+                    await state.provider.authenticate();
+                }
+                dom.authStatus.textContent = `Connected to ${providerLabel}.`;
+                dom.authStatus.classList.add('success');
+                dom.authAction.textContent = 'Continue to folders';
+                state.isAuthenticating = false;
+                dom.authAction.disabled = false;
+                showStage(2);
+                await loadFolders();
+            } catch (error) {
+                dom.authStatus.textContent = error.message || `Failed to connect to ${providerLabel}.`;
+                dom.authStatus.classList.add('error');
+                dom.authAction.textContent = defaultText;
+                state.isAuthenticating = false;
+                dom.authAction.disabled = false;
+                const selector = dom.authAction.dataset.secretField;
+                if (selector) {
+                    const input = document.querySelector(selector);
+                    if (input) input.focus();
+                }
+            }
+        }
+
+        function hydrateWorkspace() {
+            dom.hudStatus.innerHTML = '';
+            ['Priority', 'Keep', 'Out', 'Trash'].forEach((label) => {
+                const pill = document.createElement('span');
+                pill.textContent = `0 ${label.toLowerCase()}`;
+                dom.hudStatus.appendChild(pill);
+            });
+            dom.trayTitle.textContent = 'Workspace ready';
+            dom.trayDescription.textContent = 'Assets will appear here once syncing completes. Use shortcuts or the controls to classify quickly.';
+            dom.activityLog.innerHTML = '';
+            const entry = document.createElement('li');
+            entry.textContent = `Connected ${state.providerKey === 'onedrive' ? 'OneDrive' : 'Google Drive'} folder “${state.selectedFolder.name}”.`;
+            dom.activityLog.appendChild(entry);
+        }
+
+        dom.providerButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                dom.providerButtons.forEach((btn) => btn.classList.remove('selected'));
+                button.classList.add('selected');
+                state.providerKey = button.dataset.provider;
+                state.provider = state.providerKey === 'onedrive' ? new OneDriveProvider() : new GoogleDriveProvider();
+                dom.toAuth.disabled = false;
+            });
+        });
+
+        dom.toAuth.addEventListener('click', () => {
+            if (!state.provider) return;
+            showStage(1);
+            renderAuth();
+        });
+
+        dom.backToProvider.addEventListener('click', () => {
+            showStage(0);
+        });
+
+        dom.backToAuth.addEventListener('click', () => {
+            showStage(1);
+            renderAuth();
+        });
+
+        dom.authAction.addEventListener('click', () => {
+            if (state.provider?.isAuthenticated) {
+                showStage(2);
+                loadFolders();
+            } else {
+                handleAuth();
+            }
+        });
+
+        dom.startReview.addEventListener('click', async () => {
+            if (!state.selectedFolder) return;
+            showStage(3);
+            dom.loadingStage.classList.add('active');
+            dom.progressSteps.forEach((step) => step.classList.remove('active'));
+            dom.progressSteps.forEach((step) => step.classList.add('complete'));
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            dom.loadingStage.classList.remove('active');
+            dom.workspace.classList.add('active');
+            hydrateWorkspace();
+        });
+
+        dom.folderSearch.addEventListener('input', renderFolders);
+
+        dom.modeButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                dom.modeButtons.forEach((btn) => btn.classList.remove('active'));
+                button.classList.add('active');
+                const mode = button.dataset.mode;
+                dom.trayTitle.textContent = mode === 'focus' ? 'Focus review' : 'Sort grid';
+                dom.trayDescription.textContent = mode === 'focus'
+                    ? 'Use the keyboard or tap Next to advance through assets one at a time.'
+                    : 'Switch to the grid to bulk organize, then return to focus mode to fine-tune.';
+            });
+        });
+    </script>
+</body>
+</html>
