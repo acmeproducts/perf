@@ -1001,74 +1001,6 @@
             isImageTransitioning: false,
             pendingBackgroundProbe: null
         };
-        const DriveLinkHelper = {
-            extractFileId(input) {
-                if (!input) return null;
-                if (typeof input === 'string' && !input.includes('://') && /^[a-zA-Z0-9_-]{10,}$/.test(input)) {
-                    return input;
-                }
-                try {
-                    const url = new URL(input);
-                    const idParam = url.searchParams.get('id') || url.searchParams.get('file_id');
-                    if (idParam) return idParam;
-                    const pathMatch = url.pathname.match(/\/file\/d\/([^/]+)/);
-                    if (pathMatch && pathMatch[1]) return pathMatch[1];
-                    const ucMatch = url.pathname.match(/\/uc(?:\/export)?\/download\/([^/?]+)/);
-                    if (ucMatch && ucMatch[1]) return ucMatch[1];
-                } catch (error) {
-                    return null;
-                }
-                return null;
-            },
-            buildUcDownloadUrl(fileId) {
-                if (!fileId) return null;
-                return `https://drive.google.com/uc?export=download&id=${fileId}`;
-            },
-            buildApiDownloadUrl(fileId) {
-                if (!fileId) return null;
-                return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-            },
-            normalizeToAssetUrl(rawUrl, fallbackId = null) {
-                if (!rawUrl || typeof rawUrl !== 'string') return null;
-                const directHosts = new RegExp('(?:^|\\.)googleusercontent\\.com$');
-                const fileId = fallbackId || this.extractFileId(rawUrl);
-                try {
-                    const parsed = new URL(rawUrl);
-                    const host = parsed.hostname;
-                    if (directHosts.test(host)) {
-                        return rawUrl;
-                    }
-                    if (host === 'drive.google.com') {
-                        if (parsed.pathname.startsWith('/uc')) {
-                            parsed.searchParams.set('export', 'download');
-                            if (!parsed.searchParams.get('id') && fileId) {
-                                parsed.searchParams.set('id', fileId);
-                            }
-                            return parsed.toString();
-                        }
-                        if (fileId) {
-                            return this.buildUcDownloadUrl(fileId);
-                        }
-                    }
-                    if (host === 'www.googleapis.com') {
-                        parsed.searchParams.set('alt', 'media');
-                        return parsed.toString();
-                    }
-                    if (fileId) {
-                        return this.buildUcDownloadUrl(fileId);
-                    }
-                } catch (error) {
-                    if (fileId) {
-                        return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
-                    }
-                    return null;
-                }
-                if (fileId) {
-                    return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
-                }
-                return null;
-            }
-        };
         const Utils = {
             elements: {},
             
@@ -1256,6 +1188,9 @@
 
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
+                    // Prefer the provider metadata's downloadUrl so we stay aligned with Drive-managed redirects.
+                    // Falling back to the Drive v3 alt=media endpoint keeps a direct Google-hosted image path available.
+                    return file.downloadUrl || `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
