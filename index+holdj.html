@@ -456,6 +456,12 @@
             padding: 4px 8px;
             font-size: 10px; z-index: 5; backdrop-filter: blur(10px);
         }
+        .app-footer .footer-status {
+            color: inherit;
+        }
+        .app-footer .footer-status:not(:empty) {
+            margin-right: 8px;
+        }
 
         /* NEW: Standardized UI Button */
         .ui-button {
@@ -1045,7 +1051,44 @@
                 const toast = this.elements.toast;
                 toast.textContent = message;
                 toast.className = `toast ${type} show`;
-                setTimeout(() => toast.classList.remove('show'), 3000);
+                const footers = Array.from(document.querySelectorAll('.app-footer'));
+                const footerStatuses = footers.map(footer => {
+                    let statusSpan = footer.querySelector('.footer-status');
+                    if (!statusSpan) {
+                        statusSpan = document.createElement('span');
+                        statusSpan.className = 'footer-status';
+                        const baselineAttr = footer.dataset.baselineText;
+                        const textNodes = Array.from(footer.childNodes).filter(node => node.nodeType === Node.TEXT_NODE);
+                        const baselineFromNodes = textNodes.map(node => node.textContent).join('').replace(/\s+/g, ' ').trim();
+                        const baselineText = baselineAttr !== undefined ? baselineAttr : baselineFromNodes;
+                        statusSpan.dataset.baselineText = baselineText;
+                        if (textNodes.length) {
+                            footer.insertBefore(statusSpan, textNodes[0]);
+                            textNodes.forEach(node => footer.removeChild(node));
+                        } else {
+                            footer.insertBefore(statusSpan, footer.firstChild);
+                        }
+                        statusSpan.textContent = baselineText;
+                    } else if (statusSpan.dataset.baselineText === undefined) {
+                        statusSpan.dataset.baselineText = (statusSpan.textContent || '').trim();
+                    }
+                    const baselineText = statusSpan.dataset.baselineText ?? '';
+                    statusSpan.textContent = message;
+                    statusSpan.classList.remove('success', 'error', 'info');
+                    statusSpan.classList.add(type);
+                    return { statusSpan, baselineText };
+                });
+                if (this._toastHideTimer) {
+                    clearTimeout(this._toastHideTimer);
+                }
+                this._toastHideTimer = setTimeout(() => {
+                    toast.classList.remove('show');
+                    footerStatuses.forEach(({ statusSpan, baselineText }) => {
+                        statusSpan.textContent = baselineText;
+                        statusSpan.classList.remove('success', 'error', 'info');
+                    });
+                    this._toastHideTimer = null;
+                }, 3000);
                 if (important && state.haptic) {
                     const hapticType = type === 'error' ? 'error' : 'buttonPress';
                     state.haptic.triggerFeedback(hapticType);
