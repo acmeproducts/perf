@@ -28,3 +28,11 @@ rg "downloadUrl: viewUrl"
 ```
 
 The command should produce no matches. Any future regression where a template assigns a `downloadUrl` directly to the `viewUrl` will show up in this search so it can be corrected immediately.
+
+## Playwright test suite
+
+Run the Playwright checks that load representative UI variants and assert they construct Google Drive asset URLs using the UC view form:
+
+```bash
+npm run test:playwright
+```
