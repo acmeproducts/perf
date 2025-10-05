@@ -2204,6 +2204,23 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+            async getMetadataRecordsByFolder(context = {}) {
+                if (!this.db) return [];
+                const folderKey = this.resolveFolderKey(context);
+                if (!folderKey) return [];
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readonly');
+                    const store = transaction.objectStore('metadata');
+                    if (!store.indexNames.contains('folderKey')) {
+                        resolve([]);
+                        return;
+                    }
+                    const index = store.index('folderKey');
+                    const request = index.getAll(IDBKeyRange.only(folderKey));
+                    request.onsuccess = () => resolve(request.result || []);
+                    request.onerror = () => reject(request.error);
+                });
+            }
             async saveMetadata(fileId, metadata, context = {}) {
                 if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
@@ -4511,7 +4528,84 @@
                     state.imageFiles = Array.from(mergedMap.values());
 
                     if (state.imageFiles.length === 0) {
+                        const metadataContext = { providerType: state.providerType, folderId };
+                        let metadataInspectionError = null;
+                        let metadataRecords = [];
+                        const metadataInspectionSupported = typeof state.dbManager?.getMetadataRecordsByFolder === 'function';
+
+                        if (metadataInspectionSupported) {
+                            try {
+                                metadataRecords = await state.dbManager.getMetadataRecordsByFolder(metadataContext);
+                            } catch (metaError) {
+                                metadataInspectionError = metaError;
+                            }
+                        } else {
+                            metadataInspectionError = new Error('metadata inspection unsupported');
+                        }
+
+                        const metadataIds = (metadataRecords || []).map(record => record?.id).filter(Boolean);
+                        const removedIdSet = new Set(removedIds);
+                        const survivingMetadataIds = metadataIds.filter(id => !removedIdSet.has(id));
+
+                        if (!metadataInspectionError && survivingMetadataIds.length > 0) {
+                            const diagnostic = {
+                                survivingCount: survivingMetadataIds.length,
+                                survivingSample: survivingMetadataIds.slice(0, 10),
+                                removedSample: removedIds.slice(0, 10),
+                                changedSample: changedIds.slice(0, 10),
+                                cachedCount: cachedFiles.length,
+                                metadataScanned: metadataIds.length
+                            };
+                            state.syncLog?.log({
+                                event: 'foldersync:delta-empty-mismatch',
+                                level: 'error',
+                                details: `Delta reported ${folderId} empty but ${survivingMetadataIds.length} metadata entr${survivingMetadataIds.length === 1 ? 'y remains' : 'ies remain'}.`,
+                                data: diagnostic
+                            });
+                            console.warn('Delta sync reported empty folder with surviving metadata', diagnostic);
+                            Utils.showToast('Sync mismatch detected. Retrying full folder sync...', 'error', true);
+                            await coordinator?.markRequiresFullResync(folderId, 'delta-empty-mismatch');
+                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                        }
+
+                        if (metadataInspectionError) {
+                            console.warn('Metadata inspection during delta sync failed', metadataInspectionError);
+                            state.syncLog?.log({
+                                event: 'foldersync:delta-empty-uncertain',
+                                level: 'warn',
+                                details: `Unable to verify metadata state for ${folderId}: ${metadataInspectionError.message}`,
+                                data: {
+                                    removedCount: removedIds.length,
+                                    changedCount: changedIds.length
+                                }
+                            });
+                        } else {
+                            state.syncLog?.log({
+                                event: 'foldersync:delta-empty-confirmed',
+                                level: 'info',
+                                details: `Delta removed all items for ${folderId}.`,
+                                data: {
+                                    removedCount: removedIds.length,
+                                    metadataEntries: metadataIds.length
+                                }
+                            });
+                        }
+
                         await state.dbManager.saveFolderCache(folderId, []);
+                        try {
+                            if (!metadataInspectionError && typeof state.dbManager?.deleteMetadataByFolder === 'function') {
+                                await state.dbManager.deleteMetadataByFolder(metadataContext);
+                            } else if (removedIds.length > 0) {
+                                await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
+                            }
+                        } catch (cleanupError) {
+                            state.syncLog?.log({
+                                event: 'foldersync:delta-empty-cleanup-error',
+                                level: 'warn',
+                                details: `Failed to cleanup metadata for ${folderId}: ${cleanupError.message}`
+                            });
+                        }
+
                         Utils.showToast('Folder is now empty', 'info', true);
                         if (!background) {
                             await this.returnToFolderSelection();
