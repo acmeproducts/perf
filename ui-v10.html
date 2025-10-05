@@ -1040,6 +1040,74 @@
             pendingBackgroundProbe: null,
             showDebugToasts: true
         };
+        const DriveLinkHelper = {
+            extractFileId(input) {
+                if (!input) return null;
+                if (typeof input === 'string' && !input.includes('://') && /^[a-zA-Z0-9_-]{10,}$/.test(input)) {
+                    return input;
+                }
+                try {
+                    const url = new URL(input);
+                    const idParam = url.searchParams.get('id') || url.searchParams.get('file_id');
+                    if (idParam) return idParam;
+                    const pathMatch = url.pathname.match(/\/file\/d\/([^/]+)/);
+                    if (pathMatch && pathMatch[1]) return pathMatch[1];
+                    const ucMatch = url.pathname.match(/\/uc(?:\/export)?\/download\/([^/?]+)/);
+                    if (ucMatch && ucMatch[1]) return ucMatch[1];
+                } catch (error) {
+                    return null;
+                }
+                return null;
+            },
+            buildUcDownloadUrl(fileId) {
+                if (!fileId) return null;
+                return `https://drive.google.com/uc?id=${fileId}&export=view`;
+            },
+            buildApiDownloadUrl(fileId) {
+                if (!fileId) return null;
+                return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+            },
+            normalizeToAssetUrl(rawUrl, fallbackId = null) {
+                if (!rawUrl || typeof rawUrl !== 'string') return null;
+                const directHosts = new RegExp('(?:^|\\.)googleusercontent\\.com$');
+                const fileId = fallbackId || this.extractFileId(rawUrl);
+                try {
+                    const parsed = new URL(rawUrl);
+                    const host = parsed.hostname;
+                    if (directHosts.test(host)) {
+                        return rawUrl;
+                    }
+                    if (host === 'drive.google.com') {
+                        if (parsed.pathname.startsWith('/uc')) {
+                            parsed.searchParams.set('export', 'view');
+                            if (!parsed.searchParams.get('id') && fileId) {
+                                parsed.searchParams.set('id', fileId);
+                            }
+                            return parsed.toString();
+                        }
+                        if (fileId) {
+                            return this.buildUcDownloadUrl(fileId);
+                        }
+                    }
+                    if (host === 'www.googleapis.com') {
+                        parsed.searchParams.set('alt', 'media');
+                        return parsed.toString();
+                    }
+                    if (fileId) {
+                        return this.buildUcDownloadUrl(fileId);
+                    }
+                } catch (error) {
+                    if (fileId) {
+                        return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                    }
+                    return null;
+                }
+                if (fileId) {
+                    return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                }
+                return null;
+            }
+        };
         const Utils = {
             elements: {},
 
@@ -1275,10 +1343,11 @@
             
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
+                    const effectiveId = file?.targetFileId || file?.id;
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s1000');
                     }
-                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w1000`;
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1289,13 +1358,14 @@
 
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
+                    const effectiveId = file?.targetFileId || file?.id;
                     if (file.thumbnailLink) {
                         return file.thumbnailLink.replace('=s220', '=s800');
                     }
                     if (file.thumbnail && file.thumbnail.url) {
                         return file.thumbnail.url.replace('=s220', '=s800');
                     }
-                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w800`;
+                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w800`;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3347,6 +3417,52 @@
                 this.isAuthenticated = false; this.onProgressCallback = null;
                 this.loadStoredCredentials();
             }
+            normalizeDriveFileMetadata(file, options = {}) {
+                const target = options.target || file;
+                const targetId = target?.id || null;
+                const fallbackId = targetId || file?.id || null;
+                const effectiveId = options.useShortcutId ? file.id : fallbackId;
+                const viewUrl = target?.webViewLink || (fallbackId ? `https://drive.google.com/file/d/${fallbackId}/view` : '');
+                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
+                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId) : null) || apiDownloadUrl;
+                const sizeValue = target?.size != null ? Number(target.size) : null;
+
+                const normalized = {
+                    id: effectiveId,
+                    name: file?.name || target?.name,
+                    type: 'file',
+                    mimeType: target?.mimeType,
+                    size: Number.isFinite(sizeValue) ? sizeValue : 0,
+                    createdTime: target?.createdTime || file?.createdTime,
+                    modifiedTime: target?.modifiedTime || file?.modifiedTime,
+                    thumbnailLink: target?.thumbnailLink || file?.thumbnailLink,
+                    downloadUrl,
+                    viewUrl,
+                    driveApiDownloadUrl: apiDownloadUrl,
+                    appProperties: target?.appProperties || file?.appProperties || {},
+                    parents: file?.parents || target?.parents || [],
+                    targetFileId: targetId || fallbackId || null
+                };
+
+                if (options.useShortcutId) {
+                    normalized.shortcutId = file.id;
+                    normalized.isShortcut = true;
+                    normalized.shortcutDetails = file.shortcutDetails || null;
+                }
+
+                return normalized;
+            }
+            async fetchRawFilesByIds(fileIds = [], options = {}) {
+                if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
+                const signal = options.signal;
+                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,shortcutDetails(targetId,targetMimeType)';
+                const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=${fields}&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal }));
+                const responses = await Promise.allSettled(requests);
+                return responses
+                    .filter(result => result.status === 'fulfilled')
+                    .map(result => result.value)
+                    .filter(Boolean);
+            }
             loadStoredCredentials() {
                 this.accessToken = localStorage.getItem('google_access_token');
                 this.refreshToken = localStorage.getItem('google_refresh_token');
@@ -3434,8 +3550,9 @@
                 return response;
             }
             async getFolders() {
-                const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
-                return response.files.map(folder => ({
+                const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true');
+                const folders = Array.isArray(response.files) ? response.files : [];
+                return folders.map(folder => ({
                     id: folder.id,
                     name: folder.name,
                     type: 'folder',
@@ -3446,37 +3563,54 @@
                 }));
             }
             async getFilesAndMetadata(folderId = 'root') {
-                const allFiles = []; let nextPageToken = null;
+                const allFiles = [];
+                let nextPageToken = null;
+                const signal = state.activeRequests?.signal;
+
                 do {
-                    const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/')`;
-                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents),nextPageToken&pageSize=100`;
+                    const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,shortcutDetails(targetId,targetMimeType)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
-                    const response = await this.makeApiCall(url, { signal: state.activeRequests.signal });
-                    const files = response.files
-                        .filter(file => file.mimeType && file.mimeType.startsWith('image/'))
-                        .map(file => {
-                            const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                            const apiDownloadUrl = file.webContentLink || null;
-                            return {
-                                id: file.id,
-                                name: file.name,
-                                type: 'file',
-                                mimeType: file.mimeType,
-                                size: file.size ? parseInt(file.size) : 0,
-                                createdTime: file.createdTime,
-                                modifiedTime: file.modifiedTime,
-                                thumbnailLink: file.thumbnailLink,
-                                downloadUrl: DriveLinkHelper.buildUcDownloadUrl(file.id) || apiDownloadUrl,
-                                viewUrl,
-                                driveApiDownloadUrl: apiDownloadUrl,
-                                appProperties: file.appProperties || {},
-                                parents: file.parents
-                            };
-                        });
-                    allFiles.push(...files);
+
+                    const response = await this.makeApiCall(url, { signal });
+                    const files = Array.isArray(response.files) ? response.files : [];
+                    const directImages = [];
+                    const shortcutCandidates = [];
+
+                    for (const file of files) {
+                        if (file?.mimeType?.startsWith('image/')) {
+                            directImages.push(file);
+                        } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails?.targetMimeType?.startsWith('image/')) {
+                            shortcutCandidates.push(file);
+                        }
+                    }
+
+                    const normalized = directImages.map(file => this.normalizeDriveFileMetadata(file));
+
+                    let resolvedShortcuts = [];
+                    if (shortcutCandidates.length > 0) {
+                        const targetIds = [...new Set(shortcutCandidates
+                            .map(file => file.shortcutDetails?.targetId)
+                            .filter(Boolean))];
+
+                        if (targetIds.length > 0) {
+                            const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal });
+                            const targetMap = new Map(targetFiles.map(target => [target.id, target]));
+                            resolvedShortcuts = shortcutCandidates
+                                .map(shortcut => {
+                                    const target = targetMap.get(shortcut.shortcutDetails?.targetId);
+                                    if (!target || !target.mimeType?.startsWith('image/')) { return null; }
+                                    return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
+                                })
+                                .filter(Boolean);
+                        }
+                    }
+
+                    allFiles.push(...normalized, ...resolvedShortcuts);
                     nextPageToken = response.nextPageToken;
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
                 } while (nextPageToken);
+
                 return { folders: [], files: allFiles };
             }
             async loadFolderManifest(folderId, options = {}) {
@@ -3534,11 +3668,29 @@
                 };
                 const headers = { 'Content-Type': 'application/json' };
                 let fileId = manifest.manifestFileId || options.manifestFileId || null;
+                let discoveredManifests = null;
+                if (!fileId) {
+                    try {
+                        const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
+                        const lookupUrl = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=10`;
+                        const lookupResponse = await this.makeApiCall(lookupUrl, { signal: options.signal });
+                        const files = Array.isArray(lookupResponse?.files) ? lookupResponse.files : [];
+                        if (files.length > 0) {
+                            fileId = files[0].id;
+                            discoveredManifests = files;
+                        }
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'manifest:lookup:fallback', level: 'warn', details: `Failed to locate existing manifest for ${folderId}: ${error.message}` });
+                    }
+                }
                 if (!fileId) {
                     const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', { method: 'POST', body: JSON.stringify(metadata) });
                     fileId = createResponse.id;
-                } else {
-                    await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
+                }
+                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
+                if (Array.isArray(discoveredManifests) && discoveredManifests.length > 1) {
+                    const duplicateIds = discoveredManifests.slice(1).map(file => file.id);
+                    state.syncLog?.log({ event: 'manifest:duplicates', level: 'warn', details: `Detected ${duplicateIds.length} duplicate manifest files for ${folderId}.`, data: { duplicates: duplicateIds } });
                 }
                 const uploadUrl = `/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                 await this.makeApiCall(uploadUrl, { method: 'PATCH', body: JSON.stringify(payload), headers, signal: options.signal }, false);
@@ -3562,21 +3714,43 @@
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
-                const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal: options.signal }));
-                const files = await Promise.allSettled(requests);
-                return files
-                    .filter(result => result.status === 'fulfilled')
-                    .map(result => {
-                        const file = result.value;
-                        const viewUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
-                        const apiDownloadUrl = file.webContentLink || file.driveApiDownloadUrl || null;
-                        return {
-                            ...file,
-                            downloadUrl: DriveLinkHelper.buildUcDownloadUrl(file.id) || apiDownloadUrl,
-                            viewUrl,
-                            driveApiDownloadUrl: apiDownloadUrl
-                        };
-                    });
+                const rawFiles = await this.fetchRawFilesByIds(fileIds, { signal: options.signal });
+                const directImages = [];
+                const shortcutCandidates = [];
+
+                for (const file of rawFiles) {
+                    if (file?.mimeType?.startsWith('image/')) {
+                        directImages.push(file);
+                    } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails?.targetMimeType?.startsWith('image/')) {
+                        shortcutCandidates.push(file);
+                    }
+                }
+
+                const normalized = directImages.map(file => this.normalizeDriveFileMetadata(file));
+
+                if (shortcutCandidates.length === 0) {
+                    return normalized;
+                }
+
+                const targetIds = [...new Set(shortcutCandidates
+                    .map(file => file.shortcutDetails?.targetId)
+                    .filter(Boolean))];
+
+                if (targetIds.length === 0) {
+                    return normalized;
+                }
+
+                const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal: options.signal });
+                const targetMap = new Map(targetFiles.map(target => [target.id, target]));
+                const resolvedShortcuts = shortcutCandidates
+                    .map(shortcut => {
+                        const target = targetMap.get(shortcut.shortcutDetails?.targetId);
+                        if (!target || !target.mimeType?.startsWith('image/')) { return null; }
+                        return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
+                    })
+                    .filter(Boolean);
+
+                return [...normalized, ...resolvedShortcuts];
             }
             async drillIntoFolder(folder) {
                 // Not applicable for Google Drive's flat folder structure, but fulfills the interface.
