@@ -4460,10 +4460,14 @@
 
                     const mergedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
                     const incompleteDelta = changedIds.length > 0 && cloudFiles.length !== changedIds.length;
+                    const normalizedCloudFiles = [];
                     for (const file of cloudFiles) {
                         const existing = mergedMap.get(file.id) || {};
-                        mergedMap.set(file.id, { ...existing, ...file });
+                        const normalized = this.normalizeDeltaFile(file, existing);
+                        mergedMap.set(file.id, normalized);
+                        normalizedCloudFiles.push(normalized);
                     }
+                    cloudFiles = normalizedCloudFiles;
                     const removedIds = diff.removedIds || [];
                     for (const removed of removedIds) {
                         mergedMap.delete(removed);
@@ -4748,9 +4752,82 @@
                 }
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
+            normalizeDeltaFile(file, existing = {}) {
+                const normalized = { ...existing, ...file };
+                const appProps = file?.appProperties || {};
+
+                const stackCandidate = file.stack ?? appProps.slideboxStack;
+                if (stackCandidate != null && stackCandidate !== '') {
+                    normalized.stack = stackCandidate;
+                } else if (!normalized.stack) {
+                    normalized.stack = 'in';
+                }
+
+                const coerceTags = value => {
+                    if (Array.isArray(value)) {
+                        return value
+                            .map(tag => TagService.normalizeTagValue(tag))
+                            .filter(Boolean);
+                    }
+                    if (typeof value === 'string') {
+                        const parts = value.split(',')
+                            .map(tag => TagService.normalizeTagValue(tag))
+                            .filter(Boolean);
+                        return parts;
+                    }
+                    return null;
+                };
+                const tagCandidate = file.tags ?? appProps.slideboxTags;
+                const normalizedTags = coerceTags(tagCandidate);
+                if (normalizedTags != null) {
+                    normalized.tags = normalizedTags;
+                } else if (!Array.isArray(normalized.tags)) {
+                    normalized.tags = Array.isArray(existing.tags) ? [...existing.tags] : [];
+                }
+
+                const notesCandidate = file.notes ?? appProps.notes;
+                if (notesCandidate != null) {
+                    normalized.notes = notesCandidate;
+                } else if (normalized.notes == null && existing.notes != null) {
+                    normalized.notes = existing.notes;
+                } else if (normalized.notes == null) {
+                    normalized.notes = '';
+                }
+
+                const coerceNumber = (value, fallback = 0) => {
+                    if (value == null || value === '') return fallback;
+                    const parsed = Number.parseInt(value, 10);
+                    return Number.isNaN(parsed) ? fallback : parsed;
+                };
+
+                const sequenceCandidate = file.stackSequence ?? appProps.stackSequence;
+                normalized.stackSequence = coerceNumber(sequenceCandidate, existing.stackSequence ?? normalized.stackSequence ?? 0);
+
+                const qualityCandidate = file.qualityRating ?? appProps.qualityRating;
+                normalized.qualityRating = coerceNumber(qualityCandidate, existing.qualityRating ?? normalized.qualityRating ?? 0);
+
+                const contentCandidate = file.contentRating ?? appProps.contentRating;
+                normalized.contentRating = coerceNumber(contentCandidate, existing.contentRating ?? normalized.contentRating ?? 0);
+
+                const favoriteCandidate = file.favorite ?? appProps.favorite;
+                if (favoriteCandidate != null) {
+                    normalized.favorite = Utils.normalizeFavorite(favoriteCandidate);
+                } else if (typeof normalized.favorite !== 'boolean' && typeof existing.favorite === 'boolean') {
+                    normalized.favorite = existing.favorite;
+                } else if (typeof normalized.favorite !== 'boolean') {
+                    normalized.favorite = false;
+                }
+
+                if (!normalized.metadataStatus && existing.metadataStatus) {
+                    normalized.metadataStatus = existing.metadataStatus;
+                }
+                normalized.metadataStatus = normalized.metadataStatus || 'pending';
+
+                return normalized;
+            },
             generateDefaultMetadata(file) {
-                 const baseMetadata = { 
-                    stack: 'in', 
+                 const baseMetadata = {
+                    stack: 'in',
                     tags: [], 
                     qualityRating: 0, 
                     contentRating: 0, 
@@ -4774,11 +4851,90 @@
             switchToCommonUI() {
                 Utils.showScreen('app-container');
             },
+            async teardownActiveFolderSession() {
+                const {
+                    appContainer,
+                    gridModal
+                } = Utils.elements;
+
+                const logTeardownError = (message, error) => {
+                    state.syncLog?.log({
+                        event: 'ui:folder-exit:teardown-error',
+                        level: 'warn',
+                        details: `${message}: ${error?.message || error}`
+                    });
+                };
+
+                try {
+                    if (state.grid?.stack) {
+                        await Grid.close();
+                    } else if (gridModal && !gridModal.classList.contains('hidden')) {
+                        Utils.hideModal('grid-modal');
+                    }
+                } catch (error) {
+                    logTeardownError('Failed to close grid modal', error);
+                }
+
+                try {
+                    Details.hide();
+                } catch (error) {
+                    logTeardownError('Failed to hide details modal', error);
+                }
+
+                if (state.grid) {
+                    state.grid.stack = null;
+                    state.grid.selected = [];
+                    state.grid.filtered = [];
+                    state.grid.isDirty = false;
+                    if (state.grid.lazyLoadState) {
+                        const observer = state.grid.lazyLoadState.observer;
+                        if (observer) {
+                            try {
+                                observer.disconnect();
+                            } catch (error) {
+                                logTeardownError('Failed to disconnect grid observer', error);
+                            }
+                        }
+                        state.grid.lazyLoadState.observer = null;
+                        state.grid.lazyLoadState.allFiles = [];
+                        state.grid.lazyLoadState.renderedCount = 0;
+                    }
+                }
+
+                if (state.isFocusMode) {
+                    state.isFocusMode = false;
+                    if (appContainer) {
+                        appContainer.classList.remove('focus-mode');
+                    }
+                    try {
+                        Gestures.updateGestureOverlayMode();
+                    } catch (error) {
+                        logTeardownError('Failed to reset gesture overlay', error);
+                    }
+                }
+
+                const previousFolderId = state.currentFolder?.id;
+                if (previousFolderId) {
+                    const sessionKey = `${state.providerType || 'unknown'}::${previousFolderId}`;
+                    state.sessionVisitedFolders.delete(sessionKey);
+                }
+
+                state.currentFolder = { id: null, name: '' };
+                state.pendingBackgroundProbe = null;
+                state.currentStack = 'in';
+                state.currentStackPosition = 0;
+            },
             async returnToFolderSelection() {
                 if (state.isReturningToFolders) return;
 
                 state.isReturningToFolders = true;
-                const { backButton, backButtonSpinner, emptyState } = Utils.elements;
+                const {
+                    backButton,
+                    backButtonSpinner,
+                    emptyState,
+                    appContainer,
+                    folderScreen
+                } = Utils.elements;
 
                 if (backButton) {
                     backButton.disabled = true;
@@ -4789,20 +4945,36 @@
                 if (emptyState) {
                     emptyState.classList.add('hidden');
                 }
-                Utils.showScreen('folder-screen');
+
+                const ensureFolderScreenVisible = () => {
+                    Utils.showScreen('folder-screen');
+                    if (appContainer) {
+                        appContainer.classList.add('hidden');
+                        appContainer.classList.remove('focus-mode');
+                    }
+                    if (folderScreen) {
+                        folderScreen.classList.remove('hidden');
+                    }
+                };
+
+                ensureFolderScreenVisible();
 
                 try {
+                    await this.teardownActiveFolderSession();
+
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
+
                     state.activeRequests?.abort();
                     // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
                     state.activeRequests = new AbortController();
                     this.resetViewState({ skipEmptyState: true });
+                    ensureFolderScreenVisible();
                     await Folders.load();
                 } catch (error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
-                    Utils.showScreen('folder-screen');
+                    ensureFolderScreenVisible();
                 } finally {
                     if (backButton) {
                         backButton.disabled = false;
