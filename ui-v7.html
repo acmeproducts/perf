@@ -4309,15 +4309,27 @@
                 }
             },
             async backToProviderSelection() {
-                if (state.syncManager) {
-                    await state.syncManager.flush({ reason: 'provider-screen' });
-                    await state.syncManager.stop();
-                    state.syncManager.setProviderContext({ provider: null, providerType: null });
+                if (state.isReturningToFolders) return;
+                state.isReturningToFolders = true;
+
+                try {
+                    await this.teardownActiveFolderSession();
+
+                    if (state.syncManager) {
+                        await state.syncManager.flush({ reason: 'provider-screen' });
+                        await state.syncManager.stop();
+                        state.syncManager.setProviderContext({ provider: null, providerType: null });
+                    }
+                    state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
+
+                    state.sessionVisitedFolders.clear();
+
+                    state.provider = null;
+                    state.providerType = null;
+                    Utils.showScreen('provider-screen');
+                } finally {
+                    state.isReturningToFolders = false;
                 }
-                state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
-                state.provider = null;
-                state.providerType = null;
-                Utils.showScreen('provider-screen');
             },
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
                 try {
@@ -4343,52 +4355,75 @@
             },
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
-                if (!folderId) {
-                    return false;
-                }
+                if (!folderId) return false;
 
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
                 const coordinator = state.folderSyncCoordinator;
+
+                const mustFullSync = options.forceFullResync || cachedFiles.length === 0;
+
                 let preparation = null;
 
                 try {
                     if (coordinator) {
-                        preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
+                        preparation = await coordinator.prepareFolder(folderId, {
+                            forceFullResync: mustFullSync
+                        });
                     }
 
-                    if (preparation?.mode === 'delta') {
-                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
-                        return deltaLoaded !== false;
+                    if (!mustFullSync && preparation?.mode === 'delta') {
+                        const success = await this.applyDeltaSync({
+                            cachedFiles,
+                            sessionKey,
+                            preparation
+                        });
+                        if (success) {
+                            state.sessionVisitedFolders.add(sessionKey);
+                            return true;
+                        }
                     }
 
-                    if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || options.forceFullResync) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
-                        return synced !== false;
+                    if (mustFullSync || preparation?.mode === 'full') {
+                        const success = await this.syncFolderFromCloud(
+                            cachedFiles,
+                            sessionKey,
+                            { preparation }
+                        );
+                        if (success) {
+                            state.sessionVisitedFolders.add(sessionKey);
+                        }
+                        return success;
                     }
 
-                    state.imageFiles = cachedFiles;
-                    await this.processAllMetadata(state.imageFiles);
-                    Utils.showScreen('app-container');
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
-                    state.sessionVisitedFolders.add(sessionKey);
+                    if (cachedFiles.length > 0) {
+                        state.imageFiles = cachedFiles;
+                        await this.processAllMetadata(state.imageFiles);
+                        Utils.showScreen('app-container');
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
+                        state.sessionVisitedFolders.add(sessionKey);
 
-                    if (preparation?.mode === 'cache') {
-                        state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
-                    } else if (coordinator) {
-                        const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
-                        coordinator.queueBackgroundProbe(folderId, { localManifest });
+                        // Background probe for future updates
+                        if (coordinator && preparation?.mode === 'cache') {
+                            state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
+                            const localManifest = await state.dbManager.getFolderManifest({
+                                providerType: state.providerType,
+                                folderId
+                            });
+                            coordinator.queueBackgroundProbe(folderId, {
+                                localManifest,
+                                folderState: preparation.folderState
+                            });
+                        }
+
+                        return true;
                     }
 
-                    if (state.pendingBackgroundProbe?.folderId === folderId) {
-                        const pending = state.pendingBackgroundProbe;
-                        state.pendingBackgroundProbe = null;
-                        await this.applyDeltaFromCoordinator(pending);
-                    }
+                    console.error('loadImages: Unexpected state - no cache and no sync path');
+                    await this.returnToFolderSelection();
+                    return false;
 
-                    return state.imageFiles.length > 0;
                 } catch (error) {
                     if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
@@ -4474,6 +4509,15 @@
                     }
 
                     state.imageFiles = Array.from(mergedMap.values());
+
+                    if (state.imageFiles.length === 0) {
+                        await state.dbManager.saveFolderCache(folderId, []);
+                        Utils.showToast('Folder is now empty', 'info', true);
+                        if (!background) {
+                            await this.returnToFolderSelection();
+                        }
+                        return false;
+                    }
 
                     if (!background) {
                         Utils.updateLoadingProgress((diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), 'Finishing sync...');
@@ -4582,13 +4626,20 @@
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
+                    if (cloudFiles.length === 0 && cachedFiles.length === 0) {
+                        await state.dbManager.saveFolderCache(folderId, []);
+                        state.imageFiles = [];
+                        Utils.showToast('No images found in this folder', 'info', true);
+                        await this.returnToFolderSelection();
+                        return false;
+                    }
                     const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
-                        Utils.showToast('No images found in this folder', 'info', true);
-                        this.returnToFolderSelection();
+                        Utils.showToast('Folder is now empty after sync', 'info', true);
+                        await this.returnToFolderSelection();
                         return false;
                     }
 
@@ -4691,11 +4742,13 @@
                         const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
                         Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
                     }
+                    return true;
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    this.returnToFolderSelection();
+                    await this.returnToFolderSelection();
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
@@ -4911,12 +4964,6 @@
                     } catch (error) {
                         logTeardownError('Failed to reset gesture overlay', error);
                     }
-                }
-
-                const previousFolderId = state.currentFolder?.id;
-                if (previousFolderId) {
-                    const sessionKey = `${state.providerType || 'unknown'}::${previousFolderId}`;
-                    state.sessionVisitedFolders.delete(sessionKey);
                 }
 
                 state.currentFolder = { id: null, name: '' };
