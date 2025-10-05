@@ -15,7 +15,7 @@ test.describe('Google Drive direct image URLs', () => {
 
       await page.waitForTimeout(500);
 
-      const directUrl = await page.evaluate(() => {
+      const { driveUrl, directAssetUrl } = await page.evaluate(() => {
         const sampleFile = { id: 'sampleFileId123' };
         const stateRef = typeof state !== 'undefined' ? state : (window as any).state;
         const exportSystemRef = typeof ExportSystem !== 'undefined' ? ExportSystem : (window as any).ExportSystem;
@@ -29,11 +29,17 @@ test.describe('Google Drive direct image URLs', () => {
           stateRef.export = new exportSystemRef();
         }
 
-        return stateRef.export.getDirectImageURL(sampleFile);
+        const url = stateRef.export.getDirectImageURL(sampleFile);
+        const passthroughUrl = DriveLinkHelper.normalizeToAssetUrl(
+          'https://lh3.googleusercontent.com/some-direct-image'
+        );
+
+        return { driveUrl: url, directAssetUrl: passthroughUrl };
       });
 
-      expect(directUrl).toContain('https://drive.google.com/uc?id=sampleFileId123');
-      expect(directUrl).toContain('export=view');
+      expect(driveUrl).toContain('https://drive.google.com/uc?id=sampleFileId123');
+      expect(driveUrl).toContain('export=view');
+      expect(directAssetUrl).toBe('https://lh3.googleusercontent.com/some-direct-image');
     });
   }
 });
