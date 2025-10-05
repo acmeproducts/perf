@@ -4453,17 +4453,23 @@
                             try {
                                 const manifestCloudVersion = manifestSeed?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
                                 const manifestLocalVersion = preparation?.folderState?.localVersion ?? manifestCloudVersion;
+                                const manifestOptions = { manifestFileId };
+                                // Manifest persistence must survive folder exits; avoid tying this to the navigation abort controller.
                                 remoteManifestResponse = await state.provider.saveFolderManifest(folderId, {
                                     entries: manifestEntries,
                                     requiresFullResync: false,
                                     cloudVersion: manifestCloudVersion,
                                     localVersion: manifestLocalVersion,
                                     manifestFileId
-                                }, { signal: state.activeRequests?.signal, manifestFileId });
+                                }, manifestOptions);
                                 state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
                             } catch (error) {
-                                manifestRequiresRescan = true;
-                                state.syncLog?.log({ event: 'manifest:save:error', level: 'error', details: `Manifest save failed: ${error.message}` });
+                                if (error?.name === 'AbortError') {
+                                    state.syncLog?.log({ event: 'manifest:save:aborted', level: 'warn', details: `Manifest save cancelled: ${error.message}` });
+                                } else {
+                                    manifestRequiresRescan = true;
+                                    state.syncLog?.log({ event: 'manifest:save:error', level: 'error', details: `Manifest save failed: ${error.message}` });
+                                }
                             }
                         }
 
@@ -4608,7 +4614,8 @@
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
-                    state.activeRequests.abort();
+                    state.activeRequests?.abort();
+                    // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
                     state.activeRequests = new AbortController();
                     this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
