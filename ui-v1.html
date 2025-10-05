@@ -4167,13 +4167,15 @@
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
                     
-                    await this.loadImages();
-                    this.switchToCommonUI();
-                    if (state.syncManager) {
-                        state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
-                        state.syncManager.start();
+                    const loaded = await this.loadImages();
+                    if (loaded) {
+                        this.switchToCommonUI();
+                        if (state.syncManager) {
+                            state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
+                            state.syncManager.start();
+                        }
+                        state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                     }
-                    state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
                     this.returnToFolderSelection();
@@ -4181,44 +4183,58 @@
             },
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
+                if (!folderId) {
+                    return false;
+                }
+
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
                 const coordinator = state.folderSyncCoordinator;
                 let preparation = null;
 
-                if (coordinator) {
-                    preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
-                }
+                try {
+                    if (coordinator) {
+                        preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
+                    }
 
-                if (preparation?.mode === 'delta') {
-                    await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
-                    return;
-                }
+                    if (preparation?.mode === 'delta') {
+                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
+                        return deltaLoaded !== false;
+                    }
 
-                if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || options.forceFullResync) {
-                    await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
-                    return;
-                }
+                    if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || options.forceFullResync) {
+                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
+                        return synced !== false;
+                    }
 
-                state.imageFiles = cachedFiles;
-                await this.processAllMetadata(state.imageFiles);
-                Utils.showScreen('app-container');
-                Core.initializeStacks();
-                Core.initializeImageDisplay();
-                state.sessionVisitedFolders.add(sessionKey);
+                    state.imageFiles = cachedFiles;
+                    await this.processAllMetadata(state.imageFiles);
+                    Utils.showScreen('app-container');
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+                    state.sessionVisitedFolders.add(sessionKey);
 
-                if (preparation?.mode === 'cache') {
-                    state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
-                } else if (coordinator) {
-                    const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
-                    coordinator.queueBackgroundProbe(folderId, { localManifest });
-                }
+                    if (preparation?.mode === 'cache') {
+                        state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
+                    } else if (coordinator) {
+                        const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
+                        coordinator.queueBackgroundProbe(folderId, { localManifest });
+                    }
 
-                if (state.pendingBackgroundProbe?.folderId === folderId) {
-                    const pending = state.pendingBackgroundProbe;
-                    state.pendingBackgroundProbe = null;
-                    await this.applyDeltaFromCoordinator(pending);
+                    if (state.pendingBackgroundProbe?.folderId === folderId) {
+                        const pending = state.pendingBackgroundProbe;
+                        state.pendingBackgroundProbe = null;
+                        await this.applyDeltaFromCoordinator(pending);
+                    }
+
+                    return state.imageFiles.length > 0;
+                } catch (error) {
+                    if (error?.name !== 'AbortError') {
+                        Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
+                    }
+                    await this.returnToFolderSelection();
+                    return false;
                 }
             },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
@@ -4277,8 +4293,7 @@
                         if (!state.provider || typeof state.provider.fetchFilesByIds !== 'function') {
                             state.syncLog?.log({ event: 'foldersync:delta-fallback', level: 'error', details: 'Provider missing fetchFilesByIds; escalating to full resync.' });
                             await coordinator?.markRequiresFullResync(folderId, 'delta-provider-missing');
-                            await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
-                            return;
+                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
                         }
                         cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
                     }
@@ -4358,11 +4373,12 @@
                         details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
                         data: { cloudVersion: updatedCloudVersion }
                     });
+                    return state.imageFiles.length > 0;
                 } catch (error) {
                     state.syncLog?.log({ event: 'foldersync:delta-error', level: 'error', details: `Delta sync failed: ${error.message}` });
                     Utils.showToast(`Delta sync failed: ${error.message}`, 'error', true);
                     await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'delta-error');
-                    await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                    return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
                 }
             },
             async applyDeltaFromCoordinator(payload) {
@@ -4404,7 +4420,7 @@
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
                         this.returnToFolderSelection();
-                        return;
+                        return false;
                     }
 
                     for (const updatedId of updatedIds) {

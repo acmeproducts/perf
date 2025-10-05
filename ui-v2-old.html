@@ -2748,9 +2748,11 @@
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
                     
-                    await this.loadImages();
-                    this.switchToCommonUI();
-                    if(state.syncManager) state.syncManager.start();
+                    const loaded = await this.loadImages();
+                    if (loaded) {
+                        this.switchToCommonUI();
+                        if(state.syncManager) state.syncManager.start();
+                    }
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
                     this.returnToFolderSelection();
@@ -2758,20 +2760,34 @@
             },
             async loadImages() {
                 const folderId = state.currentFolder.id;
+                if (!folderId) {
+                    return false;
+                }
+
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
 
-                if (isFirstSessionVisit || cachedFiles.length === 0) {
-                    await this.syncFolderFromCloud(cachedFiles, sessionKey);
-                    return;
-                }
+                try {
+                    if (isFirstSessionVisit || cachedFiles.length === 0) {
+                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey);
+                        return synced !== false;
+                    }
 
-                state.imageFiles = cachedFiles;
-                await this.processAllMetadata(state.imageFiles);
-                Utils.showScreen('app-container');
-                Core.initializeStacks();
-                Core.initializeImageDisplay();
+                    state.imageFiles = cachedFiles;
+                    await this.processAllMetadata(state.imageFiles);
+                    Utils.showScreen('app-container');
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+
+                    return state.imageFiles.length > 0;
+                } catch (error) {
+                    if (error?.name !== 'AbortError') {
+                        Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
+                    }
+                    await this.returnToFolderSelection();
+                    return false;
+                }
             },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
@@ -2826,7 +2842,7 @@
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
                         this.returnToFolderSelection();
-                        return;
+                        return false;
                     }
 
                     for (const updatedId of updatedIds) {
@@ -2859,11 +2875,13 @@
                         const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
                         Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
                     }
+                    return state.imageFiles.length > 0;
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
                     this.returnToFolderSelection();
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
