@@ -2771,6 +2771,73 @@
                 }
                 return { manifestFileId: manifestPayload.manifestFileId, cloudVersion: manifestPayload.cloudVersion };
             }
+            async removeFromManifest(folderId, removedIds = [], options = {}) {
+                if (!this.dbManager || !Array.isArray(removedIds) || removedIds.length === 0) {
+                    return null;
+                }
+                const providerType = options.providerType || this.providerType || state.providerType || null;
+                const context = { providerType, folderId };
+                const manifestRecord = await this.dbManager.getFolderManifest(context);
+                if (!manifestRecord) {
+                    this.logger?.log({ event: 'manifest:remove:skip', level: 'warn', details: `No manifest cached for ${folderId}; cannot remove ${removedIds.length} item(s).` });
+                    return null;
+                }
+                const entries = { ...(manifestRecord.entries || {}) };
+                let removedCount = 0;
+                removedIds.forEach(id => {
+                    if (id && entries[id]) {
+                        delete entries[id];
+                        removedCount += 1;
+                    }
+                });
+                const timestamp = options.timestamp || Date.now();
+                const manifestPayload = {
+                    ...manifestRecord,
+                    ...context,
+                    entries,
+                    requiresFullResync: Boolean(manifestRecord.requiresFullResync),
+                    cloudVersion: options.targetVersion ?? manifestRecord.cloudVersion ?? null,
+                    localVersion: options.targetVersion ?? manifestRecord.localVersion ?? null,
+                    manifestFileId: options.manifestFileId || manifestRecord.manifestFileId || null,
+                    lastRemoteUpdate: timestamp,
+                    lastDiffSummary: manifestRecord.lastDiffSummary || null
+                };
+                await this.dbManager.saveFolderManifest(manifestPayload);
+                let remoteResponse = null;
+                if (this.provider && typeof this.provider.saveFolderManifest === 'function') {
+                    try {
+                        remoteResponse = await this.provider.saveFolderManifest(folderId, {
+                            entries,
+                            requiresFullResync: manifestPayload.requiresFullResync,
+                            cloudVersion: options.targetVersion ?? manifestPayload.cloudVersion ?? Date.now(),
+                            localVersion: options.targetVersion ?? manifestPayload.localVersion ?? null,
+                            manifestFileId: manifestPayload.manifestFileId
+                        }, { manifestFileId: manifestPayload.manifestFileId });
+                        if (remoteResponse?.manifestFileId) {
+                            manifestPayload.manifestFileId = remoteResponse.manifestFileId;
+                        }
+                        if (remoteResponse?.cloudVersion != null) {
+                            manifestPayload.cloudVersion = remoteResponse.cloudVersion;
+                        } else if (options.targetVersion != null) {
+                            manifestPayload.cloudVersion = options.targetVersion;
+                        }
+                        if (remoteResponse?.localVersion != null) {
+                            manifestPayload.localVersion = remoteResponse.localVersion;
+                        } else if (options.targetVersion != null) {
+                            manifestPayload.localVersion = options.targetVersion;
+                        }
+                        await this.dbManager.saveFolderManifest(manifestPayload);
+                        this.logger?.log({ event: 'manifest:remove', level: 'info', details: `Removed ${removedCount} manifest entr${removedCount === 1 ? 'y' : 'ies'} from ${folderId}.`, data: { removedIds } });
+                    } catch (error) {
+                        this.logger?.log({ event: 'manifest:remove:error', level: 'error', details: `Failed to update manifest for ${folderId}: ${error.message}` });
+                        await this.dbManager.saveFolderManifest({ ...manifestPayload, requiresFullResync: true });
+                        throw error;
+                    }
+                } else {
+                    this.logger?.log({ event: 'manifest:remove:local', level: 'info', details: `Locally removed ${removedCount} manifest entr${removedCount === 1 ? 'y' : 'ies'} from ${folderId}.`, data: { removedIds } });
+                }
+                return { manifestFileId: manifestPayload.manifestFileId, cloudVersion: manifestPayload.cloudVersion };
+            }
             async recordLocalFlush(folderId, options = {}) {
                 const timestamp = options.timestamp || Date.now();
                 const context = this.buildContext(folderId);
@@ -3033,14 +3100,37 @@
             async processEntry(entry) {
                 const provider = this.provider || state.provider;
                 const providerType = entry.providerType || this.providerType || state.providerType;
+                const updates = entry.updates || {};
+                const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
+                const folderContext = this.resolveEntryFolderContext(entry, metadataRecord);
+                if (entry.operationType === 'stack:delete') {
+                    try {
+                        this.collectManifestRemoval(folderContext, entry.fileId);
+                        await this.dbManager.deleteFromSyncQueue(entry.queueIds);
+                        this.logger?.log({
+                            event: 'sync:delete',
+                            level: 'info',
+                            fileId: entry.fileId,
+                            details: `Captured manifest removal for ${entry.fileId}.`,
+                            data: { folderId: folderContext.folderId, providerType: folderContext.providerType }
+                        });
+                        return true;
+                    } catch (error) {
+                        await this.dbManager.markPendingFlush(entry.queueIds, true);
+                        this.logger?.log({
+                            event: 'sync:delete:error',
+                            level: 'error',
+                            fileId: entry.fileId,
+                            details: `Failed to process stack deletion: ${error.message}`
+                        });
+                        return false;
+                    }
+                }
                 if (!provider || !providerType) {
                     await this.dbManager.markPendingFlush(entry.queueIds, true);
                     this.logger?.log({ event: 'sync:deferred', level: 'warn', fileId: entry.fileId, details: 'No provider bound. Marked pending flush.' });
                     return false;
                 }
-                const updates = entry.updates || {};
-                const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
-                const folderContext = this.resolveEntryFolderContext(entry, metadataRecord);
                 const payload = { ...metadataRecord, ...updates, localUpdatedAt: entry.localUpdatedAt };
                 payload.id = entry.fileId;
                 const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
@@ -3096,7 +3186,10 @@
                     return;
                 }
                 const folderKey = context.folderKey || `${context.providerType}::${context.folderId}`;
-                const existing = this.pendingManifestUpdates.get(folderKey) || { folderId: context.folderId, providerType: context.providerType, folderKey, files: new Map() };
+                const existing = this.pendingManifestUpdates.get(folderKey) || { folderId: context.folderId, providerType: context.providerType, folderKey, files: new Map(), removedIds: new Set() };
+                if (!existing.removedIds) {
+                    existing.removedIds = new Set();
+                }
                 const snapshot = { ...file };
                 snapshot.id = snapshot.id || file.fileId;
                 snapshot.localUpdatedAt = snapshot.localUpdatedAt || file.localUpdatedAt || Date.now();
@@ -3109,7 +3202,24 @@
                 if (snapshot.favorite == null && snapshot.appProperties?.favorite != null) {
                     snapshot.favorite = snapshot.appProperties.favorite === 'true';
                 }
+                existing.removedIds.delete(snapshot.id);
                 existing.files.set(snapshot.id, snapshot);
+                this.pendingManifestUpdates.set(folderKey, existing);
+            }
+            collectManifestRemoval(context, fileId) {
+                if (!context || !context.folderId || !context.providerType || !fileId) {
+                    return;
+                }
+                const folderKey = context.folderKey || `${context.providerType}::${context.folderId}`;
+                const existing = this.pendingManifestUpdates.get(folderKey) || { folderId: context.folderId, providerType: context.providerType, folderKey, files: new Map(), removedIds: new Set() };
+                if (!existing.files) {
+                    existing.files = new Map();
+                }
+                if (!existing.removedIds) {
+                    existing.removedIds = new Set();
+                }
+                existing.files.delete(fileId);
+                existing.removedIds.add(fileId);
                 this.pendingManifestUpdates.set(folderKey, existing);
             }
             async persistPendingManifestUpdates(timestamp = Date.now()) {
@@ -3121,7 +3231,8 @@
                 try {
                     for (const [folderKey, payload] of this.pendingManifestUpdates.entries()) {
                         const files = Array.from(payload.files?.values() || []);
-                        if (!payload.folderId || !payload.providerType || files.length === 0) {
+                        const removedIds = Array.from(payload.removedIds || []);
+                        if (!payload.folderId || !payload.providerType || (files.length === 0 && removedIds.length === 0)) {
                             continue;
                         }
                         const providerType = payload.providerType || this.providerType || state.providerType || null;
@@ -3137,11 +3248,24 @@
                         const nextVersion = baseVersion + 1;
                         let manifestResult = null;
                         try {
-                            manifestResult = await coordinator.applyLocalManifestUpdates(folderId, files, {
-                                providerType,
-                                targetVersion: nextVersion,
-                                timestamp
-                            });
+                            if (files.length > 0) {
+                                manifestResult = await coordinator.applyLocalManifestUpdates(folderId, files, {
+                                    providerType,
+                                    targetVersion: nextVersion,
+                                    timestamp
+                                });
+                            }
+                            if (removedIds.length > 0) {
+                                const removalResult = await coordinator.removeFromManifest(folderId, removedIds, {
+                                    providerType,
+                                    targetVersion: nextVersion,
+                                    timestamp,
+                                    manifestFileId: manifestResult?.manifestFileId
+                                });
+                                if (removalResult) {
+                                    manifestResult = { ...(manifestResult || {}), ...removalResult };
+                                }
+                            }
                         } catch (error) {
                             this.logger?.log({ event: 'manifest:update:error', level: 'error', details: `Failed to update manifest for ${folderId}: ${error.message}` });
                             await coordinator.markRequiresFullResync(folderId, 'manifest-update-failed');
@@ -4788,6 +4912,53 @@
                         details: `${providerName} recycle bin accepted ${fileName || fileId} (from ${stackLabel || 'unknown stack'}). File is not permanently deleted.`,
                         data: { source, stack: stackBefore, stackLabel }
                     });
+                    const folderId = state.currentFolder?.id || file?.folderId || null;
+                    const providerType = state.providerType || state.syncManager?.providerType || null;
+                    const metadataSnapshot = {
+                        id: file?.id || fileId,
+                        name: fileName || file?.name || '',
+                        stack: file?.stack || stackBefore || 'in',
+                        stackSequence: file?.stackSequence ?? null,
+                        folderId,
+                        providerType: file?.providerType || providerType || null
+                    };
+                    try {
+                        await state.syncManager.queueLocalChange({
+                            fileId,
+                            operationType: 'stack:delete',
+                            folderId,
+                            providerType,
+                            metadataSnapshot,
+                            localUpdatedAt: Date.now(),
+                            origin: source
+                        }, { debounce: false });
+                        state.syncLog?.log({
+                            event: 'queue:stack:delete',
+                            level: 'info',
+                            fileId,
+                            details: `Queued stack deletion for ${fileName || fileId}.`,
+                            data: { source, stack: stackBefore, folderId }
+                        });
+                    } catch (queueError) {
+                        state.syncLog?.log({
+                            event: 'queue:stack:delete:error',
+                            level: 'error',
+                            fileId,
+                            details: `Failed to queue stack deletion: ${queueError.message}`,
+                            data: { source, stack: stackBefore, folderId }
+                        });
+                    }
+                    try {
+                        await state.dbManager.deleteMetadata(fileId);
+                    } catch (dbError) {
+                        state.syncLog?.log({
+                            event: 'db:metadata:delete:error',
+                            level: 'error',
+                            fileId,
+                            details: `Failed to remove metadata cache: ${dbError.message}`,
+                            data: { source, stack: stackBefore, folderId }
+                        });
+                    }
                     return true;
                 } catch (e) {
                     state.syncLog?.log({
