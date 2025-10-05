@@ -2978,36 +2978,42 @@
                 }
                 this.isProcessing = true;
                 this.lastSyncAppliedCount = 0;
+                let result = 'empty';
                 try {
                     const queue = await this.dbManager.readSyncQueue();
                     if (queue.length === 0) {
                         this.hasPendingWork = this.pendingMutations.size > 0;
                         this.logger?.log({ event: 'sync:idle', level: 'info', details: `Queue empty (${reason}).` });
-                        return 'empty';
-                    }
-                    this.logger?.log({ event: 'sync:start', level: 'info', details: `Processing ${queue.length} queued entries (${reason}).` });
-                    const merged = this.mergeQueue(queue);
-                    for (const entry of merged) {
-                        const applied = await this.processEntry(entry);
-                        if (applied) {
-                            this.lastSyncAppliedCount += 1;
+                    } else {
+                        this.logger?.log({ event: 'sync:start', level: 'info', details: `Processing ${queue.length} queued entries (${reason}).` });
+                        const merged = this.mergeQueue(queue);
+                        for (const entry of merged) {
+                            const applied = await this.processEntry(entry);
+                            if (applied) {
+                                this.lastSyncAppliedCount += 1;
+                            }
+                        }
+                        const remaining = await this.dbManager.readSyncQueue();
+                        this.hasPendingWork = remaining.length > 0 || this.pendingMutations.size > 0;
+                        result = remaining.length > 0 ? 'partial' : 'done';
+                        if (result === 'done') {
+                            this.logger?.log({ event: 'sync:complete', level: 'success', details: `Sync loop complete (${reason}).` });
+                        } else {
+                            this.logger?.log({ event: 'sync:partial', level: 'warn', details: `Sync loop finished with ${remaining.length} entries remaining.` });
                         }
                     }
-                    const remaining = await this.dbManager.readSyncQueue();
-                    this.hasPendingWork = remaining.length > 0 || this.pendingMutations.size > 0;
-                    const result = remaining.length > 0 ? 'partial' : 'done';
-                    if (result === 'done') {
-                        this.logger?.log({ event: 'sync:complete', level: 'success', details: `Sync loop complete (${reason}).` });
-                    } else {
-                        this.logger?.log({ event: 'sync:partial', level: 'warn', details: `Sync loop finished with ${remaining.length} entries remaining.` });
-                    }
-                    return result;
                 } catch (error) {
                     this.logger?.log({ event: 'sync:error', level: 'error', details: `Queue processing failed: ${error.message}` });
-                    return 'error';
+                    result = 'error';
                 } finally {
+                    try {
+                        await this.finalizeSyncCycle(reason, { result });
+                    } catch (finalizeError) {
+                        this.logger?.log({ event: 'sync:finalize:error', level: 'error', details: `Finalize failed: ${finalizeError.message}` });
+                    }
                     this.isProcessing = false;
                 }
+                return result;
             }
             mergeQueue(entries) {
                 const map = new Map();
@@ -3159,6 +3165,45 @@
                     this.pendingManifestUpdates.clear();
                 }
             }
+            async finalizeSyncCycle(reason = 'auto', { result = null } = {}) {
+                const coordinator = state.folderSyncCoordinator;
+                const hadPendingManifests = this.pendingManifestUpdates.size > 0;
+                const timestamp = Date.now();
+                const stackMoveCount = hadPendingManifests
+                    ? Array.from(this.pendingManifestUpdates.values()).reduce((count, payload) => {
+                        const files = Array.from(payload.files?.values() || []);
+                        return count + files.filter(file => file?.stack != null || file?.stackSequence != null).length;
+                    }, 0)
+                    : 0;
+                if (!coordinator) {
+                    if (hadPendingManifests) {
+                        this.logger?.log({ event: 'sync:finalize:skipped', level: 'warn', details: `No coordinator bound; dropping ${this.pendingManifestUpdates.size} manifest batch(es).`, data: { reason, result } });
+                    }
+                    this.pendingManifestUpdates.clear();
+                    return { timestamp, persisted: false };
+                }
+                if (hadPendingManifests) {
+                    await this.persistPendingManifestUpdates(timestamp);
+                    this.logger?.log({
+                        event: 'sync:version:bump',
+                        level: 'success',
+                        details: `Persisted manifest updates for ${stackMoveCount} stack-adjusted item(s) (${reason}).`,
+                        data: { reason, timestamp, stackMoveCount, result }
+                    });
+                    return { timestamp, persisted: true };
+                }
+                if (this.lastSyncAppliedCount > 0 && state.currentFolder?.id) {
+                    await coordinator.recordLocalFlush(state.currentFolder.id, { timestamp });
+                    this.logger?.log({
+                        event: 'sync:version:recorded',
+                        level: 'info',
+                        details: `Recorded local flush after ${this.lastSyncAppliedCount} applied mutation(s) (${reason}).`,
+                        data: { reason, timestamp, applied: this.lastSyncAppliedCount, result }
+                    });
+                }
+                this.pendingManifestUpdates.clear();
+                return { timestamp, persisted: false };
+            }
             serializeGoogleMetadata(payload) {
                 const tags = Array.isArray(payload.tags) ? payload.tags : [];
                 return {
@@ -3224,16 +3269,7 @@
                 if (useBeacon && await this.sendBeaconSnapshot(reason)) {
                     return 'beacon';
                 }
-                const result = await this.processQueue(reason);
-                if (state.folderSyncCoordinator && (this.lastSyncAppliedCount > 0 || this.pendingManifestUpdates.size > 0)) {
-                    const timestamp = Date.now();
-                    if (this.pendingManifestUpdates.size > 0) {
-                        await this.persistPendingManifestUpdates(timestamp);
-                    } else if (this.lastSyncAppliedCount > 0 && state.currentFolder?.id) {
-                        await state.folderSyncCoordinator.recordLocalFlush(state.currentFolder.id, { timestamp });
-                    }
-                }
-                return result;
+                return this.processQueue(reason);
             }
             requestSync(reason = 'manual-request') {
                 this.logger?.log({ event: 'sync:request', level: 'info', details: `Manual sync requested (${reason}).` });
