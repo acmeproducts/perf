@@ -2765,18 +2765,11 @@
                 this.pendingMutations = new Map();
                 this.debounceTimers = new Map();
                 this.debounceDelay = 750;
-                this.syncTimer = null;
-                this.isProcessing = false;
                 this.isActive = false;
                 this.hasPendingWork = false;
                 this.provider = null;
                 this.providerType = null;
-                this.pendingManifestUpdates = new Map();
-                this.lifecycleHandlers = {
-                    visibility: () => this.handleVisibilityChange(),
-                    pagehide: (event) => this.handlePageHide(event),
-                    beforeUnload: (event) => this.handleBeforeUnload(event)
-                };
+                this.offlineQueue = new Map();
             }
             setLogger(logger) { this.logger = logger; }
             setDbManager(dbManager) { this.dbManager = dbManager; }
@@ -2791,49 +2784,51 @@
             }
             start() {
                 if (this.isActive) return;
-                document.addEventListener('visibilitychange', this.lifecycleHandlers.visibility);
-                window.addEventListener('pagehide', this.lifecycleHandlers.pagehide);
-                window.addEventListener('beforeunload', this.lifecycleHandlers.beforeUnload);
                 this.isActive = true;
-                this.resumePendingQueue();
+                this.retryOfflineQueue('start').catch(error => {
+                    this.logger?.log({ event: 'offline:retry:error', level: 'error', details: `Failed to retry offline queue on start: ${error.message}` });
+                });
             }
             async stop() {
                 const flushResult = await this.flush({ reason: 'stop' });
-                if (!this.isActive) {
-                    this.provider = null;
-                    this.providerType = null;
-                    this.pendingManifestUpdates.clear();
-                    return flushResult;
-                }
-                document.removeEventListener('visibilitychange', this.lifecycleHandlers.visibility);
-                window.removeEventListener('pagehide', this.lifecycleHandlers.pagehide);
-                window.removeEventListener('beforeunload', this.lifecycleHandlers.beforeUnload);
                 this.isActive = false;
                 this.provider = null;
                 this.providerType = null;
-                this.pendingManifestUpdates.clear();
                 return flushResult;
             }
-            async resumePendingQueue() {
-                if (!this.dbManager) return;
-                try {
-                    const queue = await this.dbManager.readSyncQueue();
-                    if (queue.length > 0) {
-                        const pending = queue.filter(item => item.pendingFlush);
-                        if (pending.length > 0) {
-                            await this.dbManager.markPendingFlush(pending.map(item => item.id), false);
-                            this.logger?.log({ event: 'queue:resume', level: 'warn', details: `Resuming ${pending.length} pending flush entries.` });
-                        } else {
-                            this.logger?.log({ event: 'queue:resume', level: 'info', details: `Sync queue contains ${queue.length} entries.` });
-                        }
-                        this.hasPendingWork = true;
-                        this.scheduleProcess('resume');
-                    } else {
-                        this.hasPendingWork = this.pendingMutations.size > 0;
-                    }
-                } catch (error) {
-                    this.logger?.log({ event: 'queue:resume:error', level: 'error', details: `Failed to resume queue: ${error.message}` });
+            async retryOfflineQueue(reason = 'manual') {
+                if (this.offlineQueue.size === 0) {
+                    this.updatePendingState();
+                    return 'empty';
                 }
+                const entries = [];
+                for (const folderEntries of this.offlineQueue.values()) {
+                    for (const entry of folderEntries.values()) {
+                        entries.push(entry);
+                    }
+                }
+                this.offlineQueue.clear();
+                this.updatePendingState();
+                let applied = 0;
+                for (const entry of entries) {
+                    const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
+                    const context = this.resolveEntryFolderContext(entry, metadataRecord);
+                    const enrichedEntry = { ...entry, ...context };
+                    const success = await this.processEntry(enrichedEntry, metadataRecord, context);
+                    if (!success) {
+                        this.enqueueOfflineEntry(enrichedEntry, context);
+                    } else {
+                        applied += 1;
+                    }
+                }
+                const status = this.offlineQueue.size === 0 ? 'done' : 'partial';
+                if (entries.length > 0) {
+                    const message = `Retried ${entries.length} offline entr${entries.length === 1 ? 'y' : 'ies'} (${applied} applied) [${reason}].`;
+                    const level = applied > 0 ? 'info' : 'warn';
+                    this.logger?.log({ event: 'offline:retry', level, details: message });
+                }
+                this.updatePendingState();
+                return status;
             }
             queueLocalChange(change, options = {}) {
                 if (!change || !change.fileId) return Promise.resolve();
@@ -2858,7 +2853,7 @@
                     buffer.metadataSnapshot = { ...(buffer.metadataSnapshot || {}), ...change.metadataSnapshot };
                 }
                 this.pendingMutations.set(fileId, buffer);
-                this.hasPendingWork = true;
+                this.updatePendingState();
                 const updateKeys = Object.keys(change.updates || {});
                 const descriptorParts = [];
                 if (change.operationType) descriptorParts.push(change.operationType);
@@ -2892,7 +2887,6 @@
                     clearTimeout(timer);
                     this.debounceTimers.delete(fileId);
                 }
-                if (!this.dbManager) return null;
                 const effectiveProviderType = buffer.providerType || this.providerType || state.providerType || null;
                 const effectiveFolderId = buffer.folderId || state.currentFolder?.id || null;
                 const effectiveFolderKey = buffer.folderKey || (effectiveProviderType && effectiveFolderId ? `${effectiveProviderType}::${effectiveFolderId}` : null);
@@ -2907,100 +2901,27 @@
                     providerType: effectiveProviderType,
                     folderKey: effectiveFolderKey
                 };
-                try {
-                    const id = await this.dbManager.addToSyncQueue(entry);
-                    const persistDescriptorParts = [];
-                    if (entry.operationType) persistDescriptorParts.push(entry.operationType);
-                    if (entry.updates?.stack) persistDescriptorParts.push(`stack→${entry.updates.stack}`);
-                    if (entry.updates?.stackSequence) persistDescriptorParts.push(`seq=${entry.updates.stackSequence}`);
-                    const persistDescriptor = persistDescriptorParts.join(' · ') || 'mutation';
-                    this.logger?.log({ event: 'queue:persist', level: 'info', fileId, details: `Persisted ${persistDescriptor} to syncQueue (#${id}).`, data: entry });
-                    this.scheduleProcess('buffer-commit');
-                    return id;
-                } catch (error) {
-                    this.logger?.log({ event: 'queue:error', level: 'error', fileId, details: `Failed to persist mutation: ${error.message}` });
-                    return null;
+                const metadataRecord = state.imageFiles.find(file => file.id === fileId) || entry.metadataSnapshot || {};
+                const context = this.resolveEntryFolderContext(entry, metadataRecord);
+                const enrichedEntry = { ...entry, ...context };
+                const success = await this.processEntry(enrichedEntry, metadataRecord, context);
+                if (!success) {
+                    this.enqueueOfflineEntry(enrichedEntry, context);
                 }
+                this.updatePendingState();
+                return success;
             }
-            scheduleProcess(reason = 'auto') {
-                if (this.syncTimer) return;
-                this.syncTimer = setTimeout(() => {
-                    this.syncTimer = null;
-                    this.processQueue(reason);
-                }, 300);
-            }
-            async processQueue(reason = 'auto') {
-                if (!this.dbManager) return 'no-db';
-                if (this.isProcessing) {
-                    this.logger?.log({ event: 'sync:busy', level: 'warn', details: 'Sync loop already in progress.' });
-                    return 'busy';
-                }
-                this.isProcessing = true;
-                this.lastSyncAppliedCount = 0;
-                try {
-                    const queue = await this.dbManager.readSyncQueue();
-                    if (queue.length === 0) {
-                        this.hasPendingWork = this.pendingMutations.size > 0;
-                        this.logger?.log({ event: 'sync:idle', level: 'info', details: `Queue empty (${reason}).` });
-                        return 'empty';
-                    }
-                    this.logger?.log({ event: 'sync:start', level: 'info', details: `Processing ${queue.length} queued entries (${reason}).` });
-                    const merged = this.mergeQueue(queue);
-                    for (const entry of merged) {
-                        const applied = await this.processEntry(entry);
-                        if (applied) {
-                            this.lastSyncAppliedCount += 1;
-                        }
-                    }
-                    const remaining = await this.dbManager.readSyncQueue();
-                    this.hasPendingWork = remaining.length > 0 || this.pendingMutations.size > 0;
-                    const result = remaining.length > 0 ? 'partial' : 'done';
-                    if (result === 'done') {
-                        this.logger?.log({ event: 'sync:complete', level: 'success', details: `Sync loop complete (${reason}).` });
-                    } else {
-                        this.logger?.log({ event: 'sync:partial', level: 'warn', details: `Sync loop finished with ${remaining.length} entries remaining.` });
-                    }
-                    return result;
-                } catch (error) {
-                    this.logger?.log({ event: 'sync:error', level: 'error', details: `Queue processing failed: ${error.message}` });
-                    return 'error';
-                } finally {
-                    this.isProcessing = false;
-                }
-            }
-            mergeQueue(entries) {
-                const map = new Map();
-                entries.forEach(item => {
-                    const existing = map.get(item.fileId);
-                    if (!existing) {
-                        map.set(item.fileId, { ...item, queueIds: [item.id] });
-                        return;
-                    }
-                    existing.queueIds.push(item.id);
-                    existing.updates = { ...existing.updates, ...(item.updates || {}) };
-                    existing.localUpdatedAt = Math.max(existing.localUpdatedAt || 0, item.localUpdatedAt || 0);
-                    existing.pendingFlush = existing.pendingFlush || item.pendingFlush;
-                    existing.folderId = existing.folderId || item.folderId || null;
-                    existing.providerType = existing.providerType || item.providerType || null;
-                    existing.folderKey = existing.folderKey || item.folderKey || null;
-                    if (item.metadataSnapshot) {
-                        existing.metadataSnapshot = { ...(existing.metadataSnapshot || {}), ...item.metadataSnapshot };
-                    }
-                });
-                return Array.from(map.values());
-            }
-            async processEntry(entry) {
+            async processEntry(entry, metadataRecord = null, folderContext = null) {
                 const provider = this.provider || state.provider;
                 const providerType = entry.providerType || this.providerType || state.providerType;
                 if (!provider || !providerType) {
-                    await this.dbManager.markPendingFlush(entry.queueIds, true);
-                    this.logger?.log({ event: 'sync:deferred', level: 'warn', fileId: entry.fileId, details: 'No provider bound. Marked pending flush.' });
+                    this.logger?.log({ event: 'sync:deferred', level: 'warn', fileId: entry.fileId, details: 'No provider bound. Will retry later.' });
                     return false;
                 }
                 const updates = entry.updates || {};
-                const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
-                const folderContext = this.resolveEntryFolderContext(entry, metadataRecord);
-                const payload = { ...metadataRecord, ...updates, localUpdatedAt: entry.localUpdatedAt };
+                const resolvedMetadata = metadataRecord || state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
+                const context = folderContext || this.resolveEntryFolderContext(entry, resolvedMetadata);
+                const payload = { ...resolvedMetadata, ...updates, localUpdatedAt: entry.localUpdatedAt };
                 payload.id = entry.fileId;
                 const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
                 const stackFragment = stackLabel ? ` (${stackLabel})` : '';
@@ -3012,15 +2933,13 @@
                     } else if (typeof provider.updateFileMetadata === 'function') {
                         await provider.updateFileMetadata(entry.fileId, payload);
                     }
-                    if (metadataRecord && metadataRecord !== entry.metadataSnapshot) {
-                        Object.assign(metadataRecord, updates, { localUpdatedAt: entry.localUpdatedAt });
+                    if (resolvedMetadata && resolvedMetadata !== entry.metadataSnapshot) {
+                        Object.assign(resolvedMetadata, updates, { localUpdatedAt: entry.localUpdatedAt });
                     }
-                    await this.dbManager.deleteFromSyncQueue(entry.queueIds);
                     this.logger?.log({ event: 'sync:success', level: 'success', fileId: entry.fileId, details: `Applied ${entry.operationType}${stackFragment} to ${providerType}.`, data: { updates, stackLabel } });
-                    this.collectManifestUpdate(folderContext, payload);
+                    await this.recordFolderVersion(context);
                     return true;
                 } catch (error) {
-                    await this.dbManager.markPendingFlush(entry.queueIds, true);
                     this.logger?.log({ event: 'sync:error', level: 'error', fileId: entry.fileId, details: `Failed to sync ${entry.operationType}: ${error.message}`, data: { updates, stackLabel } });
                     return false;
                 }
@@ -3050,73 +2969,38 @@
                 const folderKey = entry?.folderKey || (providerType && folderId ? `${providerType}::${folderId}` : null);
                 return { folderId, providerType, folderKey };
             }
-            collectManifestUpdate(context, file) {
-                if (!context || !context.folderId || !context.providerType || !file?.id) {
-                    return;
+            enqueueOfflineEntry(entry, context = null) {
+                const resolvedContext = context || this.resolveEntryFolderContext(entry, entry.metadataSnapshot || {});
+                const providerType = resolvedContext.providerType || entry.providerType || this.providerType || state.providerType || 'unknown';
+                const folderId = resolvedContext.folderId || 'global';
+                const folderKey = resolvedContext.folderKey || `${providerType}::${folderId}`;
+                if (!this.offlineQueue.has(folderKey)) {
+                    this.offlineQueue.set(folderKey, new Map());
                 }
-                const folderKey = context.folderKey || `${context.providerType}::${context.folderId}`;
-                const existing = this.pendingManifestUpdates.get(folderKey) || { folderId: context.folderId, providerType: context.providerType, folderKey, files: new Map() };
-                const snapshot = { ...file };
-                snapshot.id = snapshot.id || file.fileId;
-                snapshot.localUpdatedAt = snapshot.localUpdatedAt || file.localUpdatedAt || Date.now();
-                if (snapshot.notes == null && snapshot.appProperties?.notes != null) {
-                    snapshot.notes = snapshot.appProperties.notes;
-                }
-                if (snapshot.stack == null && snapshot.appProperties?.slideboxStack) {
-                    snapshot.stack = snapshot.appProperties.slideboxStack;
-                }
-                if (snapshot.favorite == null && snapshot.appProperties?.favorite != null) {
-                    snapshot.favorite = snapshot.appProperties.favorite === 'true';
-                }
-                existing.files.set(snapshot.id, snapshot);
-                this.pendingManifestUpdates.set(folderKey, existing);
+                const folderEntries = this.offlineQueue.get(folderKey);
+                folderEntries.set(entry.fileId, { ...entry, ...resolvedContext });
+                this.logger?.log({ event: 'offline:queue', level: 'warn', fileId: entry.fileId, details: `Queued offline mutation for ${folderKey}.` });
+                this.updatePendingState();
             }
-            async persistPendingManifestUpdates(timestamp = Date.now()) {
-                if (!state.folderSyncCoordinator || this.pendingManifestUpdates.size === 0) {
-                    this.pendingManifestUpdates.clear();
+            async recordFolderVersion(context) {
+                if (!context?.folderId || !state.folderSyncCoordinator) {
                     return;
                 }
-                const coordinator = state.folderSyncCoordinator;
                 try {
-                    for (const [folderKey, payload] of this.pendingManifestUpdates.entries()) {
-                        const files = Array.from(payload.files?.values() || []);
-                        if (!payload.folderId || !payload.providerType || files.length === 0) {
-                            continue;
-                        }
-                        const providerType = payload.providerType || this.providerType || state.providerType || null;
-                        const folderId = payload.folderId;
-                        if (!providerType) continue;
-                        let folderState = null;
-                        try {
-                            folderState = await state.dbManager?.getFolderState({ providerType, folderId });
-                        } catch (error) {
-                            folderState = null;
-                        }
-                        const baseVersion = Number(folderState?.localVersion || 0);
-                        const nextVersion = baseVersion + 1;
-                        let manifestResult = null;
-                        try {
-                            manifestResult = await coordinator.applyLocalManifestUpdates(folderId, files, {
-                                providerType,
-                                targetVersion: nextVersion,
-                                timestamp
-                            });
-                        } catch (error) {
-                            this.logger?.log({ event: 'manifest:update:error', level: 'error', details: `Failed to update manifest for ${folderId}: ${error.message}` });
-                            await coordinator.markRequiresFullResync(folderId, 'manifest-update-failed');
-                            continue;
-                        }
-                        const versionForRecord = manifestResult?.cloudVersion != null ? manifestResult.cloudVersion : nextVersion;
-                        const remoteContext = manifestResult?.manifestFileId ? { manifestFileId: manifestResult.manifestFileId } : {};
-                        await coordinator.recordLocalFlush(folderId, {
-                            timestamp,
-                            targetVersion: versionForRecord,
-                            remoteContext
-                        });
-                    }
-                } finally {
-                    this.pendingManifestUpdates.clear();
+                    await state.folderSyncCoordinator.recordLocalFlush(context.folderId, {
+                        timestamp: Date.now(),
+                        providerType: context.providerType || this.providerType || state.providerType || null
+                    });
+                } catch (error) {
+                    this.logger?.log({ event: 'foldersync:version:error', level: 'error', details: `Failed to record folder flush: ${error.message}` });
                 }
+            }
+            updatePendingState() {
+                let offlineCount = 0;
+                for (const entries of this.offlineQueue.values()) {
+                    offlineCount += entries.size;
+                }
+                this.hasPendingWork = this.pendingMutations.size > 0 || offlineCount > 0;
             }
             serializeGoogleMetadata(payload) {
                 const tags = Array.isArray(payload.tags) ? payload.tags : [];
@@ -3173,69 +3057,21 @@
                 }
                 this.logger?.log({ event: 'onedrive:metadata:upsert', level: 'info', fileId, details: 'Upserted OneDrive metadata document.' });
             }
-            async flush({ reason = 'manual', useBeacon = false } = {}) {
+            async flush({ reason = 'manual' } = {}) {
                 this.logger?.log({ event: 'flush:request', level: 'info', details: `Flush requested (${reason}).` });
                 const bufferedIds = Array.from(this.pendingMutations.keys());
                 if (bufferedIds.length > 0) {
                     await Promise.all(bufferedIds.map(id => this.commitBufferedChange(id)));
                 }
-                if (!this.dbManager) return 'no-db';
-                if (useBeacon && await this.sendBeaconSnapshot(reason)) {
-                    return 'beacon';
-                }
-                const result = await this.processQueue(reason);
-                if (state.folderSyncCoordinator && (this.lastSyncAppliedCount > 0 || this.pendingManifestUpdates.size > 0)) {
-                    const timestamp = Date.now();
-                    if (this.pendingManifestUpdates.size > 0) {
-                        await this.persistPendingManifestUpdates(timestamp);
-                    } else if (this.lastSyncAppliedCount > 0 && state.currentFolder?.id) {
-                        await state.folderSyncCoordinator.recordLocalFlush(state.currentFolder.id, { timestamp });
-                    }
-                }
+                const result = await this.retryOfflineQueue(reason);
+                this.updatePendingState();
                 return result;
             }
             requestSync(reason = 'manual-request') {
                 this.logger?.log({ event: 'sync:request', level: 'info', details: `Manual sync requested (${reason}).` });
-                this.scheduleProcess(reason);
-            }
-            handleVisibilityChange() {
-                if (document.visibilityState === 'hidden') {
-                    this.flush({ reason: 'visibilitychange', useBeacon: true });
-                }
-            }
-            handlePageHide() {
-                this.flush({ reason: 'pagehide', useBeacon: true });
-            }
-            handleBeforeUnload() {
-                if (!this.hasPendingWork) return;
-                this.flush({ reason: 'beforeunload', useBeacon: true });
-            }
-            async sendBeaconSnapshot(reason) {
-                if (!navigator.sendBeacon) return false;
-                try {
-                    const queue = await this.dbManager.readSyncQueue();
-                    if (queue.length === 0) return false;
-                    const payload = JSON.stringify({
-                        reason,
-                        timestamp: Date.now(),
-                        providerType: this.providerType || state.providerType || null,
-                        entries: this.mergeQueue(queue).map(entry => ({
-                            fileId: entry.fileId,
-                            updates: entry.updates,
-                            operationType: entry.operationType,
-                            localUpdatedAt: entry.localUpdatedAt
-                        }))
-                    });
-                    const ok = navigator.sendBeacon('/orbital8/sync-flush', payload);
-                    if (ok) {
-                        await this.dbManager.markPendingFlush(queue.map(item => item.id), true);
-                        this.logger?.log({ event: 'flush:beacon', level: 'warn', details: `Dispatching ${queue.length} entries via navigator.sendBeacon (${reason}).` });
-                        return true;
-                    }
-                } catch (error) {
-                    this.logger?.log({ event: 'flush:beacon:error', level: 'error', details: `Beacon fallback failed: ${error.message}` });
-                }
-                return false;
+                this.flush({ reason }).catch(error => {
+                    this.logger?.log({ event: 'sync:request:error', level: 'error', details: `Sync request failed: ${error.message}` });
+                });
             }
         }
         class VisualCueManager {
