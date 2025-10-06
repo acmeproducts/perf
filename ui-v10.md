@@ -23,11 +23,13 @@ Implementation steps
 • Trim initApp to stop constructing the removed sync classes while preserving visual cues, haptics, export, metadata extractor, and IndexedDB initialization.
 • Replace the folder-loading workflow
 • Retire loadImages, syncFolderFromCloud, refreshFolderInBackground, and processAllMetadata in favor of a new loadFolder (or refactored loadImages) that:
-• Fetches the file list from the provider via getFilesAndMetadata.
-• Merges cached metadata from IndexedDB immediately for instant UI hydration.
-• Falls back to SimpleMetadataManager.getDefaultMetadata() (extended with extractedMetadata and status fields) when a file lacks cached values.
-• Saves the assembled file array to both RAM (state.imageFiles) and folderCache, then initializes stacks/display exactly as today.
-• Triggers a background metadata refresh that re-fetches cloud metadata, updates in-memory structures, persists through cacheMetadata, and re-renders stacks/counts if anything changed.
+• Always fetches the file list and metadata freshness token from the provider via getFilesAndMetadata before rendering anything. If the provider call fails, surface the existing error UI rather than falling back to stale cache data.
+• Persist an explicit ISO timestamp for both “lastCloudUpdatedAt” (taken from the provider payload at fetch time) and “lastCacheUpdatedAt” (stamped when we write to IndexedDB) on every folderCache record. Never rely on provider “freshness” hints alone.
+• During load, parse both timestamps into Date objects (or millisecond numbers) and compare them directly; the newer timestamp must always win. Only when the cloud and cache timestamps are identical should cached metadata be merged for instant hydration. Otherwise bypass the cache entirely, render the freshly fetched cloud metadata, and refresh the cache with the latest timestamps.
+• Falls back to SimpleMetadataManager.getDefaultMetadata() (extended with extractedMetadata and status fields) when a file lacks cloud metadata. Do not substitute potentially stale cache values in this case.
+• Saves the assembled file array to both RAM (state.imageFiles) and folderCache only after confirming the cache snapshot matches what was rendered on screen, then initializes stacks/display exactly as today.
+• Eliminates the old “display cache → sync → re-render” loop; the UI must always display the same payload that was verified against the provider before the first paint.
+• Triggers a background metadata refresh hook that simply revalidates freshness tokens and no-ops if they still match. When differences are detected, re-fetch from the cloud, update in-memory structures, persist through cacheMetadata, and re-render stacks/counts.
 • Kicks off extractMetadataInBackground so PNG metadata extraction still runs asynchronously.
 • Update call sites (initializeWithProvider, resetCurrentFolder, any navigation helpers) to invoke the new loader and remove navigation-token/session bookkeeping tied to the old coordinator flow.
 • Revise metadata mutation paths
