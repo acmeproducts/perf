@@ -4423,9 +4423,37 @@
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
+                        const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                        state.sessionVisitedFolders.add(key);
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.showEmptyState();
+                        Core.updateStackCounts();
+
+                        if (coordinator) {
+                            const manifestEntries = coordinator.buildManifestFromFiles(folderId, []);
+                            const fallbackVersion = preparation?.folderState?.cloudVersion ?? Date.now();
+                            const manifestPayload = {
+                                entries: manifestEntries,
+                                requiresFullResync: false,
+                                cloudVersion: fallbackVersion,
+                                localVersion: preparation?.folderState?.localVersion ?? fallbackVersion,
+                                manifestFileId: preparation?.localManifest?.manifestFileId || null
+                            };
+                            await coordinator.persistManifest(folderId, manifestPayload, {
+                                cloudVersion: manifestPayload.cloudVersion,
+                                localVersion: manifestPayload.localVersion,
+                                lastDiffSummary: { new: 0, updated: 0, removed: cachedFiles.length }
+                            });
+                            await coordinator.persistFolderState(folderId, {
+                                cloudVersion: manifestPayload.cloudVersion,
+                                localVersion: manifestPayload.localVersion,
+                                lastCloudAck: Date.now()
+                            });
+                        }
+
                         Utils.showToast('No images found in this folder', 'info', true);
-                        this.returnToFolderSelection();
-                        return false;
+                        return true;
                     }
 
                     for (const updatedId of updatedIds) {
