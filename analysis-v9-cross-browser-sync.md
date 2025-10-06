@@ -29,3 +29,13 @@ In short, the folder version marker is not guaranteed to increase beyond the val
 
 ## Recommendation
 Option 2 provides the quickest, least invasive fix: enforce `nextVersion > existing.cloudVersion` before pushing the marker. Pair it with an integration test that exercises two browser caches to ensure the second client downloads changes immediately.
+
+## Incremental manifest reconciliation flow
+Once a client observes that the remote `cloudVersion` exceeds the cached value, it should request the manifest diff for the version range instead of rehydrating the complete manifest snapshot. The sync worker must:
+
+1. **Fetch the delta** from the sync service that includes additive, mutative, and removal operations since the local version. The request should carry the client's current version so the service can compute the minimal set of changes.
+2. **Apply additions and updates** by upserting the affected manifest entries into IndexedDB, honoring server-side timestamps or etags to prevent stale overwrites when multiple diffs land out of order.
+3. **Process deletions** by looking for explicit recycle/delete markers in the diff. When a recycle marker appears, the entry must be removed from the local manifest tables and any derived indices (e.g., folder listings, search caches) to ensure the item no longer surfaces in the UI.
+4. **Advance the local version** to the remote version supplied alongside the diff after all mutations commit successfully. This guards against partial application; if a transaction fails, keep the pre-existing version to force a retry.
+
+To validate that the incremental application succeeded, query the local manifest store for the keys included in the diff and assert that their state (presence, metadata, deletion) matches the payload. Emit telemetry counters whenever the post-application verification detects discrepancies, when the delta application fails, or when a deletion marker cannot be resolved locally. Additional safeguards include logging the expected versus applied version numbers and alerting when the gap exceeds one, which may indicate missed diffs or out-of-order delivery.
