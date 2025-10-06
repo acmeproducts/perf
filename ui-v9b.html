@@ -1024,6 +1024,7 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null,
+            activeFolderLoadToken: null,
             showDebugToasts: true
         };
         const DriveLinkHelper = {
@@ -1257,7 +1258,9 @@
             showToast(message, type = 'success', important = false) {
                 if (!state.showDebugToasts) {
                     this.clearFooterToasts();
-                    return;
+                    if (!important) {
+                        return;
+                    }
                 }
                 if (!important && Math.random() < 0.7) return;
 
@@ -4149,15 +4152,20 @@
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
-                    
-                    const loaded = await this.loadImages();
-                    if (loaded) {
+                    const loadToken = Symbol(`folder-load:${folderId}`);
+                    state.activeFolderLoadToken = loadToken;
+
+                    const loaded = await this.loadImages({ loadToken });
+                    const stillActive = state.activeFolderLoadToken === loadToken;
+                    if (loaded && stillActive) {
                         this.switchToCommonUI();
                         if (state.syncManager) {
                             state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
                             state.syncManager.start();
                         }
                         state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
+                    } else if (stillActive) {
+                        Utils.showToast('No images found in this folder', 'info', true);
                     }
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
@@ -4170,6 +4178,8 @@
                     return false;
                 }
 
+                const loadToken = options.loadToken ?? state.activeFolderLoadToken;
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
@@ -4181,18 +4191,28 @@
                         preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
                     }
 
+                    if (isStale()) {
+                        return false;
+                    }
+
                     if (preparation?.mode === 'delta') {
-                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
+                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation, loadToken });
                         return deltaLoaded !== false;
                     }
 
                     if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || options.forceFullResync) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
+                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, loadToken });
                         return synced !== false;
                     }
 
+                    if (isStale()) {
+                        return false;
+                    }
                     state.imageFiles = cachedFiles;
                     await this.processAllMetadata(state.imageFiles);
+                    if (isStale()) {
+                        return false;
+                    }
                     Utils.showScreen('app-container');
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
@@ -4206,7 +4226,7 @@
                     }
 
                     if (state.pendingBackgroundProbe?.folderId === folderId) {
-                        const pending = state.pendingBackgroundProbe;
+                        const pending = { ...state.pendingBackgroundProbe, loadToken };
                         state.pendingBackgroundProbe = null;
                         await this.applyDeltaFromCoordinator(pending);
                     }
@@ -4216,7 +4236,9 @@
                     if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    await this.returnToFolderSelection();
+                    if (!isStale()) {
+                        await this.returnToFolderSelection();
+                    }
                     return false;
                 }
             },
@@ -4257,8 +4279,13 @@
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
-            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
-                const folderId = state.currentFolder.id;
+            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false, loadToken, folderId }) {
+                const targetFolderId = folderId || state.currentFolder.id;
+                if (!targetFolderId) {
+                    return false;
+                }
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
+                const folderId = targetFolderId;
                 const diff = preparation?.diff || { changedIds: [], removedIds: [] };
                 const remoteManifest = preparation?.remoteManifest || null;
                 const folderState = preparation?.folderState || null;
@@ -4272,11 +4299,14 @@
                 try {
                     const changedIds = diff.changedIds || [];
                     let cloudFiles = [];
+                    if (isStale()) {
+                        return false;
+                    }
                     if (changedIds.length > 0) {
                         if (!state.provider || typeof state.provider.fetchFilesByIds !== 'function') {
                             state.syncLog?.log({ event: 'foldersync:delta-fallback', level: 'error', details: 'Provider missing fetchFilesByIds; escalating to full resync.' });
                             await coordinator?.markRequiresFullResync(folderId, 'delta-provider-missing');
-                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' }, loadToken, folderId });
                         }
                         cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
                     }
@@ -4292,7 +4322,13 @@
                         mergedMap.delete(removed);
                     }
 
-                    state.imageFiles = Array.from(mergedMap.values());
+                    const mergedFiles = Array.from(mergedMap.values());
+
+                    if (isStale()) {
+                        return false;
+                    }
+
+                    state.imageFiles = mergedFiles;
 
                     if (!background) {
                         Utils.updateLoadingProgress((diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), 'Finishing sync...');
@@ -4305,8 +4341,12 @@
                         await state.dbManager.deleteMetadata(removed);
                     }
 
-                    await this.processAllMetadata(state.imageFiles, false);
+                    await this.processAllMetadata(state.imageFiles, false, { folderId, providerType: state.providerType });
                     await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+
+                    if (isStale()) {
+                        return false;
+                    }
 
                     const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
                     manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
@@ -4327,13 +4367,17 @@
                     state.sessionVisitedFolders.add(key);
 
                     const hasImages = state.imageFiles.length > 0;
+                    if (isStale()) {
+                        return false;
+                    }
                     if (!background) {
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.updateStackCounts();
                         if (hasImages) {
-                            this.switchToCommonUI();
-                            Core.initializeStacks();
                             Core.initializeImageDisplay();
                         } else {
-                            await this.returnToFolderSelection();
+                            Core.showEmptyState();
                         }
                     } else {
                         Core.initializeStacks();
@@ -4371,13 +4415,14 @@
             },
             async applyDeltaFromCoordinator(payload) {
                 if (!payload) return;
+                const loadToken = payload.loadToken ?? state.activeFolderLoadToken;
                 if (payload.forceFullResync) {
-                    await this.loadImages({ forceFullResync: true });
+                    await this.loadImages({ forceFullResync: true, loadToken });
                     return;
                 }
                 if (!payload.diff?.hasChanges) return;
                 if (payload.folderId !== state.currentFolder?.id) {
-                    state.pendingBackgroundProbe = payload;
+                    state.pendingBackgroundProbe = { ...payload, loadToken };
                     return;
                 }
                 const folderId = state.currentFolder.id;
@@ -4387,14 +4432,24 @@
                     cachedFiles,
                     sessionKey,
                     preparation: { ...payload, folderState: await state.dbManager.getFolderState({ providerType: state.providerType, folderId }) },
-                    background: true
+                    background: true,
+                    loadToken,
+                    folderId
                 });
             },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
-                const folderId = state.currentFolder.id;
+                const folderId = options.folderId || state.currentFolder.id;
+                if (!folderId) {
+                    return false;
+                }
+                const loadToken = options.loadToken ?? state.activeFolderLoadToken;
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
                 const preparation = options.preparation || null;
+                if (isStale()) {
+                    return false;
+                }
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
 
@@ -4405,6 +4460,9 @@
 
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
+                        if (isStale()) {
+                            return false;
+                        }
                         state.imageFiles = [];
                         const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                         state.sessionVisitedFolders.add(key);
@@ -4435,7 +4493,9 @@
                             });
                         }
 
-                        Utils.showToast('No images found in this folder', 'info', true);
+                        if (!isStale()) {
+                            Utils.showToast('No images found in this folder', 'info', true);
+                        }
                         return true;
                     }
 
@@ -4449,12 +4509,18 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
+                    if (isStale()) {
+                        return false;
+                    }
                     state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached);
+                    await this.processAllMetadata(state.imageFiles, !hadCached, { folderId, providerType: state.providerType });
                     if (hasChanges || !hadCached) {
                         await state.dbManager.saveFolderCache(folderId, state.imageFiles);
                     }
 
+                    if (isStale()) {
+                        return false;
+                    }
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     state.sessionVisitedFolders.add(key);
                     this.switchToCommonUI();
@@ -4542,7 +4608,10 @@
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    this.returnToFolderSelection();
+                    if (!isStale()) {
+                        await this.returnToFolderSelection();
+                    }
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
@@ -4662,6 +4731,9 @@
                         backButtonSpinner.style.display = 'none';
                     }
                     state.isReturningToFolders = false;
+                    state.currentFolder.id = null;
+                    state.currentFolder.name = '';
+                    state.activeFolderLoadToken = null;
                 }
             },
             resetViewState(options = {}) {

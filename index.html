@@ -1039,6 +1039,7 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null,
+            activeFolderLoadToken: null,
             showDebugToasts: true,
             currentScreen: null
         };
@@ -1300,7 +1301,9 @@
             showToast(message, type = 'success', important = false) {
                 if (!state.showDebugToasts) {
                     this.clearFooterToasts();
-                    return;
+                    if (!important) {
+                        return;
+                    }
                 }
                 if (!important && Math.random() < 0.7) return;
                 const statusElements = [];
@@ -4300,16 +4303,19 @@
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
+                    const loadToken = Symbol(`folder-load:${folderId}`);
+                    state.activeFolderLoadToken = loadToken;
 
-                    const loaded = await this.loadImages();
-                    if (loaded) {
+                    const loaded = await this.loadImages({ loadToken });
+                    const stillActive = state.activeFolderLoadToken === loadToken;
+                    if (loaded && stillActive) {
                         this.switchToCommonUI();
                         if (state.syncManager) {
                             state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
                             state.syncManager.start();
                         }
                         state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
-                    } else {
+                    } else if (stillActive) {
                         Utils.showToast('No images found in this folder', 'info', true);
                     }
                     Utils.logSync(loaded ? 'ui:folder-load:success' : 'ui:folder-load:empty', loaded ? `Loaded folder ${folderName || folderId}` : `Folder ${folderName || folderId} contains no images`, {
@@ -4318,7 +4324,8 @@
                             folderId,
                             folderName,
                             providerType,
-                            loaded
+                            loaded,
+                            stillActive
                         }
                     });
                 } catch (error) {
@@ -4336,6 +4343,9 @@
                     return false;
                 }
 
+                const loadToken = options.loadToken ?? state.activeFolderLoadToken;
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
+
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
@@ -4350,11 +4360,20 @@
                             providerType: state.providerType,
                             cachedCount: cachedFiles.length,
                             isFirstSessionVisit,
-                            options
+                            options,
+                            loadToken
                         }
                     });
                     if (coordinator) {
                         preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
+                    }
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:load:stale', `Abandoning load for ${folderId} after preparation due to navigation change.`, {
+                            level: 'warn',
+                            data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
                     }
 
                     if (preparation?.mode === 'delta') {
@@ -4362,10 +4381,11 @@
                             data: {
                                 folderId,
                                 diff: preparation?.diff,
-                                cachedCount: cachedFiles.length
+                                cachedCount: cachedFiles.length,
+                                loadToken
                             }
                         });
-                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
+                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation, loadToken });
                         return deltaLoaded !== false;
                     }
 
@@ -4373,21 +4393,40 @@
                         Utils.logSync('foldersync:load:full', `Performing full sync for ${folderId}`, {
                             data: {
                                 folderId,
-                                reason: preparation?.mode || (cachedFiles.length === 0 ? 'no-cache' : isFirstSessionVisit ? 'first-visit' : 'forced')
+                                reason: preparation?.mode || (cachedFiles.length === 0 ? 'no-cache' : isFirstSessionVisit ? 'first-visit' : 'forced'),
+                                loadToken
                             }
                         });
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
+                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, loadToken });
                         return synced !== false;
+                    }
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:load:stale-cache', `Cache hydration for ${folderId} skipped due to navigation change.`, {
+                            level: 'warn',
+                            data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
                     }
 
                     Utils.logSync('foldersync:load:cache', `Hydrating ${folderId} from cache`, {
                         data: {
                             folderId,
-                            cachedCount: cachedFiles.length
+                            cachedCount: cachedFiles.length,
+                            loadToken
                         }
                     });
                     state.imageFiles = cachedFiles;
-                    await this.processAllMetadata(state.imageFiles);
+                    await this.processAllMetadata(state.imageFiles, false, { folderId, providerType: state.providerType });
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:load:stale-cache-post', `Post-hydration navigation change detected for ${folderId}; skipping UI update.`, {
+                            level: 'warn',
+                            data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
+                    }
+
                     Utils.showScreen('app-container');
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
@@ -4401,7 +4440,7 @@
                     }
 
                     if (state.pendingBackgroundProbe?.folderId === folderId) {
-                        const pending = state.pendingBackgroundProbe;
+                        const pending = { ...state.pendingBackgroundProbe, loadToken };
                         state.pendingBackgroundProbe = null;
                         await this.applyDeltaFromCoordinator(pending);
                     }
@@ -4411,7 +4450,8 @@
                         data: {
                             folderId,
                             finalCount: state.imageFiles.length,
-                            source: 'cache'
+                            source: 'cache',
+                            loadToken
                         }
                     });
                     return state.imageFiles.length > 0;
@@ -4421,7 +4461,8 @@
                         data: {
                             folderId,
                             folderName: state.currentFolder.name,
-                            providerType: state.providerType
+                            providerType: state.providerType,
+                            loadToken
                         }
                     });
                     if (error?.name !== 'AbortError') {
@@ -4468,8 +4509,13 @@
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
-            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
-                const folderId = state.currentFolder.id;
+            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false, loadToken, folderId }) {
+                const targetFolderId = folderId || state.currentFolder.id;
+                if (!targetFolderId) {
+                    return false;
+                }
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
+
                 const diff = preparation?.diff || { changedIds: [], removedIds: [] };
                 const remoteManifest = preparation?.remoteManifest || null;
                 const folderState = preparation?.folderState || null;
@@ -4481,15 +4527,23 @@
                 }
 
                 try {
+                    if (isStale()) {
+                        Utils.logSync('foldersync:delta:stale', `Delta sync skipped for ${targetFolderId} (navigation changed).`, {
+                            level: 'warn',
+                            data: { folderId: targetFolderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
+                    }
+
                     const changedIds = diff.changedIds || [];
                     let cloudFiles = [];
                     if (changedIds.length > 0) {
                         if (!state.provider || typeof state.provider.fetchFilesByIds !== 'function') {
                             state.syncLog?.log({ event: 'foldersync:delta-fallback', level: 'error', details: 'Provider missing fetchFilesByIds; escalating to full resync.' });
-                            await coordinator?.markRequiresFullResync(folderId, 'delta-provider-missing');
-                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                            await coordinator?.markRequiresFullResync(targetFolderId, 'delta-provider-missing');
+                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' }, loadToken, folderId: targetFolderId });
                         }
-                        cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
+                        cloudFiles = await state.provider.fetchFilesByIds(targetFolderId, changedIds, { signal: state.activeRequests?.signal });
                     }
 
                     const mergedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
@@ -4503,48 +4557,68 @@
                         mergedMap.delete(removed);
                     }
 
-                    state.imageFiles = Array.from(mergedMap.values());
+                    const mergedFiles = Array.from(mergedMap.values());
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:delta:stale-merge', `Delta results ignored for ${targetFolderId} (navigation changed).`, {
+                            level: 'warn',
+                            data: { folderId: targetFolderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
+                    }
+
+                    state.imageFiles = mergedFiles;
 
                     if (!background) {
                         Utils.updateLoadingProgress((diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), 'Finishing sync...');
                     }
 
                     for (const file of cloudFiles) {
-                        await state.dbManager.saveMetadata(file.id, file, { folderId, providerType: state.providerType });
+                        await state.dbManager.saveMetadata(file.id, file, { folderId: targetFolderId, providerType: state.providerType });
                     }
                     for (const removed of removedIds) {
                         await state.dbManager.deleteMetadata(removed);
                     }
 
-                    await this.processAllMetadata(state.imageFiles, false);
-                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    await this.processAllMetadata(state.imageFiles, false, { folderId: targetFolderId, providerType: state.providerType });
+                    await state.dbManager.saveFolderCache(targetFolderId, state.imageFiles);
 
-                    const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
+                    const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(targetFolderId, state.imageFiles) };
                     manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
                     const diffSummary = { changed: changedIds.length, removed: removedIds.length };
-                    await coordinator?.persistManifest(folderId, manifestRecord, {
+                    await coordinator?.persistManifest(targetFolderId, manifestRecord, {
                         cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
                         localVersion: folderState?.localVersion ?? null,
                         lastDiffSummary: diffSummary
                     });
                     const updatedCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? 0;
-                    await coordinator?.persistFolderState(folderId, {
+                    await coordinator?.persistFolderState(targetFolderId, {
                         cloudVersion: updatedCloudVersion,
                         localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
                         lastCloudAck: Date.now()
                     });
 
-                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                    const key = sessionKey || `${state.providerType || 'unknown'}::${targetFolderId}`;
                     state.sessionVisitedFolders.add(key);
 
                     const hasImages = state.imageFiles.length > 0;
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:delta:stale-final', `Delta UI update skipped for ${targetFolderId} (navigation changed).`, {
+                            level: 'warn',
+                            data: { folderId: targetFolderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
+                    }
+
                     if (!background) {
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.updateStackCounts();
                         if (hasImages) {
-                            this.switchToCommonUI();
-                            Core.initializeStacks();
                             Core.initializeImageDisplay();
                         } else {
-                            await this.returnToFolderSelection();
+                            Core.showEmptyState();
                         }
                     } else {
                         Core.initializeStacks();
@@ -4564,31 +4638,32 @@
                     }
                     if (incompleteDelta) {
                         state.syncLog?.log({ event: 'foldersync:delta-partial', level: 'warn', details: `Delta fetched ${cloudFiles.length}/${changedIds.length} items; marking full resync.` });
-                        await coordinator?.markRequiresFullResync(folderId, 'delta-incomplete');
+                        await coordinator?.markRequiresFullResync(targetFolderId, 'delta-incomplete');
                     }
                     state.syncLog?.log({
                         event: 'foldersync:delta-apply',
                         level: 'success',
-                        details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
-                        data: { cloudVersion: updatedCloudVersion }
+                        details: `Delta applied for ${targetFolderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
+                        data: { cloudVersion: updatedCloudVersion, loadToken }
                     });
                     return hasImages;
                 } catch (error) {
                     state.syncLog?.log({ event: 'foldersync:delta-error', level: 'error', details: `Delta sync failed: ${error.message}` });
                     Utils.showToast(`Delta sync failed: ${error.message}`, 'error', true);
-                    await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'delta-error');
-                    return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
+                    await state.folderSyncCoordinator?.markRequiresFullResync(targetFolderId, 'delta-error');
+                    return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' }, loadToken, folderId: targetFolderId });
                 }
             },
             async applyDeltaFromCoordinator(payload) {
                 if (!payload) return;
+                const loadToken = payload.loadToken ?? state.activeFolderLoadToken;
                 if (payload.forceFullResync) {
-                    await this.loadImages({ forceFullResync: true });
+                    await this.loadImages({ forceFullResync: true, loadToken });
                     return;
                 }
                 if (!payload.diff?.hasChanges) return;
                 if (payload.folderId !== state.currentFolder?.id) {
-                    state.pendingBackgroundProbe = payload;
+                    state.pendingBackgroundProbe = { ...payload, loadToken };
                     return;
                 }
                 const folderId = state.currentFolder.id;
@@ -4598,14 +4673,28 @@
                     cachedFiles,
                     sessionKey,
                     preparation: { ...payload, folderState: await state.dbManager.getFolderState({ providerType: state.providerType, folderId }) },
-                    background: true
+                    background: true,
+                    loadToken,
+                    folderId
                 });
             },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
-                const folderId = state.currentFolder.id;
+                const folderId = options.folderId || state.currentFolder.id;
+                if (!folderId) {
+                    return false;
+                }
+                const loadToken = options.loadToken ?? state.activeFolderLoadToken;
+                const isStale = () => loadToken && loadToken !== state.activeFolderLoadToken;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
                 const preparation = options.preparation || null;
+                if (isStale()) {
+                    Utils.logSync('foldersync:cloud:stale', `Skipping cloud sync for ${folderId} (navigation changed).`, {
+                        level: 'warn',
+                        data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                    });
+                    return false;
+                }
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
                 Utils.logSync('foldersync:cloud:start', `Starting cloud sync for ${folderId}`, {
@@ -4613,7 +4702,8 @@
                         folderId,
                         folderName: state.currentFolder.name,
                         hadCached,
-                        preparationMode: preparation?.mode || null
+                        preparationMode: preparation?.mode || null,
+                        loadToken
                     }
                 });
 
@@ -4628,10 +4718,18 @@
                             data: {
                                 folderId,
                                 folderName: state.currentFolder.name,
-                                cachedCount: cachedFiles.length
+                                cachedCount: cachedFiles.length,
+                                loadToken
                             }
                         });
                         await state.dbManager.saveFolderCache(folderId, []);
+                        if (isStale()) {
+                            Utils.logSync('foldersync:cloud:empty-stale', `Empty cloud sync for ${folderId} ignored (navigation changed).`, {
+                                level: 'warn',
+                                data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                            });
+                            return false;
+                        }
                         state.imageFiles = [];
                         const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                         state.sessionVisitedFolders.add(key);
@@ -4665,7 +4763,7 @@
                         Utils.showToast('No images found in this folder', 'info', true);
                         Utils.logSync('foldersync:cloud:empty:complete', `Completed empty sync for ${folderId}`, {
                             level: 'info',
-                            data: { folderId, removedIdsCount: cachedFiles.length }
+                            data: { folderId, removedIdsCount: cachedFiles.length, loadToken }
                         });
                         return true;
                     }
@@ -4680,10 +4778,26 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
+                    if (isStale()) {
+                        Utils.logSync('foldersync:cloud:stale-merge', `Merged cloud data ignored for ${folderId} (navigation changed).`, {
+                            level: 'warn',
+                            data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
+                    }
+
                     state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached);
+                    await this.processAllMetadata(state.imageFiles, !hadCached, { folderId, providerType: state.providerType });
                     if (hasChanges || !hadCached) {
                         await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    }
+
+                    if (isStale()) {
+                        Utils.logSync('foldersync:cloud:stale-post', `Cloud sync results saved without UI update for ${folderId} (navigation changed).`, {
+                            level: 'warn',
+                            data: { folderId, loadToken, activeToken: state.activeFolderLoadToken }
+                        });
+                        return false;
                     }
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
@@ -4700,7 +4814,8 @@
                             updatedIds: updatedIds.length,
                             removedIds: removedIds.length,
                             hadCached,
-                            hasChanges
+                            hasChanges,
+                            loadToken
                         }
                     });
                     if (coordinator) {
@@ -4789,7 +4904,8 @@
                             updatedIds: updatedIds.length,
                             removedIds: removedIds.length,
                             hadCached,
-                            hasChanges
+                            hasChanges,
+                            loadToken
                         }
                     });
                 } catch (error) {
@@ -4798,13 +4914,17 @@
                         data: {
                             folderId,
                             folderName: state.currentFolder.name,
-                            hadCached
+                            hadCached,
+                            loadToken
                         }
                     });
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    this.returnToFolderSelection();
+                    if (!isStale()) {
+                        await this.returnToFolderSelection();
+                    }
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
@@ -4829,7 +4949,7 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
-                    await this.processAllMetadata(mergedFiles);
+                    await this.processAllMetadata(mergedFiles, false, { folderId, providerType: state.providerType });
                     await state.dbManager.saveFolderCache(folderId, mergedFiles);
                     state.imageFiles = mergedFiles;
                     Core.initializeStacks();
@@ -4841,7 +4961,11 @@
                     console.warn("Background refresh failed:", error.message);
                 }
             },
-            async processAllMetadata(files, isFirstLoad = false) {
+            async processAllMetadata(files, isFirstLoad = false, options = {}) {
+                 const { folderId = state.currentFolder.id, providerType = state.providerType } = options;
+                 if (!folderId) {
+                    return;
+                 }
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
                  for (let i = 0; i < files.length; i++) {
                     const file = files[i];
@@ -4852,7 +4976,7 @@
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file);
                             Object.assign(file, defaultMetadata);
-                            await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                            await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId, providerType });
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -4903,10 +5027,13 @@
                     return;
                 }
 
+                const previousFolderId = state.currentFolder.id;
+                const previousFolderName = state.currentFolder.name;
+
                 Utils.logSync('ui:folder:return:start', 'Returning to folder selection.', {
                     data: {
-                        folderId: state.currentFolder.id,
-                        folderName: state.currentFolder.name,
+                        folderId: previousFolderId,
+                        folderName: previousFolderName,
                         screen: state.currentScreen,
                         imageCount: state.imageFiles.length
                     }
@@ -4937,8 +5064,8 @@
                     await Folders.load();
                     Utils.logSync('ui:folder:return:list', 'Folder list loaded.', {
                         data: {
-                            folderId: state.currentFolder.id,
-                            folderName: state.currentFolder.name,
+                            folderId: previousFolderId,
+                            folderName: previousFolderName,
                             flushResult
                         }
                     });
@@ -4946,7 +5073,7 @@
                     Utils.logSync('ui:folder:return:error', `Error returning to folders: ${error.message}`, {
                         level: 'error',
                         data: {
-                            folderId: state.currentFolder.id,
+                            folderId: previousFolderId,
                             screen: state.currentScreen
                         }
                     });
@@ -4963,11 +5090,14 @@
                     Utils.logSync('ui:folder:return:complete', 'Return to folder selection complete.', {
                         level: 'success',
                         data: {
-                            folderId: state.currentFolder.id,
+                            folderId: previousFolderId,
                             flushResult,
                             screen: state.currentScreen
                         }
                     });
+                    state.currentFolder.id = null;
+                    state.currentFolder.name = '';
+                    state.activeFolderLoadToken = null;
                 }
             },
             resetViewState(options = {}) {
