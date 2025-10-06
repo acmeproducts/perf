@@ -4524,21 +4524,17 @@
             async deleteFile(fileId, options = {}) {
                 const { source = 'ui', originStack = null, name = null } = options;
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
-                let file = null;
+                const file = fileIndex > -1 ? state.imageFiles[fileIndex] : null;
                 let stackRemoval = null;
-                if (fileIndex > -1) {
-                    const removed = state.imageFiles.splice(fileIndex, 1);
-                    file = removed && removed.length ? removed[0] : null;
-                    if (file && file.stack && state.stacks[file.stack]) {
-                        const stackArray = state.stacks[file.stack];
-                        const stackIndex = stackArray.findIndex(f => f.id === fileId);
-                        if (stackIndex > -1) {
-                            stackRemoval = { name: file.stack, index: stackIndex };
-                            stackArray.splice(stackIndex, 1);
-                        }
+                const stackBefore = originStack || file?.stack || null;
+                if (stackBefore && state.stacks[stackBefore]) {
+                    const stackArray = state.stacks[stackBefore];
+                    const stackIndex = stackArray.findIndex(f => f.id === fileId);
+                    if (stackIndex > -1) {
+                        stackRemoval = { name: stackBefore, index: stackIndex };
+                        stackArray.splice(stackIndex, 1);
                     }
                 }
-                const stackBefore = originStack || file?.stack || null;
                 const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
                 const fileName = name || file?.name || '';
                 const persistState = async () => {
@@ -4546,15 +4542,18 @@
                 };
                 const restoreState = async (reason) => {
                     if (!file) { return false; }
-                    if (fileIndex > -1) {
-                        state.imageFiles.splice(fileIndex, 0, file);
-                    } else {
-                        state.imageFiles.push(file);
-                    }
                     if (stackRemoval && state.stacks[stackRemoval.name]) {
                         state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
-                    } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
-                        state.stacks[file.stack].push(file);
+                    }
+                    const trashArray = state.stacks.trash;
+                    if (trashArray) {
+                        const existingTrashIndex = trashArray.findIndex(f => f.id === fileId);
+                        if (existingTrashIndex > -1) {
+                            trashArray.splice(existingTrashIndex, 1);
+                        }
+                    }
+                    if (stackBefore) {
+                        file.stack = stackBefore;
                     }
                     await persistState();
                     state.syncLog?.log({
@@ -4593,6 +4592,23 @@
 
                 try {
                     await provider.deleteFile(fileId);
+                    if (file) {
+                        const newSequence = Date.now();
+                        file.stack = 'trash';
+                        file.stackSequence = newSequence;
+                        state.stacks.trash = state.stacks.trash || [];
+                        const existingIndex = state.stacks.trash.findIndex(f => f.id === fileId);
+                        if (existingIndex > -1) {
+                            state.stacks.trash.splice(existingIndex, 1);
+                        }
+                        state.stacks.trash.unshift(file);
+                        state.stacks.trash = Core.sortFiles(state.stacks.trash);
+                        await App.updateUserMetadata(fileId, { stack: 'trash', stackSequence: newSequence }, {
+                            skipDebounce: true,
+                            operationType: 'stack:trash',
+                            origin: source
+                        });
+                    }
                     state.syncLog?.log({
                         event: 'provider:trash:success',
                         level: 'success',
