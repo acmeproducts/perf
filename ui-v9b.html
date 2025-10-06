@@ -4105,20 +4105,61 @@
                 const updatedIds = [];
                 const removedIds = [];
 
+                const normalizeForComparison = (value) => {
+                    if (value === null || value === undefined) return null;
+                    if (Array.isArray(value)) {
+                        return value.map(item => normalizeForComparison(item));
+                    }
+                    if (typeof value === 'object') {
+                        const normalized = {};
+                        Object.keys(value)
+                            .sort()
+                            .forEach(key => {
+                                normalized[key] = normalizeForComparison(value[key]);
+                            });
+                        return normalized;
+                    }
+                    return value;
+                };
+
+                const hasProviderDifferences = (cached = {}, cloud = {}) => {
+                    const primitiveFields = [
+                        'name', 'size', 'mimeType', 'createdTime', 'modifiedTime',
+                        'thumbnailLink', 'webContentLink', 'webViewLink', 'downloadUrl',
+                        'md5Checksum', 'checksum', 'width', 'height'
+                    ];
+                    for (const field of primitiveFields) {
+                        if ((cached?.[field] ?? null) !== (cloud?.[field] ?? null)) {
+                            return true;
+                        }
+                    }
+
+                    const structuredFields = [
+                        'appProperties', 'shortcutDetails', 'parents',
+                        'imageMediaMetadata', 'videoMediaMetadata', 'thumbnails'
+                    ];
+                    for (const field of structuredFields) {
+                        const cachedValue = normalizeForComparison(cached?.[field]);
+                        const cloudValue = normalizeForComparison(cloud?.[field]);
+                        if (JSON.stringify(cachedValue) !== JSON.stringify(cloudValue)) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                };
+
                 for (const cloudFile of cloudFiles) {
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
                         merged.push({ ...cloudFile });
                         newIds.push(cloudFile.id);
                     } else {
-                        const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
-                        const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const mergedFile = { ...cached, ...cloudFile };
+                        if (hasProviderDifferences(cached, cloudFile)) {
                             updatedIds.push(cloudFile.id);
-                        } else {
-                            merged.push(cached);
                         }
+                        merged.push(mergedFile);
                         cachedMap.delete(cloudFile.id);
                     }
                 }
