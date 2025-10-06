@@ -4056,10 +4056,15 @@
                         options.forceFullResync
                     );
 
-                    const canUseCache = !shouldFullSync && (preparation?.mode === 'cache' || !coordinator);
+                    const mustRefreshFromCloud = true; // Always refresh to capture latest cloud changes per folder load.
+                    const canUseCache = !mustRefreshFromCloud && !shouldFullSync && (preparation?.mode === 'cache' || !coordinator);
 
                     if (!canUseCache) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, navigationToken });
+                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, {
+                            preparation,
+                            navigationToken,
+                            resetToCloud: true
+                        });
                         return synced !== false;
                     }
 
@@ -4097,12 +4102,58 @@
                     return false;
                 }
             },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
+            mergeCloudWithCache(cloudFiles, cachedFiles, options = {}) {
+                const resetToCloud = Boolean(options.resetToCloud);
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
                 const merged = [];
                 const newIds = [];
                 const updatedIds = [];
                 const removedIds = [];
+                const metadataRefreshIds = [];
+
+                const normalizeForComparison = (value) => {
+                    if (value === null || value === undefined) return null;
+                    if (Array.isArray(value)) {
+                        return value.map(item => normalizeForComparison(item));
+                    }
+                    if (typeof value === 'object') {
+                        const normalized = {};
+                        Object.keys(value)
+                            .sort()
+                            .forEach(key => {
+                                normalized[key] = normalizeForComparison(value[key]);
+                            });
+                        return normalized;
+                    }
+                    return value;
+                };
+
+                const hasProviderDifferences = (cached = {}, cloud = {}) => {
+                    const primitiveFields = [
+                        'name', 'size', 'mimeType', 'createdTime', 'modifiedTime',
+                        'thumbnailLink', 'webContentLink', 'webViewLink', 'downloadUrl',
+                        'md5Checksum', 'checksum', 'width', 'height'
+                    ];
+                    for (const field of primitiveFields) {
+                        if ((cached?.[field] ?? null) !== (cloud?.[field] ?? null)) {
+                            return true;
+                        }
+                    }
+
+                    const structuredFields = [
+                        'appProperties', 'shortcutDetails', 'parents',
+                        'imageMediaMetadata', 'videoMediaMetadata', 'thumbnails'
+                    ];
+                    for (const field of structuredFields) {
+                        const cachedValue = normalizeForComparison(cached?.[field]);
+                        const cloudValue = normalizeForComparison(cloud?.[field]);
+                        if (JSON.stringify(cachedValue) !== JSON.stringify(cloudValue)) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                };
 
                 for (const cloudFile of cloudFiles) {
                     const cached = cachedMap.get(cloudFile.id);
@@ -4110,14 +4161,15 @@
                         merged.push({ ...cloudFile });
                         newIds.push(cloudFile.id);
                     } else {
-                        const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
-                        const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const providerChanged = hasProviderDifferences(cached, cloudFile);
+                        const mergedFile = resetToCloud ? { ...cloudFile } : { ...cached, ...cloudFile };
+                        if (providerChanged) {
                             updatedIds.push(cloudFile.id);
-                        } else {
-                            merged.push(cached);
                         }
+                        if (providerChanged || resetToCloud) {
+                            metadataRefreshIds.push(cloudFile.id);
+                        }
+                        merged.push(mergedFile);
                         cachedMap.delete(cloudFile.id);
                     }
                 }
@@ -4131,6 +4183,7 @@
                     newIds,
                     updatedIds,
                     removedIds,
+                    metadataRefreshIds,
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
@@ -4140,6 +4193,7 @@
                 const coordinator = state.folderSyncCoordinator;
                 const preparation = options.preparation || null;
                 const navigationToken = options.navigationToken || state.navigationToken;
+                const resetToCloud = Boolean(options.resetToCloud);
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
@@ -4152,7 +4206,7 @@
                         return false;
                     }
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const { mergedFiles, newIds, updatedIds, removedIds, metadataRefreshIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles, { resetToCloud });
 
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
@@ -4196,14 +4250,18 @@
                         return true;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
+                    if (resetToCloud) {
+                        await state.dbManager.deleteMetadataByFolder({ providerType: state.providerType, folderId });
+                    } else {
+                        for (const id of metadataRefreshIds) {
+                            const updatedFile = mergedFiles.find(file => file.id === id);
+                            if (updatedFile) {
+                                await state.dbManager.saveMetadata(id, updatedFile, { folderId, providerType: state.providerType });
+                            }
                         }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
+                        if (removedIds.length > 0) {
+                            await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
+                        }
                     }
 
                     state.imageFiles = mergedFiles;
@@ -4211,7 +4269,7 @@
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
-                    if (hasChanges || !hadCached) {
+                    if (hasChanges || !hadCached || resetToCloud) {
                         await state.dbManager.saveFolderCache(folderId, state.imageFiles);
                     }
 
