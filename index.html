@@ -2554,18 +2554,18 @@
             computeManifestDiff(localManifest, remoteManifest) {
                 const localEntries = (localManifest && localManifest.entries) || {};
                 const remoteEntries = (remoteManifest && remoteManifest.entries) || {};
-                const changedIds = [];
+                const changedSet = new Set();
                 const removedIds = [];
                 const remoteKeys = Object.keys(remoteEntries);
                 for (const fileId of remoteKeys) {
                     const remoteData = remoteEntries[fileId];
                     const localData = localEntries[fileId];
                     if (!localData) {
-                        changedIds.push(fileId);
+                        changedSet.add(fileId);
                         continue;
                     }
                     if (localData.changeNumber !== remoteData.changeNumber || localData.stack !== remoteData.stack || localData.notesHash !== remoteData.notesHash || (localData.flags || '') !== (remoteData.flags || '')) {
-                        changedIds.push(fileId);
+                        changedSet.add(fileId);
                     }
                 }
                 const remoteSet = new Set(remoteKeys);
@@ -2574,7 +2574,21 @@
                         removedIds.push(fileId);
                     }
                 });
-                return { changedIds, removedIds, hasChanges: changedIds.length > 0 || removedIds.length > 0 };
+
+                const localVersion = Number(localManifest?.localVersion ?? localManifest?.cloudVersion ?? 0) || 0;
+                const remoteVersion = Number(remoteManifest?.localVersion ?? remoteManifest?.cloudVersion ?? 0) || 0;
+                let versionMismatch = false;
+                if (remoteVersion > localVersion) {
+                    versionMismatch = true;
+                    if (changedSet.size === 0 && removedIds.length === 0) {
+                        for (const fileId of remoteKeys) {
+                            changedSet.add(fileId);
+                        }
+                    }
+                }
+
+                const changedIds = Array.from(changedSet);
+                return { changedIds, removedIds, hasChanges: changedIds.length > 0 || removedIds.length > 0, versionMismatch };
             }
             buildManifestFromFiles(folderId, files = []) {
                 const entries = {};
@@ -4330,13 +4344,17 @@
                     const diffSummary = { changed: changedIds.length, removed: removedIds.length };
                     await coordinator?.persistManifest(folderId, manifestRecord, {
                         cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
-                        localVersion: folderState?.localVersion ?? null,
+                        localVersion: remoteManifest?.localVersion ?? folderState?.localVersion ?? null,
                         lastDiffSummary: diffSummary
                     });
                     const updatedCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? 0;
+                    const updatedLocalVersion = Math.max(
+                        folderState?.localVersion ?? 0,
+                        remoteManifest?.localVersion ?? updatedCloudVersion
+                    );
                     await coordinator?.persistFolderState(folderId, {
                         cloudVersion: updatedCloudVersion,
-                        localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
+                        localVersion: updatedLocalVersion,
                         lastCloudAck: Date.now()
                     });
 
@@ -4496,12 +4514,13 @@
 
                         const resolvedManifestSeed = remoteManifestResponse || manifestSeed || preparation?.remoteManifest || null;
                         const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? resolvedManifestSeed?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
+                        const remoteLocalVersion = remoteManifestResponse?.localVersion ?? resolvedManifestSeed?.localVersion ?? preparation?.remoteManifest?.localVersion ?? preparation?.folderState?.localVersion ?? remoteCloudVersion;
                         const resolvedManifestFileId = remoteManifestResponse?.manifestFileId || manifestFileId || preparation?.localManifest?.manifestFileId || null;
                         const manifestPayload = {
                             entries: manifestEntries,
                             requiresFullResync: manifestRequiresRescan,
                             cloudVersion: remoteCloudVersion,
-                            localVersion: preparation?.folderState?.localVersion ?? remoteCloudVersion,
+                            localVersion: remoteLocalVersion,
                             manifestFileId: resolvedManifestFileId
                         };
                         await coordinator.persistManifest(folderId, manifestPayload, {
@@ -4577,7 +4596,7 @@
                         if (metadata) {
                             Object.assign(file, metadata);
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file);
+                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
                         }
@@ -4588,12 +4607,12 @@
                 }
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
-            generateDefaultMetadata(file) {
-                 const baseMetadata = { 
-                    stack: 'in', 
-                    tags: [], 
-                    qualityRating: 0, 
-                    contentRating: 0, 
+            generateDefaultMetadata(file, context = {}) {
+                 const baseMetadata = {
+                    stack: 'in',
+                    tags: [],
+                    qualityRating: 0,
+                    contentRating: 0,
                     notes: '', 
                     stackSequence: 0, 
                     favorite: false,
@@ -4608,6 +4627,19 @@
                     baseMetadata.notes = file.appProperties.notes || '';
                     baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
                     baseMetadata.favorite = file.appProperties.favorite === 'true';
+                 }
+                 const numericSequence = Number(baseMetadata.stackSequence);
+                 if (!Number.isFinite(numericSequence) || numericSequence === 0) {
+                    const timestampSource = file.modifiedTime || file.createdTime || null;
+                    let fallbackSequence = Date.now();
+                    if (timestampSource) {
+                        const parsed = Date.parse(timestampSource);
+                        if (!Number.isNaN(parsed)) {
+                            fallbackSequence = parsed;
+                        }
+                    }
+                    const indexOffset = typeof context.index === 'number' ? context.index : 0;
+                    baseMetadata.stackSequence = fallbackSequence - indexOffset;
                  }
                  return baseMetadata;
             },
