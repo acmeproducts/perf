@@ -2773,11 +2773,14 @@
                 const timestamp = options.timestamp || Date.now();
                 const context = this.buildContext(folderId);
                 const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
-                let nextVersion = Number(existing.localVersion || 0) + 1;
+                const currentLocalVersion = Number(existing.localVersion || 0);
+                const currentCloudVersion = Number(existing.cloudVersion || 0);
+                const baselineVersion = Math.max(currentLocalVersion, currentCloudVersion);
+                let nextVersion = Math.max(Date.now(), baselineVersion + 1);
                 if (options.targetVersion != null) {
                     const numericTarget = Number(options.targetVersion);
-                    if (!Number.isNaN(numericTarget) && numericTarget > Number(existing.localVersion || 0)) {
-                        nextVersion = numericTarget;
+                    if (!Number.isNaN(numericTarget)) {
+                        nextVersion = Math.max(nextVersion, numericTarget);
                     }
                 }
                 await this.dbManager.saveFolderState({ ...existing, ...context, folderId, localVersion: nextVersion, cloudVersion: nextVersion, lastLocalMutation: timestamp, lastCloudAck: timestamp });
@@ -7147,6 +7150,10 @@ this.updateImageCounters();
                 state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
                 state.folderSyncCoordinator.setDeltaHandler((payload) => App.applyDeltaFromCoordinator(payload));
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
+                window.__orbitalAppState = state;
+                window.__orbitalFolderSyncCoordinator = state.folderSyncCoordinator;
+                window.__orbitalDbManager = state.dbManager;
+                window.__orbitalSyncManager = state.syncManager;
                 state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
                 Utils.showScreen('provider-screen');
