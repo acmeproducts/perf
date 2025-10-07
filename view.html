@@ -197,10 +197,88 @@
       font-size: 0.9rem;
     }
 
+    .history-section {
+      margin-top: 24px;
+      padding-top: 18px;
+      border-top: 1px solid rgba(95, 107, 130, 0.18);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .history-section h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+
+    .history-results {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 6px;
+    }
+
+    .history-empty {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .history-commit-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .history-chip {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      min-width: 160px;
+      max-width: 240px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(95, 107, 130, 0.22);
+      background: rgba(95, 107, 130, 0.12);
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border 0.18s ease;
+      text-align: left;
+    }
+
+    .history-chip strong {
+      font-size: 0.9rem;
+      letter-spacing: 0.04em;
+    }
+
+    .history-chip span {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .history-chip:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent);
+      box-shadow: 0 10px 22px rgba(67, 97, 238, 0.18);
+    }
+
     @media (prefers-color-scheme: dark) {
       .status-bar {
         background: rgba(122, 162, 255, 0.14);
         border-color: rgba(122, 162, 255, 0.25);
+      }
+
+      .history-section {
+        border-top-color: rgba(148, 163, 184, 0.22);
+      }
+
+      .history-chip {
+        background: rgba(122, 162, 255, 0.18);
+        border-color: rgba(148, 163, 184, 0.35);
       }
     }
 
@@ -456,6 +534,16 @@
       </div>
       <button id="exportBtn" class="button-secondary">Export checklist JSON</button>
       <button id="clearChecklistBtn" class="button-secondary">Clear local checklist copy</button>
+      <div class="history-section" aria-live="polite">
+        <h3>Historical snapshots</h3>
+        <div class="field">
+          <label for="fileHistoryInput">Repository file (path or filename)</label>
+          <input id="fileHistoryInput" type="search" placeholder="index.html or app/ui/index.html" autocomplete="off" />
+        </div>
+        <button id="loadFileHistoryBtn" class="button-secondary" type="button">Load file history</button>
+        <div id="fileHistoryStatus" class="status-bar" hidden></div>
+        <div id="fileHistoryResults" class="history-results" role="list"></div>
+      </div>
     </section>
 
     <section class="panel" id="resultsPanel">
@@ -516,6 +604,10 @@
     const forgetTokenBtn = document.getElementById('forgetTokenBtn');
     const tokenDialog = document.getElementById('tokenDialog');
     const tokenInput = document.getElementById('tokenInput');
+    const fileHistoryInput = document.getElementById('fileHistoryInput');
+    const loadFileHistoryBtn = document.getElementById('loadFileHistoryBtn');
+    const fileHistoryStatus = document.getElementById('fileHistoryStatus');
+    const fileHistoryResults = document.getElementById('fileHistoryResults');
 
     const state = {
       entries: [],
@@ -531,7 +623,11 @@
       isLoading: false,
       isFetchingRepos: false,
       isFetchingBranches: false,
-      token: null
+      token: null,
+      defaultBranch: '',
+      fileHistory: [],
+      selectedFilePath: '',
+      isLoadingFileHistory: false
     };
 
     function loadSettings() {
@@ -687,6 +783,17 @@
       persistSettings();
     });
 
+    loadFileHistoryBtn.addEventListener('click', () => {
+      loadFileHistory();
+    });
+
+    fileHistoryInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        loadFileHistory();
+      }
+    });
+
     exportBtn.addEventListener('click', () => {
       if (!state.entries.length) {
         alert('No checklist entries to export yet.');
@@ -758,6 +865,169 @@
     function setButtonsDisabled(disabled) {
       loadBtn.disabled = disabled;
       refreshBtn.disabled = disabled;
+    }
+
+    function renderFileHistory() {
+      fileHistoryResults.innerHTML = '';
+      if (!state.selectedFilePath) {
+        const empty = document.createElement('div');
+        empty.className = 'history-empty';
+        empty.textContent = 'Enter a filename to load its history.';
+        fileHistoryResults.appendChild(empty);
+        return;
+      }
+      if (!state.fileHistory.length) {
+        const empty = document.createElement('div');
+        empty.className = 'history-empty';
+        empty.textContent = 'No commits found for this file on the selected branch.';
+        fileHistoryResults.appendChild(empty);
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'history-commit-list';
+      for (const commit of state.fileHistory) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'history-chip';
+        const sha = commit.sha || commit.id;
+        const message = commit.commit?.message || commit.message || '';
+        const firstLine = message.split('\n')[0].trim();
+        const authorDate = commit.commit?.author?.date || commit.commit?.committer?.date || commit.authoredDate;
+        let formattedDate = authorDate || '';
+        if (authorDate) {
+          try {
+            formattedDate = new Date(authorDate).toLocaleString();
+          } catch (err) {
+            formattedDate = authorDate;
+          }
+        }
+        const safeSha = escapeHtml((sha || '').slice(0, 7));
+        const safeDate = escapeHtml(formattedDate || '');
+        const safeMessage = escapeHtml(firstLine || 'View snapshot');
+        chip.innerHTML = `
+          <strong>${safeSha}</strong>
+          <span>${safeDate}</span>
+          <span>${safeMessage}</span>
+        `;
+        chip.title = `${sha}\n${formattedDate}${firstLine ? `\n${firstLine}` : ''}`;
+        chip.addEventListener('click', () => {
+          openHistoryEntry(commit);
+        });
+        list.appendChild(chip);
+      }
+      fileHistoryResults.appendChild(list);
+    }
+
+    async function loadFileHistory() {
+      if (!state.owner || !state.repo) {
+        alert('Select a repository first.');
+        return;
+      }
+      const filePath = fileHistoryInput.value.trim();
+      if (!filePath) {
+        alert('Enter a filename or path to fetch its history.');
+        return;
+      }
+      if (state.isLoadingFileHistory) return;
+      state.isLoadingFileHistory = true;
+      state.selectedFilePath = filePath;
+      setFileHistoryStatus(`Fetching history for ${filePath}…`, { spinner: true });
+      try {
+        const commits = await fetchFileHistory({
+          owner: state.owner,
+          repo: state.repo,
+          path: filePath,
+          branch: state.selectedBranch || state.defaultBranch || undefined
+        });
+        state.fileHistory = commits;
+        if (commits.length) {
+          setFileHistoryStatus(`Loaded ${commits.length} revision${commits.length === 1 ? '' : 's'} for ${filePath}.`);
+        } else {
+          setFileHistoryStatus(`No revisions found for ${filePath}.`, { tone: 'warning' });
+        }
+        renderFileHistory();
+      } catch (error) {
+        console.error('Failed to load file history', error);
+        setFileHistoryStatus(`Error loading history: ${error.message}`, { tone: 'error' });
+        state.fileHistory = [];
+        renderFileHistory();
+      } finally {
+        state.isLoadingFileHistory = false;
+      }
+    }
+
+    async function fetchFileHistory({ owner, repo, path, branch }) {
+      const commits = [];
+      let page = 1;
+      const encodedPath = encodeURIComponent(path);
+      const branchParam = branch ? `&sha=${encodeURIComponent(branch)}` : '';
+      while (page <= 10) {
+        const response = await githubRest(`/repos/${owner}/${repo}/commits?per_page=100&page=${page}&path=${encodedPath}${branchParam}`);
+        if (!Array.isArray(response) || !response.length) break;
+        commits.push(...response);
+        if (response.length < 100) break;
+        page += 1;
+      }
+      return commits;
+    }
+
+    function openHistoryEntry(commit) {
+      if (!state.owner || !state.repo || !state.selectedFilePath) return;
+      const url = new URL('viewer.html', window.location.href);
+      url.searchParams.set('owner', state.owner);
+      url.searchParams.set('repo', state.repo);
+      const sha = commit.sha || commit.id;
+      if (sha) {
+        url.searchParams.set('sha', sha);
+      }
+      url.searchParams.set('path', state.selectedFilePath);
+      const authorDate = commit.commit?.author?.date || commit.commit?.committer?.date || commit.authoredDate;
+      if (authorDate) {
+        url.searchParams.set('committed_at', authorDate);
+      }
+      const authorName = commit.commit?.author?.name || commit.commit?.committer?.name || commit.author?.name;
+      if (authorName) {
+        url.searchParams.set('author', authorName);
+      }
+      const message = commit.commit?.message || commit.message || '';
+      if (message) {
+        url.searchParams.set('message', message.split('\n')[0]);
+      }
+      if (commit.html_url) {
+        url.searchParams.set('commit_url', commit.html_url);
+      }
+      if (state.selectedBranch) {
+        url.searchParams.set('ref', state.selectedBranch);
+      }
+      if (state.defaultBranch) {
+        url.searchParams.set('default_branch', state.defaultBranch);
+      }
+      window.open(url.toString(), '_blank', 'noopener');
+    }
+
+    function resetFileHistory({ clearInput = false } = {}) {
+      state.fileHistory = [];
+      state.selectedFilePath = '';
+      state.isLoadingFileHistory = false;
+      fileHistoryStatus.hidden = true;
+      if (clearInput) {
+        fileHistoryInput.value = '';
+      }
+      renderFileHistory();
+    }
+
+    function setFileHistoryStatus(message, { tone = 'info', spinner = false } = {}) {
+      if (!message) {
+        fileHistoryStatus.hidden = true;
+        fileHistoryStatus.textContent = '';
+        return;
+      }
+      fileHistoryStatus.hidden = false;
+      fileHistoryStatus.textContent = message;
+      fileHistoryStatus.dataset.tone = tone;
+      if (spinner) {
+        fileHistoryStatus.innerHTML = `<span class="loader"></span> <span>${message}</span>`;
+      }
     }
 
     function disableRepoControls(message) {
@@ -858,6 +1128,7 @@
       branchSelect.disabled = true;
       state.branches = [];
       state.selectedBranch = '';
+      state.defaultBranch = '';
     }
 
     function selectRepository(fullName, { userInitiated = false, fromHydration = false } = {}) {
@@ -880,6 +1151,9 @@
         console.warn('Invalid repository selection', fullName);
         return;
       }
+      const repoInfo = state.repos.find(repo => repo.full_name === fullName);
+      state.defaultBranch = repoInfo?.default_branch || '';
+      resetFileHistory({ clearInput: false });
       const [owner, repo] = fullName.split('/', 2);
       state.owner = owner;
       state.repo = repo;
@@ -945,9 +1219,12 @@
         : state.selectedBranch;
       const availableNames = branches.map(branch => branch.name);
       const fallbackBranch = branches[0].name;
+      const preferredDefault = state.defaultBranch && availableNames.includes(state.defaultBranch)
+        ? state.defaultBranch
+        : null;
       const branchToSelect = desiredBranch && availableNames.includes(desiredBranch)
         ? desiredBranch
-        : fallbackBranch;
+        : (preferredDefault || fallbackBranch);
       state.pendingBranchSelection = '';
       applyBranchSelection(branchToSelect, { fromHydration, userInitiated });
     }
@@ -960,6 +1237,11 @@
       state.selectedBranch = value;
       if (value) {
         applyAutoBranchFilter(value, { force: userInitiated });
+      }
+      if (state.selectedFilePath) {
+        state.fileHistory = [];
+        setFileHistoryStatus('Branch changed. Reload file history to refresh results.');
+        renderFileHistory();
       }
       persistSettings();
     }
@@ -1395,6 +1677,7 @@
     }
 
     loadSettings();
+    renderFileHistory();
     applyFilters();
     render();
   </script>
