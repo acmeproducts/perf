@@ -1039,8 +1039,20 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null,
-            showDebugToasts: true
+            showDebugToasts: true,
+            deviceId: null
         };
+        const DEVICE_ID_STORAGE_KEY = 'orbital-device-id';
+        try {
+            let storedId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+            if (!storedId) {
+                storedId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                localStorage.setItem(DEVICE_ID_STORAGE_KEY, storedId);
+            }
+            state.deviceId = storedId;
+        } catch (error) {
+            state.deviceId = `device-${Date.now()}`;
+        }
         const DriveLinkHelper = {
             extractFileId(input) {
                 if (!input) return null;
@@ -2107,7 +2119,7 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2142,6 +2154,11 @@
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
                         }
+                        if (oldVersion < 5 && !db.objectStoreNames.contains('folderVersions')) {
+                            const versionStore = db.createObjectStore('folderVersions', { keyPath: 'folderKey' });
+                            versionStore.createIndex('provider', 'provider', { unique: false });
+                            versionStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
                             if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
@@ -2164,6 +2181,21 @@
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
             }
+            buildFolderVersionPayload(input = {}) {
+                const folderKey = this.resolveFolderKey(input);
+                if (!folderKey) return null;
+                const rawFolderId = typeof input === 'string' ? input : (input.folderId || input.originalFolderId || null);
+                const providerType = input.providerType || input.provider || null;
+                const version = Number(input.folderVersion || input.version || 0);
+                const lastChecked = input.lastChecked != null ? input.lastChecked : Date.now();
+                return {
+                    folderKey,
+                    folderId: rawFolderId || (folderKey.includes('::') ? folderKey.split('::').slice(1).join('::') : folderKey),
+                    provider: providerType,
+                    folderVersion: Number.isFinite(version) ? version : 0,
+                    lastChecked
+                };
+            }
             async getFolderCache(folderId) {
                 if (!this.db) return null;
                 return new Promise((resolve, reject) => {
@@ -2174,12 +2206,69 @@
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveFolderCache(folderId, files) {
+            async getFolderVersion(context) {
+                if (!this.db) return null;
+                const payload = this.buildFolderVersionPayload(context);
+                if (!payload) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderVersions', 'readonly');
+                    const store = transaction.objectStore('folderVersions');
+                    const request = store.get(payload.folderKey);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (!record) { resolve(null); return; }
+                        resolve({
+                            folderKey: record.folderKey || payload.folderKey,
+                            folderId: record.folderId || payload.folderId,
+                            provider: record.provider || payload.provider,
+                            folderVersion: Number(record.folderVersion || 0),
+                            lastChecked: record.lastChecked || 0
+                        });
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderVersion(record) {
+                if (!this.db) return null;
+                const payload = this.buildFolderVersionPayload(record);
+                if (!payload) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderVersions', 'readwrite');
+                    const store = transaction.objectStore('folderVersions');
+                    const request = store.put({ ...payload });
+                    request.onsuccess = () => resolve({ ...payload });
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async deleteFolderVersion(context) {
                 if (!this.db) return;
+                const payload = this.buildFolderVersionPayload(context);
+                if (!payload) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderVersions', 'readwrite');
+                    const store = transaction.objectStore('folderVersions');
+                    const request = store.delete(payload.folderKey);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderCache(folderId, files, options = {}) {
+                if (!this.db) return;
+                const record = {
+                    folderId,
+                    files,
+                    cached: Date.now()
+                };
+                if (options.folderVersion != null) {
+                    record.folderVersion = Number(options.folderVersion);
+                }
+                if (options.providerType) {
+                    record.provider = options.providerType;
+                }
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
+                    const request = store.put(record);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
                 });
@@ -2207,10 +2296,16 @@
             async saveMetadata(fileId, metadata, context = {}) {
                 if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
+                const normalized = metadata ? { ...metadata } : {};
+                if (normalized.itemTimestamp == null) {
+                    normalized.itemTimestamp = Date.now();
+                } else if (!Number.isNaN(Number(normalized.itemTimestamp))) {
+                    normalized.itemTimestamp = Number(normalized.itemTimestamp);
+                }
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
+                    const record = { id: fileId, metadata: normalized, cached: Date.now() };
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -2422,6 +2517,7 @@
                     this.deleteFolderCache(context.folderId || context),
                     this.deleteFolderState(context),
                     this.deleteFolderManifest(context),
+                    this.deleteFolderVersion(context),
                     fileIds.length > 0 ? Promise.all(fileIds.map(id => this.deleteMetadata(id))) : this.deleteMetadataByFolder(context)
                 ]);
             }
@@ -2458,9 +2554,10 @@
                     return { mode: 'full', reason: 'no-db' };
                 }
                 const context = this.buildContext(folderId);
-                const [folderState, localManifest] = await Promise.all([
+                let [folderState, localManifest, versionRecord] = await Promise.all([
                     this.dbManager.getFolderState(context),
-                    this.dbManager.getFolderManifest(context)
+                    this.dbManager.getFolderManifest(context),
+                    this.dbManager.getFolderVersion(context)
                 ]);
 
                 if (forceFullResync) {
@@ -2469,6 +2566,20 @@
                         await this.dbManager.saveFolderManifest({ ...localManifest, ...context, requiresFullResync: true });
                     }
                     return { mode: 'full', folderState, localManifest, reason: 'force' };
+                }
+
+                let previousVersion = Number(versionRecord?.folderVersion || 0);
+                let remoteVersion = null;
+                if (this.provider?.getFolderVersion) {
+                    try {
+                        remoteVersion = await this.provider.getFolderVersion(folderId);
+                        if (remoteVersion != null) {
+                            versionRecord = await this.dbManager.saveFolderVersion({ ...context, folderVersion: remoteVersion, lastChecked: Date.now() });
+                        }
+                    } catch (error) {
+                        this.logger?.log({ event: 'foldersync:version:error', level: 'error', details: `Failed to read folder version for ${folderId}: ${error.message}` });
+                        return { mode: 'full', folderState, localManifest, reason: 'version-check-failed' };
+                    }
                 }
 
                 if (!folderState || !localManifest) {
@@ -2480,16 +2591,30 @@
                         this.logger?.log({ event: 'foldersync:coldstart:manifest-error', level: 'warn', details: `Failed to prefetch manifest for ${folderId}: ${error.message}` });
                     }
                     const manifestFileId = remoteManifest?.manifestFileId || null;
-                    return { mode: 'full', folderState, localManifest, remoteManifest, manifestFileId, reason: 'cold-start' };
+                    return { mode: 'full', folderState, localManifest, remoteManifest, manifestFileId, remoteVersion, reason: 'cold-start' };
                 }
 
                 if (localManifest.requiresFullResync) {
                     this.logger?.log({ event: 'foldersync:manifest-flag', level: 'warn', details: `Manifest flagged full resync for ${folderId}.` });
-                    return { mode: 'full', folderState, localManifest, reason: 'manifest-flag' };
+                    return { mode: 'full', folderState, localManifest, remoteVersion, reason: 'manifest-flag' };
                 }
 
-                const localVersion = Number(folderState.localVersion || 0);
-                const cloudVersion = Number(folderState.cloudVersion || 0);
+                if (folderState && remoteVersion != null) {
+                    folderState = { ...folderState, cloudVersion: remoteVersion };
+                }
+                if (remoteVersion != null) {
+                    if (previousVersion === 0) {
+                        this.logger?.log({ event: 'foldersync:version:cold', level: 'warn', details: `No cached folder version for ${folderId}; requiring full resync.` });
+                        return { mode: 'full', folderState, localManifest, remoteVersion, reason: 'no-local-version' };
+                    }
+                    if (remoteVersion !== previousVersion) {
+                        this.logger?.log({ event: 'foldersync:version:mismatch', level: 'warn', details: `Folder version ${remoteVersion} differs from cached ${previousVersion}; requiring full resync.`, data: { folderId } });
+                        return { mode: 'full', folderState, localManifest, remoteVersion, reason: 'version-mismatch' };
+                    }
+                }
+
+                const localVersion = remoteVersion != null ? previousVersion : Number(folderState.localVersion || versionRecord?.folderVersion || 0);
+                const cloudVersion = remoteVersion != null ? remoteVersion : Number(folderState.cloudVersion || versionRecord?.folderVersion || 0);
                 if (localVersion >= cloudVersion) {
                     this.logger?.log({
                         event: 'foldersync:hydrate-cache',
@@ -2498,23 +2623,23 @@
                         data: { folderId }
                     });
                     this.queueBackgroundProbe(folderId, { localManifest, folderState });
-                    return { mode: 'cache', folderState, localManifest };
+                    return { mode: 'cache', folderState, localManifest, remoteVersion };
                 }
 
                 const remoteManifest = await this.fetchRemoteManifest(folderId, { expectVersion: cloudVersion });
                 if (!remoteManifest) {
-                    return { mode: 'full', folderState, localManifest, reason: 'missing-remote' };
+                    return { mode: 'full', folderState, localManifest, remoteVersion, reason: 'missing-remote' };
                 }
                 if (remoteManifest.requiresFullResync) {
                     await this.dbManager.saveFolderManifest({ ...localManifest, ...context, requiresFullResync: true, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion });
-                    return { mode: 'full', folderState, localManifest, remoteManifest, reason: 'remote-flag' };
+                    return { mode: 'full', folderState, localManifest, remoteManifest, remoteVersion, reason: 'remote-flag' };
                 }
 
                 const diff = this.computeManifestDiff(localManifest, remoteManifest);
                 if (!diff.hasChanges && Number(remoteManifest.cloudVersion || 0) <= localVersion) {
                     await this.dbManager.saveFolderState({ ...folderState, ...context, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion, localVersion });
                     this.queueBackgroundProbe(folderId, { localManifest, folderState: { ...folderState, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion } });
-                    return { mode: 'cache', folderState: { ...folderState, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion }, localManifest };
+                    return { mode: 'cache', folderState: { ...folderState, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion }, localManifest, remoteVersion: remoteManifest.cloudVersion ?? remoteVersion };
                 }
 
                 this.logger?.log({
@@ -2523,7 +2648,7 @@
                     details: `Delta required: ${diff.changedIds.length} changed, ${diff.removedIds.length} removed.`,
                     data: { folderId, cloudVersion: remoteManifest.cloudVersion ?? cloudVersion }
                 });
-                return { mode: 'delta', folderState, localManifest, remoteManifest, diff };
+                return { mode: 'delta', folderState, localManifest, remoteManifest, diff, remoteVersion: remoteManifest.cloudVersion ?? remoteVersion };
             }
             async fetchRemoteManifest(folderId, options = {}) {
                 if (!this.provider || typeof this.provider.loadFolderManifest !== 'function') {
@@ -2579,8 +2704,10 @@
             buildManifestFromFiles(folderId, files = []) {
                 const entries = {};
                 files.forEach(file => {
+                    const changeNumber = this.computeChangeNumber(file);
                     entries[file.id] = {
-                        changeNumber: this.computeChangeNumber(file),
+                        changeNumber,
+                        itemTimestamp: changeNumber,
                         stack: file.stack || file.appProperties?.slideboxStack || 'in',
                         notesHash: this.hashString(file.notes || file.appProperties?.notes || ''),
                         lastCloudUpdate: file.modifiedTime || file.createdTime || new Date().toISOString(),
@@ -2595,6 +2722,10 @@
                 return entries;
             }
             computeChangeNumber(file) {
+                if (file.itemTimestamp != null) {
+                    const numeric = Number(file.itemTimestamp);
+                    if (!Number.isNaN(numeric)) return numeric;
+                }
                 if (file.changeNumber != null) {
                     const numeric = Number(file.changeNumber);
                     if (!Number.isNaN(numeric)) return numeric;
@@ -2712,10 +2843,12 @@
                     const existing = entries[file.id] || {};
                     const notesValue = file.notes ?? file.appProperties?.notes ?? '';
                     const stackValue = file.stack || file.appProperties?.slideboxStack || existing.stack || 'in';
-                    const changeNumber = Number(file.localUpdatedAt || file.changeNumber || existing.changeNumber || timestamp);
+                    const baseTimestamp = file.itemTimestamp != null ? Number(file.itemTimestamp) : Number(existing.itemTimestamp || existing.changeNumber || file.localUpdatedAt || timestamp);
+                    const changeNumber = Number.isNaN(baseTimestamp) ? timestamp : baseTimestamp;
                     entries[file.id] = {
                         ...existing,
                         changeNumber,
+                        itemTimestamp: changeNumber,
                         stack: stackValue,
                         notesHash: this.hashString(notesValue),
                         lastCloudUpdate: file.modifiedTime || existing.lastCloudUpdate || isoTimestamp,
@@ -2772,17 +2905,39 @@
                 return { manifestFileId: manifestPayload.manifestFileId, cloudVersion: manifestPayload.cloudVersion };
             }
             async recordLocalFlush(folderId, options = {}) {
-                const timestamp = options.timestamp || Date.now();
+                let timestamp = options.timestamp != null ? Number(options.timestamp) : Date.now();
+                if (!Number.isFinite(timestamp)) {
+                    timestamp = Date.now();
+                }
                 const context = this.buildContext(folderId);
                 const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
-                let nextVersion = Number(existing.localVersion || 0) + 1;
-                if (options.targetVersion != null) {
-                    const numericTarget = Number(options.targetVersion);
-                    if (!Number.isNaN(numericTarget) && numericTarget > Number(existing.localVersion || 0)) {
-                        nextVersion = numericTarget;
-                    }
+                const baseVersionRaw = Number(existing.localVersion || existing.cloudVersion || 0);
+                const baseVersion = Number.isFinite(baseVersionRaw) ? baseVersionRaw : 0;
+                let candidateVersion = options.targetVersion != null ? Number(options.targetVersion) : timestamp;
+                if (!Number.isFinite(candidateVersion)) {
+                    candidateVersion = timestamp;
+                }
+                if (!Number.isFinite(candidateVersion)) {
+                    candidateVersion = Date.now();
+                }
+                let nextVersion = candidateVersion;
+                if (nextVersion <= baseVersion) {
+                    nextVersion = baseVersion + 1;
+                }
+                if (!Number.isFinite(nextVersion)) {
+                    nextVersion = Date.now();
+                }
+                if (timestamp < nextVersion) {
+                    timestamp = nextVersion;
                 }
                 await this.dbManager.saveFolderState({ ...existing, ...context, folderId, localVersion: nextVersion, cloudVersion: nextVersion, lastLocalMutation: timestamp, lastCloudAck: timestamp });
+                if (this.dbManager && typeof this.dbManager.saveFolderVersion === 'function') {
+                    try {
+                        await this.dbManager.saveFolderVersion({ ...context, folderVersion: nextVersion, lastChecked: timestamp });
+                    } catch (error) {
+                        this.logger?.log({ event: 'foldersync:version:cache-error', level: 'warn', details: `Failed to persist local folder version for ${folderId}: ${error.message}` });
+                    }
+                }
                 let manifestRecord = null;
                 if ((!options.remoteContext || !options.remoteContext.manifestFileId) && this.dbManager) {
                     manifestRecord = await this.dbManager.getFolderManifest(context);
@@ -3043,6 +3198,9 @@
                 const folderContext = this.resolveEntryFolderContext(entry, metadataRecord);
                 const payload = { ...metadataRecord, ...updates, localUpdatedAt: entry.localUpdatedAt };
                 payload.id = entry.fileId;
+                if (payload.itemTimestamp == null) {
+                    payload.itemTimestamp = entry.localUpdatedAt || Date.now();
+                }
                 const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
                 const stackFragment = stackLabel ? ` (${stackLabel})` : '';
                 try {
@@ -3100,6 +3258,9 @@
                 const snapshot = { ...file };
                 snapshot.id = snapshot.id || file.fileId;
                 snapshot.localUpdatedAt = snapshot.localUpdatedAt || file.localUpdatedAt || Date.now();
+                if (snapshot.itemTimestamp == null && file.itemTimestamp != null) {
+                    snapshot.itemTimestamp = file.itemTimestamp;
+                }
                 if (snapshot.notes == null && snapshot.appProperties?.notes != null) {
                     snapshot.notes = snapshot.appProperties.notes;
                 }
@@ -3112,7 +3273,7 @@
                 existing.files.set(snapshot.id, snapshot);
                 this.pendingManifestUpdates.set(folderKey, existing);
             }
-            async persistPendingManifestUpdates(timestamp = Date.now()) {
+            async persistPendingManifestUpdates(defaultTimestamp = Date.now()) {
                 if (!state.folderSyncCoordinator || this.pendingManifestUpdates.size === 0) {
                     this.pendingManifestUpdates.clear();
                     return;
@@ -3133,24 +3294,56 @@
                         } catch (error) {
                             folderState = null;
                         }
-                        const baseVersion = Number(folderState?.localVersion || 0);
-                        const nextVersion = baseVersion + 1;
+                        const baseVersionRaw = Number(folderState?.localVersion || 0);
+                        const baseVersion = Number.isFinite(baseVersionRaw) ? baseVersionRaw : 0;
+                        const normalizedDefaultTs = Number.isFinite(defaultTimestamp) ? defaultTimestamp : Date.now();
+                        const changeTimestamps = files
+                            .map(file => {
+                                if (file?.itemTimestamp != null && !Number.isNaN(Number(file.itemTimestamp))) {
+                                    return Number(file.itemTimestamp);
+                                }
+                                if (file?.localUpdatedAt != null && !Number.isNaN(Number(file.localUpdatedAt))) {
+                                    return Number(file.localUpdatedAt);
+                                }
+                                return null;
+                            })
+                            .filter(ts => Number.isFinite(ts));
+                        let folderTimestamp = normalizedDefaultTs;
+                        if (changeTimestamps.length > 0) {
+                            folderTimestamp = Math.max(folderTimestamp, ...changeTimestamps);
+                        }
+                        if (!Number.isFinite(folderTimestamp)) {
+                            folderTimestamp = Date.now();
+                        }
+                        let nextVersion = Number(folderTimestamp);
+                        if (!Number.isFinite(nextVersion)) {
+                            nextVersion = Date.now();
+                        }
+                        if (nextVersion <= baseVersion) {
+                            nextVersion = baseVersion + 1;
+                        }
                         let manifestResult = null;
                         try {
                             manifestResult = await coordinator.applyLocalManifestUpdates(folderId, files, {
                                 providerType,
                                 targetVersion: nextVersion,
-                                timestamp
+                                timestamp: folderTimestamp
                             });
                         } catch (error) {
                             this.logger?.log({ event: 'manifest:update:error', level: 'error', details: `Failed to update manifest for ${folderId}: ${error.message}` });
                             await coordinator.markRequiresFullResync(folderId, 'manifest-update-failed');
                             continue;
                         }
-                        const versionForRecord = manifestResult?.cloudVersion != null ? manifestResult.cloudVersion : nextVersion;
+                        let versionForRecord = manifestResult?.cloudVersion != null ? Number(manifestResult.cloudVersion) : nextVersion;
+                        if (!Number.isFinite(versionForRecord)) {
+                            versionForRecord = nextVersion;
+                        }
+                        if (versionForRecord <= baseVersion) {
+                            versionForRecord = baseVersion + 1;
+                        }
                         const remoteContext = manifestResult?.manifestFileId ? { manifestFileId: manifestResult.manifestFileId } : {};
                         await coordinator.recordLocalFlush(folderId, {
-                            timestamp,
+                            timestamp: versionForRecord,
                             targetVersion: versionForRecord,
                             remoteContext
                         });
@@ -3161,17 +3354,24 @@
             }
             serializeGoogleMetadata(payload) {
                 const tags = Array.isArray(payload.tags) ? payload.tags : [];
+                const timestamp = payload.itemTimestamp != null ? Number(payload.itemTimestamp) : (payload.localUpdatedAt || Date.now());
+                const serializedTimestamp = Number.isNaN(Number(timestamp)) ? Date.now() : Number(timestamp);
+                const tagString = tags.join(',');
                 return {
                     slideboxStack: payload.stack || 'in',
-                    slideboxTags: tags.join(','),
+                    slideboxTags: tagString,
+                    tags: tagString,
                     qualityRating: String(payload.qualityRating ?? 0),
                     contentRating: String(payload.contentRating ?? 0),
                     notes: payload.notes || '',
                     stackSequence: String(payload.stackSequence ?? 0),
-                    favorite: payload.favorite ? 'true' : 'false'
+                    favorite: payload.favorite ? 'true' : 'false',
+                    itemTimestamp: String(serializedTimestamp)
                 };
             }
             serializeGenericMetadata(payload) {
+                const timestamp = payload.itemTimestamp != null ? Number(payload.itemTimestamp) : (payload.localUpdatedAt || Date.now());
+                const normalizedTimestamp = Number.isNaN(Number(timestamp)) ? Date.now() : Number(timestamp);
                 return {
                     stack: payload.stack || 'in',
                     tags: Array.isArray(payload.tags) ? payload.tags : [],
@@ -3180,6 +3380,7 @@
                     contentRating: payload.contentRating ?? 0,
                     stackSequence: payload.stackSequence ?? 0,
                     favorite: Utils.normalizeFavorite(payload.favorite),
+                    itemTimestamp: normalizedTimestamp,
                     localUpdatedAt: payload.localUpdatedAt || Date.now()
                 };
             }
@@ -3207,6 +3408,7 @@
                     }
                 }
                 const merged = { ...(existing || {}), ...this.serializeGenericMetadata(payload) };
+                merged.lastUpdated = new Date().toISOString();
                 const putResponse = await fetch(endpoint, { method: 'PUT', headers, body: JSON.stringify(merged) });
                 if (!putResponse.ok) {
                     const text = await putResponse.text();
@@ -3230,7 +3432,7 @@
                     if (this.pendingManifestUpdates.size > 0) {
                         await this.persistPendingManifestUpdates(timestamp);
                     } else if (this.lastSyncAppliedCount > 0 && state.currentFolder?.id) {
-                        await state.folderSyncCoordinator.recordLocalFlush(state.currentFolder.id, { timestamp });
+                        await state.folderSyncCoordinator.recordLocalFlush(state.currentFolder.id, { timestamp, targetVersion: timestamp });
                     }
                 }
                 return result;
@@ -3452,6 +3654,19 @@
                     targetFileId: targetId || fallbackId || null
                 };
 
+                const appProps = target?.appProperties || file?.appProperties || {};
+                const rawItemTimestamp = appProps.itemTimestamp != null ? appProps.itemTimestamp : null;
+                const numericItemTimestamp = rawItemTimestamp != null ? Number(rawItemTimestamp) : null;
+                if (numericItemTimestamp != null && !Number.isNaN(numericItemTimestamp)) {
+                    normalized.itemTimestamp = numericItemTimestamp;
+                }
+                if (appProps.stackSequence != null && normalized.stackSequence == null) {
+                    const sequenceValue = Number(appProps.stackSequence);
+                    if (!Number.isNaN(sequenceValue)) {
+                        normalized.stackSequence = sequenceValue;
+                    }
+                }
+
                 if (options.useShortcutId) {
                     normalized.shortcutId = file.id;
                     normalized.isShortcut = true;
@@ -3621,6 +3836,55 @@
 
                 return { folders: [], files: allFiles };
             }
+            async findFolderVersionFile(folderId, options = {}) {
+                const query = `'${folderId}' in parents and name = '.orbital8-folder-version.json' and trashed=false`;
+                const url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1`;
+                const response = await this.makeApiCall(url, { signal: options.signal });
+                return response.files && response.files[0] ? response.files[0] : null;
+            }
+            async ensureFolderVersionFile(folderId, options = {}) {
+                const existing = await this.findFolderVersionFile(folderId, options);
+                if (existing?.id) {
+                    return existing.id;
+                }
+                const metadata = {
+                    name: '.orbital8-folder-version.json',
+                    parents: [folderId],
+                    mimeType: 'application/json'
+                };
+                const created = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', {
+                    method: 'POST',
+                    body: JSON.stringify(metadata),
+                    signal: options.signal
+                });
+                return created.id;
+            }
+            async getFolderVersion(folderId, options = {}) {
+                try {
+                    const file = await this.findFolderVersionFile(folderId, options);
+                    if (!file?.id) {
+                        return null;
+                    }
+                    const response = await this.makeApiCall(`/files/${file.id}?alt=media&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                        method: 'GET',
+                        signal: options.signal
+                    }, false);
+                    const text = await response.text();
+                    if (!text) return null;
+                    const data = JSON.parse(text);
+                    if (data && data.folderVersion != null) {
+                        const numeric = Number(data.folderVersion);
+                        return Number.isNaN(numeric) ? null : numeric;
+                    }
+                    return null;
+                } catch (error) {
+                    if (/404/.test(String(error.message))) {
+                        return null;
+                    }
+                    state.syncLog?.log({ event: 'folderversion:fetch:error', level: 'error', details: `Failed to read folder version for ${folderId}: ${error.message}` });
+                    throw error;
+                }
+            }
             async loadFolderManifest(folderId, options = {}) {
                 try {
                     const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
@@ -3706,19 +3970,20 @@
                 return { cloudVersion, manifestFileId: fileId };
             }
             async updateFolderVersionMarker(folderId, version, options = {}) {
-                let fileId = options.manifestFileId;
-                if (!fileId) {
-                    const manifest = await this.loadFolderManifest(folderId, { signal: options.signal });
-                    fileId = manifest?.manifestFileId;
-                }
-                if (!fileId) {
-                    await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false });
-                    return;
-                }
-                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                const fileId = await this.ensureFolderVersionFile(folderId, options);
+                const payload = {
+                    folderId,
+                    folderVersion: Number(version),
+                    lastUpdatedBy: state.deviceId || 'unknown',
+                    lastUpdatedAt: new Date().toISOString()
+                };
+                const uploadUrl = `/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                await this.makeApiCall(uploadUrl, {
                     method: 'PATCH',
-                    body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(version) } })
-                });
+                    body: JSON.stringify(payload),
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: options.signal
+                }, false);
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -3781,9 +4046,10 @@
             async updateUserMetadata(fileId, updates) {
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
-                Object.assign(file, updates);
+                const timestamp = Date.now();
+                Object.assign(file, updates, { itemTimestamp: timestamp, localUpdatedAt: timestamp });
                 await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { providerType: state.providerType });
             }
 
             async deleteFile(fileId) {
@@ -3872,7 +4138,56 @@
                     nextLink = data['@odata.nextLink'];
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
                 }
+                const metadataResults = await Promise.allSettled(allFiles.map(async (file) => {
+                    try {
+                        const response = await this.makeApiCall(`/me/drive/special/approot:/${file.id}.json:/content`, { method: 'GET', signal: state.activeRequests.signal });
+                        const metadata = await response.json();
+                        return { fileId: file.id, metadata };
+                    } catch (error) {
+                        if (/404/.test(String(error.message))) {
+                            return { fileId: file.id, metadata: null };
+                        }
+                        throw error;
+                    }
+                }));
+                const metadataMap = new Map();
+                metadataResults.forEach(result => {
+                    if (result.status === 'fulfilled' && result.value) {
+                        metadataMap.set(result.value.fileId, result.value.metadata);
+                    }
+                });
+                allFiles.forEach(file => {
+                    const metadata = metadataMap.get(file.id);
+                    if (!metadata) return;
+                    if (metadata.stack) file.stack = metadata.stack;
+                    if (Array.isArray(metadata.tags)) file.tags = metadata.tags;
+                    if (metadata.notes != null) file.notes = metadata.notes;
+                    if (metadata.qualityRating != null) file.qualityRating = metadata.qualityRating;
+                    if (metadata.contentRating != null) file.contentRating = metadata.contentRating;
+                    if (metadata.stackSequence != null) file.stackSequence = metadata.stackSequence;
+                    if (metadata.favorite != null) file.favorite = Boolean(metadata.favorite);
+                    if (metadata.itemTimestamp != null && !Number.isNaN(Number(metadata.itemTimestamp))) {
+                        file.itemTimestamp = Number(metadata.itemTimestamp);
+                    }
+                });
                 return { folders: [], files: allFiles };
+            }
+            async getFolderVersion(folderId, options = {}) {
+                try {
+                    const response = await this.makeApiCall(`/me/drive/special/approot:/folder-versions/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
+                    const data = await response.json();
+                    if (data && data.folderVersion != null) {
+                        const numeric = Number(data.folderVersion);
+                        return Number.isNaN(numeric) ? null : numeric;
+                    }
+                    return null;
+                } catch (error) {
+                    if (/404/.test(String(error.message))) {
+                        return null;
+                    }
+                    state.syncLog?.log({ event: 'folderversion:fetch:error', level: 'error', details: `OneDrive folder version fetch failed for ${folderId}: ${error.message}` });
+                    throw error;
+                }
             }
             async loadFolderManifest(folderId, options = {}) {
                 try {
@@ -3936,20 +4251,18 @@
             }
             async updateFolderVersionMarker(folderId, version, options = {}) {
                 const headers = { 'Content-Type': 'application/json' };
-                try {
-                    await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
-                        method: 'PUT',
-                        headers,
-                        body: JSON.stringify({ folderId, cloudVersion: version, updatedAt: new Date().toISOString() }),
-                        signal: options.signal
-                    });
-                } catch (error) {
-                    if (/404/.test(String(error.message))) {
-                        await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false }, options);
-                    } else {
-                        throw error;
-                    }
-                }
+                const payload = {
+                    folderId,
+                    folderVersion: Number(version),
+                    lastUpdatedBy: state.deviceId || 'unknown',
+                    lastUpdatedAt: new Date().toISOString()
+                };
+                await this.makeApiCall(`/me/drive/special/approot:/folder-versions/${folderId}.json:/content`, {
+                    method: 'PUT',
+                    headers,
+                    body: JSON.stringify(payload),
+                    signal: options.signal
+                });
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -4222,6 +4535,10 @@
                         coordinator.queueBackgroundProbe(folderId, { localManifest });
                     }
 
+                    if (preparation?.remoteVersion != null && state.dbManager?.saveFolderVersion) {
+                        await state.dbManager.saveFolderVersion({ folderId, providerType: state.providerType, folderVersion: preparation.remoteVersion, lastChecked: Date.now() });
+                    }
+
                     if (state.pendingBackgroundProbe?.folderId === folderId) {
                         const pending = state.pendingBackgroundProbe;
                         state.pendingBackgroundProbe = null;
@@ -4247,13 +4564,28 @@
                 for (const cloudFile of cloudFiles) {
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
-                        merged.push({ ...cloudFile });
+                        const initialTimestamp = cloudFile.itemTimestamp ?? Number(cloudFile.appProperties?.itemTimestamp ?? 0);
+                        const normalized = { ...cloudFile };
+                        if (initialTimestamp && !Number.isNaN(Number(initialTimestamp))) {
+                            normalized.itemTimestamp = Number(initialTimestamp);
+                        }
+                        merged.push(normalized);
                         newIds.push(cloudFile.id);
                     } else {
+                        const cloudTimestampRaw = cloudFile.itemTimestamp ?? cloudFile.appProperties?.itemTimestamp;
+                        const cachedTimestampRaw = cached.itemTimestamp ?? cached.appProperties?.itemTimestamp;
+                        const cloudTimestamp = cloudTimestampRaw != null ? Number(cloudTimestampRaw) : NaN;
+                        const cachedTimestamp = cachedTimestampRaw != null ? Number(cachedTimestampRaw) : NaN;
                         const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
                         const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const useTimestampComparison = !Number.isNaN(cloudTimestamp) && !Number.isNaN(cachedTimestamp);
+                        const shouldUpdate = useTimestampComparison ? cloudTimestamp > cachedTimestamp : (!isNaN(cloudModified) && cloudModified > cachedModified);
+                        if (shouldUpdate) {
+                            const updated = { ...cached, ...cloudFile };
+                            if (!Number.isNaN(cloudTimestamp)) {
+                                updated.itemTimestamp = cloudTimestamp;
+                            }
+                            merged.push(updated);
                             updatedIds.push(cloudFile.id);
                         } else {
                             merged.push(cached);
@@ -4323,7 +4655,11 @@
                     }
 
                     await this.processAllMetadata(state.imageFiles, false);
-                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    const deltaCacheOptions = { providerType: state.providerType };
+                    if (preparation?.remoteVersion != null) {
+                        deltaCacheOptions.folderVersion = preparation.remoteVersion;
+                    }
+                    await state.dbManager.saveFolderCache(folderId, state.imageFiles, deltaCacheOptions);
 
                     const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
                     manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
@@ -4339,6 +4675,22 @@
                         localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
                         lastCloudAck: Date.now()
                     });
+                    if (state.dbManager?.saveFolderVersion) {
+                        let versionToPersist = deltaCacheOptions.folderVersion ?? updatedCloudVersion;
+                        if ((versionToPersist == null || Number(versionToPersist) === 0) && typeof state.provider?.getFolderVersion === 'function') {
+                            try {
+                                const fetchedVersion = await state.provider.getFolderVersion(folderId);
+                                if (fetchedVersion != null) {
+                                    versionToPersist = fetchedVersion;
+                                }
+                            } catch (error) {
+                                state.syncLog?.log({ event: 'foldersync:version:refresh-error', level: 'warn', details: `Failed to refresh folder version after sync: ${error.message}` });
+                            }
+                        }
+                        if (versionToPersist != null) {
+                            await state.dbManager.saveFolderVersion({ folderId, providerType: state.providerType, folderVersion: Number(versionToPersist), lastChecked: Date.now() });
+                        }
+                    }
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     state.sessionVisitedFolders.add(key);
@@ -4420,8 +4772,16 @@
                     const cloudFiles = result.files || [];
                     const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
+                    const cacheOptions = { providerType: state.providerType };
+                    if (preparation?.remoteVersion != null) {
+                        cacheOptions.folderVersion = preparation.remoteVersion;
+                    }
+
                     if (mergedFiles.length === 0) {
-                        await state.dbManager.saveFolderCache(folderId, []);
+                        await state.dbManager.saveFolderCache(folderId, [], cacheOptions);
+                        if (cacheOptions.folderVersion != null && state.dbManager?.saveFolderVersion) {
+                            await state.dbManager.saveFolderVersion({ folderId, providerType: state.providerType, folderVersion: Number(cacheOptions.folderVersion), lastChecked: Date.now() });
+                        }
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
                         this.returnToFolderSelection();
@@ -4441,7 +4801,7 @@
                     state.imageFiles = mergedFiles;
                     await this.processAllMetadata(state.imageFiles, !hadCached);
                     if (hasChanges || !hadCached) {
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                        await state.dbManager.saveFolderCache(folderId, state.imageFiles, cacheOptions);
                     }
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
@@ -4557,7 +4917,7 @@
                     }
 
                     await this.processAllMetadata(mergedFiles);
-                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
+                    await state.dbManager.saveFolderCache(folderId, mergedFiles, { providerType: state.providerType });
                     state.imageFiles = mergedFiles;
                     Core.initializeStacks();
                     Core.updateStackCounts();
@@ -4589,25 +4949,39 @@
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
             generateDefaultMetadata(file) {
-                 const baseMetadata = { 
-                    stack: 'in', 
-                    tags: [], 
-                    qualityRating: 0, 
-                    contentRating: 0, 
-                    notes: '', 
-                    stackSequence: 0, 
+                 const baseMetadata = {
+                    stack: 'in',
+                    tags: [],
+                    qualityRating: 0,
+                    contentRating: 0,
+                    notes: '',
+                    stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {}, 
-                    metadataStatus: 'pending' 
+                    extractedMetadata: {},
+                    metadataStatus: 'pending',
+                    itemTimestamp: Date.now()
                 };
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
-                    baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
+                    const rawTags = file.appProperties.tags || file.appProperties.slideboxTags || '';
+                    baseMetadata.tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
                     baseMetadata.qualityRating = parseInt(file.appProperties.qualityRating) || 0;
                     baseMetadata.contentRating = parseInt(file.appProperties.contentRating) || 0;
                     baseMetadata.notes = file.appProperties.notes || '';
                     baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
                     baseMetadata.favorite = file.appProperties.favorite === 'true';
+                    const rawTimestamp = file.appProperties.itemTimestamp != null ? Number(file.appProperties.itemTimestamp) : null;
+                    if (rawTimestamp != null && !Number.isNaN(rawTimestamp)) {
+                        baseMetadata.itemTimestamp = rawTimestamp;
+                    }
+                 }
+                 if (file.itemTimestamp != null && !Number.isNaN(Number(file.itemTimestamp))) {
+                    baseMetadata.itemTimestamp = Number(file.itemTimestamp);
+                 } else if (file.modifiedTime || file.createdTime) {
+                    const fallbackTs = Date.parse(file.modifiedTime || file.createdTime);
+                    if (!Number.isNaN(fallbackTs)) {
+                        baseMetadata.itemTimestamp = fallbackTs;
+                    }
                  }
                  return baseMetadata;
             },
@@ -4690,9 +5064,10 @@
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
                     const timestamp = Date.now();
-                    Object.assign(file, updates, { localUpdatedAt: timestamp });
+                    Object.assign(file, updates, { localUpdatedAt: timestamp, itemTimestamp: timestamp });
+                    updates.itemTimestamp = timestamp;
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { providerType: state.providerType });
                     if (state.syncManager) {
                         await state.syncManager.queueLocalChange({
                             fileId,
@@ -4702,7 +5077,7 @@
                             localUpdatedAt: timestamp,
                             folderId: state.currentFolder.id,
                             providerType: state.providerType,
-                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id }
+                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id, itemTimestamp: file.itemTimestamp }
                         }, { debounce: !skipDebounce });
                     }
                 } catch (error) {
@@ -4730,7 +5105,7 @@
                 const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
                 const fileName = name || file?.name || '';
                 const persistState = async () => {
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { providerType: state.providerType });
                 };
                 const restoreState = async (reason) => {
                     if (!file) { return false; }
@@ -5475,7 +5850,7 @@ this.updateImageCounters();
                 for(const file of newStack) {
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                 }
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { providerType: state.providerType });
 
                 state.stacks[state.grid.stack] = newStack;
                 state.currentStackPosition = 0;
@@ -6485,7 +6860,7 @@ this.updateImageCounters();
                         Utils.updateLoadingProgress(i + 1, filesToMove.length);
                     }
                     Utils.showToast(`Moved ${filesToMove.length} images to ${folderName}`, 'success', true);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles, { providerType: state.providerType });
                     state.folderMoveMode = { active: false, files: [] };
                     Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
                 } catch (error) { Utils.showToast('Error moving files', 'error', true); App.returnToFolderSelection(); }
