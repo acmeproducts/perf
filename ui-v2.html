@@ -4096,8 +4096,6 @@
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
                 state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
-                state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
-                state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
 
                 if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
@@ -4149,12 +4147,6 @@
                 }
             },
             async backToProviderSelection() {
-                if (state.syncManager) {
-                    await state.syncManager.flush({ reason: 'provider-screen' });
-                    await state.syncManager.stop();
-                    state.syncManager.setProviderContext({ provider: null, providerType: null });
-                }
-                state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
                 state.provider = null;
                 state.providerType = null;
                 Utils.showScreen('provider-screen');
@@ -4170,11 +4162,6 @@
                     const loaded = await this.loadImages();
                     if (loaded) {
                         this.switchToCommonUI();
-                        if (state.syncManager) {
-                            state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
-                            state.syncManager.start();
-                        }
-                        state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                     }
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
@@ -4187,385 +4174,40 @@
                     return false;
                 }
 
-                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
-                const coordinator = state.folderSyncCoordinator;
-                let preparation = null;
-
-                try {
-                    if (coordinator) {
-                        preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
-                    }
-
-                    if (preparation?.mode === 'delta') {
-                        const deltaLoaded = await this.applyDeltaSync({ cachedFiles, sessionKey, preparation });
-                        return deltaLoaded !== false;
-                    }
-
-                    if (preparation?.mode === 'full' || cachedFiles.length === 0 || isFirstSessionVisit || options.forceFullResync) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation });
-                        return synced !== false;
-                    }
-
-                    state.imageFiles = cachedFiles;
-                    await this.processAllMetadata(state.imageFiles);
-                    Utils.showScreen('app-container');
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
-                    state.sessionVisitedFolders.add(sessionKey);
-
-                    if (preparation?.mode === 'cache') {
-                        state.syncLog?.log({ event: 'foldersync:cache-hit', level: 'info', details: `Hydrated ${folderId} from cache while background probe runs.` });
-                    } else if (coordinator) {
-                        const localManifest = await state.dbManager.getFolderManifest({ providerType: state.providerType, folderId });
-                        coordinator.queueBackgroundProbe(folderId, { localManifest });
-                    }
-
-                    if (state.pendingBackgroundProbe?.folderId === folderId) {
-                        const pending = state.pendingBackgroundProbe;
-                        state.pendingBackgroundProbe = null;
-                        await this.applyDeltaFromCoordinator(pending);
-                    }
-
-                    return state.imageFiles.length > 0;
-                } catch (error) {
-                    if (error?.name !== 'AbortError') {
-                        Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
-                    }
-                    await this.returnToFolderSelection();
-                    return false;
-                }
-            },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
-                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
-                const merged = [];
-                const newIds = [];
-                const updatedIds = [];
-                const removedIds = [];
-
-                for (const cloudFile of cloudFiles) {
-                    const cached = cachedMap.get(cloudFile.id);
-                    if (!cached) {
-                        merged.push({ ...cloudFile });
-                        newIds.push(cloudFile.id);
-                    } else {
-                        const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
-                        const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
-                            updatedIds.push(cloudFile.id);
-                        } else {
-                            merged.push(cached);
-                        }
-                        cachedMap.delete(cloudFile.id);
-                    }
-                }
-
-                for (const removedId of cachedMap.keys()) {
-                    removedIds.push(removedId);
-                }
-
-                return {
-                    mergedFiles: merged,
-                    newIds,
-                    updatedIds,
-                    removedIds,
-                    hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
-                };
-            },
-            async applyDeltaSync({ cachedFiles = [], sessionKey, preparation, background = false }) {
-                const folderId = state.currentFolder.id;
-                const diff = preparation?.diff || { changedIds: [], removedIds: [] };
-                const remoteManifest = preparation?.remoteManifest || null;
-                const folderState = preparation?.folderState || null;
-                const coordinator = state.folderSyncCoordinator;
-
-                if (!background) {
-                    Utils.showScreen('loading-screen');
-                    Utils.updateLoadingProgress(0, (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), 'Applying cloud updates...');
-                }
-
-                try {
-                    const changedIds = diff.changedIds || [];
-                    let cloudFiles = [];
-                    if (changedIds.length > 0) {
-                        if (!state.provider || typeof state.provider.fetchFilesByIds !== 'function') {
-                            state.syncLog?.log({ event: 'foldersync:delta-fallback', level: 'error', details: 'Provider missing fetchFilesByIds; escalating to full resync.' });
-                            await coordinator?.markRequiresFullResync(folderId, 'delta-provider-missing');
-                            return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
-                        }
-                        cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
-                    }
-
-                    const mergedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
-                    const incompleteDelta = changedIds.length > 0 && cloudFiles.length !== changedIds.length;
-                    for (const file of cloudFiles) {
-                        const existing = mergedMap.get(file.id) || {};
-                        mergedMap.set(file.id, { ...existing, ...file });
-                    }
-                    const removedIds = diff.removedIds || [];
-                    for (const removed of removedIds) {
-                        mergedMap.delete(removed);
-                    }
-
-                    state.imageFiles = Array.from(mergedMap.values());
-
-                    if (!background) {
-                        Utils.updateLoadingProgress((diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), (diff.changedIds?.length || 0) + (diff.removedIds?.length || 0), 'Finishing sync...');
-                    }
-
-                    for (const file of cloudFiles) {
-                        await state.dbManager.saveMetadata(file.id, file, { folderId, providerType: state.providerType });
-                    }
-                    for (const removed of removedIds) {
-                        await state.dbManager.deleteMetadata(removed);
-                    }
-
-                    await this.processAllMetadata(state.imageFiles, false);
-                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
-
-                    const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
-                    manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
-                    const diffSummary = { changed: changedIds.length, removed: removedIds.length };
-                    await coordinator?.persistManifest(folderId, manifestRecord, {
-                        cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
-                        localVersion: folderState?.localVersion ?? null,
-                        lastDiffSummary: diffSummary
-                    });
-                    const updatedCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? 0;
-                    await coordinator?.persistFolderState(folderId, {
-                        cloudVersion: updatedCloudVersion,
-                        localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
-                        lastCloudAck: Date.now()
-                    });
-
-                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                    state.sessionVisitedFolders.add(key);
-
-                    const hasImages = state.imageFiles.length > 0;
-                    if (!background) {
-                        if (hasImages) {
-                            this.switchToCommonUI();
-                            Core.initializeStacks();
-                            Core.initializeImageDisplay();
-                        } else {
-                            await this.returnToFolderSelection();
-                        }
-                    } else {
-                        Core.initializeStacks();
-                        Core.updateStackCounts();
-                        if (hasImages) {
-                            await Core.displayCurrentImage();
-                        } else {
-                            Core.showEmptyState();
-                        }
-                    }
-
-                    const summary = [];
-                    if (changedIds.length > 0) summary.push(`${changedIds.length} updated`);
-                    if (removedIds.length > 0) summary.push(`${removedIds.length} removed`);
-                    if (summary.length > 0) {
-                        Utils.showToast(`Folder updated (${summary.join(', ')})`, 'info');
-                    }
-                    if (incompleteDelta) {
-                        state.syncLog?.log({ event: 'foldersync:delta-partial', level: 'warn', details: `Delta fetched ${cloudFiles.length}/${changedIds.length} items; marking full resync.` });
-                        await coordinator?.markRequiresFullResync(folderId, 'delta-incomplete');
-                    }
-                    state.syncLog?.log({
-                        event: 'foldersync:delta-apply',
-                        level: 'success',
-                        details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
-                        data: { cloudVersion: updatedCloudVersion }
-                    });
-                    return hasImages;
-                } catch (error) {
-                    state.syncLog?.log({ event: 'foldersync:delta-error', level: 'error', details: `Delta sync failed: ${error.message}` });
-                    Utils.showToast(`Delta sync failed: ${error.message}`, 'error', true);
-                    await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'delta-error');
-                    return this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation: { ...preparation, mode: 'full' } });
-                }
-            },
-            async applyDeltaFromCoordinator(payload) {
-                if (!payload) return;
-                if (payload.forceFullResync) {
-                    await this.loadImages({ forceFullResync: true });
-                    return;
-                }
-                if (!payload.diff?.hasChanges) return;
-                if (payload.folderId !== state.currentFolder?.id) {
-                    state.pendingBackgroundProbe = payload;
-                    return;
-                }
-                const folderId = state.currentFolder.id;
-                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || state.imageFiles || [];
-                await this.applyDeltaSync({
-                    cachedFiles,
-                    sessionKey,
-                    preparation: { ...payload, folderState: await state.dbManager.getFolderState({ providerType: state.providerType, folderId }) },
-                    background: true
-                });
-            },
-            async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
-                const folderId = state.currentFolder.id;
-                const hadCached = cachedFiles.length > 0;
-                const coordinator = state.folderSyncCoordinator;
-                const preparation = options.preparation || null;
                 Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                Utils.updateLoadingProgress(0, 0, 'Loading images from cloud...');
 
                 try {
+                    // Just load fresh from cloud every time - no caching complexity
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
-                    if (mergedFiles.length === 0) {
-                        await state.dbManager.saveFolderCache(folderId, []);
+                    if (cloudFiles.length === 0) {
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
                         this.returnToFolderSelection();
                         return false;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
+                    state.imageFiles = cloudFiles;
 
-                    state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached);
-                    if (hasChanges || !hadCached) {
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
-                    }
+                    // Process metadata (tags, notes, etc from IndexedDB)
+                    await this.processAllMetadata(cloudFiles, true);
 
-                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                    state.sessionVisitedFolders.add(key);
+                    // Save to cache for faster repeat loads
+                    await state.dbManager.saveFolderCache(folderId, cloudFiles);
+
                     this.switchToCommonUI();
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
 
-                    if (coordinator) {
-                        const manifestEntries = coordinator.buildManifestFromFiles(folderId, state.imageFiles);
-                        let manifestSeed = preparation?.remoteManifest || null;
-                        let manifestFileId = manifestSeed?.manifestFileId || preparation?.localManifest?.manifestFileId || preparation?.manifestFileId || null;
-                        if (!manifestFileId && state.provider && typeof state.provider.loadFolderManifest === 'function') {
-                            try {
-                                const lookup = await state.provider.loadFolderManifest(folderId, { signal: state.activeRequests?.signal });
-                                if (lookup?.manifestFileId) {
-                                    manifestFileId = lookup.manifestFileId;
-                                    if (!manifestSeed) {
-                                        manifestSeed = lookup;
-                                    }
-                                }
-                            } catch (error) {
-                                state.syncLog?.log({ event: 'manifest:lookup:pre-save', level: 'warn', details: `Manifest lookup before save failed: ${error.message}` });
-                            }
-                        }
-
-                        let remoteManifestResponse = null;
-                        let manifestRequiresRescan = false;
-                        if (state.provider && typeof state.provider.saveFolderManifest === 'function') {
-                            try {
-                                const manifestCloudVersion = manifestSeed?.cloudVersion ?? preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
-                                const manifestLocalVersion = preparation?.folderState?.localVersion ?? manifestCloudVersion;
-                                const manifestOptions = { manifestFileId };
-                                // Manifest persistence must survive folder exits; avoid tying this to the navigation abort controller.
-                                remoteManifestResponse = await state.provider.saveFolderManifest(folderId, {
-                                    entries: manifestEntries,
-                                    requiresFullResync: false,
-                                    cloudVersion: manifestCloudVersion,
-                                    localVersion: manifestLocalVersion,
-                                    manifestFileId
-                                }, manifestOptions);
-                                state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
-                            } catch (error) {
-                                if (error?.name === 'AbortError') {
-                                    state.syncLog?.log({ event: 'manifest:save:aborted', level: 'warn', details: `Manifest save cancelled: ${error.message}` });
-                                } else {
-                                    manifestRequiresRescan = true;
-                                    state.syncLog?.log({ event: 'manifest:save:error', level: 'error', details: `Manifest save failed: ${error.message}` });
-                                }
-                            }
-                        }
-
-                        const resolvedManifestSeed = remoteManifestResponse || manifestSeed || preparation?.remoteManifest || null;
-                        const remoteCloudVersion = remoteManifestResponse?.cloudVersion ?? resolvedManifestSeed?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? Date.now();
-                        const resolvedManifestFileId = remoteManifestResponse?.manifestFileId || manifestFileId || preparation?.localManifest?.manifestFileId || null;
-                        const manifestPayload = {
-                            entries: manifestEntries,
-                            requiresFullResync: manifestRequiresRescan,
-                            cloudVersion: remoteCloudVersion,
-                            localVersion: preparation?.folderState?.localVersion ?? remoteCloudVersion,
-                            manifestFileId: resolvedManifestFileId
-                        };
-                        await coordinator.persistManifest(folderId, manifestPayload, {
-                            cloudVersion: manifestPayload.cloudVersion,
-                            localVersion: manifestPayload.localVersion,
-                            lastDiffSummary: { new: newIds.length, updated: updatedIds.length, removed: removedIds.length }
-                        });
-                        await coordinator.persistFolderState(folderId, {
-                            cloudVersion: manifestPayload.cloudVersion,
-                            localVersion: Math.max(manifestPayload.localVersion ?? 0, manifestPayload.cloudVersion ?? 0),
-                            lastCloudAck: Date.now()
-                        });
-                        if (manifestPayload.requiresFullResync) {
-                            await coordinator.markRequiresFullResync(folderId, 'manifest-save-failed');
-                        }
-                    }
-
-                    if (hadCached && hasChanges) {
-                        const diffSummary = [];
-                        if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
-                        if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
-                        if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
-                        const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
-                        Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
-                    }
+                    return true;
                 } catch (error) {
-                    if (error.name !== 'AbortError') {
+                    if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
                     this.returnToFolderSelection();
-                }
-            },
-            async refreshFolderInBackground() {
-                try {
-                    const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                    const result = await state.provider.getFilesAndMetadata(folderId);
-                    const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
-
-                    if (!hasChanges) {
-                        return;
-                    }
-
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                        await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    await this.processAllMetadata(mergedFiles);
-                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
-                    state.imageFiles = mergedFiles;
-                    Core.initializeStacks();
-                    Core.updateStackCounts();
-                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
-                    else Core.showEmptyState();
-                    Utils.showToast('Folder updated in background', 'info');
-                } catch (error) {
-                    console.warn("Background refresh failed:", error.message);
+                    return false;
                 }
             },
             async processAllMetadata(files, isFirstLoad = false) {
@@ -4616,31 +4258,26 @@
             },
             async returnToFolderSelection() {
                 if (state.isReturningToFolders) return;
-
                 state.isReturningToFolders = true;
 
+                // Cancel any pending operations
+                state.activeRequests?.abort();
+                state.activeRequests = new AbortController();
+
+                // Switch screens immediately
                 Utils.showScreen('folder-screen');
-                this.resetViewState({ skipEmptyState: true });
+
+                // Clear state
+                state.imageFiles = [];
+                state.stacks = { in: [], out: [], priority: [], trash: [] };
 
                 try {
-                    if (state.syncManager) {
-                        await state.syncManager.flush({ reason: 'folder-switch' });
-                    }
-                } catch (error) {
-                    Utils.showToast(`Error syncing before returning to folders: ${error.message}`, 'error', true);
-                }
-
-                try {
-                    state.activeRequests?.abort();
-                    // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
-                    state.activeRequests = new AbortController();
                     await Folders.load();
                 } catch (error) {
-                    Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
-                    Utils.showScreen('folder-screen');
+                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                } finally {
+                    state.isReturningToFolders = false;
                 }
-
-                state.isReturningToFolders = false;
             },
             resetViewState(options = {}) {
                 const { skipEmptyState = false } = options;
@@ -4674,26 +4311,37 @@
                 }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
-                const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui' } = options;
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
-                    const timestamp = Date.now();
-                    Object.assign(file, updates, { localUpdatedAt: timestamp });
-                    await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+
+                    // Update local state immediately
+                    Object.assign(file, updates);
+
+                    // Save to IndexedDB
+                    await state.dbManager.saveMetadata(file.id, file, {
+                        folderId: state.currentFolder.id,
+                        providerType: state.providerType
+                    });
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
-                    if (state.syncManager) {
-                        await state.syncManager.queueLocalChange({
-                            fileId,
-                            updates,
-                            operationType,
-                            origin,
-                            localUpdatedAt: timestamp,
-                            folderId: state.currentFolder.id,
-                            providerType: state.providerType,
-                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id }
-                        }, { debounce: !skipDebounce });
+
+                    // Update cloud directly (fire-and-forget, no queuing)
+                    if (state.providerType === 'googledrive') {
+                        const metadata = {
+                            slideboxStack: file.stack || 'in',
+                            slideboxTags: (file.tags || []).join(','),
+                            qualityRating: String(file.qualityRating ?? 0),
+                            contentRating: String(file.contentRating ?? 0),
+                            notes: file.notes || '',
+                            stackSequence: String(file.stackSequence ?? 0),
+                            favorite: file.favorite ? 'true' : 'false'
+                        };
+                        // Fire and forget - don't await, don't block UI
+                        state.provider.updateFileMetadata(fileId, metadata).catch(err => {
+                            console.warn('Cloud update failed (will retry on next load):', err);
+                        });
                     }
+                    // OneDrive doesn't support custom metadata yet - just save locally
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -4797,19 +4445,13 @@
                     Utils.showToast('No folder selected to reset', 'error');
                     return;
                 }
-                const providerType = state.providerType;
+
                 try {
-                    state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                    const fileIds = cachedFiles.map(file => file.id);
-                    await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
-                    await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset');
-                    state.sessionVisitedFolders.delete(`${providerType || 'unknown'}::${folderId}`);
-                    Utils.showToast('Folder cache cleared. Resyncing...', 'info');
-                    await this.loadImages({ forceFullResync: true });
+                    await state.dbManager.deleteFolderCache(folderId);
+                    Utils.showToast('Cache cleared. Reloading...', 'info');
+                    await this.loadImages();
                 } catch (error) {
                     Utils.showToast(`Reset failed: ${error.message}`, 'error', true);
-                    state.syncLog?.log({ event: 'foldersync:reset-error', level: 'error', details: `Reset failed: ${error.message}` });
                 }
             },
             async extractMetadataInBackground(pngFiles) {
@@ -6965,18 +6607,13 @@ this.updateImageCounters();
         async function initApp() {
             try {
                 Utils.init();
-                state.syncLog = new SyncActivityLogger();
-                state.syncLog.init();
                 state.visualCues = new VisualCueManager();
                 state.haptic = new HapticFeedbackManager();
                 state.export = new ExportSystem();
                 state.dbManager = new DBManager();
                 await state.dbManager.init();
-                state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
-                state.folderSyncCoordinator.setDeltaHandler((payload) => App.applyDeltaFromCoordinator(payload));
-                state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
-                state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
+
                 Utils.showScreen('provider-screen');
                 Events.init();
                 Gestures.init();
