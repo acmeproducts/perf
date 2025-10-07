@@ -1328,10 +1328,18 @@
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
+                    const candidates = [
+                        file?.viewUrl,
+                        file?.downloadUrl,
+                        DriveLinkHelper.buildUcDownloadUrl(effectiveId)
+                    ];
+                    for (const candidate of candidates) {
+                        const shareable = DriveLinkHelper.normalizeToAssetUrl(candidate, effectiveId);
+                        if (shareable) {
+                            return shareable;
+                        }
                     }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w1000`;
+                    return file?.viewUrl || file?.downloadUrl || '';
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1343,13 +1351,19 @@
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s800');
+                    const candidates = [
+                        file?.viewUrl,
+                        file?.downloadUrl,
+                        DriveLinkHelper.buildUcDownloadUrl(effectiveId),
+                        DriveLinkHelper.buildApiDownloadUrl(effectiveId)
+                    ];
+                    for (const candidate of candidates) {
+                        const shareable = DriveLinkHelper.normalizeToAssetUrl(candidate, effectiveId);
+                        if (shareable) {
+                            return shareable;
+                        }
                     }
-                    if (file.thumbnail && file.thumbnail.url) {
-                        return file.thumbnail.url.replace('=s220', '=s800');
-                    }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w800`;
+                    return file?.viewUrl || file?.downloadUrl || '';
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3983,12 +3997,8 @@
                 }
             },
             async backToProviderSelection() {
-                if (state.syncManager) {
-                    await state.syncManager.flush({ reason: 'provider-screen' });
-                    await state.syncManager.stop();
-                    state.syncManager.setProviderContext({ provider: null, providerType: null });
-                }
-                state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
+                state.activeRequests?.abort();
+                state.activeRequests = new AbortController();
                 state.provider = null;
                 state.providerType = null;
                 state.navigationToken = Symbol('navigation');
