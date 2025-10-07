@@ -29,7 +29,7 @@ Implementation steps
 • Retire loadImages, syncFolderFromCloud, refreshFolderInBackground, and processAllMetadata in favor of a new loadFolder (or refactored loadImages) that:
 • Reads the cached folder record (if present) and validates freshness **before** hydrating UI state. To validate, always obtain the provider payload headers first: request `{ files, metadata, lastCloudUpdatedAt }` (or at minimum `{ lastCloudUpdatedAt }` for a lightweight check) prior to rendering anything. The provider must supply `metadata` as a map keyed by `fileId` plus a `lastCloudUpdatedAt` ISO string; if the provider has no native timestamp, generate `new Date().toISOString()` when composing the payload.
 • Persists explicit ISO timestamps for both `lastCloudUpdatedAt` (taken from the provider payload at fetch time) and `lastCacheUpdatedAt` (stamped when we write to IndexedDB) on every `folderCache` record. Never rely on provider “freshness” hints alone.
-• Parses both timestamps into epoch milliseconds and compares them directly **before rendering**. When timestamps match exactly **and** the cached file list is present, hydrate UI state from IndexedDB without contacting the provider for full file data. Otherwise, immediately fetch the full cloud payload, render that data first, then update RAM and cache with the verified snapshot. At no point should the UI render unverified cached data.
+• Parses both timestamps into epoch milliseconds **after** obtaining the latest `lastCloudUpdatedAt` value from the provider validation call. If the newly fetched timestamp matches the cached `lastCloudUpdatedAt` and a cached file list is available, hydrate UI state directly from IndexedDB (no additional payload download required). Otherwise, fetch the full cloud payload, render that verified data first, then update RAM and cache with the new snapshot. At no point should the UI render data that has not been revalidated against the provider.
 • Falls back to SimpleMetadataManager.getDefaultMetadata() when a file lacks cloud metadata. Do not substitute potentially stale cache values in this case.
 • Saves the assembled file array to both RAM (`state.imageFiles`) and `folderCache` only after confirming the cache snapshot matches the data that was rendered on screen. This keeps IndexedDB aligned with the validated payload.
 • Eliminates the old “display cache → sync → re-render” loop; the UI must always display the same payload that was verified against the provider before the first paint, and background refreshes simply re-run the validation logic.
@@ -60,9 +60,8 @@ Validation plan
 • Validate IndexedDB (folderCache/metadata) contents via DevTools to ensure the three-layer flow persists data as expected.
 Testing
 • ⚠️ Not run (QA review only; plan stage)
-6.4 and 6.5 need more work do not display then sych then update displayed counters. 2 options 1. staleness check of cache vs cloud , if stale load/display cloud, display, else display cache 2. load/display cloud @codex never display potentially stale data
+Previous note: “6.4 and 6.5 need more work—do not display then sync then update displayed counters. 2 options 1. staleness check of cache vs cloud, if stale load/display cloud, display, else display cache 2. load/display cloud. @codex never display potentially stale data.”
+Resolution: The updated Step 6 now enforces the validation-first approach so the UI never paints from an unverified cache.
 
 Issues
-• Plan Step 6 still displays cached metadata before confirming freshness
-• The current plan (items 6.4–6.5) explicitly hydrates the UI from IndexedDB and only later refreshes from the cloud, which violates the new requirement to “never display potentially stale data.” We need to either validate cache freshness before rendering or always render cloud data first, as outlined in the two options you provided.
-Suggested taskRevise Step 6 to prevent stale metadata from rendering
+• RESOLVED: Plan Step 6 clarifies that cache hydration only happens after revalidating timestamps against a fresh provider check, ensuring the UI never renders unverified data.
