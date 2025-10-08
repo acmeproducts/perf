@@ -34,10 +34,47 @@
         background: linear-gradient(180deg, rgba(99, 102, 241, 0.32), transparent 320px) var(--bg-dark);
         color: #e5e7eb;
       }
+      .usage-guide {
+        background: var(--panel-dark);
+        border-color: var(--border-dark);
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+      }
+      .usage-guide strong {
+        color: #e5e7eb;
+      }
     }
 
     header {
       padding: 32px clamp(20px, 4vw, 48px) 12px;
+    }
+
+    .usage-guide {
+      margin: 0 clamp(20px, 4vw, 48px);
+      margin-bottom: 20px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px 22px;
+      box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
+    }
+
+    .usage-guide h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      letter-spacing: -0.01em;
+    }
+
+    .usage-guide ol {
+      margin: 0;
+      padding-left: 22px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      display: grid;
+      gap: 6px;
+    }
+
+    .usage-guide strong {
+      color: #111827;
     }
 
     header h1 {
@@ -50,6 +87,17 @@
       margin: 8px 0 0;
       max-width: 720px;
       color: var(--muted);
+    }
+
+    .storage-notice {
+      margin: 12px 0 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .storage-notice[data-mode="fallback"] {
+      color: var(--danger);
+      font-weight: 600;
     }
 
     .app-shell {
@@ -695,7 +743,19 @@
   <header>
     <h1>Codex Review Viewer</h1>
     <p>Track review artefacts, toggle inclusion, and edit contextual notes inline. Double-click any line to update it.</p>
+    <p id="storageNotice" class="storage-notice" aria-live="polite"></p>
   </header>
+
+  <section class="usage-guide" aria-label="Usage instructions">
+    <h2>How to use the Review Viewer</h2>
+    <ol>
+      <li><strong>Load an export.</strong> Use <em>Import JSON</em> to open a saved Codex checklist snapshot from this tool or the combined console.</li>
+      <li><strong>Explore the tabs.</strong> Switch between <em>View</em> and <em>Snapshot preview</em> to audit annotations versus the metadata captured in the export.</li>
+      <li><strong>Filter efficiently.</strong> Search within the checklist and toggle statuses to surface the entries that need attention.</li>
+      <li><strong>Capture revisions.</strong> Update notes inline and save or export new copies in JSON, text, Markdown, CSV, or PDF formats.</li>
+      <li><strong>Watch storage notices.</strong> A sandbox warning means your uploads live only for this browser tab—download any updates before leaving.</li>
+    </ol>
+  </section>
   <div class="app-shell">
     <nav class="tab-bar" role="tablist">
       <button class="tab-button active" id="tab-view" role="tab" aria-selected="true" aria-controls="panel-view">View</button>
@@ -766,6 +826,7 @@
       </div>
     </section>
   </div>
+  <script src="codex-storage.js"></script>
   <script src="codex-checklist-shared.js"></script>
   <script>
 
@@ -812,6 +873,46 @@
     const TOKEN_KEY = 'codexrecall.pat';
     const SNAPSHOT_HISTORY_KEY = 'codexrecall.snapshotHistory';
 
+    function createMemoryStorage() {
+      const store = new Map();
+      return {
+        mode: 'memory',
+        usingFallback: true,
+        getItem(key) {
+          return store.has(key) ? store.get(key) : null;
+        },
+        setItem(key, value) {
+          store.set(key, String(value));
+        },
+        removeItem(key) {
+          store.delete(key);
+        }
+      };
+    }
+
+    function resolveStorage() {
+      if (window.CodexStorage) {
+        return window.CodexStorage;
+      }
+      try {
+        if (window.localStorage) {
+          return window.localStorage;
+        }
+      } catch (error) {
+        console.warn('Review Viewer: localStorage unavailable, using in-memory storage.', error);
+      }
+      return createMemoryStorage();
+    }
+
+    function isFallbackStorage(storage) {
+      if (!storage) return true;
+      if (typeof storage.usingFallback === 'boolean') return storage.usingFallback;
+      if (storage.mode && storage.mode !== 'localStorage') return true;
+      return false;
+    }
+
+    const storage = resolveStorage();
+
     const dom = {
       entryList: document.getElementById('entry-list'),
       refreshButton: document.getElementById('refresh-button'),
@@ -822,7 +923,8 @@
       exportPdfButton: document.getElementById('export-pdf-button'),
       saveButton: document.getElementById('save-button'),
       importInput: document.getElementById('import-input'),
-      statusBar: document.getElementById('status-bar')
+      statusBar: document.getElementById('status-bar'),
+      storageNotice: document.getElementById('storageNotice')
     };
 
     const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
@@ -881,6 +983,17 @@
       content: '',
       rawUrl: ''
     };
+
+    function updateStorageNotice() {
+      if (!dom.storageNotice) return;
+      const fallback = isFallbackStorage(storage);
+      dom.storageNotice.dataset.mode = fallback ? 'fallback' : 'persistent';
+      dom.storageNotice.textContent = fallback
+        ? 'Storage: sandboxed (changes persist for this session only).'
+        : 'Storage: using browser localStorage for persistence.';
+    }
+
+    updateStorageNotice();
 
     tabPanels.forEach(panel => {
       panel.hidden = !panel.classList.contains('active');
@@ -1338,7 +1451,7 @@
         entries: cloneEntries(entries)
       };
       try {
-        localStorage.setItem(key, JSON.stringify(payload));
+        storage.setItem(key, JSON.stringify(payload));
         currentChecklist = {
           owner: currentChecklist.owner,
           repo: currentChecklist.repo,
@@ -1355,7 +1468,7 @@
         setStatus(`Saved checklist for ${formatLabel(currentChecklist)}.`);
       } catch (error) {
         console.error('Unable to save state', error);
-        setStatus('Unable to save state. Check storage availability.', true);
+        setStatus('Unable to save state. Storage may be sandboxed or unavailable.', true);
       } finally {
         pendingSaveKey = null;
       }
@@ -1969,7 +2082,7 @@
 
     function getStoredToken() {
       try {
-        return localStorage.getItem(TOKEN_KEY);
+        return storage.getItem(TOKEN_KEY);
       } catch (error) {
         console.warn('Unable to read stored token', error);
         return null;
@@ -2050,7 +2163,7 @@
 
     function loadSnapshotHistory() {
       try {
-        const raw = localStorage.getItem(SNAPSHOT_HISTORY_KEY);
+        const raw = storage.getItem(SNAPSHOT_HISTORY_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
@@ -2083,7 +2196,7 @@
         filtered.length = 8;
       }
       try {
-        localStorage.setItem(SNAPSHOT_HISTORY_KEY, JSON.stringify(filtered));
+        storage.setItem(SNAPSHOT_HISTORY_KEY, JSON.stringify(filtered));
       } catch (error) {
         console.warn('Unable to persist snapshot history', error);
       }
