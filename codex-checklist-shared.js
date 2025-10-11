@@ -4,6 +4,47 @@
   const MIGRATION_MARKER = 'codexrecall.viewer.migrated';
   const CodexChecklist = { current: null };
 
+  function createMemoryStorage() {
+    const store = new Map();
+    return {
+      get length() {
+        return store.size;
+      },
+      key(index) {
+        const keys = Array.from(store.keys());
+        return index >= 0 && index < keys.length ? keys[index] : null;
+      },
+      getItem(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      setItem(key, value) {
+        store.set(key, String(value));
+      },
+      removeItem(key) {
+        store.delete(key);
+      },
+      clear() {
+        store.clear();
+      }
+    };
+  }
+
+  function resolveStorage() {
+    if (window.CodexStorage) {
+      return window.CodexStorage;
+    }
+    try {
+      if (window.localStorage) {
+        return window.localStorage;
+      }
+    } catch (error) {
+      console.warn('CodexChecklist: unable to access localStorage, using in-memory storage.', error);
+    }
+    return createMemoryStorage();
+  }
+
+  const storage = resolveStorage();
+
   function deepClone(value) {
     try {
       return JSON.parse(JSON.stringify(value));
@@ -31,7 +72,7 @@
 
   function readPayload(key) {
     try {
-      const raw = localStorage.getItem(key);
+      const raw = storage.getItem(key);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.entries)) {
@@ -63,8 +104,8 @@
 
   function listAll() {
     const snapshots = [];
-    for (let i = 0; i < localStorage.length; i += 1) {
-      const key = localStorage.key(i);
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
       if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
       const info = parseKey(key);
       if (!info) continue;
@@ -119,32 +160,32 @@
   }
 
   function migrateLegacy() {
-    if (localStorage.getItem(MIGRATION_MARKER)) {
+    if (storage.getItem(MIGRATION_MARKER)) {
       return null;
     }
     let migrated = null;
     try {
-      const raw = localStorage.getItem(LEGACY_KEY);
+      const raw = storage.getItem(LEGACY_KEY);
       if (!raw) {
-        localStorage.setItem(MIGRATION_MARKER, 'true');
+        storage.setItem(MIGRATION_MARKER, 'true');
         return null;
       }
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed) || !parsed.length) {
-        localStorage.removeItem(LEGACY_KEY);
-        localStorage.setItem(MIGRATION_MARKER, 'true');
+        storage.removeItem(LEGACY_KEY);
+        storage.setItem(MIGRATION_MARKER, 'true');
         return null;
       }
       const owner = 'legacy';
       const repo = 'viewer';
       const key = keyFor(owner, repo);
-      if (!localStorage.getItem(key)) {
+      if (!storage.getItem(key)) {
         const payload = { savedAt: new Date().toISOString(), entries: parsed };
-        localStorage.setItem(key, JSON.stringify(payload));
+        storage.setItem(key, JSON.stringify(payload));
         migrated = setCurrent({ owner, repo, payload, source: 'migration' });
       }
-      localStorage.removeItem(LEGACY_KEY);
-      localStorage.setItem(MIGRATION_MARKER, 'true');
+      storage.removeItem(LEGACY_KEY);
+      storage.setItem(MIGRATION_MARKER, 'true');
     } catch (error) {
       console.warn('CodexChecklist: failed to migrate legacy viewer state', error);
     }
