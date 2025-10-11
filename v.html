@@ -120,6 +120,25 @@
       letter-spacing: -0.01em;
     }
 
+    .storage-status {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 0 0 16px;
+      font-style: italic;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .storage-status {
+        color: var(--muted-dark);
+      }
+    }
+
+    .storage-status[data-mode="fallback"] {
+      color: var(--danger);
+      font-style: normal;
+      font-weight: 600;
+    }
+
     .grid-two {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -517,6 +536,7 @@
 
     <section class="panel primary-panel active" id="setupPanel">
       <h2>Authentication & defaults</h2>
+      <p id="storageStatus" class="storage-status" data-mode="persistent">Storage: checking…</p>
       <div class="grid-two">
         <div>
           <div class="field">
@@ -713,6 +733,7 @@
     }
 
     const storage = resolveStorage();
+    const storageStatus = document.getElementById('storageStatus');
 
     const state = {
       token: null,
@@ -857,6 +878,33 @@
       } else {
         element.textContent = message;
       }
+    }
+
+    function isFallbackStorage(store) {
+      if (!store) return true;
+      if (typeof store.usingFallback === 'boolean') {
+        return Boolean(store.usingFallback);
+      }
+      if (typeof store.mode === 'string') {
+        return store.mode !== 'localStorage';
+      }
+      try {
+        const probeKey = `__codexstorage_probe__${Math.random().toString(36).slice(2)}`;
+        store.setItem(probeKey, '1');
+        store.removeItem(probeKey);
+        return false;
+      } catch (error) {
+        return true;
+      }
+    }
+
+    function updateStorageStatus() {
+      if (!storageStatus) return;
+      const fallback = isFallbackStorage(storage);
+      storageStatus.dataset.mode = fallback ? 'fallback' : 'persistent';
+      storageStatus.textContent = fallback
+        ? 'Storage: sandboxed (resets after tab closes)'
+        : 'Storage: browser localStorage';
     }
 
     function encodeContent(content) {
@@ -1718,6 +1766,12 @@
     testMessageInput.addEventListener('input', () => {
       testMessageInput.dataset.manual = testMessageInput.value.trim() ? 'true' : '';
     });
+
+    if (storage && typeof storage.subscribe === 'function') {
+      storage.subscribe(updateStorageStatus);
+    }
+    window.addEventListener('codexstorage:ready', updateStorageStatus);
+    updateStorageStatus();
 
     switchPrimaryTab('setup');
     switchDetailTab('preview');
