@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Codex Recall Workspace</title>
+  <title>Codex Recall Launcher</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -39,35 +39,6 @@
 
     header {
       padding: 28px clamp(20px, 4vw, 48px) 16px;
-    }
-
-    .usage-guide {
-      margin: 0 clamp(20px, 4vw, 48px);
-      margin-bottom: 12px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 18px 20px;
-      box-shadow: 0 12px 32px rgba(20, 30, 60, 0.06);
-    }
-
-    .usage-guide h2 {
-      margin: 0 0 10px;
-      font-size: 1rem;
-      letter-spacing: -0.01em;
-    }
-
-    .usage-guide ol {
-      margin: 0;
-      padding-left: 20px;
-      color: var(--text-muted);
-      font-size: 0.95rem;
-      display: grid;
-      gap: 6px;
-    }
-
-    .usage-guide strong {
-      color: var(--text);
     }
 
     header h1 {
@@ -107,14 +78,6 @@
         background: var(--panel-dark);
         border-color: var(--border-dark);
         box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
-      }
-      .usage-guide {
-        background: var(--panel-dark);
-        border-color: var(--border-dark);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-      }
-      .usage-guide strong {
-        color: var(--text-invert);
       }
     }
 
@@ -229,18 +192,6 @@
       margin-top: 16px;
     }
 
-    .storage-status {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      font-style: italic;
-    }
-
-    .storage-status[data-mode="fallback"] {
-      color: var(--danger);
-      font-style: normal;
-      font-weight: 600;
-    }
-
     .status-bar {
       margin-top: 12px;
       border-radius: 12px;
@@ -310,6 +261,13 @@
       }
     }
 
+    .commit-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+
     .commit-item {
       border-radius: 12px;
       padding: 10px 12px;
@@ -320,6 +278,7 @@
       gap: 4px;
       color: inherit;
       transition: border 0.2s ease, background 0.2s ease;
+      flex: 1;
     }
 
     .commit-item strong {
@@ -346,6 +305,43 @@
       .commit-item.active {
         background: rgba(124, 129, 255, 0.14);
         border-color: rgba(124, 129, 255, 0.4);
+      }
+    }
+
+    .commit-launch {
+      border-radius: 10px;
+      border: 1px solid var(--accent);
+      background: rgba(79, 70, 229, 0.12);
+      color: var(--accent);
+      padding: 0 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+      display: flex;
+      align-items: center;
+    }
+
+    .commit-launch:hover {
+      background: rgba(79, 70, 229, 0.22);
+      transform: translateY(-1px);
+    }
+
+    .commit-launch:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .commit-launch {
+        border-color: var(--accent-dark);
+        background: rgba(124, 129, 255, 0.16);
+        color: var(--accent-dark);
+      }
+
+      .commit-launch:hover {
+        background: rgba(124, 129, 255, 0.28);
       }
     }
 
@@ -417,6 +413,12 @@
       gap: 12px;
     }
 
+    .launch-section {
+      margin-top: 18px;
+      display: grid;
+      gap: 10px;
+    }
+
     .inline-fields {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -461,11 +463,11 @@
 </head>
 <body>
   <header>
-    <h1>Codex Recall Workspace</h1>
+    <h1>Codex Recall Launcher</h1>
     <p>
-      Load a repository once, pick a file by name, and jump between every historical version. Search by commit SHA or
-      timestamp, preview the exact file in a same-origin iframe, then copy, download, or push the snapshot back to GitHub
-      in seconds.
+      Point Codex at any repository, choose a file, and scan every revision in descending order. Search by SHA or
+      timestamp, spin up isolated tabs for any snapshot under a custom name, then copy, export, or publish straight back
+      to GitHub when you're satisfied.
     </p>
   </header>
 
@@ -558,6 +560,17 @@
                 <button id="copyContentBtn" type="button" class="secondary">Copy to clipboard</button>
                 <button id="downloadContentBtn" type="button" class="secondary">Download</button>
               </div>
+              <div class="launch-section">
+                <div class="field">
+                  <label for="launchNameInput">Tab name</label>
+                  <input id="launchNameInput" type="text" placeholder="snapshot.html" />
+                </div>
+                <div class="button-row">
+                  <button id="launchTabBtn" type="button" disabled>Launch in new tab</button>
+                  <button id="launchCloneBtn" type="button" class="secondary" disabled>Launch test tab</button>
+                </div>
+                <div id="launchStatus" class="status-bar" hidden></div>
+              </div>
             </div>
             <div>
               <h3>Push or share</h3>
@@ -638,8 +651,11 @@
       selectedCommit: null,
       content: '',
       commitUrl: '',
-      committedAt: ''
+      committedAt: '',
+      contentCache: null
     };
+
+    state.contentCache = new Map();
 
     const tokenInput = document.getElementById('tokenInput');
     const tokenStatus = document.getElementById('tokenStatus');
@@ -674,6 +690,10 @@
     const refreshPreviewBtn = document.getElementById('refreshPreviewBtn');
     const copyContentBtn = document.getElementById('copyContentBtn');
     const downloadContentBtn = document.getElementById('downloadContentBtn');
+    const launchNameInput = document.getElementById('launchNameInput');
+    const launchTabBtn = document.getElementById('launchTabBtn');
+    const launchCloneBtn = document.getElementById('launchCloneBtn');
+    const launchStatus = document.getElementById('launchStatus');
 
     const publishForm = document.getElementById('publishForm');
     const destOwnerInput = document.getElementById('destOwnerInput');
@@ -697,6 +717,12 @@
       previewMeta.hidden = true;
       actionsGrid.hidden = true;
       contentEditor.value = '';
+      launchNameInput.dataset.manual = '';
+      launchNameInput.dataset.lastCommit = '';
+      launchNameInput.value = '';
+      setStatus(launchStatus, '');
+      launchTabBtn.disabled = true;
+      launchCloneBtn.disabled = true;
       if (clearMessage) {
         commitMessageInput.dataset.manual = '';
         commitMessageInput.value = '';
@@ -730,16 +756,6 @@
       } catch (error) {
         return atob(content);
       }
-      updateStorageStatus();
-    }
-
-    function updateStorageStatus() {
-      if (!storageStatus) return;
-      const fallback = isFallbackStorage(storage);
-      storageStatus.dataset.mode = fallback ? 'fallback' : 'persistent';
-      storageStatus.textContent = fallback
-        ? 'Storage: sandboxed (resets after tab closes)'
-        : 'Storage: browser localStorage';
     }
 
     function persistSettings() {
@@ -789,9 +805,71 @@
       destPathInput.value = state.selectedFile ? state.selectedFile : '';
     }
 
+    function buildDefaultLaunchName(commit) {
+      const fileName = state.selectedFile ? state.selectedFile.split('/').pop() : 'snapshot.html';
+      const dotIndex = fileName.lastIndexOf('.');
+      const base = dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
+      const extension = dotIndex >= 0 ? fileName.slice(dotIndex) : '.html';
+      const sha = (commit?.sha || state.selectedCommit?.sha || '').slice(0, 7);
+      const safeBase = base.replace(/[^a-z0-9._-]+/gi, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'snapshot';
+      const safeSha = sha.replace(/[^a-f0-9]+/gi, '') || 'draft';
+      return `${safeBase}-${safeSha}${extension}`;
+    }
+
+    function updateLaunchName(commit) {
+      if (launchNameInput.dataset.manual === 'true') return;
+      const target = commit || state.selectedCommit;
+      launchNameInput.value = buildDefaultLaunchName(target);
+    }
+
+    function appendSuffix(name, suffix) {
+      if (!suffix) return name;
+      const trimmed = (name || '').trim();
+      if (!trimmed) return suffix;
+      const lowerSuffix = suffix.toLowerCase();
+      const dotIndex = trimmed.lastIndexOf('.');
+      const base = dotIndex > 0 ? trimmed.slice(0, dotIndex) : trimmed;
+      const extension = dotIndex > 0 ? trimmed.slice(dotIndex) : '';
+      if (base.toLowerCase().endsWith(`-${lowerSuffix}`)) {
+        return trimmed;
+      }
+      return `${base}-${suffix}${extension}`;
+    }
+
+    function resolveLaunchName(commit, { variant = 'default' } = {}) {
+      const baseName = (launchNameInput.value || '').trim() || buildDefaultLaunchName(commit);
+      if (variant === 'test') {
+        return appendSuffix(baseName, 'test');
+      }
+      return baseName;
+    }
+
+    function openContentInNewTab(content, tabName) {
+      const win = window.open('', '_blank');
+      if (!win) {
+        throw new Error('Popup blocked. Allow pop-ups to launch snapshots.');
+      }
+      win.document.open();
+      win.document.write(content);
+      win.document.close();
+      if (tabName) {
+        try {
+          win.document.title = tabName;
+        } catch (error) {
+          // ignore title write failures
+        }
+      }
+      try {
+        win.focus();
+      } catch (error) {
+        // ignore focus failures
+      }
+    }
+
     function resetHistory() {
       state.commits = [];
       state.filteredCommits = [];
+      state.contentCache = new Map();
       historyList.innerHTML = '';
       historyEmpty.textContent = 'Pick a file to load every historical version in descending order.';
       historyEmpty.hidden = false;
@@ -922,6 +1000,7 @@
         return;
       }
       state.selectedFile = filePath;
+      state.contentCache = new Map();
       updatePublishDefaults();
       resetPreview();
       setStatus(historyStatus, `Loading history for ${filePath}…`, { spinner: true });
@@ -992,23 +1071,39 @@
       }
       historyEmpty.hidden = true;
       for (const commit of state.filteredCommits) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'commit-item';
+        const row = document.createElement('div');
+        row.className = 'commit-row';
+
+        const loadBtn = document.createElement('button');
+        loadBtn.type = 'button';
+        loadBtn.className = 'commit-item';
         const sha = commit.sha || '';
         const message = (commit.commit?.message || '').split('\n')[0];
         const authored = commit.commit?.author?.date || commit.commit?.committer?.date || '';
         const formatted = authored ? new Date(authored).toLocaleString() : 'Unknown date';
-        button.innerHTML = `
+        loadBtn.innerHTML = `
           <strong>${sha.slice(0, 7)}</strong>
           <span>${formatted}</span>
           <span>${escapeHtml(message)}</span>
         `;
         if (state.selectedCommit && state.selectedCommit.sha === commit.sha) {
-          button.classList.add('active');
+          loadBtn.classList.add('active');
         }
-        button.addEventListener('click', () => selectCommit(commit));
-        historyList.appendChild(button);
+        loadBtn.addEventListener('click', () => selectCommit(commit));
+
+        const launchBtn = document.createElement('button');
+        launchBtn.type = 'button';
+        launchBtn.className = 'commit-launch';
+        launchBtn.textContent = 'Launch tab';
+        launchBtn.title = 'Open this snapshot in a new tab';
+        launchBtn.addEventListener('click', event => {
+          event.stopPropagation();
+          launchCommitVersion(commit);
+        });
+
+        row.appendChild(loadBtn);
+        row.appendChild(launchBtn);
+        historyList.appendChild(row);
       }
     }
 
@@ -1016,6 +1111,25 @@
       const div = document.createElement('div');
       div.textContent = value;
       return div.innerHTML;
+    }
+
+    async function fetchCommitContent(commit) {
+      if (!commit) {
+        throw new Error('Pick a commit to launch.');
+      }
+      if (!state.selectedFile) {
+        throw new Error('Select a file first.');
+      }
+      if (!state.contentCache) {
+        state.contentCache = new Map();
+      }
+      if (state.contentCache.has(commit.sha)) {
+        return state.contentCache.get(commit.sha);
+      }
+      const data = await apiFetch(`/repos/${state.owner}/${state.repo}/contents/${encodePath(state.selectedFile)}?ref=${commit.sha}`);
+      const raw = decodeContent(data.content);
+      state.contentCache.set(commit.sha, raw);
+      return raw;
     }
 
     async function selectCommit(commit) {
@@ -1032,8 +1146,10 @@
       setStatus(publishStatus, '', {});
       setStatus(fileStatus, `Fetching ${state.selectedFile} at ${commit.sha.slice(0,7)}…`, { spinner: true });
       try {
-        const contentData = await apiFetch(`/repos/${state.owner}/${state.repo}/contents/${encodePath(state.selectedFile)}?ref=${commit.sha}`);
-        const raw = decodeContent(contentData.content);
+        if (launchNameInput.dataset.manual === 'true' && launchNameInput.dataset.lastCommit !== commit.sha) {
+          launchNameInput.dataset.manual = '';
+        }
+        const raw = await fetchCommitContent(commit);
         state.content = raw;
         state.commitUrl = commit.html_url || `https://github.com/${state.owner}/${state.repo}/commit/${commit.sha}`;
         state.committedAt = commit.commit?.author?.date || commit.commit?.committer?.date || '';
@@ -1041,6 +1157,8 @@
           const normalized = state.selectedFile ? state.selectedFile.replace(/^\/+/, '') : state.selectedFile;
           commitMessageInput.value = `Add snapshot of ${normalized}`;
         }
+        updateLaunchName(commit);
+        launchNameInput.dataset.lastCommit = commit.sha;
         previewFrame.hidden = false;
         previewEmpty.hidden = true;
         previewFrame.srcdoc = raw;
@@ -1054,10 +1172,58 @@
         previewMeta.innerHTML = metaPieces.join(' • ');
         previewMeta.hidden = false;
         actionsGrid.hidden = false;
+        launchTabBtn.disabled = false;
+        launchCloneBtn.disabled = false;
+        setStatus(launchStatus, '');
         setStatus(fileStatus, `Loaded ${state.selectedFile} from commit ${commit.sha.slice(0,7)}.`, { tone: 'success' });
       } catch (error) {
         console.error('Failed to load file content', error);
         setStatus(fileStatus, `Unable to fetch file content: ${error.message}`, { tone: 'error' });
+      }
+    }
+
+    async function launchCommitVersion(commit) {
+      if (!state.selectedFile) {
+        setStatus(launchStatus, 'Select a file before launching a snapshot.', { tone: 'error' });
+        return;
+      }
+      const target = commit || state.selectedCommit;
+      if (!target) {
+        setStatus(launchStatus, 'Pick a commit to launch.', { tone: 'error' });
+        return;
+      }
+      setStatus(launchStatus, 'Preparing snapshot…', { spinner: true });
+      try {
+        if (!state.selectedCommit || state.selectedCommit.sha !== target.sha) {
+          await selectCommit(target);
+        }
+        const snapshot = await fetchCommitContent(target);
+        const tabName = resolveLaunchName(target);
+        openContentInNewTab(snapshot, tabName);
+        setStatus(launchStatus, `Opened ${tabName} in a new tab.`, { tone: 'success' });
+      } catch (error) {
+        console.error('Failed to launch snapshot tab', error);
+        setStatus(launchStatus, `Unable to launch tab: ${error.message}`, { tone: 'error' });
+      }
+    }
+
+    function launchEditedVersion() {
+      if (!state.selectedCommit) {
+        setStatus(launchStatus, 'Pick a commit before launching a test tab.', { tone: 'error' });
+        return;
+      }
+      if (!contentEditor.value.trim()) {
+        setStatus(launchStatus, 'Load a commit and make any edits before launching a test tab.', { tone: 'error' });
+        return;
+      }
+      setStatus(launchStatus, 'Opening test tab…', { spinner: true });
+      try {
+        const name = resolveLaunchName(state.selectedCommit, { variant: 'test' });
+        openContentInNewTab(contentEditor.value, name);
+        setStatus(launchStatus, `Opened ${name} for testing in a new tab.`, { tone: 'success' });
+      } catch (error) {
+        console.error('Failed to launch edited snapshot', error);
+        setStatus(launchStatus, `Unable to launch tab: ${error.message}`, { tone: 'error' });
       }
     }
 
@@ -1160,7 +1326,7 @@
       const blob = new Blob([contentEditor.value], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      const name = state.selectedFile ? state.selectedFile.split('/').pop() : 'snapshot.html';
+      const name = resolveLaunchName(state.selectedCommit);
       link.href = url;
       link.download = name;
       document.body.appendChild(link);
@@ -1259,6 +1425,29 @@
 
     downloadContentBtn.addEventListener('click', () => {
       downloadContent();
+    });
+
+    launchTabBtn.addEventListener('click', () => {
+      launchCommitVersion(state.selectedCommit);
+    });
+
+    launchCloneBtn.addEventListener('click', () => {
+      launchEditedVersion();
+    });
+
+    launchNameInput.addEventListener('input', () => {
+      const value = launchNameInput.value.trim();
+      if (value) {
+        launchNameInput.dataset.manual = 'true';
+        if (state.selectedCommit) {
+          launchNameInput.dataset.lastCommit = state.selectedCommit.sha;
+        }
+      } else {
+        launchNameInput.dataset.manual = '';
+        if (state.selectedCommit) {
+          updateLaunchName(state.selectedCommit);
+        }
+      }
     });
 
     publishForm.addEventListener('submit', publishSnapshot);
