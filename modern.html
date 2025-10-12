@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Prompt Builder</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont,
+          "Helvetica Neue", sans-serif;
+        background-color: #0f172a;
+        color: #e2e8f0;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 3rem 1.5rem;
+        background: radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 55%),
+          radial-gradient(circle at bottom, rgba(236, 72, 153, 0.18), transparent 60%),
+          #0f172a;
+      }
+
+      main {
+        width: min(960px, 100%);
+        background-color: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 20px;
+        backdrop-filter: blur(16px);
+        padding: 2.5rem;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.45);
+      }
+
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: clamp(2rem, 5vw, 2.75rem);
+        letter-spacing: -0.03em;
+        font-weight: 700;
+      }
+
+      p.description {
+        margin-top: 0;
+        margin-bottom: 2rem;
+        max-width: 720px;
+        color: rgba(226, 232, 240, 0.75);
+        line-height: 1.6;
+      }
+
+      .field-group {
+        display: grid;
+        gap: 1.25rem;
+        margin-bottom: 2.5rem;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+
+      input[type="text"],
+      textarea {
+        width: 100%;
+        padding: 0.9rem 1rem;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background-color: rgba(15, 23, 42, 0.6);
+        color: inherit;
+        font: inherit;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input[type="text"]:focus,
+      textarea:focus {
+        outline: none;
+        border-color: rgba(59, 130, 246, 0.7);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 160px;
+      }
+
+      .output-card {
+        background-color: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 16px;
+        padding: 1.5rem;
+      }
+
+      .output-card header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .output-card h2 {
+        margin: 0;
+        font-size: 1.15rem;
+        font-weight: 600;
+      }
+
+      button.copy {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6rem 1.1rem;
+        border-radius: 999px;
+        border: 1px solid rgba(59, 130, 246, 0.5);
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.85), rgba(96, 165, 250, 0.65));
+        color: #0f172a;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+      }
+
+      button.copy:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
+      }
+
+      button.copy:active {
+        transform: translateY(0);
+        box-shadow: none;
+      }
+
+      #copy-status {
+        font-size: 0.9rem;
+        color: rgba(226, 232, 240, 0.75);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Codex Prompt Builder</h1>
+      <p class="description">
+        Provide the files you want to target and the ordered tasks you need to run. The builder
+        will output a ready-to-paste prompt that guides Codex through the edits, staging,
+        commit, and pull-request steps so you can open the PR in the standard review view.
+      </p>
+
+      <div class="field-group">
+        <label for="targets-input">Target files (comma separated, case-insensitive)</label>
+        <input
+          id="targets-input"
+          type="text"
+          value="index.html, UI*.html"
+          autocomplete="off"
+        />
+
+        <label for="commands-input">Commands (comma separated)</label>
+        <input
+          id="commands-input"
+          type="text"
+          value="Define SHARE_URL_TEMPLATE for Google Drive permanent links, Update DriveLinkHelper to return SHARE_URL_TEMPLATE, Ensure getDirectImageURL uses the helper for Google Drive"
+          autocomplete="off"
+        />
+      </div>
+
+      <section class="output-card">
+        <header>
+          <h2>Generated prompt</h2>
+          <button class="copy" type="button" id="copy-btn">Copy prompt</button>
+        </header>
+        <textarea id="prompt-output" readonly></textarea>
+        <div id="copy-status" role="status" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script>
+      const targetsInput = document.getElementById("targets-input");
+      const commandsInput = document.getElementById("commands-input");
+      const promptOutput = document.getElementById("prompt-output");
+      const copyBtn = document.getElementById("copy-btn");
+      const copyStatus = document.getElementById("copy-status");
+
+      const buildPrompt = () => {
+        const targets = targetsInput.value
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+
+        const commands = commandsInput.value
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+
+        const targetList = targets.length
+          ? targets.map((value) => `"${value}"`).join(", ")
+          : '"index.html"';
+
+        const hasGoogleDriveTask = commands.some((task) => /google\s*drive/i.test(task));
+        const commandLines = commands.length
+          ? commands
+              .map((task, index) => `${index + 1}. ${task}`)
+              .join("\n")
+          : "1. Await detailed task instructions.";
+
+        const shareTemplateLine = hasGoogleDriveTask
+          ? '\n- Set SHARE_URL_TEMPLATE := "https://drive.google.com/file/d/${fileId}/view?usp=sharing".'
+          : "";
+
+        const commitMessage = hasGoogleDriveTask
+          ? "Switch Google Drive links to permanent share URLs"
+          : "Apply requested updates";
+
+        const prTitle = hasGoogleDriveTask
+          ? "Update Google Drive share links"
+          : "Apply requested repository updates";
+
+        const prompt = `You are an expert code-editing assistant working in the loaded Git repo.\n\n` +
+          `Step 1 — Define task variables:\n` +
+          `- Set TARGET_GLOBS := [${targetList}] (treat matches case-insensitively).${shareTemplateLine}\n` +
+          `- Use TARGET_GLOBS to scope every search, edit, and verification step.\n\n` +
+          `Step 2 — Execute the following tasks in order:\n${commandLines}\n` +
+          `- Confirm each change against TARGET_GLOBS before proceeding.\n\n` +
+          `Step 3 — Review and finalize:\n` +
+          `- Show a unified diff for every modified file.\n` +
+          `- Run any formatting or tests required by the edits (skip only if unnecessary).\n` +
+          `- Stage the updates with: git add .\n` +
+          `- Commit with: git commit -m "${commitMessage}".\n` +
+          `- Prepare a clear summary and testing section, then invoke the make_pr tool with title "${prTitle}" and a body describing the changes and test results so the PR is ready for review in the normal interface.\n` +
+          `- Stop after the pull request details are reported.`;
+
+        return prompt;
+      };
+
+      const updatePrompt = () => {
+        promptOutput.value = buildPrompt();
+      };
+
+      updatePrompt();
+
+      targetsInput.addEventListener("input", updatePrompt);
+      commandsInput.addEventListener("input", updatePrompt);
+
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(promptOutput.value);
+          copyStatus.textContent = "Prompt copied to clipboard.";
+          setTimeout(() => {
+            copyStatus.textContent = "";
+          }, 2500);
+        } catch (error) {
+          copyStatus.textContent = "Unable to copy. Select the text manually.";
+        }
+      });
+    </script>
+  </body>
+</html>
