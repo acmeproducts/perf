@@ -99,9 +99,15 @@
                         style="background-color: var(--control-light);">
                     START
                 </button>
-                <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
-                    <span id="recordIcon">REC</span>
-                </button>
+                <div class="flex items-center gap-3 bg-gray-900/40 px-3 py-2 rounded-full">
+                    <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
+                        <span id="recordIcon">REC</span>
+                    </button>
+                    <div class="flex items-center gap-2 text-[10px] sm:text-xs text-gray-300 font-mono">
+                        <span id="recordLed" class="block w-2.5 h-2.5 rounded-full bg-gray-500"></span>
+                        <span id="recordTimecode">00:00</span>
+                    </div>
+                </div>
             </div>
 
 
@@ -151,6 +157,18 @@
             <!-- Track UIs generated here -->
 
         </div>
+
+        <div id="recordingPreviewCard" class="hidden bg-gray-900 border border-red-500/60 rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-red-300 uppercase tracking-wide">Recording Preview</h3>
+                <span id="recordingPreviewStatus" class="text-xs text-gray-400"></span>
+            </div>
+            <audio id="recordingPreviewAudio" controls class="w-full rounded-lg"></audio>
+            <div class="flex flex-wrap gap-3">
+                <button id="saveRecording" class="px-4 py-2 text-sm font-semibold rounded-md bg-emerald-500 hover:bg-emerald-600 text-gray-900 transition-colors">Save Take</button>
+                <button id="discardRecording" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100 transition-colors">Discard</button>
+            </div>
+        </div>
         
         <!-- Backing Track Uploader Panel -->
         <div id="backtrackPanel" class="mt-4 p-4 rounded-lg border border-violet-600 hidden">
@@ -195,7 +213,15 @@
         let currentStep = 0;
         let nextNoteTime = 0.0;
         let timerID = 0;
-        let backTrackSource = null; 
+        let backTrackSource = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordingTimerId = null;
+        let recordingStartTime = null;
+        let recordingPreviewUrl = null;
+        let recordingDestination = null;
+        let recorderWarningShown = false;
+        let recorderSupportLogged = false;
 
         // --- Audio Nodes ---
         let masterGainNode;
@@ -489,18 +515,316 @@
         function initAudio() {
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                
+
                 masterGainNode = audioContext.createGain();
-                
+
                 distortionNode = audioContext.createWaveShaper();
                 distortionNode.curve = createDistortionCurve(getSliderValue('gritSlider'));
-                
+
                 backTrackGain = audioContext.createGain();
-                backTrackGain.gain.setValueAtTime(0.5, audioContext.currentTime); 
+                backTrackGain.gain.setValueAtTime(0.5, audioContext.currentTime);
                 backTrackGain.connect(masterGainNode);
-                
+
                 distortionNode.connect(masterGainNode);
+
+                recordingDestination = audioContext.createMediaStreamDestination();
                 masterGainNode.connect(audioContext.destination);
+                masterGainNode.connect(recordingDestination);
+            }
+
+            if (audioContext && !recordingDestination) {
+                recordingDestination = audioContext.createMediaStreamDestination();
+                masterGainNode.connect(recordingDestination);
+            }
+
+            if (typeof MediaRecorder === 'undefined') {
+                if (!recorderSupportLogged) {
+                    console.warn('MediaRecorder API is not supported in this browser. Recording features will be disabled.');
+                    recorderSupportLogged = true;
+                }
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'Recording unavailable in this browser.';
+                }
+                setRecordTimecode('No REC');
+                return;
+            }
+
+            if (recordingDestination && !mediaRecorder) {
+                try {
+                    mediaRecorder = new MediaRecorder(recordingDestination.stream);
+                    mediaRecorder.addEventListener('dataavailable', handleRecordingData);
+                    mediaRecorder.addEventListener('stop', handleRecordingStop);
+                } catch (error) {
+                    reportRecorderIssue('Unable to initialize recording in this browser. See console for details.', error);
+                    mediaRecorder = null;
+                }
+            }
+        }
+
+        function setRecordTimecode(value) {
+            const timeEl = document.getElementById('recordTimecode');
+            if (timeEl) {
+                timeEl.textContent = value;
+            }
+        }
+
+        function formatTimecode(durationMs) {
+            const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function updateRecordingTimecode() {
+            if (!recordingStartTime) return;
+            const elapsed = Date.now() - recordingStartTime;
+            setRecordTimecode(formatTimecode(elapsed));
+        }
+
+        function setRecordingUiState(active) {
+            const recordButton = document.getElementById('toggleRecord');
+            const recordIcon = document.getElementById('recordIcon');
+            const led = document.getElementById('recordLed');
+
+            if (!recordButton) return;
+
+            if (active) {
+                recordButton.classList.add('recording-active');
+                if (recordIcon) recordIcon.textContent = 'STOP';
+                if (led) {
+                    led.classList.remove('bg-gray-500');
+                    led.classList.add('bg-red-500');
+                }
+            } else {
+                recordButton.classList.remove('recording-active');
+                if (recordIcon) recordIcon.textContent = 'REC';
+                if (led) {
+                    led.classList.remove('bg-red-500');
+                    led.classList.add('bg-gray-500');
+                }
+            }
+        }
+
+        function clearRecordingPreview() {
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const status = document.getElementById('recordingPreviewStatus');
+
+            if (audioEl) {
+                audioEl.pause();
+                audioEl.removeAttribute('src');
+                audioEl.load();
+            }
+
+            if (previewCard) {
+                previewCard.classList.add('hidden');
+            }
+
+            if (status) {
+                status.textContent = '';
+            }
+
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+                recordingPreviewUrl = null;
+            }
+        }
+
+        function reportRecorderIssue(message, error) {
+            if (error) {
+                console.warn(message, error);
+            } else {
+                console.warn(message);
+            }
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = message;
+            }
+            setRecordTimecode('No REC');
+            if (!recorderWarningShown) {
+                if (typeof alert === 'function') {
+                    alert(message);
+                }
+                recorderWarningShown = true;
+            }
+        }
+
+        function handleRecordingData(event) {
+            if (event.data && event.data.size > 0) {
+                recordedChunks.push(event.data);
+            }
+        }
+
+        function handleRecordingStop() {
+            if (recordingTimerId) {
+                clearInterval(recordingTimerId);
+                recordingTimerId = null;
+            }
+
+            recordingStartTime = null;
+            isRecording = false;
+            setRecordingUiState(false);
+
+            if (!recordedChunks.length) {
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'No audio captured.';
+                }
+                setRecordTimecode('00:00');
+                return;
+            }
+
+            const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : 'audio/webm';
+            const blob = new Blob(recordedChunks, { type: mimeType });
+
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+            }
+            recordingPreviewUrl = URL.createObjectURL(blob);
+
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const status = document.getElementById('recordingPreviewStatus');
+
+            if (audioEl) {
+                audioEl.src = recordingPreviewUrl;
+                audioEl.load();
+            }
+
+            if (previewCard) {
+                previewCard.classList.remove('hidden');
+            }
+
+            if (status) {
+                status.textContent = 'Take ready for review.';
+            }
+
+            setRecordTimecode('00:00');
+        }
+
+        function startRecording() {
+            if (!mediaRecorder) {
+                reportRecorderIssue('Recording is unavailable because MediaRecorder could not be initialized.');
+                return;
+            }
+
+            recordingStartTime = Date.now();
+            setRecordTimecode('00:00');
+            setRecordingUiState(true);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            const previousStatusText = status ? status.textContent : '';
+            if (status) {
+                status.textContent = 'Recording...';
+            }
+
+            const resumePromise = audioContext ? audioContext.resume() : Promise.resolve();
+            resumePromise.catch((error) => {
+                console.warn('Unable to resume audio context before recording start.', error);
+            }).finally(() => {
+                try {
+                    mediaRecorder.start();
+                    clearRecordingPreview();
+                    recordedChunks = [];
+                    if (status) {
+                        status.textContent = 'Recording...';
+                    }
+                    isRecording = true;
+                    updateRecordingTimecode();
+                    if (recordingTimerId) clearInterval(recordingTimerId);
+                    recordingTimerId = setInterval(updateRecordingTimecode, 250);
+                } catch (error) {
+                    isRecording = false;
+                    recordingStartTime = null;
+                    if (recordingTimerId) {
+                        clearInterval(recordingTimerId);
+                        recordingTimerId = null;
+                    }
+                    setRecordingUiState(false);
+                    reportRecorderIssue('Recording could not be started. See console for details.', error);
+                    if (status) {
+                        status.textContent = previousStatusText;
+                    }
+                }
+            });
+        }
+
+        function stopActiveRecording() {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                return;
+            }
+
+            isRecording = false;
+            recordingStartTime = null;
+
+            if (recordingTimerId) {
+                clearInterval(recordingTimerId);
+                recordingTimerId = null;
+            }
+
+            setRecordingUiState(false);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Finalizing take...';
+            }
+
+            try {
+                mediaRecorder.stop();
+            } catch (error) {
+                reportRecorderIssue('An error occurred while stopping the recording. See console for details.', error);
+            }
+        }
+
+        function ensureRecorderAvailable() {
+            if (mediaRecorder) {
+                return true;
+            }
+
+            reportRecorderIssue('Recording is unavailable because MediaRecorder could not be initialized.');
+            return false;
+        }
+
+        function handleSaveRecording() {
+            if (!recordedChunks.length) {
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'Nothing to save yet.';
+                }
+                return;
+            }
+
+            const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : 'audio/webm';
+            const blob = new Blob(recordedChunks, { type: mimeType });
+            const downloadUrl = URL.createObjectURL(blob);
+
+            const timestamp = new Date();
+            const filename = `raw-house-take-${timestamp.getFullYear()}${String(timestamp.getMonth() + 1).padStart(2, '0')}${String(timestamp.getDate()).padStart(2, '0')}-${String(timestamp.getHours()).padStart(2, '0')}${String(timestamp.getMinutes()).padStart(2, '0')}${String(timestamp.getSeconds()).padStart(2, '0')}.webm`;
+
+            const anchor = document.createElement('a');
+            anchor.href = downloadUrl;
+            anchor.download = filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+
+            setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Download started.';
+            }
+        }
+
+        function handleDiscardRecording() {
+            clearRecordingPreview();
+            recordedChunks = [];
+            setRecordTimecode('00:00');
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Recording discarded.';
             }
         }
 
@@ -602,7 +926,9 @@
                 clearTimeout(timerID);
                 button.textContent = 'START';
                 button.classList.add('glow-shadow');
-                
+
+                stopActiveRecording();
+
                 if (backTrackSource && backTrackSource.source) {
                     try {
                         backTrackSource.source.stop();
@@ -615,18 +941,16 @@
         }
         
         function toggleRecord() {
-            isRecording = !isRecording;
-            const recordButton = document.getElementById('toggleRecord');
-            const recordIcon = document.getElementById('recordIcon');
+            initAudio();
 
-            if (isRecording) {
-                recordButton.classList.add('recording-active');
-                recordIcon.textContent = 'REC (ON)';
-                console.log('--- RECORDING STARTED ---');
+            if (!ensureRecorderAvailable()) {
+                return;
+            }
+
+            if (mediaRecorder.state === 'recording') {
+                stopActiveRecording();
             } else {
-                recordButton.classList.remove('recording-active');
-                recordIcon.textContent = 'REC';
-                console.log('--- RECORDING STOPPED ---');
+                startRecording();
             }
         }
 
@@ -791,6 +1115,9 @@
             // 2. Setup Main Controls
             document.getElementById('togglePlay').addEventListener('click', togglePlay);
             document.getElementById('toggleRecord').addEventListener('click', toggleRecord);
+
+            document.getElementById('saveRecording').addEventListener('click', handleSaveRecording);
+            document.getElementById('discardRecording').addEventListener('click', handleDiscardRecording);
             
             // BPM Slider Control
             document.getElementById('bpmSlider').addEventListener('input', () => {
