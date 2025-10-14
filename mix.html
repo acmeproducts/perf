@@ -79,11 +79,6 @@
             background: #4b5563;
             border-radius: 10px;
         }
-        /* Custom styles for simplified controls */
-        .simplified-control-spacer {
-            width: 25%;
-            margin-right: 1rem; /* Matches space-x-4 from parent */
-        }
     </style>
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex flex-col items-center">
@@ -155,7 +150,7 @@
         <!-- Backing Track Uploader Panel -->
         <div id="backtrackPanel" class="mt-4 p-4 rounded-lg border border-violet-600 hidden">
             <h3 class="text-xl font-bold text-violet-400 mb-3">Backing Track Loader</h3>
-            
+
             <!-- Sync/Speed Control -->
             <div class="mb-4 flex flex-wrap gap-4 items-center text-white text-sm bg-gray-700 p-3 rounded-lg">
                 <label class="font-semibold text-violet-300">Playback Mode:</label>
@@ -178,10 +173,48 @@
 
     </div>
 
+    <!-- Project Controls -->
+    <div class="w-full max-w-6xl mt-4 p-4 bg-gray-800 rounded-xl shadow-2xl" id="projectControls">
+        <div class="flex flex-wrap items-center gap-2 justify-end">
+            <button id="projectSave" class="px-3 py-2 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Save Project</button>
+            <button id="projectExport" class="px-3 py-2 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Export Project</button>
+            <button id="projectImport" class="px-3 py-2 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Import Project</button>
+        </div>
+        <div id="projectStatus" class="text-xs text-gray-400 mt-2">Project tools ready.</div>
+    </div>
+
     <!-- Master Footer -->
     <footer id="master-footer" class="fixed bottom-0 left-0 right-0 p-2 text-center text-xs text-gray-500 bg-gray-900 border-t border-gray-700">
         v15.0 | 2025-10-12 04:15 AM PDT
     </footer>
+
+    <!-- Customize Modal -->
+    <div id="trackCustomizeModal" class="fixed inset-0 hidden items-center justify-center bg-black bg-opacity-60 z-50">
+        <div class="bg-gray-800 rounded-lg shadow-2xl w-full max-w-xl p-5 space-y-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <h2 id="customizeTitle" class="text-lg font-bold text-white">Customize Track</h2>
+                <button id="customizeClose" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div class="space-y-2">
+                <label for="customizePresetSelect" class="text-sm text-gray-300">Preset</label>
+                <select id="customizePresetSelect" class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600"></select>
+            </div>
+            <div>
+                <h3 class="text-sm font-semibold text-gray-200 mb-2">Parameters</h3>
+                <div id="customizeParameters" class="space-y-2"></div>
+            </div>
+            <div class="space-y-2">
+                <h3 class="text-sm font-semibold text-gray-200">Samples</h3>
+                <input type="file" id="customSampleFile" accept="audio/*" class="w-full text-sm text-gray-300 bg-gray-700 border border-gray-600 rounded p-2">
+                <div class="flex flex-wrap gap-2">
+                    <input type="url" id="customSampleUrl" placeholder="https://example.com/sample.wav" class="flex-grow bg-gray-700 text-white border border-gray-600 rounded p-2 text-sm" />
+                    <button id="customSampleUrlLoad" class="px-3 py-2 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Load URL</button>
+                    <button id="clearSampleButton" class="px-3 py-2 bg-gray-700 text-white text-xs rounded hover:bg-gray-600">Use Preset</button>
+                </div>
+            </div>
+            <div id="customizeStatus" class="text-xs text-gray-400">Ready.</div>
+        </div>
+    </div>
 
     <script>
         const NUM_STEPS = 16;
@@ -195,41 +228,258 @@
         let currentStep = 0;
         let nextNoteTime = 0.0;
         let timerID = 0;
-        let backTrackSource = null; 
+        let backTrackSource = null;
+        let currentCustomizeTrackId = null;
 
         // --- Audio Nodes ---
         let masterGainNode;
         let distortionNode;
         let backTrackGain;
 
-        // --- Drum Sound Options for the unified DRUM HIT Track ---
-        // 5 highly-normalized, distinct sounds.
-        const drumHitOptions = [
-            // KICK: Deep Sine for classic house thump
-            { value: 'deepKick', label: 'Deep Kick (Sine)', gainMult: 1.5, baseDecay: 0.4 }, 
-            // SNARE: Classic noise-based snare drum
-            { value: 'snareHit', label: 'Snare Hit (Noise/Tone)', gainMult: 1.0, baseDecay: 0.2 }, 
-            // RIM/CLAVE: High frequency, short tone for rhythmic accents
-            { value: 'rimShot', label: 'Rim Shot/Clave (Tone)', gainMult: 0.9, baseDecay: 0.05 }, 
-            // TAIKO: Low resonant drum for fills
-            { value: 'taikoDrum', label: 'Low Taiko (Tonal)', gainMult: 1.1, baseDecay: 0.5 },
-            // CYMBAL: Washed highpass noise for sizzle
-            { value: 'cymbalSiz', label: 'Cymbal Sizzle (Noise)', gainMult: 0.6, baseDecay: 1.0 }, 
-        ];
+        // --- Track Metadata Definitions ---
+        const TRACK_DEFINITIONS = {
+            drumHit: {
+                serializeId: 'track-drum-hit',
+                label: 'Drum Hit',
+                color: 'var(--kick-color)',
+                gain: 1.0,
+                defaultPresetId: 'deepKick',
+                pattern: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+                presets: [
+                    {
+                        id: 'deepKick',
+                        name: 'Deep Kick (Sine)',
+                        type: 'synth',
+                        meta: { gainMult: 1.5, baseDecay: 0.4, basePitch: 45 },
+                        defaults: { decay: 0.45, pitch: 0.95, tone: 400, gain: 1.2 }
+                    },
+                    {
+                        id: 'snareHit',
+                        name: 'Snare Hit (Noise/Tone)',
+                        type: 'synth',
+                        meta: { gainMult: 1.0, baseDecay: 0.2, basePitch: 60 },
+                        defaults: { decay: 0.2, pitch: 1.1, tone: 1800, gain: 1.0 }
+                    },
+                    {
+                        id: 'rimShot',
+                        name: 'Rim Shot/Clave (Tone)',
+                        type: 'synth',
+                        meta: { gainMult: 0.9, baseDecay: 0.08, basePitch: 90 },
+                        defaults: { decay: 0.1, pitch: 1.3, tone: 2400, gain: 0.9 }
+                    },
+                    {
+                        id: 'taikoDrum',
+                        name: 'Low Taiko (Tonal)',
+                        type: 'synth',
+                        meta: { gainMult: 1.1, baseDecay: 0.6, basePitch: 38 },
+                        defaults: { decay: 0.6, pitch: 0.8, tone: 300, gain: 1.1 }
+                    },
+                    {
+                        id: 'cymbalSiz',
+                        name: 'Cymbal Sizzle (Noise)',
+                        type: 'synth',
+                        meta: { gainMult: 0.6, baseDecay: 1.0, basePitch: 120 },
+                        defaults: { decay: 1.0, pitch: 1.0, tone: 8000, gain: 0.6 }
+                    }
+                ],
+                parameters: [
+                    { id: 'pitch', label: 'Pitch', type: 'range', min: 0.5, max: 2.0, step: 0.01, default: 1.0, unit: 'x' },
+                    { id: 'decay', label: 'Decay', type: 'range', min: 0.05, max: 2.0, step: 0.01, default: 0.4, unit: 's' },
+                    { id: 'gain', label: 'Gain', type: 'range', min: 0.1, max: 2.5, step: 0.05, default: 1.0, unit: 'x' },
+                    { id: 'tone', label: 'Tone', type: 'range', min: 200, max: 8000, step: 20, default: 800, unit: 'Hz' }
+                ]
+            },
+            clap: {
+                serializeId: 'track-clap',
+                label: 'Clap',
+                color: 'var(--clap-color)',
+                gain: 0.7,
+                defaultPresetId: 'classicClap',
+                pattern: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+                presets: [
+                    {
+                        id: 'classicClap',
+                        name: 'Classic House Clap',
+                        type: 'synth',
+                        defaults: { decay: 0.18, tone: 6500, pitch: 1.0, gain: 1.0 }
+                    },
+                    {
+                        id: 'shortClap',
+                        name: 'Short Dry Clap',
+                        type: 'synth',
+                        defaults: { decay: 0.1, tone: 5000, pitch: 1.1, gain: 0.9 }
+                    },
+                    {
+                        id: 'wideClap',
+                        name: 'Wide Reverb Clap',
+                        type: 'synth',
+                        defaults: { decay: 0.35, tone: 7500, pitch: 0.95, gain: 1.2 }
+                    }
+                ],
+                parameters: [
+                    { id: 'pitch', label: 'Pitch', type: 'range', min: 0.5, max: 1.5, step: 0.01, default: 1.0, unit: 'x' },
+                    { id: 'decay', label: 'Decay', type: 'range', min: 0.05, max: 1.0, step: 0.01, default: 0.18, unit: 's' },
+                    { id: 'tone', label: 'Tone', type: 'range', min: 2000, max: 10000, step: 50, default: 6500, unit: 'Hz' },
+                    { id: 'gain', label: 'Gain', type: 'range', min: 0.2, max: 2.0, step: 0.05, default: 1.0, unit: 'x' }
+                ]
+            },
+            hihat: {
+                serializeId: 'track-hihat',
+                label: 'Closed Hat',
+                color: 'var(--hh-color)',
+                gain: 0.7,
+                defaultPresetId: 'tightHat',
+                pattern: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                presets: [
+                    {
+                        id: 'tightHat',
+                        name: 'Tight Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.08, tone: 9000, pitch: 1.0, gain: 1.0 }
+                    },
+                    {
+                        id: 'airyHat',
+                        name: 'Airy Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.15, tone: 11000, pitch: 0.9, gain: 0.9 }
+                    },
+                    {
+                        id: 'crunchHat',
+                        name: 'Crunch Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.12, tone: 7000, pitch: 1.1, gain: 1.1 }
+                    }
+                ],
+                parameters: [
+                    { id: 'pitch', label: 'Pitch', type: 'range', min: 0.5, max: 2.5, step: 0.05, default: 1.0, unit: 'x' },
+                    { id: 'decay', label: 'Decay', type: 'range', min: 0.03, max: 0.6, step: 0.01, default: 0.1, unit: 's' },
+                    { id: 'tone', label: 'Filter', type: 'range', min: 4000, max: 14000, step: 100, default: 9000, unit: 'Hz' },
+                    { id: 'gain', label: 'Gain', type: 'range', min: 0.2, max: 2.0, step: 0.05, default: 1.0, unit: 'x' }
+                ]
+            },
+            openhat: {
+                serializeId: 'track-openhat',
+                label: 'Open Hat',
+                color: 'var(--oh-color)',
+                gain: 0.7,
+                defaultPresetId: 'classicOpen',
+                pattern: [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+                presets: [
+                    {
+                        id: 'classicOpen',
+                        name: 'Classic Open Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.4, tone: 8000, pitch: 1.0, gain: 1.0 }
+                    },
+                    {
+                        id: 'noisyOpen',
+                        name: 'Noisy Open Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.55, tone: 10000, pitch: 0.9, gain: 1.1 }
+                    },
+                    {
+                        id: 'shortOpen',
+                        name: 'Short Open Hat',
+                        type: 'synth',
+                        defaults: { decay: 0.25, tone: 7000, pitch: 1.2, gain: 0.9 }
+                    }
+                ],
+                parameters: [
+                    { id: 'pitch', label: 'Pitch', type: 'range', min: 0.5, max: 2.0, step: 0.05, default: 1.0, unit: 'x' },
+                    { id: 'decay', label: 'Decay', type: 'range', min: 0.1, max: 1.2, step: 0.02, default: 0.45, unit: 's' },
+                    { id: 'tone', label: 'Filter', type: 'range', min: 3000, max: 12000, step: 100, default: 8000, unit: 'Hz' },
+                    { id: 'gain', label: 'Gain', type: 'range', min: 0.2, max: 2.0, step: 0.05, default: 1.0, unit: 'x' }
+                ]
+            },
+            perc: {
+                serializeId: 'track-perc',
+                label: 'Percussion',
+                color: 'var(--perc-color)',
+                gain: 0.7,
+                defaultPresetId: 'metalPerc',
+                pattern: [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+                presets: [
+                    {
+                        id: 'metalPerc',
+                        name: 'Metallic Perc',
+                        type: 'synth',
+                        defaults: { decay: 0.2, tone: 4000, pitch: 1.1, gain: 1.0 }
+                    },
+                    {
+                        id: 'woodBlock',
+                        name: 'Wood Block',
+                        type: 'synth',
+                        defaults: { decay: 0.15, tone: 2500, pitch: 0.9, gain: 0.8 }
+                    },
+                    {
+                        id: 'noisePerc',
+                        name: 'Noise Hit',
+                        type: 'synth',
+                        defaults: { decay: 0.3, tone: 6000, pitch: 1.2, gain: 1.1 }
+                    }
+                ],
+                parameters: [
+                    { id: 'pitch', label: 'Pitch', type: 'range', min: 0.5, max: 2.5, step: 0.05, default: 1.0, unit: 'x' },
+                    { id: 'decay', label: 'Decay', type: 'range', min: 0.05, max: 0.8, step: 0.01, default: 0.2, unit: 's' },
+                    { id: 'tone', label: 'Filter', type: 'range', min: 1500, max: 9000, step: 100, default: 4000, unit: 'Hz' },
+                    { id: 'gain', label: 'Gain', type: 'range', min: 0.2, max: 2.0, step: 0.05, default: 1.0, unit: 'x' }
+                ]
+            }
+        };
+
+        function buildSequencer(definitions) {
+            const sequencerObject = {};
+            Object.entries(definitions).forEach(([key, def]) => {
+                const parameterMap = {};
+                const parameterOrder = [];
+                (def.parameters || []).forEach(param => {
+                    parameterMap[param.id] = { ...param, value: param.default };
+                    parameterOrder.push(param.id);
+                });
+
+                const presetMap = {};
+                (def.presets || []).forEach(preset => {
+                    presetMap[preset.id] = preset;
+                });
+
+                const initialStatus = def.defaultPresetId && presetMap[def.defaultPresetId]
+                    ? `Preset: ${presetMap[def.defaultPresetId].name}`
+                    : 'Ready.';
+
+                sequencerObject[key] = {
+                    id: key,
+                    serializeId: def.serializeId,
+                    label: def.label,
+                    color: def.color,
+                    gain: def.gain ?? 1.0,
+                    muted: false,
+                    pattern: Array.isArray(def.pattern) ? [...def.pattern] : new Array(NUM_STEPS).fill(0),
+                    presets: def.presets || [],
+                    presetMap,
+                    parameterDefs: def.parameters || [],
+                    parameters: parameterMap,
+                    parameterOrder,
+                    defaultPresetId: def.defaultPresetId || (def.presets && def.presets[0] ? def.presets[0].id : null),
+                    sample: {
+                        mode: 'preset',
+                        presetId: def.defaultPresetId || (def.presets && def.presets[0] ? def.presets[0].id : null),
+                        audioBuffer: null,
+                        fileName: null,
+                        url: null
+                    },
+                    statusMessage: initialStatus
+                };
+            });
+            return sequencerObject;
+        }
 
         // --- Sequencer State & Defaults (Bass Track Removed) ---
-        const sequencer = {
-            drumHit: { pattern: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], color: 'var(--kick-color)', gain: 1.0, muted: false, 
-                        params: { 
-                            id: 'decay', label: 'Decay', unit: 's', min: 0.01, max: DECAY_RANGE, default: 0.1, step: 0.01, 
-                            type: 'select', options: drumHitOptions 
-                        } 
-                    }, 
-            clap: { pattern: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0], color: 'var(--clap-color)', gain: 0.7, muted: false, decay: 0.1 },
-            hihat: { pattern: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], color: 'var(--hh-color)', gain: 0.7, muted: false, decay: 0.05 },
-            openhat: { pattern: [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1], color: 'var(--oh-color)', gain: 0.7, muted: false, decay: 0.3 },
-            perc: { pattern: [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], color: 'var(--perc-color)', gain: 0.7, muted: false, decay: 0.1 },
-        };
+        const sequencer = buildSequencer(TRACK_DEFINITIONS);
+        Object.values(sequencer).forEach(track => {
+            if (track.defaultPresetId) {
+                applyPresetDefaults(track, track.defaultPresetId);
+            }
+        });
 
         // --- Utility Functions ---
 
@@ -237,18 +487,82 @@
             return 440 * Math.pow(2, (midiNote - 69) / 12);
         }
 
+        function getTrackParamValue(track, paramId) {
+            if (!track || !track.parameters[paramId]) return undefined;
+            return track.parameters[paramId].value;
+        }
+
+        function setTrackParamValue(track, paramId, value) {
+            if (!track || !track.parameters[paramId]) return;
+            track.parameters[paramId].value = value;
+        }
+
+        function applyPresetDefaults(track, presetId) {
+            if (!track) return;
+            const preset = track.presetMap ? track.presetMap[presetId] : null;
+            if (!preset || !preset.defaults) return;
+            Object.entries(preset.defaults).forEach(([key, value]) => {
+                setTrackParamValue(track, key, value);
+            });
+        }
+
+        function formatParamValue(param, value) {
+            if (typeof value !== 'number') return value;
+            if (param.unit === 'Hz') {
+                return `${Math.round(value)} ${param.unit}`;
+            }
+            const decimals = param.step && param.step < 0.1 ? 2 : 1;
+            return `${value.toFixed(decimals)}${param.unit ? ` ${param.unit}` : ''}`;
+        }
+
+        function playTrackSample(track, time, { pitch, decay, gain }) {
+            if (!track || track.sample.mode !== 'custom' || !track.sample.audioBuffer) return false;
+
+            const safePitch = Math.max(0.1, pitch || 1.0);
+            const safeDecay = Math.max(0.05, decay || 0.2);
+            const safeGain = Math.max(0, gain || 0);
+
+            const gainNode = audioContext.createGain();
+            const source = audioContext.createBufferSource();
+            source.buffer = track.sample.audioBuffer;
+            source.playbackRate.setValueAtTime(safePitch, time);
+            gainNode.gain.setValueAtTime(safeGain, time);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, time + safeDecay);
+
+            source.connect(gainNode);
+            gainNode.connect(distortionNode);
+
+            const maxDuration = track.sample.audioBuffer.duration / safePitch;
+            const playDuration = Math.min(maxDuration, safeDecay * 2.5);
+
+            source.start(time);
+            source.stop(time + Math.max(0.1, playDuration));
+            return true;
+        }
+
+        function updateTrackStatus(trackId, message) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            track.statusMessage = message;
+            const statusDiv = document.getElementById(`${trackId}-status`);
+            if (statusDiv) {
+                statusDiv.textContent = message;
+            }
+            if (currentCustomizeTrackId === trackId) {
+                const modalStatus = document.getElementById('customizeStatus');
+                if (modalStatus) {
+                    modalStatus.textContent = message;
+                }
+            }
+        }
+
         function getSliderValue(id) {
             const el = document.getElementById(id);
-            return el ? parseFloat(el.value) : 0; 
-        }
-        
-        function getSelectValue(id) {
-            const el = document.getElementById(id);
-            return el ? el.value : null;
+            return el ? parseFloat(el.value) : 0;
         }
 
         function createDistortionCurve(amount) {
-            const k = amount * 0.1; 
+            const k = amount * 0.1;
             const n_samples = 44100;
             const curve = new Float32Array(n_samples);
             for (let i = 0; i < n_samples; i++) {
@@ -276,117 +590,142 @@
             const track = sequencer.drumHit;
             if (track.muted) return;
 
-            const drumType = getSelectValue('drumHit-type-select');
-            const selectedOption = drumHitOptions.find(opt => opt.value === drumType);
-            
             const globalVolume = getDrumVolume();
             const globalDecayMult = getDrumDecayMultiplier();
-            
-            // Normalized gain factor * Global Volume Slider
-            const volume = track.gain * (selectedOption.gainMult || 1.0) * globalVolume; 
-            
+
+            const pitch = getTrackParamValue(track, 'pitch') || 1.0;
+            const decay = (getTrackParamValue(track, 'decay') || 0.4) * globalDecayMult;
+            const tone = getTrackParamValue(track, 'tone') || 800;
+            const gainParam = getTrackParamValue(track, 'gain') || 1.0;
+
+            const selectedPresetId = track.sample.mode === 'preset' ? track.sample.presetId : track.defaultPresetId;
+            const selectedPreset = selectedPresetId ? track.presetMap[selectedPresetId] : null;
+            const presetMeta = selectedPreset && selectedPreset.meta ? selectedPreset.meta : {};
+
+            const finalGain = track.gain * globalVolume * gainParam * (presetMeta.gainMult || 1.0);
+
+            if (playTrackSample(track, time, { pitch, decay, gain: finalGain })) {
+                return;
+            }
+
             const gain = audioContext.createGain();
-            gain.connect(distortionNode); 
-            gain.gain.setValueAtTime(volume, time);
-            
-            let basePitch = 50; 
-            // Base decay from selected option * Global Decay Slider
-            let finalDecay = (selectedOption.baseDecay || 0.1) * globalDecayMult;
+            gain.connect(distortionNode);
+            gain.gain.setValueAtTime(finalGain, time);
 
-            // Define common nodes used for all sounds
-            let osc = null;
-            let noise = null;
-            let filter = null;
             let sourceNode = null;
+            let filter = null;
 
-            switch (drumType) {
+            const basePitchMidi = presetMeta.basePitch || 50;
+            const baseFrequency = midiToFreq(basePitchMidi);
+
+            switch (selectedPresetId) {
                 case 'deepKick':
-                case 'taikoDrum':
-                    // Tonal, low-frequency sounds
-                    osc = audioContext.createOscillator();
+                case 'taikoDrum': {
+                    const osc = audioContext.createOscillator();
                     osc.type = 'sine';
-                    basePitch = (drumType === 'deepKick') ? 45 : 35; 
-                    
                     filter = audioContext.createBiquadFilter();
                     filter.type = 'lowpass';
-                    filter.frequency.setValueAtTime(basePitch * 10, time);
+                    filter.frequency.setValueAtTime(Math.max(200, tone * 10), time);
                     filter.Q.setValueAtTime(2, time);
-                    
-                    osc.connect(filter);
-                    sourceNode = osc;
 
-                    osc.frequency.setValueAtTime(midiToFreq(basePitch), time);
-                    osc.frequency.exponentialRampToValueAtTime(30, time + 0.15); 
+                    const startFreq = baseFrequency * pitch;
+                    osc.connect(filter);
+                    sourceNode = filter;
+                    osc.frequency.setValueAtTime(startFreq, time);
+                    osc.frequency.exponentialRampToValueAtTime(Math.max(30, startFreq * 0.2), time + 0.15);
+                    osc.start(time);
+                    osc.stop(time + Math.max(0.05, decay));
                     break;
-                    
-                case 'snareHit':
-                    // Snare (Mix of noise and a short tone)
-                    noise = audioContext.createBufferSource();
+                }
+                case 'snareHit': {
+                    const noise = audioContext.createBufferSource();
                     const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.5, audioContext.sampleRate);
                     const output = noiseBuffer.getChannelData(0);
                     for (let i = 0; i < noiseBuffer.length; i++) { output[i] = Math.random() * 2 - 1; }
                     noise.buffer = noiseBuffer;
-                    
+
                     filter = audioContext.createBiquadFilter();
                     filter.type = 'bandpass';
-                    filter.frequency.setValueAtTime(800, time); 
-                    filter.Q.setValueAtTime(1, time);
-                    
-                    noise.connect(filter);
-                    sourceNode = noise;
-                    break;
+                    filter.frequency.setValueAtTime(Math.max(200, tone), time);
+                    filter.Q.setValueAtTime(1.2, time);
 
-                case 'rimShot':
-                    // Rim Shot/Clave (High, short tone)
-                    osc = audioContext.createOscillator();
+                    noise.connect(filter);
+                    sourceNode = filter;
+                    noise.start(time);
+                    noise.stop(time + Math.max(0.05, decay));
+                    break;
+                }
+                case 'rimShot': {
+                    const osc = audioContext.createOscillator();
                     osc.type = 'square';
-                    basePitch = 90; // High tone
-                    
+
                     filter = audioContext.createBiquadFilter();
                     filter.type = 'highpass';
-                    filter.frequency.setValueAtTime(midiToFreq(basePitch) * 0.5, time);
+                    filter.frequency.setValueAtTime(Math.max(200, tone), time);
                     filter.Q.setValueAtTime(10, time);
 
                     osc.connect(filter);
-                    sourceNode = osc;
-                    osc.frequency.setValueAtTime(midiToFreq(basePitch), time);
+                    sourceNode = filter;
+                    osc.frequency.setValueAtTime(baseFrequency * pitch, time);
+                    osc.start(time);
+                    osc.stop(time + Math.max(0.03, decay));
                     break;
-
-                case 'cymbalSiz':
-                    // Cymbal (Washed highpass noise)
-                    noise = audioContext.createBufferSource();
+                }
+                case 'cymbalSiz': {
+                    const noise = audioContext.createBufferSource();
                     const cymbalNoiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 2.0, audioContext.sampleRate);
                     const cymbalOutput = cymbalNoiseBuffer.getChannelData(0);
                     for (let i = 0; i < cymbalNoiseBuffer.length; i++) { cymbalOutput[i] = Math.random() * 2 - 1; }
                     noise.buffer = cymbalNoiseBuffer;
-                    
+
                     filter = audioContext.createBiquadFilter();
                     filter.type = 'highpass';
-                    filter.frequency.setValueAtTime(6000, time); 
+                    filter.frequency.setValueAtTime(Math.max(2000, tone), time);
                     filter.Q.setValueAtTime(1, time);
 
                     noise.connect(filter);
-                    sourceNode = noise;
+                    sourceNode = filter;
+                    noise.start(time);
+                    noise.stop(time + Math.max(0.2, decay));
                     break;
-
-                default:
-                    return; // Should not happen with current options
+                }
+                default: {
+                    const osc = audioContext.createOscillator();
+                    osc.type = 'sine';
+                    filter = audioContext.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.setValueAtTime(Math.max(400, tone), time);
+                    osc.connect(filter);
+                    sourceNode = filter;
+                    osc.frequency.setValueAtTime(baseFrequency * pitch, time);
+                    osc.start(time);
+                    osc.stop(time + Math.max(0.05, decay));
+                }
             }
-            
-            // Connect and play
+
+            if (!sourceNode) return;
+
             sourceNode.connect(gain);
-            
-            gain.gain.exponentialRampToValueAtTime(0.001, time + finalDecay); 
-            sourceNode.start(time);
-            sourceNode.stop(time + finalDecay);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + Math.max(0.05, decay));
         }
 
         // Play functions simplified to use global controls
         function playClap(time) {
             const track = sequencer.clap;
             if (track.muted) return;
-            const volume = track.gain * getDrumVolume(); 
-            const decay = track.decay * getDrumDecayMultiplier();
+            const globalVolume = getDrumVolume();
+            const globalDecayMult = getDrumDecayMultiplier();
+
+            const pitch = getTrackParamValue(track, 'pitch') || 1.0;
+            const decay = (getTrackParamValue(track, 'decay') || 0.18) * globalDecayMult;
+            const tone = getTrackParamValue(track, 'tone') || 6500;
+            const gainParam = getTrackParamValue(track, 'gain') || 1.0;
+
+            const finalGain = track.gain * globalVolume * gainParam;
+
+            if (playTrackSample(track, time, { pitch, decay, gain: finalGain })) {
+                return;
+            }
 
             const noise = audioContext.createBufferSource();
             const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * CLAP_NOISE_DURATION, audioContext.sampleRate);
@@ -395,16 +734,38 @@
                 output[i] = Math.random() * 2 - 1;
             }
             noise.buffer = noiseBuffer;
-            const gain = audioContext.createGain();
 
-            noise.connect(gain);
-            gain.connect(distortionNode); 
-            
-            gain.gain.setValueAtTime(volume, time);
-            gain.gain.exponentialRampToValueAtTime(0.001, time + decay);
+            const bandpass = audioContext.createBiquadFilter();
+            bandpass.type = 'bandpass';
+            bandpass.frequency.setValueAtTime(Math.max(2000, tone * pitch), time);
+            bandpass.Q.setValueAtTime(1.5, time);
+
+            const highpass = audioContext.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.setValueAtTime(2000, time);
+
+            const gain = audioContext.createGain();
+            gain.connect(distortionNode);
+            gain.gain.setValueAtTime(finalGain, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + Math.max(0.05, decay));
+
+            noise.connect(bandpass);
+            bandpass.connect(highpass);
+            highpass.connect(gain);
+
+            const toneOsc = audioContext.createOscillator();
+            toneOsc.type = 'triangle';
+            toneOsc.frequency.setValueAtTime(800 * pitch, time);
+            const toneGain = audioContext.createGain();
+            toneGain.gain.setValueAtTime(0.3, time);
+            toneGain.gain.exponentialRampToValueAtTime(0.001, time + Math.max(0.03, decay * 0.6));
+            toneOsc.connect(toneGain);
+            toneGain.connect(gain);
 
             noise.start(time);
-            noise.stop(time + decay);
+            noise.stop(time + Math.max(0.05, decay));
+            toneOsc.start(time);
+            toneOsc.stop(time + Math.max(0.05, decay));
         }
         
         // This track should probably be renamed if we remove the bassline entirely
@@ -420,8 +781,16 @@
 
             const globalVolume = getDrumVolume();
             const globalDecayMult = getDrumDecayMultiplier();
-            const volume = track.gain * globalVolume;
-            const decay = track.decay * globalDecayMult;
+            const pitch = getTrackParamValue(track, 'pitch') || 1.0;
+            const decay = (getTrackParamValue(track, 'decay') || 0.12) * globalDecayMult;
+            const tone = getTrackParamValue(track, 'tone') || 9000;
+            const gainParam = getTrackParamValue(track, 'gain') || 1.0;
+
+            const finalGain = track.gain * globalVolume * gainParam;
+
+            if (playTrackSample(track, time, { pitch, decay, gain: finalGain })) {
+                return;
+            }
 
             const noise = audioContext.createBufferSource();
             const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * DECAY_RANGE, audioContext.sampleRate);
@@ -430,19 +799,24 @@
                 output[i] = Math.random() * 2 - 1;
             }
             noise.buffer = noiseBuffer;
-            
+
             const bandpass = audioContext.createBiquadFilter();
             bandpass.type = 'bandpass';
-            bandpass.frequency.setValueAtTime(8000, time);
-            bandpass.Q.setValueAtTime(10, time);
+            bandpass.frequency.setValueAtTime(Math.max(4000, tone * pitch), time);
+            bandpass.Q.setValueAtTime(12, time);
+
+            const highpass = audioContext.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.setValueAtTime(5000, time);
 
             const gain = audioContext.createGain();
             noise.connect(bandpass);
-            bandpass.connect(gain);
+            bandpass.connect(highpass);
+            highpass.connect(gain);
             gain.connect(distortionNode);
 
-            const finalDecay = isClosed ? decay : Math.max(decay, 0.2);
-            gain.gain.setValueAtTime(volume, time);
+            const finalDecay = isClosed ? Math.max(0.04, decay * 0.9) : Math.max(0.2, decay * 1.2);
+            gain.gain.setValueAtTime(finalGain, time);
             gain.gain.exponentialRampToValueAtTime(0.001, time + finalDecay);
 
             noise.start(time);
@@ -452,14 +826,22 @@
         function playPercussion(time) {
             const track = sequencer.perc;
             if (track.muted) return;
-            
+
             const globalVolume = getDrumVolume();
             const globalDecayMult = getDrumDecayMultiplier();
-            const volume = track.gain * globalVolume;
-            const decay = track.decay * globalDecayMult;
+            const pitch = getTrackParamValue(track, 'pitch') || 1.0;
+            const decay = (getTrackParamValue(track, 'decay') || 0.2) * globalDecayMult;
+            const tone = getTrackParamValue(track, 'tone') || 4000;
+            const gainParam = getTrackParamValue(track, 'gain') || 1.0;
+
+            const finalGain = track.gain * globalVolume * gainParam;
+
+            if (playTrackSample(track, time, { pitch, decay, gain: finalGain })) {
+                return;
+            }
 
             const noise = audioContext.createBufferSource();
-            const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.2, audioContext.sampleRate);
+            const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.3, audioContext.sampleRate);
             const output = noiseBuffer.getChannelData(0);
             for (let i = 0; i < noiseBuffer.length; i++) {
                 output[i] = Math.random() * 2 - 1;
@@ -468,19 +850,19 @@
 
             const bandpass = audioContext.createBiquadFilter();
             bandpass.type = 'bandpass';
-            bandpass.frequency.setValueAtTime(4000, time); 
-            bandpass.Q.setValueAtTime(5, time);
+            bandpass.frequency.setValueAtTime(Math.max(500, tone * pitch), time);
+            bandpass.Q.setValueAtTime(6, time);
 
             const gain = audioContext.createGain();
             noise.connect(bandpass);
             bandpass.connect(gain);
-            gain.connect(distortionNode); 
-            
-            gain.gain.setValueAtTime(volume, time); 
-            gain.gain.exponentialRampToValueAtTime(0.001, time + decay); 
+            gain.connect(distortionNode);
+
+            gain.gain.setValueAtTime(finalGain, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + Math.max(0.05, decay));
 
             noise.start(time);
-            noise.stop(time + decay);
+            noise.stop(time + Math.max(0.05, decay));
         }
 
 
@@ -704,79 +1086,511 @@
         
         // --- UI Generation and Setup ---
 
+        function getPresetOptionsHTML(track) {
+            if (!track || !track.presets) return '';
+            return track.presets.map(preset => `<option value="${preset.id}">${preset.name}</option>`).join('');
+        }
+
+        function populateParameterInputs(trackId) {
+            const track = sequencer[trackId];
+            const container = document.getElementById('customizeParameters');
+            if (!track || !container) return;
+            if (currentCustomizeTrackId && currentCustomizeTrackId !== trackId) return;
+            container.innerHTML = '';
+
+            track.parameterOrder.forEach(paramId => {
+                const param = track.parameters[paramId];
+                if (!param) return;
+
+                const row = document.createElement('div');
+                row.className = 'flex items-center space-x-3';
+
+                const label = document.createElement('span');
+                label.className = 'text-xs text-gray-300 w-24';
+                label.textContent = param.label;
+
+                const input = document.createElement('input');
+                input.type = param.type === 'number' ? 'number' : 'range';
+                input.min = param.min;
+                input.max = param.max;
+                input.step = param.step || 0.01;
+                input.value = param.value;
+                input.className = 'flex-grow h-2 bg-gray-700 rounded appearance-none cursor-pointer';
+
+                const valueDisplay = document.createElement('span');
+                valueDisplay.className = 'text-xs text-gray-400 w-24 text-right';
+                valueDisplay.textContent = formatParamValue(param, param.value);
+
+                input.addEventListener('input', (event) => {
+                    const newValue = parseFloat(event.target.value);
+                    if (Number.isFinite(newValue)) {
+                        setTrackParamValue(track, paramId, newValue);
+                        valueDisplay.textContent = formatParamValue(param, newValue);
+                        updateTrackStatus(trackId, 'Custom parameters updated.');
+                    }
+                });
+
+                row.appendChild(label);
+                row.appendChild(input);
+                row.appendChild(valueDisplay);
+                container.appendChild(row);
+            });
+        }
+
+        async function setTrackSampleFromArrayBuffer(trackId, arrayBuffer, metadata = {}) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            try {
+                initAudio();
+                updateTrackStatus(trackId, 'Decoding sample...');
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                track.sample.mode = 'custom';
+                track.sample.audioBuffer = audioBuffer;
+                track.sample.fileName = metadata.fileName || null;
+                track.sample.url = metadata.url || null;
+                const descriptor = metadata.fileName || metadata.url || 'Custom sample';
+                updateTrackStatus(trackId, `Custom sample loaded (${descriptor}, ${audioBuffer.duration.toFixed(2)}s).`);
+            } catch (error) {
+                console.error('Error decoding track sample:', error);
+                track.sample.audioBuffer = null;
+                track.sample.mode = 'preset';
+                if (track.sample.presetId) {
+                    applyPresetDefaults(track, track.sample.presetId);
+                }
+                updateTrackStatus(trackId, 'Error loading sample. Reverted to preset.');
+            }
+        }
+
+        async function loadTrackSampleFromFile(trackId, file) {
+            if (!file) return;
+            updateTrackStatus(trackId, `Loading sample "${file.name}"...`);
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                await setTrackSampleFromArrayBuffer(trackId, arrayBuffer, { fileName: file.name });
+            } catch (error) {
+                console.error('Error reading sample file:', error);
+                updateTrackStatus(trackId, 'Error reading sample file.');
+            }
+        }
+
+        async function loadTrackSampleFromUrl(trackId, url) {
+            if (!url) return;
+            updateTrackStatus(trackId, 'Fetching sample from URL...');
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const arrayBuffer = await response.arrayBuffer();
+                await setTrackSampleFromArrayBuffer(trackId, arrayBuffer, { url });
+            } catch (error) {
+                console.error('Error loading sample URL:', error);
+                updateTrackStatus(trackId, 'Error loading sample URL.');
+            }
+        }
+
+        function clearTrackSample(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            const presetId = track.sample.presetId || track.defaultPresetId;
+            track.sample.mode = 'preset';
+            track.sample.audioBuffer = null;
+            track.sample.fileName = null;
+            track.sample.url = null;
+            if (presetId) {
+                applyPresetDefaults(track, presetId);
+                const preset = track.presetMap[presetId];
+                updateTrackStatus(trackId, `Preset: ${preset ? preset.name : presetId}`);
+            } else {
+                updateTrackStatus(trackId, 'Preset mode restored.');
+            }
+        }
+
+        function openCustomizeModal(trackId) {
+            const track = sequencer[trackId];
+            const modal = document.getElementById('trackCustomizeModal');
+            if (!track || !modal) return;
+
+            currentCustomizeTrackId = trackId;
+            modal.dataset.trackId = trackId;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            const title = document.getElementById('customizeTitle');
+            if (title) title.textContent = `Customize ${track.label}`;
+
+            const presetSelect = document.getElementById('customizePresetSelect');
+            if (presetSelect) {
+                presetSelect.innerHTML = getPresetOptionsHTML(track);
+                const currentPresetId = track.sample.presetId || track.defaultPresetId || '';
+                presetSelect.value = currentPresetId;
+                presetSelect.onchange = (event) => {
+                    const newPresetId = event.target.value;
+                    track.sample.mode = 'preset';
+                    track.sample.presetId = newPresetId;
+                    track.sample.audioBuffer = null;
+                    track.sample.fileName = null;
+                    track.sample.url = null;
+                    applyPresetDefaults(track, newPresetId);
+                    const preset = track.presetMap[newPresetId];
+                    updateTrackStatus(trackId, `Preset: ${preset ? preset.name : newPresetId}`);
+                    populateParameterInputs(trackId);
+                };
+            }
+
+            const fileInput = document.getElementById('customSampleFile');
+            if (fileInput) {
+                fileInput.value = '';
+                fileInput.onchange = async (event) => {
+                    const file = event.target.files && event.target.files[0];
+                    if (file) {
+                        await loadTrackSampleFromFile(trackId, file);
+                        populateParameterInputs(trackId);
+                    }
+                    event.target.value = '';
+                };
+            }
+
+            const urlInput = document.getElementById('customSampleUrl');
+            const urlButton = document.getElementById('customSampleUrlLoad');
+            if (urlButton) {
+                urlButton.onclick = async () => {
+                    if (!urlInput) return;
+                    const url = urlInput.value.trim();
+                    if (url) {
+                        await loadTrackSampleFromUrl(trackId, url);
+                        populateParameterInputs(trackId);
+                        urlInput.value = '';
+                    }
+                };
+            }
+
+            const clearButton = document.getElementById('clearSampleButton');
+            if (clearButton) {
+                clearButton.onclick = () => {
+                    clearTrackSample(trackId);
+                    populateParameterInputs(trackId);
+                    if (presetSelect) {
+                        const currentPresetId = track.sample.presetId || track.defaultPresetId || '';
+                        presetSelect.value = currentPresetId;
+                    }
+                };
+            }
+
+            const modalStatus = document.getElementById('customizeStatus');
+            if (modalStatus) {
+                modalStatus.textContent = track.statusMessage || 'Ready.';
+            }
+
+            populateParameterInputs(trackId);
+        }
+
+        function closeCustomizeModal() {
+            const modal = document.getElementById('trackCustomizeModal');
+            if (!modal) return;
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            currentCustomizeTrackId = null;
+        }
+
+        function refreshTrackPatternUI(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            for (let i = 0; i < NUM_STEPS; i++) {
+                const button = document.getElementById(`${trackId}-step-${i}`);
+                if (button) {
+                    button.style.backgroundColor = track.pattern[i] === 1 ? track.color : 'rgba(107, 114, 128, 0.3)';
+                }
+            }
+            const label = document.getElementById(`${trackId}-label`);
+            if (label) {
+                label.classList.toggle('track-muted', track.muted);
+            }
+        }
+
+        function getTrackSnapshot(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return null;
+            const parameters = {};
+            track.parameterOrder.forEach(paramId => {
+                parameters[paramId] = getTrackParamValue(track, paramId);
+            });
+
+            return {
+                serializeId: track.serializeId,
+                pattern: [...track.pattern],
+                parameters,
+                presetId: track.sample.presetId,
+                sample: {
+                    mode: track.sample.mode,
+                    fileName: track.sample.fileName,
+                    url: track.sample.url
+                },
+                gain: track.gain,
+                muted: track.muted,
+                label: track.label,
+                color: track.color
+            };
+        }
+
+        function applyTrackSnapshot(trackId, snapshot) {
+            const track = sequencer[trackId];
+            if (!track || !snapshot) return;
+
+            if (Array.isArray(snapshot.pattern)) {
+                for (let i = 0; i < NUM_STEPS; i++) {
+                    track.pattern[i] = snapshot.pattern[i] ? 1 : 0;
+                }
+            }
+
+            if (snapshot.presetId) {
+                track.sample.presetId = snapshot.presetId;
+            }
+
+            if (snapshot.sample && snapshot.sample.mode === 'custom') {
+                track.sample.mode = 'custom';
+                track.sample.fileName = snapshot.sample.fileName || null;
+                track.sample.url = snapshot.sample.url || null;
+                track.sample.audioBuffer = null;
+            } else {
+                track.sample.mode = 'preset';
+                track.sample.audioBuffer = null;
+            }
+
+            if (track.sample.mode === 'preset' && track.sample.presetId) {
+                applyPresetDefaults(track, track.sample.presetId);
+            }
+
+            if (snapshot.parameters) {
+                Object.entries(snapshot.parameters).forEach(([paramId, value]) => {
+                    setTrackParamValue(track, paramId, value);
+                });
+            }
+
+            if (typeof snapshot.gain === 'number') {
+                track.gain = snapshot.gain;
+            }
+
+            if (typeof snapshot.muted === 'boolean') {
+                track.muted = snapshot.muted;
+            }
+
+            refreshTrackPatternUI(trackId);
+            populateParameterInputs(trackId);
+
+            if (track.sample.mode === 'preset') {
+                const preset = track.presetMap[track.sample.presetId];
+                updateTrackStatus(trackId, `Preset: ${preset ? preset.name : track.sample.presetId}`);
+            } else {
+                const descriptor = track.sample.fileName || track.sample.url || 'Custom sample';
+                updateTrackStatus(trackId, `Custom sample metadata applied (${descriptor}).`);
+            }
+        }
+
+        function saveTrackConfig(trackId) {
+            const snapshot = getTrackSnapshot(trackId);
+            if (!snapshot) return;
+            const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${trackId}-track.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            updateTrackStatus(trackId, 'Track saved to JSON file.');
+        }
+
+        async function exportTrackConfig(trackId) {
+            const snapshot = getTrackSnapshot(trackId);
+            if (!snapshot) return;
+            const snapshotString = JSON.stringify(snapshot);
+            try {
+                await navigator.clipboard.writeText(snapshotString);
+                updateTrackStatus(trackId, 'Track JSON copied to clipboard.');
+            } catch (error) {
+                console.warn('Clipboard write failed, using prompt fallback.', error);
+                window.prompt('Copy the track configuration JSON:', snapshotString);
+                updateTrackStatus(trackId, 'Track JSON ready to copy.');
+            }
+        }
+
+        function importTrackConfig(trackId) {
+            const jsonString = window.prompt('Paste track configuration JSON:');
+            if (!jsonString) return;
+            try {
+                const parsed = JSON.parse(jsonString);
+                applyTrackSnapshot(trackId, parsed);
+                const preset = sequencer[trackId].sample.mode === 'preset' ? sequencer[trackId].presetMap[sequencer[trackId].sample.presetId] : null;
+                updateTrackStatus(trackId, preset ? `Preset: ${preset.name}` : 'Track configuration imported.');
+            } catch (error) {
+                console.error('Error importing track JSON:', error);
+                updateTrackStatus(trackId, 'Error importing track configuration.');
+            }
+        }
+
+        function getProjectSnapshot() {
+            const tracks = {};
+            Object.keys(sequencer).forEach(id => {
+                tracks[id] = getTrackSnapshot(id);
+            });
+            return {
+                version: 'raw-house-mix-v15',
+                bpm: getSliderValue('bpmSlider'),
+                drumVolume: getSliderValue('drumVolumeSlider'),
+                drumDecay: getSliderValue('drumDecaySlider'),
+                grit: getSliderValue('gritSlider'),
+                tracks
+            };
+        }
+
+        function updateProjectStatus(message) {
+            const status = document.getElementById('projectStatus');
+            if (status) {
+                status.textContent = message;
+            }
+        }
+
+        function applyProjectSnapshot(snapshot) {
+            if (!snapshot) return;
+            if (typeof snapshot.bpm === 'number') {
+                const bpmSlider = document.getElementById('bpmSlider');
+                if (bpmSlider) {
+                    bpmSlider.value = snapshot.bpm;
+                    updateBPMDisplay();
+                }
+            }
+            if (typeof snapshot.drumVolume === 'number') {
+                const volSlider = document.getElementById('drumVolumeSlider');
+                if (volSlider) {
+                    volSlider.value = snapshot.drumVolume;
+                    updateDrumVolumeDisplay();
+                }
+            }
+            if (typeof snapshot.drumDecay === 'number') {
+                const decaySlider = document.getElementById('drumDecaySlider');
+                if (decaySlider) {
+                    decaySlider.value = snapshot.drumDecay;
+                    updateDrumDecayDisplay();
+                }
+            }
+            if (typeof snapshot.grit === 'number') {
+                const gritSlider = document.getElementById('gritSlider');
+                if (gritSlider) {
+                    gritSlider.value = snapshot.grit;
+                    updateDistortion();
+                }
+            }
+
+            if (snapshot.tracks) {
+                Object.entries(snapshot.tracks).forEach(([trackId, trackSnapshot]) => {
+                    if (sequencer[trackId]) {
+                        applyTrackSnapshot(trackId, trackSnapshot);
+                    }
+                });
+            }
+        }
+
+        function saveProjectConfig() {
+            const snapshot = getProjectSnapshot();
+            const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'raw-house-project.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            updateProjectStatus('Project saved to JSON file.');
+        }
+
+        async function exportProjectConfig() {
+            const snapshot = getProjectSnapshot();
+            const snapshotString = JSON.stringify(snapshot);
+            try {
+                await navigator.clipboard.writeText(snapshotString);
+                updateProjectStatus('Project JSON copied to clipboard.');
+            } catch (error) {
+                console.warn('Clipboard export failed, using prompt fallback.', error);
+                window.prompt('Copy the project JSON:', snapshotString);
+                updateProjectStatus('Project JSON ready to copy.');
+            }
+        }
+
+        function importProjectConfig() {
+            const jsonString = window.prompt('Paste project JSON:');
+            if (!jsonString) return;
+            try {
+                const parsed = JSON.parse(jsonString);
+                applyProjectSnapshot(parsed);
+                updateProjectStatus('Project configuration imported.');
+            } catch (error) {
+                console.error('Error importing project JSON:', error);
+                updateProjectStatus('Error importing project configuration.');
+            }
+        }
+
         function generateTrackUI(id, data) {
-            const trackName = id.toUpperCase().replace('DRUMHIT', 'DRUM HIT'); 
-            const specialParam = data.params;
+            const trackName = data.label || id.toUpperCase().replace('DRUMHIT', 'DRUM HIT');
             const container = document.getElementById('sequencerContainer');
 
-            const isDrumHit = id === 'drumHit';
-            
-            let paramControlHTML = `<div class="simplified-control-spacer"></div>`;
-            let volumeControlHTML = `<div class="simplified-control-spacer"></div>`;
-
-            if (isDrumHit) {
-                // DRUM HIT track: Decay slider + Sound pulldown
-                const optionsHTML = specialParam.options.map(opt => `<option value="${opt.value}">${opt.label}</option>`).join('');
-                
-                // Volume/Decay sliders removed, replaced with spacer
-                volumeControlHTML = `<div class="simplified-control-spacer"></div>`; 
-
-                paramControlHTML = `
-                    <!-- Sound Pulldown -->
-                    <div class="flex items-center space-x-2 w-1/4">
-                        <label for="${id}-type-select" class="text-gray-400 text-xs flex-shrink-0">SOUND</label>
-                        <select id="${id}-type-select" class="w-full text-xs bg-gray-700 text-white rounded-md p-1 border border-gray-600">
-                            ${optionsHTML}
-                        </select>
-                    </div>
-                `;
-            } else {
-                // All other tracks: No parameter controls, just spacers for alignment
-                volumeControlHTML = `<div class="simplified-control-spacer"></div>`;
-                paramControlHTML = `<div class="simplified-control-spacer"></div>`;
-            }
-            
-            // Build the main track element
             const trackElement = document.createElement('div');
-            trackElement.className = "flex flex-col space-y-2 mb-4";
+            trackElement.className = 'flex flex-col space-y-2 mb-4';
             trackElement.innerHTML = `
-                <!-- Top Row: Label, Mute, Volume, Special Parameter -->
-                <div class="flex items-center space-x-4">
-                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity" 
+                <div class="flex flex-wrap items-center gap-2">
+                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity"
                           style="background-color: ${data.color};">
                           ${trackName}
                     </span>
-                    
-                    ${volumeControlHTML}
-                    ${paramControlHTML}
-                    
+                    <button id="${id}-customize" class="px-3 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Customize</button>
+                    <div class="flex items-center gap-2 ml-auto">
+                        <button id="${id}-save" class="px-2 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Save</button>
+                        <button id="${id}-export" class="px-2 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Export</button>
+                        <button id="${id}-import" class="px-2 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600 transition-colors">Import</button>
+                    </div>
                 </div>
-
-                <!-- Bottom Row: Step Sequencer -->
-                <div id="${id}Track" class="flex flex-grow space-x-1 sm:space-x-2 pl-4">
-                    <!-- Step buttons injected here -->
-                </div>
+                <div class="text-xs text-gray-400 ml-2" id="${id}-status">${data.statusMessage || 'Ready.'}</div>
+                <div id="${id}Track" class="flex flex-grow space-x-1 sm:space-x-2 pl-4"></div>
             `;
             container.appendChild(trackElement);
 
-            // Mute/Unmute Logic - CRITICAL FIX
-            document.getElementById(`${id}-label`).addEventListener('click', (e) => {
-                // Directly reference the global sequencer object
-                sequencer[id].muted = !sequencer[id].muted;
-                e.target.classList.toggle('track-muted', sequencer[id].muted);
-            });
+            const label = document.getElementById(`${id}-label`);
+            if (label) {
+                label.addEventListener('click', (e) => {
+                    sequencer[id].muted = !sequencer[id].muted;
+                    e.target.classList.toggle('track-muted', sequencer[id].muted);
+                });
+                label.classList.toggle('track-muted', sequencer[id].muted);
+            }
 
-            // Generate Step Buttons
+            const customizeButton = document.getElementById(`${id}-customize`);
+            if (customizeButton) {
+                customizeButton.addEventListener('click', () => openCustomizeModal(id));
+            }
+
+            const saveButton = document.getElementById(`${id}-save`);
+            if (saveButton) {
+                saveButton.addEventListener('click', () => saveTrackConfig(id));
+            }
+
+            const exportButton = document.getElementById(`${id}-export`);
+            if (exportButton) {
+                exportButton.addEventListener('click', () => exportTrackConfig(id));
+            }
+
+            const importButton = document.getElementById(`${id}-import`);
+            if (importButton) {
+                importButton.addEventListener('click', () => importTrackConfig(id));
+            }
+
             const stepContainer = document.getElementById(`${id}Track`);
             for (let i = 0; i < NUM_STEPS; i++) {
                 const button = document.createElement('button');
                 button.id = `${id}-step-${i}`;
-                button.className = `step-button flex-grow rounded-md`;
+                button.className = 'step-button flex-grow rounded-md';
                 button.style.backgroundColor = data.pattern[i] === 1 ? data.color : 'rgba(107, 114, 128, 0.3)';
-                button.onclick = () => {
-                    data.pattern[i] = 1 - data.pattern[i]; 
+                button.addEventListener('click', () => {
+                    data.pattern[i] = 1 - data.pattern[i];
                     button.style.backgroundColor = data.pattern[i] === 1 ? data.color : 'rgba(107, 114, 128, 0.3)';
-                };
+                });
                 stepContainer.appendChild(button);
             }
         }
@@ -846,21 +1660,39 @@
                     }
                 });
             });
-            
+
+            const projectSave = document.getElementById('projectSave');
+            if (projectSave) projectSave.addEventListener('click', saveProjectConfig);
+            const projectExport = document.getElementById('projectExport');
+            if (projectExport) projectExport.addEventListener('click', exportProjectConfig);
+            const projectImport = document.getElementById('projectImport');
+            if (projectImport) projectImport.addEventListener('click', importProjectConfig);
+
+            const customizeClose = document.getElementById('customizeClose');
+            if (customizeClose) customizeClose.addEventListener('click', closeCustomizeModal);
+            const modal = document.getElementById('trackCustomizeModal');
+            if (modal) {
+                modal.addEventListener('click', (event) => {
+                    if (event.target === modal) {
+                        closeCustomizeModal();
+                    }
+                });
+            }
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && currentCustomizeTrackId) {
+                    closeCustomizeModal();
+                }
+            });
+
             // Initial setup
-            updateDistortion(); 
+            updateDistortion();
             updateBPMDisplay();
             updateDrumVolumeDisplay();
             updateDrumDecayDisplay();
 
             // Initialize audio context on first user interaction with a click listener
             document.body.addEventListener('click', initAudio, { once: true });
-
-            // Set the default selected value for the DRUM HIT track
-            const drumHitSelect = document.getElementById('drumHit-type-select');
-            if(drumHitSelect) {
-                drumHitSelect.value = 'deepKick'; // Defaulting to the KICK sound
-            }
         };
     </script>
 </body>
