@@ -84,6 +84,56 @@
             width: 25%;
             margin-right: 1rem; /* Matches space-x-4 from parent */
         }
+        .meter-wrapper {
+            width: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .meter-wrapper.track-meter {
+            margin-right: 0.5rem;
+        }
+        .meter-bar {
+            position: relative;
+            width: 0.55rem;
+            height: 2.6rem;
+            background: #0f172a;
+            border-radius: 0.35rem;
+            border: 1px solid #374151;
+            overflow: hidden;
+        }
+        .meter-wrapper.master-meter .meter-bar {
+            height: 3rem;
+            width: 0.65rem;
+        }
+        .meter-level {
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            width: 100%;
+            height: 0;
+            background: linear-gradient(to top, #22c55e, #facc15);
+            transition: height 0.1s linear;
+        }
+        .meter-peak {
+            position: absolute;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #facc15;
+            opacity: 0.9;
+        }
+        .meter-clip {
+            font-size: 0.55rem;
+            letter-spacing: 0.12em;
+            color: #f87171;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        .meter-clip.active {
+            opacity: 1;
+        }
     </style>
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex flex-col items-center">
@@ -124,7 +174,7 @@
             
             <!-- Right Group: Grit/Decay/Backing Track -->
             <div class="flex flex-wrap gap-4 items-center flex-grow min-w-[300px] sm:min-w-[400px]">
-                
+
                 <!-- DRUM Decay Control -->
                 <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
                     <label for="drumDecaySlider" class="text-gray-400 text-sm flex-shrink-0">DRUM DECAY (<span id="drumDecayValue">50</span>)</label>
@@ -141,6 +191,22 @@
                 
                 <button id="toggleBacktrackPanel" class="px-3 py-2 text-white text-sm rounded-md bg-violet-600 hover:bg-violet-700 transition-colors flex-shrink-0">
                     <span id="backtrackLabel">Load Backing Track</span>
+                </button>
+            </div>
+
+            <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="meter-wrapper master-meter" id="master-meter" data-meter-id="master">
+                    <div class="meter-bar">
+                        <div class="meter-level"></div>
+                        <div class="meter-peak" style="bottom: 0;"></div>
+                    </div>
+                    <div class="meter-clip">CLIP</div>
+                </div>
+                <button id="toggleMetersBtn" class="px-3 py-2 text-xs rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors">
+                    Meters: On
+                </button>
+                <button id="resetPeaksBtn" class="px-3 py-2 text-xs rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors">
+                    Reset Peaks
                 </button>
             </div>
         </div>
@@ -195,12 +261,22 @@
         let currentStep = 0;
         let nextNoteTime = 0.0;
         let timerID = 0;
-        let backTrackSource = null; 
+        let backTrackSource = null;
 
         // --- Audio Nodes ---
         let masterGainNode;
         let distortionNode;
         let backTrackGain;
+        let masterAnalyser;
+
+        // --- Meter & Routing State ---
+        const trackRouting = {};
+        const meterElements = {};
+        const meterState = {};
+        const METER_PREFS_KEY = 'mix-meters-preferences';
+        const CLIP_HOLD_MS = 750;
+        let meterPreferences = { enabled: true };
+        let meterAnimationFrame = null;
 
         // --- Drum Sound Options for the unified DRUM HIT Track ---
         // 5 highly-normalized, distinct sounds.
@@ -248,14 +324,172 @@
         }
 
         function createDistortionCurve(amount) {
-            const k = amount * 0.1; 
+            const k = amount * 0.1;
             const n_samples = 44100;
             const curve = new Float32Array(n_samples);
             for (let i = 0; i < n_samples; i++) {
-                const x = i * 2 / n_samples - 1; 
-                curve[i] = Math.tanh(x * k); 
+                const x = i * 2 / n_samples - 1;
+                curve[i] = Math.tanh(x * k);
             }
             return curve;
+        }
+
+        function loadMeterPreferences() {
+            try {
+                const stored = localStorage.getItem(METER_PREFS_KEY);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    meterPreferences = { enabled: true, ...parsed };
+                }
+            } catch (error) {
+                meterPreferences = { enabled: true };
+            }
+        }
+
+        function saveMeterPreferences() {
+            try {
+                localStorage.setItem(METER_PREFS_KEY, JSON.stringify(meterPreferences));
+            } catch (error) {
+                /* ignore storage errors */
+            }
+        }
+
+        function ensureMeterState(id) {
+            if (!meterState[id]) {
+                meterState[id] = { peakHold: 0, clipHold: 0, timeData: null };
+            }
+            return meterState[id];
+        }
+
+        function registerMeterElement(id, wrapper) {
+            if (!wrapper) return;
+            const level = wrapper.querySelector('.meter-level');
+            const peak = wrapper.querySelector('.meter-peak');
+            const clip = wrapper.querySelector('.meter-clip');
+            meterElements[id] = { wrapper, level, peak, clip };
+            ensureMeterState(id);
+            wrapper.classList.toggle('hidden', !meterPreferences.enabled);
+        }
+
+        function updateMeterToggleUI() {
+            const toggleButton = document.getElementById('toggleMetersBtn');
+            if (toggleButton) {
+                toggleButton.textContent = meterPreferences.enabled ? 'Meters: On' : 'Meters: Off';
+            }
+        }
+
+        function startMeterLoop() {
+            if (meterAnimationFrame || !meterPreferences.enabled) return;
+            meterAnimationFrame = requestAnimationFrame(meterLoop);
+        }
+
+        function stopMeterLoop() {
+            if (meterAnimationFrame) {
+                cancelAnimationFrame(meterAnimationFrame);
+                meterAnimationFrame = null;
+            }
+        }
+
+        function updateMeterVisibility() {
+            Object.values(meterElements).forEach(elements => {
+                if (!elements || !elements.wrapper) return;
+                elements.wrapper.classList.toggle('hidden', !meterPreferences.enabled);
+            });
+            updateMeterToggleUI();
+            if (meterPreferences.enabled) {
+                startMeterLoop();
+            } else {
+                stopMeterLoop();
+            }
+        }
+
+        function setMetersEnabled(enabled) {
+            meterPreferences.enabled = !!enabled;
+            saveMeterPreferences();
+            updateMeterVisibility();
+        }
+
+        function resetAllMeterPeaks() {
+            Object.entries(meterState).forEach(([id, state]) => {
+                if (!state) return;
+                state.peakHold = 0;
+                state.clipHold = 0;
+                const elements = meterElements[id];
+                if (elements) {
+                    if (elements.peak) {
+                        elements.peak.style.bottom = '0%';
+                    }
+                    if (elements.clip) {
+                        elements.clip.classList.remove('active');
+                    }
+                }
+            });
+        }
+
+        function getAnalyserForMeter(id) {
+            if (id === 'master') {
+                return masterAnalyser;
+            }
+            const routing = trackRouting[id];
+            return routing ? routing.analyser : null;
+        }
+
+        function meterLoop() {
+            if (!meterPreferences.enabled) {
+                meterAnimationFrame = null;
+                return;
+            }
+
+            const now = performance.now();
+
+            Object.entries(meterElements).forEach(([id, elements]) => {
+                if (!elements) return;
+                const analyser = getAnalyserForMeter(id);
+                if (!analyser) return;
+
+                const state = ensureMeterState(id);
+                if (!state.timeData || state.timeData.length !== analyser.fftSize) {
+                    state.timeData = new Float32Array(analyser.fftSize);
+                }
+
+                analyser.getFloatTimeDomainData(state.timeData);
+
+                let sumSquares = 0;
+                let peak = 0;
+                for (let i = 0; i < state.timeData.length; i++) {
+                    const sample = state.timeData[i];
+                    sumSquares += sample * sample;
+                    const absSample = Math.abs(sample);
+                    if (absSample > peak) peak = absSample;
+                }
+
+                const rms = state.timeData.length ? Math.sqrt(sumSquares / state.timeData.length) : 0;
+
+                if (peak > state.peakHold) {
+                    state.peakHold = peak;
+                }
+
+                const levelHeight = Math.min(1, rms);
+                const peakHeight = Math.min(1, state.peakHold);
+
+                if (elements.level) {
+                    elements.level.style.height = `${(levelHeight * 100).toFixed(1)}%`;
+                }
+                if (elements.peak) {
+                    elements.peak.style.bottom = `${(peakHeight * 100).toFixed(1)}%`;
+                }
+
+                if (peak >= 0.98) {
+                    state.clipHold = now;
+                    if (elements.clip) {
+                        elements.clip.classList.add('active');
+                    }
+                } else if (now - state.clipHold > CLIP_HOLD_MS && elements.clip) {
+                    elements.clip.classList.remove('active');
+                }
+            });
+
+            meterAnimationFrame = requestAnimationFrame(meterLoop);
         }
         
         // Converts global slider (1-100) to audio gain (0-2.0)
@@ -286,7 +520,7 @@
             const volume = track.gain * (selectedOption.gainMult || 1.0) * globalVolume; 
             
             const gain = audioContext.createGain();
-            gain.connect(distortionNode); 
+            routeThroughTrackNode('drumHit', gain);
             gain.gain.setValueAtTime(volume, time);
             
             let basePitch = 50; 
@@ -398,7 +632,7 @@
             const gain = audioContext.createGain();
 
             noise.connect(gain);
-            gain.connect(distortionNode); 
+            routeThroughTrackNode('clap', gain);
             
             gain.gain.setValueAtTime(volume, time);
             gain.gain.exponentialRampToValueAtTime(0.001, time + decay);
@@ -439,7 +673,7 @@
             const gain = audioContext.createGain();
             noise.connect(bandpass);
             bandpass.connect(gain);
-            gain.connect(distortionNode);
+            routeThroughTrackNode(isClosed ? 'hihat' : 'openhat', gain);
 
             const finalDecay = isClosed ? decay : Math.max(decay, 0.2);
             gain.gain.setValueAtTime(volume, time);
@@ -474,7 +708,7 @@
             const gain = audioContext.createGain();
             noise.connect(bandpass);
             bandpass.connect(gain);
-            gain.connect(distortionNode); 
+            routeThroughTrackNode('perc', gain);
             
             gain.gain.setValueAtTime(volume, time); 
             gain.gain.exponentialRampToValueAtTime(0.001, time + decay); 
@@ -486,21 +720,61 @@
 
         // --- Core Audio Setup ---
 
+        function setupMasterAnalyserChain() {
+            if (!audioContext || masterAnalyser) return;
+            masterAnalyser = audioContext.createAnalyser();
+            masterAnalyser.fftSize = 512;
+            masterGainNode.connect(masterAnalyser);
+            masterAnalyser.connect(audioContext.destination);
+        }
+
+        function setupTrackRouting() {
+            if (!audioContext || !distortionNode) return;
+            Object.keys(sequencer).forEach(id => {
+                if (trackRouting[id]) return;
+                const trackGain = audioContext.createGain();
+                trackGain.gain.setValueAtTime(1, audioContext.currentTime);
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 512;
+                trackGain.connect(analyser);
+                analyser.connect(distortionNode);
+                trackRouting[id] = { input: trackGain, analyser };
+            });
+        }
+
+        function routeThroughTrackNode(trackId, node) {
+            if (!node || !audioContext || !distortionNode) return;
+            if (!trackRouting[trackId]) {
+                setupTrackRouting();
+            }
+            const routing = trackRouting[trackId];
+            if (routing && routing.input) {
+                node.connect(routing.input);
+            } else if (distortionNode) {
+                node.connect(distortionNode);
+            }
+        }
+
         function initAudio() {
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                
+
                 masterGainNode = audioContext.createGain();
-                
+
                 distortionNode = audioContext.createWaveShaper();
                 distortionNode.curve = createDistortionCurve(getSliderValue('gritSlider'));
-                
+
                 backTrackGain = audioContext.createGain();
-                backTrackGain.gain.setValueAtTime(0.5, audioContext.currentTime); 
+                backTrackGain.gain.setValueAtTime(0.5, audioContext.currentTime);
                 backTrackGain.connect(masterGainNode);
-                
+
                 distortionNode.connect(masterGainNode);
-                masterGainNode.connect(audioContext.destination);
+
+                setupMasterAnalyserChain();
+                setupTrackRouting();
+                if (meterPreferences.enabled) {
+                    startMeterLoop();
+                }
             }
         }
 
@@ -742,11 +1016,18 @@
             trackElement.innerHTML = `
                 <!-- Top Row: Label, Mute, Volume, Special Parameter -->
                 <div class="flex items-center space-x-4">
-                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity" 
+                    <div class="meter-wrapper track-meter" id="${id}-meter" data-meter-id="${id}">
+                        <div class="meter-bar">
+                            <div class="meter-level"></div>
+                            <div class="meter-peak" style="bottom: 0;"></div>
+                        </div>
+                        <div class="meter-clip">CLIP</div>
+                    </div>
+                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity"
                           style="background-color: ${data.color};">
                           ${trackName}
                     </span>
-                    
+
                     ${volumeControlHTML}
                     ${paramControlHTML}
                     
@@ -758,6 +1039,9 @@
                 </div>
             `;
             container.appendChild(trackElement);
+
+            const meterWrapper = trackElement.querySelector(`#${id}-meter`);
+            registerMeterElement(id, meterWrapper);
 
             // Mute/Unmute Logic - CRITICAL FIX
             document.getElementById(`${id}-label`).addEventListener('click', (e) => {
@@ -783,6 +1067,9 @@
 
 
         window.onload = function() {
+            loadMeterPreferences();
+            registerMeterElement('master', document.getElementById('master-meter'));
+
             // 1. Generate Track UIs Dynamically
             Object.keys(sequencer).forEach(id => {
                 generateTrackUI(id, sequencer[id]);
@@ -791,7 +1078,17 @@
             // 2. Setup Main Controls
             document.getElementById('togglePlay').addEventListener('click', togglePlay);
             document.getElementById('toggleRecord').addEventListener('click', toggleRecord);
-            
+
+            const toggleMetersBtn = document.getElementById('toggleMetersBtn');
+            if (toggleMetersBtn) {
+                toggleMetersBtn.addEventListener('click', () => setMetersEnabled(!meterPreferences.enabled));
+            }
+
+            const resetPeaksBtn = document.getElementById('resetPeaksBtn');
+            if (resetPeaksBtn) {
+                resetPeaksBtn.addEventListener('click', resetAllMeterPeaks);
+            }
+
             // BPM Slider Control
             document.getElementById('bpmSlider').addEventListener('input', () => {
                 updateBPMDisplay();
@@ -861,6 +1158,8 @@
             if(drumHitSelect) {
                 drumHitSelect.value = 'deepKick'; // Defaulting to the KICK sound
             }
+
+            updateMeterVisibility();
         };
     </script>
 </body>
