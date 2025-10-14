@@ -36,6 +36,21 @@
         .glow-shadow {
             box-shadow: 0 0 10px rgba(252, 211, 77, 0.5);
         }
+        .history-button {
+            background-color: #374151;
+            color: #f9fafb;
+            font-size: 0.75rem;
+            padding: 0.35rem 0.9rem;
+            border-radius: 9999px;
+            transition: background-color 0.2s ease;
+        }
+        .history-button:hover:not(:disabled) {
+            background-color: #4b5563;
+        }
+        .history-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
         .control-panel {
             background-color: var(--bg-dark);
         }
@@ -65,12 +80,36 @@
             background: #fcd34d;
             cursor: pointer;
         }
+        .track-action-button {
+            background-color: #374151;
+            color: #e5e7eb;
+            font-size: 0.65rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.5rem;
+            transition: background-color 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .track-action-button:hover:not(:disabled) {
+            background-color: #4b5563;
+        }
+        .track-action-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
         .recording-active {
             animation: pulse-red 1s infinite alternate;
         }
         @keyframes pulse-red {
             from { opacity: 1; }
             to { opacity: 0.5; }
+        }
+        .highlight-flash {
+            animation: flashOutline 0.6s ease-out;
+        }
+        @keyframes flashOutline {
+            0% { box-shadow: 0 0 0 0 rgba(252, 211, 77, 0.85); }
+            100% { box-shadow: 0 0 0 12px rgba(252, 211, 77, 0); }
         }
         ::-webkit-scrollbar {
             width: 8px;
@@ -102,6 +141,12 @@
                 <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
                     <span id="recordIcon">REC</span>
                 </button>
+            </div>
+
+            <!-- Undo/Redo -->
+            <div class="flex items-center gap-2 flex-shrink-0">
+                <button id="undoButton" class="history-button" disabled>Undo ⌘Z</button>
+                <button id="redoButton" class="history-button" disabled>Redo ⇧⌘Z</button>
             </div>
 
 
@@ -187,7 +232,10 @@
         const NUM_STEPS = 16;
         const CLAP_NOISE_DURATION = 0.05;
         const DECAY_RANGE = 0.5;
-        
+        const INACTIVE_STEP_COLOR = 'rgba(107, 114, 128, 0.3)';
+        const HISTORY_LIMIT = 200;
+        const SAVED_PATTERNS_STORAGE_KEY = 'raw-house-track-patterns';
+
         // --- Global Audio Variables & State ---
         let audioContext;
         let isPlaying = false;
@@ -195,12 +243,21 @@
         let currentStep = 0;
         let nextNoteTime = 0.0;
         let timerID = 0;
-        let backTrackSource = null; 
+        let backTrackSource = null;
 
         // --- Audio Nodes ---
         let masterGainNode;
         let distortionNode;
         let backTrackGain;
+
+        const historyState = {
+            undoStack: [],
+            redoStack: []
+        };
+
+        let patternClipboard = null;
+        const supportsLocalStorage = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+        let savedPatterns = loadSavedPatterns();
 
         // --- Drum Sound Options for the unified DRUM HIT Track ---
         // 5 highly-normalized, distinct sounds.
@@ -247,8 +304,326 @@
             return el ? el.value : null;
         }
 
+        function sanitizePatternArray(pattern = []) {
+            const sanitized = new Array(NUM_STEPS).fill(0);
+            const maxLen = Math.min(NUM_STEPS, Array.isArray(pattern) ? pattern.length : 0);
+            for (let i = 0; i < maxLen; i++) {
+                sanitized[i] = pattern[i] ? 1 : 0;
+            }
+            return sanitized;
+        }
+
+        function loadSavedPatterns() {
+            if (!supportsLocalStorage) {
+                return {};
+            }
+            try {
+                const raw = window.localStorage.getItem(SAVED_PATTERNS_STORAGE_KEY);
+                if (!raw) return {};
+                const parsed = JSON.parse(raw);
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (error) {
+                console.warn('Unable to load saved patterns from storage.', error);
+                return {};
+            }
+        }
+
+        function persistSavedPatterns() {
+            if (!supportsLocalStorage) {
+                return;
+            }
+            try {
+                window.localStorage.setItem(SAVED_PATTERNS_STORAGE_KEY, JSON.stringify(savedPatterns));
+            } catch (error) {
+                console.warn('Unable to persist saved patterns.', error);
+            }
+        }
+
+        function serializePatternForClipboard(trackId, reason = 'manual') {
+            const track = sequencer[trackId];
+            if (!track) return null;
+            return {
+                trackId,
+                pattern: sanitizePatternArray(track.pattern),
+                meta: {
+                    reason,
+                    savedAt: new Date().toISOString(),
+                    instrument: trackId.toUpperCase(),
+                    length: NUM_STEPS
+                }
+            };
+        }
+
+        function isValidClipboardPayload(payload) {
+            return payload && Array.isArray(payload.pattern) && typeof payload.trackId === 'string';
+        }
+
+        function pushHistory(action) {
+            if (!action) return;
+            historyState.undoStack.push(action);
+            if (historyState.undoStack.length > HISTORY_LIMIT) {
+                historyState.undoStack.shift();
+            }
+            historyState.redoStack = [];
+            updateUndoRedoButtons();
+        }
+
+        function updateUndoRedoButtons() {
+            const undoButton = document.getElementById('undoButton');
+            const redoButton = document.getElementById('redoButton');
+            if (!undoButton || !redoButton) return;
+            undoButton.disabled = historyState.undoStack.length === 0;
+            redoButton.disabled = historyState.redoStack.length === 0;
+        }
+
+        function setStepButtonVisual(trackId, stepIndex) {
+            const track = sequencer[trackId];
+            const button = document.getElementById(`${trackId}-step-${stepIndex}`);
+            if (!track || !button) return;
+            const isActive = track.pattern[stepIndex] === 1;
+            button.style.backgroundColor = isActive ? track.color : INACTIVE_STEP_COLOR;
+            button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        }
+
+        function renderTrackPattern(trackId) {
+            for (let i = 0; i < NUM_STEPS; i++) {
+                setStepButtonVisual(trackId, i);
+            }
+        }
+
+        function triggerTrackHighlight(trackId) {
+            const wrapper = document.getElementById(`${trackId}-wrapper`);
+            if (!wrapper) return;
+            wrapper.classList.remove('highlight-flash');
+            void wrapper.offsetWidth;
+            wrapper.classList.add('highlight-flash');
+            setTimeout(() => wrapper.classList.remove('highlight-flash'), 650);
+        }
+
+        function replacePattern(trackId, newPattern, source = 'replace') {
+            const track = sequencer[trackId];
+            if (!track) return;
+            const sanitized = sanitizePatternArray(newPattern);
+            const previousPattern = track.pattern.slice();
+            const isDifferent = sanitized.some((value, index) => value !== previousPattern[index]);
+            if (!isDifferent) return;
+
+            track.pattern = sanitized.slice();
+            renderTrackPattern(trackId);
+
+            pushHistory({
+                type: 'patternReplace',
+                trackId,
+                previousPattern,
+                newPattern: sanitized.slice(),
+                source
+            });
+            triggerTrackHighlight(trackId);
+        }
+
+        function handleStepToggle(trackId, stepIndex) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            const previousValue = track.pattern[stepIndex];
+            const newValue = previousValue === 1 ? 0 : 1;
+            if (previousValue === newValue) return;
+            track.pattern[stepIndex] = newValue;
+            setStepButtonVisual(trackId, stepIndex);
+            pushHistory({
+                type: 'toggle',
+                trackId,
+                stepIndex,
+                previousValue,
+                newValue
+            });
+        }
+
+        function applyAction(action, isUndo) {
+            if (!action) return;
+            if (action.type === 'toggle') {
+                const value = isUndo ? action.previousValue : action.newValue;
+                const track = sequencer[action.trackId];
+                if (!track) return;
+                track.pattern[action.stepIndex] = value;
+                setStepButtonVisual(action.trackId, action.stepIndex);
+            } else if (action.type === 'patternReplace') {
+                const pattern = isUndo ? action.previousPattern : action.newPattern;
+                const sanitized = sanitizePatternArray(pattern);
+                const track = sequencer[action.trackId];
+                if (!track) return;
+                track.pattern = sanitized.slice();
+                renderTrackPattern(action.trackId);
+            }
+            triggerTrackHighlight(action.trackId);
+        }
+
+        function undoLastAction() {
+            const action = historyState.undoStack.pop();
+            if (!action) return;
+            applyAction(action, true);
+            historyState.redoStack.push(action);
+            updateUndoRedoButtons();
+        }
+
+        function redoLastAction() {
+            const action = historyState.redoStack.pop();
+            if (!action) return;
+            applyAction(action, false);
+            historyState.undoStack.push(action);
+            updateUndoRedoButtons();
+        }
+
+        function isInteractiveElement(element) {
+            if (!element) return false;
+            const tagName = element.tagName;
+            return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT' || element.isContentEditable;
+        }
+
+        function handleHistoryKeyboardShortcuts(event) {
+            if (!(event.metaKey || event.ctrlKey)) return;
+            if (isInteractiveElement(document.activeElement)) return;
+
+            const key = event.key.toLowerCase();
+            if (key === 'z' && !event.shiftKey) {
+                event.preventDefault();
+                undoLastAction();
+            } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+                event.preventDefault();
+                redoLastAction();
+            }
+        }
+
+        function storeSavedPattern(trackId, name, payload) {
+            if (!name || !isValidClipboardPayload(payload)) return;
+            if (!savedPatterns[trackId]) {
+                savedPatterns[trackId] = {};
+            }
+            const entry = {
+                ...payload,
+                pattern: sanitizePatternArray(payload.pattern),
+                meta: {
+                    ...payload.meta,
+                    name,
+                    storedAt: new Date().toISOString()
+                }
+            };
+            savedPatterns[trackId][name] = entry;
+            persistSavedPatterns();
+        }
+
+        function listSavedPatternNames(trackId) {
+            const trackEntries = savedPatterns[trackId] || {};
+            return Object.keys(trackEntries);
+        }
+
+        async function copyPattern(trackId) {
+            const payload = serializePatternForClipboard(trackId, 'copy');
+            if (!payload) return;
+            patternClipboard = payload;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(JSON.stringify(payload));
+                } catch (error) {
+                    console.warn('Unable to write pattern to system clipboard.', error);
+                }
+            }
+            triggerTrackHighlight(trackId);
+        }
+
+        async function pastePattern(trackId) {
+            let payload = patternClipboard;
+            if (!payload && navigator.clipboard && navigator.clipboard.readText) {
+                try {
+                    const clipboardText = await navigator.clipboard.readText();
+                    const parsed = JSON.parse(clipboardText);
+                    if (isValidClipboardPayload(parsed)) {
+                        payload = parsed;
+                    }
+                } catch (error) {
+                    console.warn('Unable to read pattern from system clipboard.', error);
+                }
+            }
+            if (!isValidClipboardPayload(payload)) return;
+            replacePattern(trackId, payload.pattern, 'paste');
+        }
+
+        function duplicatePattern(trackId) {
+            const existingNames = listSavedPatternNames(trackId);
+            const defaultName = `${trackId.toUpperCase()} Copy ${existingNames.length + 1}`;
+            const desiredName = prompt(`Name for duplicated ${trackId.toUpperCase()} pattern:`, defaultName);
+            if (!desiredName) return;
+            const payload = serializePatternForClipboard(trackId, 'duplicate');
+            if (!payload) return;
+            payload.meta = {
+                ...payload.meta,
+                duplicatedFrom: trackId
+            };
+            storeSavedPattern(trackId, desiredName.trim(), payload);
+            triggerTrackHighlight(trackId);
+        }
+
+        function savePattern(trackId) {
+            const name = prompt(`Save ${trackId.toUpperCase()} pattern as:`);
+            if (!name) return;
+            const payload = serializePatternForClipboard(trackId, 'save');
+            if (!payload) return;
+            storeSavedPattern(trackId, name.trim(), payload);
+            triggerTrackHighlight(trackId);
+        }
+
+        function importPattern(trackId) {
+            const names = listSavedPatternNames(trackId);
+            if (names.length === 0) {
+                alert('No saved patterns available for this track yet.');
+                return;
+            }
+            const selection = prompt(`Available patterns for ${trackId.toUpperCase()}:\n${names.join('\n')}\n\nType the name to load:`);
+            if (!selection) return;
+            const normalized = selection.trim();
+            const entry = (savedPatterns[trackId] || {})[normalized];
+            if (!entry) {
+                alert('Pattern name not found.');
+                return;
+            }
+            replacePattern(trackId, entry.pattern, 'import');
+        }
+
+        function exportSequencerPatterns() {
+            const exportData = {
+                updatedAt: new Date().toISOString(),
+                tracks: {},
+                savedPatterns: JSON.parse(JSON.stringify(savedPatterns || {}))
+            };
+            Object.keys(sequencer).forEach(trackId => {
+                exportData.tracks[trackId] = serializePatternForClipboard(trackId, 'export');
+            });
+            return exportData;
+        }
+
+        const trackActionHandlers = {
+            copy: copyPattern,
+            paste: pastePattern,
+            duplicate: duplicatePattern,
+            save: savePattern,
+            import: importPattern
+        };
+
+        function handleTrackAction(event) {
+            const button = event.currentTarget;
+            const action = button.dataset.trackAction;
+            const trackId = button.dataset.track;
+            const handler = trackActionHandlers[action];
+            if (!handler) return;
+            const result = handler(trackId);
+            if (result && typeof result.then === 'function') {
+                result.catch(error => console.error(`Track action ${action} failed`, error));
+            }
+        }
+
+        window.exportSequencerPatterns = exportSequencerPatterns;
+
         function createDistortionCurve(amount) {
-            const k = amount * 0.1; 
+            const k = amount * 0.1;
             const n_samples = 44100;
             const curve = new Float32Array(n_samples);
             for (let i = 0; i < n_samples; i++) {
@@ -739,17 +1114,26 @@
             // Build the main track element
             const trackElement = document.createElement('div');
             trackElement.className = "flex flex-col space-y-2 mb-4";
+            trackElement.id = `${id}-wrapper`;
+            trackElement.setAttribute('data-track', id);
             trackElement.innerHTML = `
                 <!-- Top Row: Label, Mute, Volume, Special Parameter -->
                 <div class="flex items-center space-x-4">
-                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity" 
+                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 hover:opacity-80 transition-opacity"
                           style="background-color: ${data.color};">
                           ${trackName}
                     </span>
-                    
+
                     ${volumeControlHTML}
                     ${paramControlHTML}
-                    
+
+                    <div class="flex items-center space-x-1 ml-auto" id="${id}-actions">
+                        <button type="button" class="track-action-button" data-track="${id}" data-track-action="copy">Copy</button>
+                        <button type="button" class="track-action-button" data-track="${id}" data-track-action="paste">Paste</button>
+                        <button type="button" class="track-action-button" data-track="${id}" data-track-action="duplicate">Duplicate</button>
+                        <button type="button" class="track-action-button" data-track="${id}" data-track-action="save">Save</button>
+                        <button type="button" class="track-action-button" data-track="${id}" data-track-action="import">Import</button>
+                    </div>
                 </div>
 
                 <!-- Bottom Row: Step Sequencer -->
@@ -766,18 +1150,20 @@
                 e.target.classList.toggle('track-muted', sequencer[id].muted);
             });
 
+            trackElement.querySelectorAll('[data-track-action]').forEach(button => {
+                button.addEventListener('click', handleTrackAction);
+            });
+
             // Generate Step Buttons
             const stepContainer = document.getElementById(`${id}Track`);
             for (let i = 0; i < NUM_STEPS; i++) {
                 const button = document.createElement('button');
                 button.id = `${id}-step-${i}`;
                 button.className = `step-button flex-grow rounded-md`;
-                button.style.backgroundColor = data.pattern[i] === 1 ? data.color : 'rgba(107, 114, 128, 0.3)';
-                button.onclick = () => {
-                    data.pattern[i] = 1 - data.pattern[i]; 
-                    button.style.backgroundColor = data.pattern[i] === 1 ? data.color : 'rgba(107, 114, 128, 0.3)';
-                };
+                button.type = 'button';
+                button.addEventListener('click', () => handleStepToggle(id, i));
                 stepContainer.appendChild(button);
+                setStepButtonVisual(id, i);
             }
         }
 
@@ -787,6 +1173,11 @@
             Object.keys(sequencer).forEach(id => {
                 generateTrackUI(id, sequencer[id]);
             });
+
+            document.getElementById('undoButton').addEventListener('click', undoLastAction);
+            document.getElementById('redoButton').addEventListener('click', redoLastAction);
+            document.addEventListener('keydown', handleHistoryKeyboardShortcuts);
+            updateUndoRedoButtons();
 
             // 2. Setup Main Controls
             document.getElementById('togglePlay').addEventListener('click', togglePlay);
