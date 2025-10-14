@@ -2735,7 +2735,7 @@
             }
             queueLocalChange(change, options = {}) {
                 if (!change || !change.fileId) return Promise.resolve();
-                const { debounce = true } = options;
+                const { debounce = true, fireAndForget = false, onImmediateFailure = null } = options;
                 const fileId = change.fileId;
                 const buffer = this.pendingMutations.get(fileId) || {
                     updates: {},
@@ -2774,12 +2774,47 @@
                     data: change
                 });
 
+                const handleImmediateFailure = (error) => {
+                    const message = error?.message || 'Immediate sync failed.';
+                    this.logger?.log({
+                        event: 'queue:immediate:error',
+                        level: 'error',
+                        fileId,
+                        details: message,
+                        data: { change }
+                    });
+                    if (typeof onImmediateFailure === 'function') {
+                        try {
+                            onImmediateFailure(error);
+                        } catch (callbackError) {
+                            console.error('Immediate failure handler threw:', callbackError);
+                        }
+                    }
+                };
+
                 if (debounce) {
                     clearTimeout(this.debounceTimers.get(fileId));
                     this.debounceTimers.set(fileId, setTimeout(() => this.commitBufferedChange(fileId), this.debounceDelay));
                     return Promise.resolve();
                 }
-                return this.commitBufferedChange(fileId);
+                const commitPromise = this.commitBufferedChange(fileId);
+                if (fireAndForget) {
+                    commitPromise.then(result => {
+                        if (result === false || result === null || typeof result === 'undefined') {
+                            handleImmediateFailure(new Error('Immediate metadata sync failed.'));
+                        }
+                    }).catch(handleImmediateFailure);
+                    return Promise.resolve();
+                }
+                return commitPromise.then(result => {
+                    if (result === false || result === null || typeof result === 'undefined') {
+                        handleImmediateFailure(new Error('Immediate metadata sync failed.'));
+                    }
+                    return result;
+                }).catch(error => {
+                    handleImmediateFailure(error);
+                    throw error;
+                });
             }
             async commitBufferedChange(fileId) {
                 const buffer = this.pendingMutations.get(fileId);
@@ -4437,7 +4472,7 @@
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     if (state.syncManager) {
-                        await state.syncManager.queueLocalChange({
+                        const change = {
                             fileId,
                             updates,
                             operationType,
@@ -4446,7 +4481,26 @@
                             folderId: state.currentFolder.id,
                             providerType: state.providerType,
                             metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id }
-                        }, { debounce: !skipDebounce });
+                        };
+                        const queueOptions = { debounce: !skipDebounce };
+                        if (skipDebounce) {
+                            queueOptions.fireAndForget = true;
+                            queueOptions.onImmediateFailure = (error) => {
+                                const reason = error?.message || 'Provider sync failed.';
+                                state.syncLog?.log({
+                                    event: 'sync:immediate:error',
+                                    level: 'error',
+                                    fileId,
+                                    details: `Immediate metadata sync failed: ${reason}`,
+                                    data: { updates, operationType, origin }
+                                });
+                                Utils.showToast(`Immediate sync failed: ${reason}`, 'error', true);
+                            };
+                        }
+                        const queuePromise = state.syncManager.queueLocalChange(change, queueOptions);
+                        if (!skipDebounce && queuePromise && typeof queuePromise.then === 'function') {
+                            await queuePromise;
+                        }
                     }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);

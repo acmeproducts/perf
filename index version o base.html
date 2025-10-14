@@ -2019,7 +2019,7 @@
             }
             async queueLocalChange(change, options = {}) {
                 if (!change || !change.fileId) return;
-                const { debounce = true } = options;
+                const { debounce = true, fireAndForget = false, onImmediateFailure = null } = options;
                 const descriptor = change.operationType || 'metadata:update';
                 this.log?.log({
                     event: 'sync:queue',
@@ -2034,7 +2034,34 @@
                     { metadataSnapshot: change.metadataSnapshot || {} }
                 );
                 if (!debounce) {
-                    await this.flush({ reason: change.reason || 'immediate' });
+                    const handleImmediateFailure = (error) => {
+                        const message = error?.message || 'Immediate sync failed.';
+                        this.log?.log({
+                            event: 'sync:immediate:error',
+                            level: 'error',
+                            fileId: change.fileId,
+                            details: message,
+                            data: { change }
+                        });
+                        if (typeof onImmediateFailure === 'function') {
+                            try {
+                                onImmediateFailure(error);
+                            } catch (callbackError) {
+                                console.error('Immediate failure handler threw:', callbackError);
+                            }
+                        }
+                    };
+                    const flushPromise = this.flush({ reason: change.reason || 'immediate' });
+                    if (fireAndForget) {
+                        flushPromise.catch(handleImmediateFailure);
+                        return;
+                    }
+                    try {
+                        await flushPromise;
+                    } catch (error) {
+                        handleImmediateFailure(error);
+                        throw error;
+                    }
                 }
             }
             scheduleSync() {
@@ -3260,7 +3287,7 @@
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     if (state.syncManager) {
-                        await state.syncManager.queueLocalChange({
+                        const change = {
                             fileId,
                             updates,
                             operationType,
@@ -3269,7 +3296,26 @@
                             folderId: state.currentFolder.id,
                             providerType: state.providerType,
                             metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id }
-                        }, { debounce: !skipDebounce });
+                        };
+                        const queueOptions = { debounce: !skipDebounce };
+                        if (skipDebounce) {
+                            queueOptions.fireAndForget = true;
+                            queueOptions.onImmediateFailure = (error) => {
+                                const reason = error?.message || 'Provider sync failed.';
+                                state.syncLog?.log({
+                                    event: 'sync:immediate:error',
+                                    level: 'error',
+                                    fileId,
+                                    details: `Immediate metadata sync failed: ${reason}`,
+                                    data: { updates, operationType, origin }
+                                });
+                                Utils.showToast(`Immediate sync failed: ${reason}`, 'error', true);
+                            };
+                        }
+                        const queuePromise = state.syncManager.queueLocalChange(change, queueOptions);
+                        if (!skipDebounce && queuePromise && typeof queuePromise.then === 'function') {
+                            await queuePromise;
+                        }
                     }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
