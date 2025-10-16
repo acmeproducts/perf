@@ -1,0 +1,1040 @@
+<!-- Raw House Music Studio - v16.0 - 2025-10-12 04:45 AM PDT -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raw House Studio – Mix v2</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #1f2937;
+            --control-light: #fcd34d;
+            --kick-color: #ef4444;
+            --clap-color: #3b82f6;
+            --hh-color: #f97316;
+            --oh-color: #8b5cf6;
+            --perc-color: #2dd4bf;
+            --backtrack-color: #a855f7;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827;
+        }
+
+        .glow-shadow {
+            box-shadow: 0 0 10px rgba(252, 211, 77, 0.5);
+        }
+
+        .track-card {
+            background: rgba(17, 24, 39, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        .track-label {
+            width: 7rem;
+            flex-shrink: 0;
+            cursor: pointer;
+            transition: opacity 0.2s ease;
+        }
+
+        .track-muted {
+            opacity: 0.35;
+        }
+
+        .recording-active {
+            animation: pulse-red 1s infinite alternate;
+        }
+
+        @keyframes pulse-red {
+            from { opacity: 1; }
+            to { opacity: 0.5; }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-8 flex flex-col items-center">
+
+    <div id="app" class="w-full max-w-6xl bg-gray-800 p-4 sm:p-6 rounded-xl shadow-2xl space-y-6">
+
+        <div class="control-panel p-3 rounded-lg flex flex-wrap gap-4 justify-between items-center bg-gray-900/60">
+            <div class="flex items-center gap-3 flex-shrink-0">
+                <button id="togglePlay" class="px-4 py-2 font-bold rounded-full text-gray-900 glow-shadow hover:opacity-90 transition-colors text-sm"
+                        style="background-color: var(--control-light);">
+                    START
+                </button>
+                <div class="flex items-center gap-3 bg-gray-900/40 px-3 py-2 rounded-full">
+                    <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
+                        <span id="recordIcon">REC</span>
+                    </button>
+                    <div class="flex items-center gap-2 text-[10px] sm:text-xs text-gray-300 font-mono">
+                        <span id="recordLed" class="block w-2.5 h-2.5 rounded-full bg-gray-500"></span>
+                        <span id="recordTimecode">00:00</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-4 items-center flex-grow min-w-[300px] sm:min-w-[400px]">
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="bpmSlider" class="text-gray-400 text-sm flex-shrink-0">BPM (<span id="bpmValue">125</span>)</label>
+                    <input type="range" id="bpmSlider" min="40" max="200" value="125" step="1"
+                           class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="gritSlider" class="text-red-400 text-sm flex-shrink-0">GRIT (<span id="gritValue">50</span>)</label>
+                    <input type="range" id="gritSlider" min="1" max="100" value="50" step="1"
+                           class="w-full h-2 bg-red-500 rounded-lg appearance-none cursor-pointer">
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-4 items-center flex-grow min-w-[300px] sm:min-w-[400px]">
+                <button id="toggleBacktrackPanel" class="px-3 py-2 text-white text-sm rounded-md bg-violet-600 hover:bg-violet-700 transition-colors flex-shrink-0">
+                    <span id="backtrackLabel">Load Backing Track</span>
+                </button>
+                <button id="stopAllSamples" class="px-3 py-2 text-sm rounded-md bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors flex-shrink-0">
+                    Stop Samples
+                </button>
+            </div>
+        </div>
+
+        <div id="recordingPreviewCard" class="hidden bg-gray-900 border border-red-500/60 rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-red-300">Recording Preview</h3>
+                <div class="flex gap-2 text-xs text-gray-400">
+                    <button id="saveRecording" class="px-3 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 transition-colors">Save</button>
+                    <button id="discardRecording" class="px-3 py-1 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors">Discard</button>
+                </div>
+            </div>
+            <span id="recordingPreviewStatus" class="text-xs text-gray-400"></span>
+            <audio id="recordingPreviewAudio" controls class="w-full rounded-lg"></audio>
+        </div>
+
+        <section class="space-y-4" id="trackList"></section>
+
+        <div id="backtrackPanel" class="hidden bg-gray-900 border border-violet-600/50 rounded-xl p-4 space-y-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-violet-300">Backing Track Loader</h2>
+                <button id="clearBacktrack" class="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">Clear</button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-gray-200 text-sm">
+                <div class="flex items-center space-x-2">
+                    <input type="radio" id="syncMode" name="backtrackMode" value="sync" checked class="text-violet-500 focus:ring-violet-500">
+                    <label for="syncMode">Tempo Sync (4 Bar Loop)</label>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <input type="radio" id="originalMode" name="backtrackMode" value="original" class="text-violet-500 focus:ring-violet-500">
+                    <label for="originalMode">Original Speed</label>
+                </div>
+            </div>
+            <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4">
+                <input type="url" id="audioUrlInput" placeholder="Paste Audio URL (.mp3/.wav)" class="flex-grow p-2 rounded-md bg-gray-700 text-white placeholder-gray-400 border border-gray-700 focus:border-violet-500 focus:outline-none">
+                <input type="file" id="audioFileInput" accept="audio/*" class="w-full sm:w-auto text-gray-400 p-2 rounded-md bg-gray-700 cursor-pointer border border-gray-700">
+            </div>
+            <div class="mt-3 text-sm text-gray-400" id="backTrackStatus">Status: Ready.</div>
+        </div>
+
+    </div>
+
+    <footer class="fixed bottom-0 left-0 right-0 p-2 text-center text-xs text-gray-500 bg-gray-900 border-t border-gray-700">
+        v16.0 | 2025-10-12 04:45 AM PDT
+    </footer>
+
+    <script>
+        const TRACK_DEFINITIONS = [
+            { id: 'drumHit', label: 'Drum Track', color: 'var(--kick-color)', defaultPreset: 'taikoBig' },
+            { id: 'clap', label: 'Clap Track', color: 'var(--clap-color)', defaultPreset: 'bongo' },
+            { id: 'hihat', label: 'Hi-Hat Track', color: 'var(--hh-color)', defaultPreset: 'tomTom' },
+            { id: 'openhat', label: 'Open Hat Track', color: 'var(--oh-color)', defaultPreset: 'bassBig' },
+            { id: 'perc', label: 'Percussion Track', color: 'var(--perc-color)', defaultPreset: 'guzhengEthereal' }
+        ];
+
+        const PRESET_LIBRARY = [
+            { value: 'pianoWarm', label: 'Piano – Warm Keys' },
+            { value: 'ukuleleBright', label: 'Ukulele – Bright Strum' },
+            { value: 'banjoPluck', label: 'Banjo – Quick Picking' },
+            { value: 'guzhengEthereal', label: 'Guzheng – Ethereal Glide' },
+            { value: 'taikoBig', label: 'Taiko Drum – Big' },
+            { value: 'taikoHuge', label: 'Taiko Drum – Huge' },
+            { value: 'taikoColossal', label: 'Taiko Drum – Colossal' },
+            { value: 'bassBig', label: 'Bass Drum – Big' },
+            { value: 'bassHuge', label: 'Bass Drum – Huge' },
+            { value: 'bassColossal', label: 'Bass Drum – Colossal' },
+            { value: 'bongo', label: 'Bongo – Tight Groove' },
+            { value: 'tomTom', label: 'Tom Tom – Rolling Pulse' }
+        ];
+
+        let audioContext;
+        let masterGainNode;
+        let distortionNode;
+        let backTrackGain;
+        let backTrackSource = null;
+        let recordingDestination = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordingTimerId = null;
+        let recordingStartTime = null;
+        let recordingPreviewUrl = null;
+        let recorderWarningShown = false;
+        let recorderSupportLogged = false;
+        let isPlaying = false;
+        let isRecording = false;
+
+        const tracks = {};
+
+        function createTrack(definition) {
+            return {
+                id: definition.id,
+                label: definition.label,
+                color: definition.color,
+                muted: false,
+                loop: true,
+                gainNode: null,
+                sample: {
+                    buffer: null,
+                    name: '',
+                    origin: '',
+                    duration: 0,
+                    source: null,
+                    playbackRate: 1
+                },
+                elements: {
+                    status: null,
+                    muteButton: null,
+                    loopToggle: null,
+                    presetSelect: null,
+                    fileInput: null,
+                    urlInput: null
+                },
+                defaultPreset: definition.defaultPreset
+            };
+        }
+
+        function ensureTrackMap() {
+            if (Object.keys(tracks).length) return;
+            TRACK_DEFINITIONS.forEach(def => {
+                tracks[def.id] = createTrack(def);
+            });
+        }
+
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                masterGainNode = audioContext.createGain();
+                masterGainNode.gain.value = 0.9;
+
+                distortionNode = audioContext.createWaveShaper();
+                distortionNode.curve = createDistortionCurve(getSliderValue('gritSlider'));
+                distortionNode.oversample = '4x';
+
+                backTrackGain = audioContext.createGain();
+                backTrackGain.gain.value = 0.6;
+
+                distortionNode.connect(masterGainNode);
+                backTrackGain.connect(masterGainNode);
+                masterGainNode.connect(audioContext.destination);
+
+                ensureTrackMap();
+                Object.values(tracks).forEach(track => {
+                    track.gainNode = audioContext.createGain();
+                    track.gainNode.gain.value = 1.0;
+                    track.gainNode.connect(distortionNode);
+                });
+
+                recordingDestination = audioContext.createMediaStreamDestination();
+                masterGainNode.connect(recordingDestination);
+            }
+
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume().catch(err => console.error('Unable to resume audio context', err));
+            }
+        }
+
+        function createDistortionCurve(amount) {
+            const k = amount * 0.1;
+            const n_samples = 44100;
+            const curve = new Float32Array(n_samples);
+            for (let i = 0; i < n_samples; i++) {
+                const x = (i * 2) / n_samples - 1;
+                curve[i] = Math.tanh(x * k);
+            }
+            return curve;
+        }
+
+        function getSliderValue(id) {
+            const el = document.getElementById(id);
+            return el ? parseFloat(el.value) : 0;
+        }
+
+        function setTrackStatus(trackId, message, isError = false) {
+            const track = tracks[trackId];
+            if (!track || !track.elements.status) return;
+            track.elements.status.textContent = message;
+            track.elements.status.classList.toggle('text-red-400', isError);
+            track.elements.status.classList.toggle('text-gray-300', !isError);
+        }
+
+        function formatDuration(seconds) {
+            if (!Number.isFinite(seconds) || seconds <= 0) return 'Unknown length';
+            return `${seconds.toFixed(2)}s`;
+        }
+
+        function normalizeBuffer(channelData) {
+            let max = 0;
+            for (let i = 0; i < channelData.length; i++) {
+                const abs = Math.abs(channelData[i]);
+                if (abs > max) max = abs;
+            }
+            if (max === 0 || max <= 1) return;
+            const scale = 1 / max;
+            for (let i = 0; i < channelData.length; i++) {
+                channelData[i] *= scale;
+            }
+        }
+
+        function addHarmonicTone(channelData, sampleRate, startTime, duration, frequencies, amplitude, decay) {
+            const startIndex = Math.floor(startTime * sampleRate);
+            const endIndex = Math.min(channelData.length, startIndex + Math.floor(duration * sampleRate));
+            for (let i = startIndex; i < endIndex; i++) {
+                const t = (i - startIndex) / sampleRate;
+                const env = Math.exp(-decay * t);
+                let sample = 0;
+                frequencies.forEach((freq, idx) => {
+                    const weight = amplitude / (idx + 1);
+                    sample += weight * Math.sin(2 * Math.PI * freq * t);
+                });
+                channelData[i] += sample * env;
+            }
+        }
+
+        function addPercussiveHit(channelData, sampleRate, startTime, duration, baseFreq, amp, noiseLevel, pitchDecay) {
+            const startIndex = Math.floor(startTime * sampleRate);
+            const endIndex = Math.min(channelData.length, startIndex + Math.floor(duration * sampleRate));
+            for (let i = startIndex; i < endIndex; i++) {
+                const t = (i - startIndex) / sampleRate;
+                const env = Math.exp(-5 * t);
+                const pitchEnv = baseFreq * Math.pow(0.5, t * pitchDecay);
+                const tone = Math.sin(2 * Math.PI * pitchEnv * t) * amp * env;
+                const randomSeed = Math.sin((i + 1) * 12.9898) * 43758.5453;
+                const frac = randomSeed - Math.floor(randomSeed);
+                const noise = (frac * 2 - 1) * noiseLevel * env;
+                channelData[i] += tone + noise;
+            }
+        }
+
+        function generatePresetBuffer(presetId) {
+            const duration = 8;
+            const sampleRate = audioContext.sampleRate || 44100;
+            const buffer = audioContext.createBuffer(1, duration * sampleRate, sampleRate);
+            const data = buffer.getChannelData(0);
+
+            switch (presetId) {
+                case 'pianoWarm':
+                    for (let bar = 0; bar < duration; bar += 2) {
+                        addHarmonicTone(data, sampleRate, bar, 1.6, [261.63, 392.00, 523.25], 0.8, 2.8);
+                        addHarmonicTone(data, sampleRate, bar + 0.75, 1.4, [329.63, 493.88, 659.25], 0.6, 3.1);
+                    }
+                    break;
+                case 'ukuleleBright':
+                    for (let beat = 0; beat < duration; beat += 0.75) {
+                        addHarmonicTone(data, sampleRate, beat, 0.9, [392.00, 523.25, 784.00], 0.6, 4.5);
+                    }
+                    break;
+                case 'banjoPluck':
+                    for (let beat = 0; beat < duration; beat += 0.6) {
+                        addHarmonicTone(data, sampleRate, beat, 0.7, [440.00, 659.25, 880.00], 0.7, 6.5);
+                    }
+                    break;
+                case 'guzhengEthereal':
+                    for (let beat = 0; beat < duration; beat += 1.2) {
+                        addHarmonicTone(data, sampleRate, beat, 2.0, [329.63, 587.33, 698.46], 0.5, 1.9);
+                        addHarmonicTone(data, sampleRate, beat + 0.5, 2.4, [415.30, 659.25, 830.61], 0.4, 1.6);
+                    }
+                    break;
+                case 'taikoBig':
+                    for (let beat = 0; beat < duration; beat += 1.5) {
+                        addPercussiveHit(data, sampleRate, beat, 1.2, 65, 0.9, 0.1, 0.9);
+                    }
+                    break;
+                case 'taikoHuge':
+                    for (let beat = 0; beat < duration; beat += 2) {
+                        addPercussiveHit(data, sampleRate, beat, 1.5, 50, 1.0, 0.12, 0.7);
+                    }
+                    break;
+                case 'taikoColossal':
+                    for (let beat = 0; beat < duration; beat += 2.5) {
+                        addPercussiveHit(data, sampleRate, beat, 1.8, 40, 1.1, 0.14, 0.5);
+                    }
+                    break;
+                case 'bassBig':
+                    for (let beat = 0; beat < duration; beat += 1) {
+                        addPercussiveHit(data, sampleRate, beat, 0.9, 55, 0.9, 0.05, 1.2);
+                    }
+                    break;
+                case 'bassHuge':
+                    for (let beat = 0; beat < duration; beat += 1.25) {
+                        addPercussiveHit(data, sampleRate, beat, 1.2, 45, 1.0, 0.06, 1.0);
+                    }
+                    break;
+                case 'bassColossal':
+                    for (let beat = 0; beat < duration; beat += 1.5) {
+                        addPercussiveHit(data, sampleRate, beat, 1.4, 35, 1.15, 0.07, 0.8);
+                    }
+                    break;
+                case 'bongo':
+                    for (let beat = 0; beat < duration; beat += 0.5) {
+                        addPercussiveHit(data, sampleRate, beat, 0.6, 180, 0.7, 0.03, 2.2);
+                    }
+                    break;
+                case 'tomTom':
+                    for (let beat = 0; beat < duration; beat += 0.75) {
+                        addPercussiveHit(data, sampleRate, beat, 0.9, 120, 0.75, 0.04, 1.8);
+                    }
+                    break;
+                default:
+                    console.warn(`Unknown preset '${presetId}', generating silence.`);
+            }
+
+            normalizeBuffer(data);
+            return buffer;
+        }
+
+        function setTrackSampleFromPreset(trackId, presetId) {
+            const track = tracks[trackId];
+            if (!track) return;
+            if (!audioContext) initAudio();
+
+            try {
+                const buffer = generatePresetBuffer(presetId);
+                applySampleToTrack(trackId, buffer, `${PRESET_LIBRARY.find(p => p.value === presetId)?.label || 'Preset'}`, 'preset');
+            } catch (error) {
+                console.error('Unable to create preset buffer', error);
+                setTrackStatus(trackId, 'Unable to create preset audio. See console for details.', true);
+            }
+        }
+
+        function decodeArrayBufferToBuffer(arrayBuffer) {
+            return new Promise((resolve, reject) => {
+                if (!audioContext) initAudio();
+                audioContext.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+            });
+        }
+
+        async function loadSampleFromFile(trackId, file) {
+            const track = tracks[trackId];
+            if (!track || !file) return;
+            setTrackStatus(trackId, `Loading file: ${file.name} …`);
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const buffer = await decodeArrayBufferToBuffer(arrayBuffer);
+                applySampleToTrack(trackId, buffer, file.name, 'file');
+            } catch (error) {
+                console.error('Error loading file', error);
+                setTrackStatus(trackId, 'Unable to load audio file. Please try another sample.', true);
+            }
+        }
+
+        async function loadSampleFromUrl(trackId, url) {
+            if (!url) return;
+            const track = tracks[trackId];
+            if (!track) return;
+            setTrackStatus(trackId, `Fetching ${url} …`);
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+                const arrayBuffer = await response.arrayBuffer();
+                const buffer = await decodeArrayBufferToBuffer(arrayBuffer);
+                applySampleToTrack(trackId, buffer, url, 'url');
+            } catch (error) {
+                console.error('Unable to load audio from URL', error);
+                setTrackStatus(trackId, 'Unable to load URL. Check CORS / file type.', true);
+            }
+        }
+
+        function applySampleToTrack(trackId, buffer, originLabel, originType) {
+            const track = tracks[trackId];
+            if (!track) return;
+
+            stopTrackSample(trackId);
+            track.sample.buffer = buffer;
+            track.sample.name = originLabel;
+            track.sample.origin = originType;
+            track.sample.duration = buffer.duration;
+            track.sample.playbackRate = calculateSamplePlaybackRate();
+
+            setTrackStatus(trackId, `Sample ready (${originLabel}) – ${formatDuration(buffer.duration)}`);
+            if (isPlaying && !track.muted) {
+                startTrackSample(trackId, true);
+            }
+        }
+
+        function startTrackSample(trackId, restart = false) {
+            const track = tracks[trackId];
+            if (!track || !track.sample.buffer || !audioContext) return;
+
+            const source = audioContext.createBufferSource();
+            source.buffer = track.sample.buffer;
+            source.loop = track.loop;
+            source.playbackRate.value = track.sample.playbackRate;
+            source.connect(track.gainNode);
+            source.onended = () => {
+                if (!source.loop) {
+                    track.sample.source = null;
+                }
+            };
+
+            track.sample.source = source;
+            try {
+                source.start(restart ? audioContext.currentTime + 0.05 : 0);
+            } catch (error) {
+                console.error('Unable to start sample playback', error);
+            }
+        }
+
+        function stopTrackSample(trackId) {
+            const track = tracks[trackId];
+            if (!track || !track.sample.source) return;
+            try {
+                track.sample.source.stop();
+            } catch (error) {
+                console.warn('Source already stopped', error);
+            }
+            track.sample.source = null;
+        }
+
+        function restartAllSamples() {
+            Object.keys(tracks).forEach(id => {
+                if (tracks[id].sample.buffer && !tracks[id].muted) {
+                    stopTrackSample(id);
+                    startTrackSample(id, true);
+                }
+            });
+        }
+
+        function stopAllSamples() {
+            Object.keys(tracks).forEach(stopTrackSample);
+        }
+
+        function calculateSamplePlaybackRate() {
+            const bpm = getSliderValue('bpmSlider');
+            const base = 125;
+            return Math.max(0.25, Math.min(4, bpm / base));
+        }
+
+        function updatePlaybackRates() {
+            const rate = calculateSamplePlaybackRate();
+            Object.values(tracks).forEach(track => {
+                track.sample.playbackRate = rate;
+                if (track.sample.source) {
+                    track.sample.source.playbackRate.value = rate;
+                }
+            });
+        }
+
+        function updateDistortion() {
+            if (!distortionNode) return;
+            const amount = getSliderValue('gritSlider');
+            distortionNode.curve = createDistortionCurve(amount);
+            document.getElementById('gritValue').textContent = amount;
+        }
+
+        function updateBPMDisplay() {
+            document.getElementById('bpmValue').textContent = getSliderValue('bpmSlider');
+            updatePlaybackRates();
+            if (backTrackSource && backTrackSource.source) {
+                backTrackSource.source.playbackRate.value = calculatePlaybackRate();
+            }
+        }
+
+        function calculatePlaybackRate() {
+            const syncMode = document.querySelector('input[name="backtrackMode"]:checked')?.value || 'sync';
+            if (syncMode === 'original') return 1;
+            return calculateSamplePlaybackRate();
+        }
+
+        function playBackTrack(time) {
+            if (!backTrackSource || !backTrackSource.buffer || !audioContext) return;
+            stopBackTrack();
+            const source = audioContext.createBufferSource();
+            source.buffer = backTrackSource.buffer;
+            source.connect(backTrackGain);
+            source.loop = true;
+            source.playbackRate.value = calculatePlaybackRate();
+            source.start(time);
+            backTrackSource.source = source;
+        }
+
+        function stopBackTrack() {
+            if (backTrackSource && backTrackSource.source) {
+                try {
+                    backTrackSource.source.stop();
+                } catch (error) {
+                    console.warn('Backing track already stopped', error);
+                }
+                backTrackSource.source = null;
+            }
+        }
+
+        async function loadAudio(audioData, isUrl) {
+            if (!audioContext) initAudio();
+            const status = document.getElementById('backTrackStatus');
+            try {
+                status.textContent = 'Loading backing track…';
+                let arrayBuffer;
+                if (isUrl) {
+                    const response = await fetch(audioData);
+                    if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+                    arrayBuffer = await response.arrayBuffer();
+                } else {
+                    arrayBuffer = audioData;
+                }
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+                backTrackSource = { buffer: audioBuffer, source: null };
+                status.textContent = `Loaded backing track (${formatDuration(audioBuffer.duration)}).`;
+                document.getElementById('backtrackLabel').textContent = 'Replace Backing Track';
+                if (isPlaying) {
+                    playBackTrack(audioContext.currentTime + 0.05);
+                }
+            } catch (error) {
+                console.error('Error loading backing track', error);
+                status.textContent = 'Unable to load backing track.';
+            }
+        }
+
+        function clearBacktrackSelection() {
+            stopBackTrack();
+            backTrackSource = null;
+            document.getElementById('backTrackStatus').textContent = 'Status: Ready.';
+            document.getElementById('backtrackLabel').textContent = 'Load Backing Track';
+            document.getElementById('audioUrlInput').value = '';
+            document.getElementById('audioFileInput').value = '';
+        }
+
+        function togglePlay() {
+            initAudio();
+            const button = document.getElementById('togglePlay');
+            if (!isPlaying) {
+                audioContext.resume().then(() => {
+                    isPlaying = true;
+                    button.textContent = 'STOP';
+                    button.classList.remove('glow-shadow');
+                    restartAllSamples();
+                    if (backTrackSource && backTrackSource.buffer) {
+                        playBackTrack(audioContext.currentTime + 0.05);
+                    }
+                }).catch(error => console.error('Error resuming audio context:', error));
+            } else {
+                isPlaying = false;
+                button.textContent = 'START';
+                button.classList.add('glow-shadow');
+                if (isRecording) {
+                    isRecording = false;
+                    setRecordingUiState(false);
+                }
+                stopActiveRecording();
+                stopAllSamples();
+                stopBackTrack();
+            }
+        }
+
+        function toggleMute(trackId) {
+            const track = tracks[trackId];
+            if (!track) return;
+            track.muted = !track.muted;
+            if (track.elements.muteButton) {
+                track.elements.muteButton.classList.toggle('bg-gray-700', track.muted);
+                track.elements.muteButton.classList.toggle('bg-emerald-600', !track.muted);
+                track.elements.muteButton.textContent = track.muted ? 'Muted' : 'Mute';
+            }
+            const label = document.getElementById(`${trackId}-label`);
+            if (label) label.classList.toggle('track-muted', track.muted);
+            if (track.muted) {
+                stopTrackSample(trackId);
+            } else if (isPlaying && track.sample.buffer) {
+                startTrackSample(trackId, true);
+            }
+        }
+
+        function setTrackLoop(trackId, loop) {
+            const track = tracks[trackId];
+            if (!track) return;
+            track.loop = loop;
+            if (track.sample.source) {
+                track.sample.source.loop = loop;
+            }
+        }
+
+        function clearTrackSample(trackId) {
+            const track = tracks[trackId];
+            if (!track) return;
+            stopTrackSample(trackId);
+            track.sample = { buffer: null, name: '', origin: '', duration: 0, source: null, playbackRate: calculateSamplePlaybackRate() };
+            setTrackStatus(trackId, 'No sample assigned. Choose a preset or upload audio.');
+            if (track.elements.fileInput) {
+                track.elements.fileInput.value = '';
+            }
+            if (track.elements.urlInput) {
+                track.elements.urlInput.value = '';
+            }
+        }
+
+        function renderTracks() {
+            ensureTrackMap();
+            const container = document.getElementById('trackList');
+            container.innerHTML = '';
+
+            TRACK_DEFINITIONS.forEach(def => {
+                const track = tracks[def.id];
+                const card = document.createElement('div');
+                card.className = 'track-card rounded-xl p-4 space-y-4';
+                card.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span id="${def.id}-label" class="track-label text-xs sm:text-sm font-bold text-white text-center rounded-lg py-1"
+                              style="background-color: ${def.color};">${def.label}</span>
+                        <div class="flex items-center gap-3">
+                            <button id="${def.id}-mute" class="px-3 py-1 text-xs rounded-md bg-emerald-600 text-white hover:bg-emerald-500 transition-colors">Mute</button>
+                            <label class="flex items-center gap-2 text-xs text-gray-300">
+                                <input type="checkbox" id="${def.id}-loop" class="text-emerald-500" checked>
+                                Loop
+                            </label>
+                        </div>
+                    </div>
+                    <div id="${def.id}-status" class="text-xs text-gray-300">No sample assigned. Choose a preset or upload audio.</div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="flex flex-col gap-2">
+                            <label for="${def.id}-preset" class="text-xs text-gray-400">Preset</label>
+                            <select id="${def.id}-preset" class="bg-gray-700 border border-gray-600 text-white text-xs rounded-md p-2">
+                                <option value="">Select a preset…</option>
+                                ${PRESET_LIBRARY.map(opt => `<option value="${opt.value}">${opt.label}</option>`).join('')}
+                            </select>
+                            <button id="${def.id}-loadPreset" class="px-3 py-1 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors">Load Preset</button>
+                        </div>
+                        <div class="flex flex-col gap-2">
+                            <label class="text-xs text-gray-400">Upload Sample</label>
+                            <input type="file" id="${def.id}-file" accept="audio/*" class="bg-gray-700 border border-gray-600 text-gray-300 text-xs rounded-md p-2">
+                            <button id="${def.id}-clear" class="px-3 py-1 text-xs rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors">Clear Sample</button>
+                        </div>
+                        <div class="flex flex-col gap-2 sm:col-span-2">
+                            <label class="text-xs text-gray-400">Load by URL</label>
+                            <div class="flex flex-col sm:flex-row gap-2">
+                                <input type="url" id="${def.id}-url" placeholder="https://example.com/sample.wav" class="flex-grow bg-gray-700 border border-gray-600 text-white text-xs rounded-md p-2 placeholder-gray-500">
+                                <button id="${def.id}-loadUrl" class="px-3 py-1 text-xs rounded-md bg-violet-600 text-white hover:bg-violet-500 transition-colors">Fetch URL</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+
+                track.elements.status = document.getElementById(`${def.id}-status`);
+                track.elements.muteButton = document.getElementById(`${def.id}-mute`);
+                track.elements.loopToggle = document.getElementById(`${def.id}-loop`);
+                track.elements.presetSelect = document.getElementById(`${def.id}-preset`);
+                track.elements.fileInput = document.getElementById(`${def.id}-file`);
+                track.elements.urlInput = document.getElementById(`${def.id}-url`);
+
+                track.elements.muteButton.addEventListener('click', () => toggleMute(def.id));
+                track.elements.loopToggle.addEventListener('change', (e) => setTrackLoop(def.id, e.target.checked));
+                document.getElementById(`${def.id}-loadPreset`).addEventListener('click', () => {
+                    const value = track.elements.presetSelect.value || track.defaultPreset;
+                    if (!value) {
+                        setTrackStatus(def.id, 'Please select a preset to load.', true);
+                        return;
+                    }
+                    setTrackStatus(def.id, 'Generating preset audio…');
+                    setTimeout(() => setTrackSampleFromPreset(def.id, value), 10);
+                });
+                track.elements.fileInput.addEventListener('change', (event) => {
+                    const file = event.target.files[0];
+                    if (file) {
+                        loadSampleFromFile(def.id, file);
+                    }
+                });
+                document.getElementById(`${def.id}-loadUrl`).addEventListener('click', () => {
+                    const url = track.elements.urlInput.value.trim();
+                    if (url) {
+                        loadSampleFromUrl(def.id, url);
+                    }
+                });
+                document.getElementById(`${def.id}-clear`).addEventListener('click', () => clearTrackSample(def.id));
+
+                if (track.defaultPreset) {
+                    track.elements.presetSelect.value = track.defaultPreset;
+                    setTrackSampleFromPreset(def.id, track.defaultPreset);
+                }
+            });
+        }
+
+        function setRecordTimecode(value) {
+            const el = document.getElementById('recordTimecode');
+            if (el) el.textContent = value;
+        }
+
+        function formatTimecode(durationMs) {
+            const totalSeconds = Math.floor(durationMs / 1000);
+            const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+            const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+            return `${minutes}:${seconds}`;
+        }
+
+        function updateRecordingTimecode() {
+            if (!recordingStartTime) return;
+            const elapsed = Date.now() - recordingStartTime;
+            setRecordTimecode(formatTimecode(elapsed));
+        }
+
+        function setRecordingUiState(active) {
+            const recordButton = document.getElementById('toggleRecord');
+            const led = document.getElementById('recordLed');
+            if (active) {
+                recordButton.classList.add('recording-active');
+                led.classList.remove('bg-gray-500');
+                led.classList.add('bg-red-500');
+            } else {
+                recordButton.classList.remove('recording-active');
+                led.classList.remove('bg-red-500');
+                led.classList.add('bg-gray-500');
+                setRecordTimecode('00:00');
+            }
+        }
+
+        function clearRecordingPreview() {
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const status = document.getElementById('recordingPreviewStatus');
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+                recordingPreviewUrl = null;
+            }
+            if (audioEl) {
+                audioEl.src = '';
+                audioEl.removeAttribute('controls');
+            }
+            if (status) {
+                status.textContent = 'No recording captured yet.';
+            }
+            if (previewCard) {
+                previewCard.classList.add('hidden');
+            }
+        }
+
+        function reportRecorderIssue(message, error) {
+            console.error(message, error);
+            if (!recorderWarningShown) {
+                recorderWarningShown = true;
+                alert(message);
+            }
+        }
+
+        function handleRecordingData(event) {
+            if (event.data && event.data.size > 0) {
+                recordedChunks.push(event.data);
+            }
+        }
+
+        function handleRecordingStop() {
+            if (!recordedChunks.length) {
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) status.textContent = 'Recording stopped, but no audio data was captured.';
+                return;
+            }
+
+            const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+            recordedChunks = [];
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+            }
+            recordingPreviewUrl = URL.createObjectURL(blob);
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const status = document.getElementById('recordingPreviewStatus');
+            if (audioEl) {
+                audioEl.src = recordingPreviewUrl;
+                audioEl.setAttribute('controls', 'controls');
+            }
+            if (status) {
+                status.textContent = 'Recording complete. Preview below or save the take.';
+            }
+            if (previewCard) {
+                previewCard.classList.remove('hidden');
+            }
+        }
+
+        function startRecording() {
+            if (!audioContext) initAudio();
+            if (!recordingDestination) {
+                setRecordingUiState(false);
+                reportRecorderIssue('Recording destination missing. Please reload the page.', new Error('No destination node.'));
+                return;
+            }
+            if (!ensureRecorderAvailable()) {
+                setRecordingUiState(false);
+                return;
+            }
+
+            try {
+                if (mediaRecorder.state === 'recording') {
+                    console.warn('Recorder already active.');
+                    return;
+                }
+                recordedChunks = [];
+                mediaRecorder.start();
+                recordingStartTime = Date.now();
+                recordingTimerId = setInterval(updateRecordingTimecode, 250);
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) status.textContent = 'Recording…';
+            } catch (error) {
+                reportRecorderIssue('Unable to start recording.', error);
+                setRecordingUiState(false);
+            }
+        }
+
+        function stopActiveRecording() {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                return;
+            }
+            try {
+                mediaRecorder.stop();
+            } catch (error) {
+                reportRecorderIssue('An error occurred while stopping the recording.', error);
+            }
+            recordingStartTime = null;
+            if (recordingTimerId) {
+                clearInterval(recordingTimerId);
+                recordingTimerId = null;
+            }
+        }
+
+        function ensureRecorderAvailable() {
+            if (!recordingDestination) {
+                reportRecorderIssue('Recording destination unavailable.', new Error('Missing destination'));
+                return false;
+            }
+            if (mediaRecorder) return true;
+            if (!window.MediaRecorder) {
+                if (!recorderSupportLogged) {
+                    recorderSupportLogged = true;
+                    console.warn('MediaRecorder unsupported in this browser.');
+                }
+                alert('MediaRecorder is not supported in this browser. Recording is unavailable.');
+                return false;
+            }
+            try {
+                mediaRecorder = new MediaRecorder(recordingDestination.stream);
+                mediaRecorder.ondataavailable = handleRecordingData;
+                mediaRecorder.onstop = handleRecordingStop;
+                return true;
+            } catch (error) {
+                reportRecorderIssue('Unable to initialize recording.', error);
+                return false;
+            }
+        }
+
+        function toggleRecord() {
+            initAudio();
+            if (isRecording) {
+                isRecording = false;
+                setRecordingUiState(false);
+                stopActiveRecording();
+            } else {
+                if (!ensureRecorderAvailable()) return;
+                isRecording = true;
+                setRecordingUiState(true);
+                startRecording();
+            }
+        }
+
+        function handleSaveRecording() {
+            if (!recordingPreviewUrl) {
+                alert('There is no recording to save yet.');
+                return;
+            }
+            const link = document.createElement('a');
+            link.href = recordingPreviewUrl;
+            link.download = `raw-house-mix-${Date.now()}.webm`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function handleDiscardRecording() {
+            if (!recordingPreviewUrl) {
+                alert('No recording to discard.');
+                return;
+            }
+            if (!confirm('Discard the current recording?')) return;
+            clearRecordingPreview();
+        }
+
+        window.onload = function () {
+            ensureTrackMap();
+            renderTracks();
+
+            document.getElementById('togglePlay').addEventListener('click', togglePlay);
+            document.getElementById('toggleRecord').addEventListener('click', toggleRecord);
+            document.getElementById('stopAllSamples').addEventListener('click', () => {
+                if (isPlaying) {
+                    togglePlay();
+                } else {
+                    stopAllSamples();
+                }
+            });
+            document.getElementById('saveRecording').addEventListener('click', handleSaveRecording);
+            document.getElementById('discardRecording').addEventListener('click', handleDiscardRecording);
+
+            document.getElementById('bpmSlider').addEventListener('input', updateBPMDisplay);
+            document.getElementById('gritSlider').addEventListener('input', updateDistortion);
+
+            const backtrackPanel = document.getElementById('backtrackPanel');
+            document.getElementById('toggleBacktrackPanel').addEventListener('click', () => {
+                backtrackPanel.classList.toggle('hidden');
+            });
+
+            document.getElementById('audioUrlInput').addEventListener('change', (e) => {
+                const url = e.target.value.trim();
+                if (url) {
+                    if (isPlaying) togglePlay();
+                    loadAudio(url, true);
+                    document.getElementById('audioFileInput').value = '';
+                }
+            });
+
+            document.getElementById('audioFileInput').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    if (isPlaying) togglePlay();
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        loadAudio(event.target.result, false);
+                    };
+                    reader.readAsArrayBuffer(file);
+                    document.getElementById('audioUrlInput').value = '';
+                }
+            });
+
+            document.getElementById('clearBacktrack').addEventListener('click', clearBacktrackSelection);
+
+            document.querySelectorAll('input[name="backtrackMode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    if (backTrackSource && backTrackSource.source) {
+                        backTrackSource.source.playbackRate.value = calculatePlaybackRate();
+                    }
+                });
+            });
+
+            clearRecordingPreview();
+            updateBPMDisplay();
+            updateDistortion();
+        };
+    </script>
+</body>
+</html>

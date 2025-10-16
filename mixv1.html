@@ -1,0 +1,2216 @@
+<!-- Raw House Music Studio - v15.0 - 2025-10-12 04:15 AM PDT -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raw House Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #1f2937;
+            --control-light: #fcd34d;
+            --kick-color: #ef4444; /* Red, now DRUM HIT */
+            --clap-color: #3b82f6; /* Blue */
+            --hh-color: #f97316; /* Orange */
+            --oh-color: #8b5cf6; /* Violet */
+            --perc-color: #2dd4bf; /* Teal */
+            --backtrack-color: #a855f7; /* Violet */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827;
+        }
+        .step-button {
+            transition: all 0.05s ease;
+            height: 2rem;
+            min-width: 1rem;
+        }
+        .step-button:active {
+            transform: scale(0.95);
+        }
+        .step-active {
+            box-shadow: 0 0 10px var(--control-light), 0 0 5px var(--control-light) inset;
+        }
+        .glow-shadow {
+            box-shadow: 0 0 10px rgba(252, 211, 77, 0.5);
+        }
+        .control-panel {
+            background-color: var(--bg-dark);
+        }
+        .track-label {
+            width: 7rem;
+            flex-shrink: 0;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .track-muted {
+            opacity: 0.3;
+        }
+        .track-slider {
+            -webkit-appearance: none;
+            height: 6px;
+            background: #4b5563;
+            border-radius: 3px;
+            cursor: pointer;
+            width: 100%;
+        }
+        .track-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #fcd34d;
+            cursor: pointer;
+        }
+        .recording-active {
+            animation: pulse-red 1s infinite alternate;
+        }
+        @keyframes pulse-red {
+            from { opacity: 1; }
+            to { opacity: 0.5; }
+        }
+        .meter-rail {
+            width: 4.5rem;
+            height: 0.35rem;
+            background: rgba(55, 65, 81, 0.9);
+            border-radius: 9999px;
+            overflow: hidden;
+        }
+        .meter-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #facc15, #ef4444);
+            width: 0%;
+            transition: width 0.08s ease-out;
+        }
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(17, 24, 39, 0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        .modal-backdrop.active {
+            display: flex;
+        }
+        .modal-card {
+            background: #1f2937;
+            border-radius: 1rem;
+            width: min(480px, 94vw);
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+        }
+        .modal-card input[type="range"] {
+            width: 100%;
+        }
+        .pill-button {
+            padding: 0.45rem 0.85rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 10px;
+        }
+        /* Custom styles for simplified controls */
+        .simplified-control-spacer {
+            width: 25%;
+            margin-right: 1rem; /* Matches space-x-4 from parent */
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-8 flex flex-col items-center">
+
+    <div id="app" class="w-full max-w-6xl bg-gray-800 p-4 sm:p-6 rounded-xl shadow-2xl space-y-6">
+
+        <!-- Control Bar (Horizontal Compression) -->
+        <div class="control-panel p-3 rounded-lg flex flex-wrap gap-4 justify-between items-center">
+            
+            <!-- Left Group: Play/Stop/Record -->
+            <div class="flex items-center gap-3 flex-shrink-0">
+                <button id="togglePlay" class="px-4 py-2 font-bold rounded-full text-gray-900 glow-shadow hover:opacity-90 transition-colors text-sm"
+                        style="background-color: var(--control-light);">
+                    START
+                </button>
+                <div class="flex items-center gap-3 bg-gray-900/40 px-3 py-2 rounded-full">
+                    <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
+                        <span id="recordIcon">REC</span>
+                    </button>
+                    <div class="flex items-center gap-2 text-[10px] sm:text-xs text-gray-300 font-mono">
+                        <span id="recordLed" class="block w-2.5 h-2.5 rounded-full bg-gray-500"></span>
+                        <span id="recordTimecode">00:00</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Master Meter & History Controls -->
+            <div class="flex items-center gap-4 flex-wrap text-xs text-gray-300 justify-center">
+                <div class="flex items-center gap-2">
+                    <span class="tracking-wide text-[10px] uppercase text-gray-400">Master</span>
+                    <div class="meter-rail">
+                        <div id="masterMeterFill" class="meter-fill"></div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="undoAction" class="pill-button bg-gray-700 hover:bg-gray-600 text-gray-100">Undo</button>
+                    <button id="redoAction" class="pill-button bg-gray-700 hover:bg-gray-600 text-gray-100">Redo</button>
+                </div>
+            </div>
+
+
+            <!-- Middle Group: BPM/Grit/Drum Controls -->
+            <div class="flex flex-wrap gap-4 items-center flex-grow min-w-[300px] sm:min-w-[400px]">
+                <!-- BPM Control -->
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="bpmSlider" class="text-gray-400 text-sm flex-shrink-0">BPM (<span id="bpmValue">125</span>)</label>
+                    <input type="range" id="bpmSlider" min="1" max="225" value="125" step="1" 
+                           class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                </div>
+
+                <!-- DRUM Volume Control -->
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="drumVolumeSlider" class="text-gray-400 text-sm flex-shrink-0">DRUM VOL (<span id="drumVolumeValue">70</span>)</label>
+                    <input type="range" id="drumVolumeSlider" min="1" max="100" value="70" step="1" 
+                           class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                </div>
+            </div>
+            
+            <!-- Right Group: Grit/Decay/Backing Track -->
+            <div class="flex flex-wrap gap-4 items-center flex-grow min-w-[300px] sm:min-w-[400px]">
+                
+                <!-- DRUM Decay Control -->
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="drumDecaySlider" class="text-gray-400 text-sm flex-shrink-0">DRUM DECAY (<span id="drumDecayValue">50</span>)</label>
+                    <input type="range" id="drumDecaySlider" min="1" max="100" value="50" step="1" 
+                           class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                </div>
+
+                <!-- Distortion Control -->
+                <div class="flex items-center space-x-2 flex-grow min-w-[150px]">
+                    <label for="gritSlider" class="text-red-400 text-sm flex-shrink-0">GRIT (<span id="gritValue">50</span>)</label>
+                    <input type="range" id="gritSlider" min="1" max="100" value="50" step="1" 
+                           class="w-full h-2 bg-red-500 rounded-lg appearance-none cursor-pointer">
+                </div>
+                
+                <button id="toggleBacktrackPanel" class="px-3 py-2 text-white text-sm rounded-md bg-violet-600 hover:bg-violet-700 transition-colors flex-shrink-0">
+                    <span id="backtrackLabel">Load Backing Track</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Sequencer Grid Container -->
+        <div class="space-y-4 max-h-[60vh] overflow-y-auto pr-2" id="sequencerContainer">
+
+            <!-- Track UIs generated here -->
+
+        </div>
+
+        <div id="recordingPreviewCard" class="hidden bg-gray-900 border border-red-500/60 rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-red-300 uppercase tracking-wide">Recording Preview</h3>
+                <span id="recordingPreviewStatus" class="text-xs text-gray-400"></span>
+            </div>
+            <audio id="recordingPreviewAudio" controls class="w-full rounded-lg"></audio>
+            <div class="flex flex-wrap gap-3">
+                <button id="saveRecording" class="px-4 py-2 text-sm font-semibold rounded-md bg-emerald-500 hover:bg-emerald-600 text-gray-900 transition-colors">Save Take</button>
+                <button id="discardRecording" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100 transition-colors">Discard</button>
+            </div>
+        </div>
+
+        <div class="bg-gray-900/50 border border-gray-700 rounded-xl p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <h3 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Project Exchange</h3>
+                <span id="projectStatus" class="text-xs text-gray-400">Ready.</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button id="saveProject" class="pill-button bg-emerald-500 text-gray-900 hover:bg-emerald-400">Save Project</button>
+                <button id="exportProject" class="pill-button bg-blue-500 text-gray-900 hover:bg-blue-400">Export to Clipboard</button>
+                <button id="importProject" class="pill-button bg-gray-700 text-gray-100 hover:bg-gray-600">Import Project</button>
+                <input type="file" id="importProjectInput" accept="application/json" class="hidden" />
+            </div>
+        </div>
+        
+        <!-- Backing Track Uploader Panel -->
+        <div id="backtrackPanel" class="mt-4 p-4 rounded-lg border border-violet-600 hidden">
+            <h3 class="text-xl font-bold text-violet-400 mb-3">Backing Track Loader</h3>
+            
+            <!-- Sync/Speed Control -->
+            <div class="mb-4 flex flex-wrap gap-4 items-center text-white text-sm bg-gray-700 p-3 rounded-lg">
+                <label class="font-semibold text-violet-300">Playback Mode:</label>
+                <div class="flex items-center space-x-2">
+                    <input type="radio" id="syncMode" name="backtrackMode" value="sync" checked class="text-violet-500 focus:ring-violet-500">
+                    <label for="syncMode">Tempo Sync (4 Bar Loop)</label>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <input type="radio" id="originalMode" name="backtrackMode" value="original" class="text-violet-500 focus:ring-violet-500">
+                    <label for="originalMode">Original Speed</label>
+                </div>
+            </div>
+
+            <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4">
+                <input type="url" id="audioUrlInput" placeholder="Paste Audio URL (.mp3/.wav)" class="flex-grow p-2 rounded-md bg-gray-700 text-white placeholder-gray-400 border border-gray-700 focus:border-violet-500 focus:outline-none">
+                <input type="file" id="audioFileInput" accept="audio/*" class="w-full sm:w-auto text-gray-400 p-2 rounded-md bg-gray-700 cursor-pointer border border-gray-700">
+            </div>
+            <div class="mt-3 text-sm text-gray-400" id="backTrackStatus">Status: Ready.</div>
+        </div>
+
+        <!-- Track customization modal -->
+        <div id="customizeModal" class="modal-backdrop">
+            <div class="modal-card p-6 space-y-5">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 id="customizeModalTitle" class="text-lg font-semibold text-gray-100"></h3>
+                        <p id="customizeModalSubtitle" class="text-xs text-gray-400"></p>
+                    </div>
+                    <button id="closeCustomizeModal" class="pill-button bg-gray-700 text-gray-200 hover:bg-gray-600">Close</button>
+                </div>
+                <div id="presetContainer" class="space-y-2"></div>
+                <div id="parameterContainer" class="space-y-3"></div>
+                <div class="space-y-2">
+                    <label class="text-xs font-semibold text-gray-300 uppercase">Custom Sample</label>
+                    <div class="flex flex-col space-y-2">
+                        <input type="url" id="customSampleUrl" placeholder="Paste audio URL" class="p-2 rounded-md bg-gray-800 text-gray-200 border border-gray-700 focus:border-emerald-500 focus:outline-none" />
+                        <input type="file" id="customSampleFile" accept="audio/*" class="text-gray-300" />
+                        <div class="text-[11px] text-gray-400" id="customSampleStatus"></div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-2 justify-end">
+                    <button id="resetTrackConfig" class="pill-button bg-gray-700 text-gray-100 hover:bg-gray-600">Reset</button>
+                    <button id="applyTrackConfig" class="pill-button bg-emerald-500 text-gray-900 hover:bg-emerald-400">Apply</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Master Footer -->
+    <footer id="master-footer" class="fixed bottom-0 left-0 right-0 p-2 text-center text-xs text-gray-500 bg-gray-900 border-t border-gray-700">
+        v15.0 | 2025-10-12 04:15 AM PDT
+    </footer>
+
+    <script>
+        const NUM_STEPS = 16;
+        const CLAP_NOISE_DURATION = 0.05;
+        const DECAY_RANGE = 0.5;
+        
+        // --- Global Audio Variables & State ---
+        let audioContext;
+        let isPlaying = false;
+        let isRecording = false;
+        let currentStep = 0;
+        let nextNoteTime = 0.0;
+        let timerID = 0;
+        let backTrackSource = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordingTimerId = null;
+        let recordingStartTime = null;
+        let recordingPreviewUrl = null;
+        let recordingDestination = null;
+        let recorderWarningShown = false;
+        let recorderSupportLogged = false;
+
+        // --- Audio Nodes ---
+        let masterGainNode;
+        let distortionNode;
+        let backTrackGain;
+
+        // --- Drum Sound Options for the unified DRUM HIT Track ---
+        // 5 highly-normalized, distinct sounds.
+        const drumHitOptions = [
+            // KICK: Deep Sine for classic house thump
+            { value: 'deepKick', label: 'Deep Kick (Sine)', gainMult: 1.5, baseDecay: 0.4 }, 
+            // SNARE: Classic noise-based snare drum
+            { value: 'snareHit', label: 'Snare Hit (Noise/Tone)', gainMult: 1.0, baseDecay: 0.2 }, 
+            // RIM/CLAVE: High frequency, short tone for rhythmic accents
+            { value: 'rimShot', label: 'Rim Shot/Clave (Tone)', gainMult: 0.9, baseDecay: 0.05 }, 
+            // TAIKO: Low resonant drum for fills
+            { value: 'taikoDrum', label: 'Low Taiko (Tonal)', gainMult: 1.1, baseDecay: 0.5 },
+            // CYMBAL: Washed highpass noise for sizzle
+            { value: 'cymbalSiz', label: 'Cymbal Sizzle (Noise)', gainMult: 0.6, baseDecay: 1.0 }, 
+        ];
+
+        // --- Sequencer State & Defaults (Bass Track Removed) ---
+        const sequencer = {
+            drumHit: {
+                id: 'drumHit',
+                label: 'DRUM HIT',
+                pattern: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+                color: 'var(--kick-color)',
+                muted: false,
+                selectedPreset: 'deepKick',
+                settings: { volume: 1.0, decay: 0.4, pitch: 0.9 },
+                presets: [
+                    { id: 'deepKick', name: 'Deep Kick (Sine)', settings: { decay: 0.4, pitch: 0.85 } },
+                    { id: 'snareHit', name: 'Snare Hit (Noise/Tone)', settings: { decay: 0.25, pitch: 1 } },
+                    { id: 'rimShot', name: 'Rim Shot (Tone)', settings: { decay: 0.12, pitch: 1.25 } },
+                    { id: 'taikoDrum', name: 'Low Taiko (Tonal)', settings: { decay: 0.6, pitch: 0.7 } },
+                    { id: 'cymbalSiz', name: 'Cymbal Sizzle (Noise)', settings: { decay: 1.0, pitch: 1 } },
+                ],
+                parameters: [
+                    { id: 'volume', label: 'Volume', min: 0.2, max: 2.0, step: 0.01 },
+                    { id: 'decay', label: 'Decay', min: 0.05, max: 1.5, step: 0.01 },
+                    { id: 'pitch', label: 'Pitch', min: 0.5, max: 1.5, step: 0.01 },
+                ],
+                customSample: null,
+                customSampleName: '',
+                customSampleUrl: '',
+            },
+            clap: {
+                id: 'clap',
+                label: 'CLAP',
+                pattern: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+                color: 'var(--clap-color)',
+                muted: false,
+                selectedPreset: 'classic',
+                settings: { volume: 0.7, decay: 0.15, tone: 900, pitch: 1 },
+                presets: [
+                    { id: 'classic', name: 'Classic Clap', settings: { decay: 0.15, tone: 900 } },
+                    { id: 'bigRoom', name: 'Big Room', settings: { decay: 0.28, tone: 700 } },
+                    { id: 'tight', name: 'Tight', settings: { decay: 0.1, tone: 1400 } },
+                ],
+                parameters: [
+                    { id: 'volume', label: 'Volume', min: 0.2, max: 1.5, step: 0.01 },
+                    { id: 'decay', label: 'Decay', min: 0.05, max: 0.5, step: 0.01 },
+                    { id: 'tone', label: 'Tone', min: 400, max: 2000, step: 10 },
+                    { id: 'pitch', label: 'Pitch', min: 0.5, max: 1.5, step: 0.01 },
+                ],
+                customSample: null,
+                customSampleName: '',
+                customSampleUrl: '',
+            },
+            hihat: {
+                id: 'hihat',
+                label: 'HI-HAT',
+                pattern: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                color: 'var(--hh-color)',
+                muted: false,
+                selectedPreset: 'tightHat',
+                settings: { volume: 0.7, decay: 0.08, tone: 9000, pitch: 1.1 },
+                presets: [
+                    { id: 'tightHat', name: 'Tight Hat', settings: { decay: 0.08, tone: 10000 } },
+                    { id: 'looseHat', name: 'Loose Hat', settings: { decay: 0.18, tone: 8000 } },
+                    { id: 'darkHat', name: 'Dark Hat', settings: { decay: 0.12, tone: 6000 } },
+                ],
+                parameters: [
+                    { id: 'volume', label: 'Volume', min: 0.2, max: 1.5, step: 0.01 },
+                    { id: 'decay', label: 'Decay', min: 0.04, max: 0.4, step: 0.01 },
+                    { id: 'tone', label: 'Tone', min: 4000, max: 12000, step: 50 },
+                    { id: 'pitch', label: 'Pitch', min: 0.5, max: 1.5, step: 0.01 },
+                ],
+                customSample: null,
+                customSampleName: '',
+                customSampleUrl: '',
+            },
+            openhat: {
+                id: 'openhat',
+                label: 'OPEN HAT',
+                pattern: [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+                color: 'var(--oh-color)',
+                muted: false,
+                selectedPreset: 'classicOpen',
+                settings: { volume: 0.7, decay: 0.35, tone: 7000, pitch: 1 },
+                presets: [
+                    { id: 'classicOpen', name: 'Classic Open', settings: { decay: 0.35, tone: 8000 } },
+                    { id: 'splash', name: 'Splashy', settings: { decay: 0.6, tone: 9000 } },
+                    { id: 'short', name: 'Short', settings: { decay: 0.2, tone: 6000 } },
+                ],
+                parameters: [
+                    { id: 'volume', label: 'Volume', min: 0.2, max: 1.5, step: 0.01 },
+                    { id: 'decay', label: 'Decay', min: 0.1, max: 1.2, step: 0.01 },
+                    { id: 'tone', label: 'Tone', min: 3000, max: 11000, step: 50 },
+                    { id: 'pitch', label: 'Pitch', min: 0.5, max: 1.5, step: 0.01 },
+                ],
+                customSample: null,
+                customSampleName: '',
+                customSampleUrl: '',
+            },
+            perc: {
+                id: 'perc',
+                label: 'PERC',
+                pattern: [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+                color: 'var(--perc-color)',
+                muted: false,
+                selectedPreset: 'digital',
+                settings: { volume: 0.7, decay: 0.2, tone: 4000, pitch: 1 },
+                presets: [
+                    { id: 'digital', name: 'Digital Noise', settings: { decay: 0.2, tone: 4500 } },
+                    { id: 'wood', name: 'Wood Click', settings: { decay: 0.12, tone: 2500 } },
+                    { id: 'snap', name: 'Finger Snap', settings: { decay: 0.18, tone: 3800 } },
+                ],
+                parameters: [
+                    { id: 'volume', label: 'Volume', min: 0.2, max: 1.5, step: 0.01 },
+                    { id: 'decay', label: 'Decay', min: 0.05, max: 0.6, step: 0.01 },
+                    { id: 'tone', label: 'Tone', min: 1000, max: 6000, step: 50 },
+                    { id: 'pitch', label: 'Pitch', min: 0.5, max: 1.5, step: 0.01 },
+                ],
+                customSample: null,
+                customSampleName: '',
+                customSampleUrl: '',
+            },
+        };
+
+        const trackRouting = {};
+        const trackMeters = {};
+        let masterAnalyser = null;
+        let meterAnimationId = null;
+        let meterBuffer = new Uint8Array(256);
+        let projectStatusTimeout = null;
+        let activeCustomizeTrackId = null;
+        let pendingTrackConfig = null;
+        const historyState = {
+            undo: [],
+            redo: [],
+            clipboard: null,
+        };
+
+        // --- Utility Functions ---
+
+        function midiToFreq(midiNote) {
+            return 440 * Math.pow(2, (midiNote - 69) / 12);
+        }
+
+        function getSliderValue(id) {
+            const el = document.getElementById(id);
+            return el ? parseFloat(el.value) : 0; 
+        }
+        
+        function createDistortionCurve(amount) {
+            const k = amount * 0.1;
+            const n_samples = 44100;
+            const curve = new Float32Array(n_samples);
+            for (let i = 0; i < n_samples; i++) {
+                const x = i * 2 / n_samples - 1;
+                curve[i] = Math.tanh(x * k);
+            }
+            return curve;
+        }
+
+        function setProjectStatus(message, persist = false) {
+            const statusEl = document.getElementById('projectStatus');
+            if (!statusEl) return;
+            statusEl.textContent = message;
+            if (projectStatusTimeout) {
+                clearTimeout(projectStatusTimeout);
+                projectStatusTimeout = null;
+            }
+            if (!persist) {
+                projectStatusTimeout = setTimeout(() => {
+                    statusEl.textContent = 'Ready.';
+                }, 3200);
+            }
+        }
+
+        function updateHistoryButtons() {
+            const undoBtn = document.getElementById('undoAction');
+            const redoBtn = document.getElementById('redoAction');
+            if (undoBtn) {
+                undoBtn.disabled = historyState.undo.length === 0;
+                undoBtn.classList.toggle('opacity-40', undoBtn.disabled);
+            }
+            if (redoBtn) {
+                redoBtn.disabled = historyState.redo.length === 0;
+                redoBtn.classList.toggle('opacity-40', redoBtn.disabled);
+            }
+        }
+
+        function recordHistory(entry) {
+            historyState.undo.push(entry);
+            historyState.redo.length = 0;
+            updateHistoryButtons();
+        }
+
+        function applyHistoryEntry(entry, revert) {
+            if (!entry) return;
+            const track = sequencer[entry.trackId];
+            if (!track) return;
+            switch (entry.type) {
+                case 'step': {
+                    const value = revert ? entry.before : entry.after;
+                    track.pattern[entry.index] = value;
+                    updateStepButton(entry.trackId, entry.index);
+                    break;
+                }
+                case 'pattern': {
+                    const pattern = clonePattern(revert ? entry.before : entry.after);
+                    for (let i = 0; i < NUM_STEPS; i++) {
+                        track.pattern[i] = pattern[i] || 0;
+                    }
+                    refreshTrackSteps(entry.trackId);
+                    break;
+                }
+                case 'settings': {
+                    const settings = cloneSettings(revert ? entry.before : entry.after);
+                    track.settings = { ...track.settings, ...settings };
+                    updateTrackGainFromSettings(entry.trackId);
+                    if (entry.presetBefore !== undefined && entry.presetAfter !== undefined) {
+                        track.selectedPreset = revert ? entry.presetBefore : entry.presetAfter;
+                    }
+                    break;
+                }
+                case 'project': {
+                    // Project-level history is applied elsewhere if implemented
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        function undoLastAction() {
+            const entry = historyState.undo.pop();
+            if (!entry) return;
+            applyHistoryEntry(entry, true);
+            historyState.redo.push(entry);
+            updateHistoryButtons();
+        }
+
+        function redoLastAction() {
+            const entry = historyState.redo.pop();
+            if (!entry) return;
+            applyHistoryEntry(entry, false);
+            historyState.undo.push(entry);
+            updateHistoryButtons();
+        }
+
+        function clonePattern(pattern) {
+            return Array.isArray(pattern) ? pattern.slice() : [];
+        }
+
+        function cloneSettings(settings) {
+            return settings ? JSON.parse(JSON.stringify(settings)) : {};
+        }
+
+        function computeMeterLevel(analyser) {
+            if (!analyser) return 0;
+            const length = analyser.fftSize;
+            if (meterBuffer.length !== length) {
+                meterBuffer = new Uint8Array(length);
+            }
+            analyser.getByteTimeDomainData(meterBuffer);
+            let sum = 0;
+            for (let i = 0; i < meterBuffer.length; i++) {
+                const sample = (meterBuffer[i] - 128) / 128;
+                sum += sample * sample;
+            }
+            const rms = Math.sqrt(sum / meterBuffer.length);
+            return Math.min(1, rms * 2.5);
+        }
+
+        function getTrackVolume(track) {
+            const baseVolume = track && track.settings && typeof track.settings.volume === 'number' ? track.settings.volume : 1;
+            return baseVolume * getDrumVolume();
+        }
+
+        function formatParamValue(param, value) {
+            if (!param) return `${value}`;
+            if (param.step && param.step >= 1) {
+                return `${Math.round(value)}`;
+            }
+            return `${parseFloat(value).toFixed(2)}`;
+        }
+        
+        // Converts global slider (1-100) to audio gain (0-2.0)
+        function getDrumVolume() {
+            // New range: 1 to 100 maps to 0 to 2.0 (2x power)
+            return (getSliderValue('drumVolumeSlider') - 1) / 99 * 2.0; 
+        }
+
+        // Converts global slider (1-100) to decay multiplier (0.1 - 2.0)
+        function getDrumDecayMultiplier() {
+            // New range: 1 to 100 maps to 0.1 to 2.0
+            return 0.1 + (getSliderValue('drumDecaySlider') - 1) / 99 * 1.9;
+        }
+
+        function ensureTrackRouting(id) {
+            if (!audioContext || !distortionNode) return null;
+            if (!trackRouting[id]) {
+                const gain = audioContext.createGain();
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                gain.connect(analyser);
+                analyser.connect(distortionNode);
+                trackRouting[id] = { gain, analyser };
+                updateTrackGainFromSettings(id);
+            }
+            return trackRouting[id];
+        }
+
+        function updateTrackGainFromSettings(id) {
+            const track = sequencer[id];
+            const routing = trackRouting[id];
+            if (!track || !routing || !audioContext) return;
+            const target = Math.max(0.0001, getTrackVolume(track));
+            routing.gain.gain.setTargetAtTime(target, audioContext.currentTime, 0.01);
+        }
+
+        function triggerCustomSample(trackId, time) {
+            const track = sequencer[trackId];
+            if (!track || !track.customSample || !audioContext) return false;
+            const routing = ensureTrackRouting(trackId);
+            if (!routing) return false;
+
+            const source = audioContext.createBufferSource();
+            source.buffer = track.customSample;
+            const playback = Math.max(0.25, track.settings?.pitch || 1);
+            source.playbackRate.setValueAtTime(playback, time);
+
+            const voiceGain = audioContext.createGain();
+            const baseVolume = Math.max(0.0001, getTrackVolume(track));
+            voiceGain.gain.setValueAtTime(baseVolume, time);
+            const decay = Math.max(0.05, track.settings?.decay || 0.2);
+            voiceGain.gain.exponentialRampToValueAtTime(0.0001, time + decay);
+
+            source.connect(voiceGain);
+            voiceGain.connect(routing.gain);
+
+            source.start(time);
+            const stopTime = time + Math.max(decay * 1.5, track.customSample.duration + 0.2);
+            source.stop(stopTime);
+            return true;
+        }
+
+        function startMeterLoop() {
+            if (meterAnimationId) return;
+            const loop = () => {
+                if (masterAnalyser) {
+                    const masterLevel = computeMeterLevel(masterAnalyser);
+                    const masterEl = document.getElementById('masterMeterFill');
+                    if (masterEl) {
+                        masterEl.style.width = `${(masterLevel * 100).toFixed(1)}%`;
+                    }
+                }
+                Object.keys(trackRouting).forEach((id) => {
+                    const routing = trackRouting[id];
+                    const meterEl = trackMeters[id];
+                    if (!routing || !meterEl) return;
+                    const level = computeMeterLevel(routing.analyser);
+                    meterEl.style.width = `${(level * 100).toFixed(1)}%`;
+                });
+                meterAnimationId = requestAnimationFrame(loop);
+            };
+            meterAnimationId = requestAnimationFrame(loop);
+        }
+
+        function stopMeterLoop() {
+            if (meterAnimationId) {
+                cancelAnimationFrame(meterAnimationId);
+                meterAnimationId = null;
+            }
+        }
+
+        // --- Audio Instrument Generators ---
+
+        function playDrumHit(time) {
+            const track = sequencer.drumHit;
+            if (track.muted) return;
+
+            if (triggerCustomSample('drumHit', time)) {
+                return;
+            }
+
+            const drumType = track.selectedPreset || (track.presets[0]?.id ?? 'deepKick');
+            const selectedOption = drumHitOptions.find(opt => opt.value === drumType) || drumHitOptions[0];
+
+            const globalDecayMult = getDrumDecayMultiplier();
+
+            const routing = ensureTrackRouting('drumHit');
+            if (!routing) return;
+
+            const gain = audioContext.createGain();
+            const baseVolume = getTrackVolume(track) * (selectedOption?.gainMult || 1.0);
+            gain.gain.setValueAtTime(Math.max(0.0001, baseVolume), time);
+            gain.connect(routing.gain);
+
+            let basePitch = 50;
+            // Base decay from selected option * Global Decay Slider
+            let finalDecay = (selectedOption?.baseDecay || 0.1) * globalDecayMult * (track.settings?.decay || 0.4);
+
+            // Define common nodes used for all sounds
+            let osc = null;
+            let noise = null;
+            let filter = null;
+            let sourceNode = null;
+
+            const pitchScale = track.settings?.pitch || 1;
+
+            switch (drumType) {
+                case 'deepKick':
+                case 'taikoDrum':
+                    // Tonal, low-frequency sounds
+                    osc = audioContext.createOscillator();
+                    osc.type = 'sine';
+                    basePitch = (drumType === 'deepKick') ? 45 : 35;
+
+                    filter = audioContext.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.setValueAtTime(basePitch * 10, time);
+                    filter.Q.setValueAtTime(2, time);
+
+                    osc.connect(filter);
+                    sourceNode = osc;
+
+                    osc.frequency.setValueAtTime(midiToFreq(basePitch) * pitchScale, time);
+                    osc.frequency.exponentialRampToValueAtTime(30 * pitchScale, time + 0.15);
+                    break;
+
+                case 'snareHit':
+                    // Snare (Mix of noise and a short tone)
+                    noise = audioContext.createBufferSource();
+                    const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.5, audioContext.sampleRate);
+                    const output = noiseBuffer.getChannelData(0);
+                    for (let i = 0; i < noiseBuffer.length; i++) { output[i] = Math.random() * 2 - 1; }
+                    noise.buffer = noiseBuffer;
+                    
+                    filter = audioContext.createBiquadFilter();
+                    filter.type = 'bandpass';
+                    filter.frequency.setValueAtTime(800 * pitchScale, time);
+                    filter.Q.setValueAtTime(1, time);
+
+                    noise.connect(filter);
+                    sourceNode = noise;
+                    break;
+
+                case 'rimShot':
+                    // Rim Shot/Clave (High, short tone)
+                    osc = audioContext.createOscillator();
+                    osc.type = 'square';
+                    basePitch = 90; // High tone
+
+                    filter = audioContext.createBiquadFilter();
+                    filter.type = 'highpass';
+                    filter.frequency.setValueAtTime(midiToFreq(basePitch) * 0.5 * pitchScale, time);
+                    filter.Q.setValueAtTime(10, time);
+
+                    osc.connect(filter);
+                    sourceNode = osc;
+                    osc.frequency.setValueAtTime(midiToFreq(basePitch) * pitchScale, time);
+                    break;
+
+                case 'cymbalSiz':
+                    // Cymbal (Washed highpass noise)
+                    noise = audioContext.createBufferSource();
+                    const cymbalNoiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 2.0, audioContext.sampleRate);
+                    const cymbalOutput = cymbalNoiseBuffer.getChannelData(0);
+                    for (let i = 0; i < cymbalNoiseBuffer.length; i++) { cymbalOutput[i] = Math.random() * 2 - 1; }
+                    noise.buffer = cymbalNoiseBuffer;
+                    
+                    filter = audioContext.createBiquadFilter();
+                    filter.type = 'highpass';
+                    filter.frequency.setValueAtTime(6000 * pitchScale, time);
+                    filter.Q.setValueAtTime(1, time);
+
+                    noise.connect(filter);
+                    sourceNode = noise;
+                    break;
+
+                default:
+                    return; // Should not happen with current options
+            }
+            
+            // Connect and play
+            sourceNode.connect(gain);
+
+            gain.gain.exponentialRampToValueAtTime(0.001, time + finalDecay);
+            sourceNode.start(time);
+            sourceNode.stop(time + finalDecay);
+        }
+
+        // Play functions simplified to use global controls
+        function playClap(time) {
+            const track = sequencer.clap;
+            if (track.muted) return;
+            if (triggerCustomSample('clap', time)) return;
+
+            const routing = ensureTrackRouting('clap');
+            if (!routing) return;
+
+            const decay = Math.max(0.05, (track.settings?.decay || 0.15) * getDrumDecayMultiplier());
+            const tone = Math.max(200, track.settings?.tone || 900);
+
+            const noise = audioContext.createBufferSource();
+            const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * CLAP_NOISE_DURATION, audioContext.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < noiseBuffer.length; i++) {
+                output[i] = Math.random() * 2 - 1;
+            }
+            noise.buffer = noiseBuffer;
+
+            const bandpass = audioContext.createBiquadFilter();
+            bandpass.type = 'bandpass';
+            bandpass.frequency.setValueAtTime(tone, time);
+            bandpass.Q.setValueAtTime(1, time);
+
+            const gain = audioContext.createGain();
+
+            noise.connect(bandpass);
+            bandpass.connect(gain);
+            gain.connect(routing.gain);
+
+            const volume = Math.max(0.0001, getTrackVolume(track));
+            gain.gain.setValueAtTime(volume, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + decay);
+
+            noise.start(time);
+            noise.stop(time + decay);
+        }
+        
+        // This track should probably be renamed if we remove the bassline entirely
+        // Renaming to SINE/SAW LEAD since it's the only oscillator left
+        function playSynth(time) { 
+            // NOTE: This function remains as a placeholder and is not called by the scheduler.
+        }
+
+
+        function playHiHat(time, isClosed) {
+            const track = isClosed ? sequencer.hihat : sequencer.openhat;
+            if (track.muted) return;
+            const trackId = isClosed ? 'hihat' : 'openhat';
+            if (triggerCustomSample(trackId, time)) return;
+
+            const routing = ensureTrackRouting(trackId);
+            if (!routing) return;
+
+            const globalDecayMult = getDrumDecayMultiplier();
+            const baseDecay = Math.max(0.05, (track.settings?.decay || 0.1) * globalDecayMult);
+            const tone = Math.max(1000, track.settings?.tone || 8000);
+
+            const noise = audioContext.createBufferSource();
+            const duration = audioContext.sampleRate * DECAY_RANGE;
+            const noiseBuffer = audioContext.createBuffer(1, duration, audioContext.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < noiseBuffer.length; i++) {
+                output[i] = Math.random() * 2 - 1;
+            }
+            noise.buffer = noiseBuffer;
+
+            const bandpass = audioContext.createBiquadFilter();
+            bandpass.type = 'bandpass';
+            bandpass.frequency.setValueAtTime(tone, time);
+            bandpass.Q.setValueAtTime(isClosed ? 12 : 8, time);
+
+            const gain = audioContext.createGain();
+            noise.connect(bandpass);
+            bandpass.connect(gain);
+            gain.connect(routing.gain);
+
+            const finalDecay = isClosed ? baseDecay : Math.max(baseDecay, 0.25);
+            gain.gain.setValueAtTime(Math.max(0.0001, getTrackVolume(track)), time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + finalDecay);
+
+            noise.start(time);
+            noise.stop(time + finalDecay);
+        }
+
+        function playPercussion(time) {
+            const track = sequencer.perc;
+            if (track.muted) return;
+            if (triggerCustomSample('perc', time)) return;
+
+            const routing = ensureTrackRouting('perc');
+            if (!routing) return;
+
+            const globalDecayMult = getDrumDecayMultiplier();
+            const decay = Math.max(0.05, (track.settings?.decay || 0.2) * globalDecayMult);
+            const tone = Math.max(400, track.settings?.tone || 4000);
+
+            const noise = audioContext.createBufferSource();
+            const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.3, audioContext.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < noiseBuffer.length; i++) {
+                output[i] = Math.random() * 2 - 1;
+            }
+            noise.buffer = noiseBuffer;
+
+            const bandpass = audioContext.createBiquadFilter();
+            bandpass.type = 'bandpass';
+            bandpass.frequency.setValueAtTime(tone, time);
+            bandpass.Q.setValueAtTime(6, time);
+
+            const gain = audioContext.createGain();
+            noise.connect(bandpass);
+            bandpass.connect(gain);
+            gain.connect(routing.gain);
+
+            gain.gain.setValueAtTime(Math.max(0.0001, getTrackVolume(track)), time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + decay);
+
+            noise.start(time);
+            noise.stop(time + decay);
+        }
+
+
+        // --- Core Audio Setup ---
+
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                masterGainNode = audioContext.createGain();
+                masterAnalyser = audioContext.createAnalyser();
+                masterAnalyser.fftSize = 512;
+
+                distortionNode = audioContext.createWaveShaper();
+                distortionNode.curve = createDistortionCurve(getSliderValue('gritSlider'));
+
+                backTrackGain = audioContext.createGain();
+                backTrackGain.gain.setValueAtTime(0.5, audioContext.currentTime);
+                backTrackGain.connect(masterGainNode);
+
+                distortionNode.connect(masterGainNode);
+                masterGainNode.connect(masterAnalyser);
+                masterAnalyser.connect(audioContext.destination);
+
+                recordingDestination = audioContext.createMediaStreamDestination();
+                masterGainNode.connect(recordingDestination);
+
+                Object.keys(sequencer).forEach((id) => ensureTrackRouting(id));
+                startMeterLoop();
+            }
+
+            if (audioContext && !recordingDestination) {
+                recordingDestination = audioContext.createMediaStreamDestination();
+                masterGainNode.connect(recordingDestination);
+            }
+
+            if (typeof MediaRecorder === 'undefined') {
+                if (!recorderSupportLogged) {
+                    console.warn('MediaRecorder API is not supported in this browser. Recording features will be disabled.');
+                    recorderSupportLogged = true;
+                }
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'Recording unavailable in this browser.';
+                }
+                setRecordTimecode('No REC');
+                return;
+            }
+
+            if (recordingDestination && !mediaRecorder) {
+                try {
+                    mediaRecorder = new MediaRecorder(recordingDestination.stream);
+                    mediaRecorder.addEventListener('dataavailable', handleRecordingData);
+                    mediaRecorder.addEventListener('stop', handleRecordingStop);
+                } catch (error) {
+                    reportRecorderIssue('Unable to initialize recording in this browser. See console for details.', error);
+                    mediaRecorder = null;
+                }
+            }
+        }
+
+        function setRecordTimecode(value) {
+            const timeEl = document.getElementById('recordTimecode');
+            if (timeEl) {
+                timeEl.textContent = value;
+            }
+        }
+
+        function formatTimecode(durationMs) {
+            const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function updateRecordingTimecode() {
+            if (!recordingStartTime) return;
+            const elapsed = Date.now() - recordingStartTime;
+            setRecordTimecode(formatTimecode(elapsed));
+        }
+
+        function setRecordingUiState(active) {
+            const recordButton = document.getElementById('toggleRecord');
+            const recordIcon = document.getElementById('recordIcon');
+            const led = document.getElementById('recordLed');
+
+            if (!recordButton) return;
+
+            if (active) {
+                recordButton.classList.add('recording-active');
+                if (recordIcon) recordIcon.textContent = 'STOP';
+                if (led) {
+                    led.classList.remove('bg-gray-500');
+                    led.classList.add('bg-red-500');
+                }
+            } else {
+                recordButton.classList.remove('recording-active');
+                if (recordIcon) recordIcon.textContent = 'REC';
+                if (led) {
+                    led.classList.remove('bg-red-500');
+                    led.classList.add('bg-gray-500');
+                }
+            }
+        }
+
+        function clearRecordingPreview() {
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const status = document.getElementById('recordingPreviewStatus');
+
+            if (audioEl) {
+                audioEl.pause();
+                audioEl.removeAttribute('src');
+                audioEl.load();
+            }
+
+            if (previewCard) {
+                previewCard.classList.add('hidden');
+            }
+
+            if (status) {
+                status.textContent = '';
+            }
+
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+                recordingPreviewUrl = null;
+            }
+        }
+
+        function reportRecorderIssue(message, error) {
+            if (error) {
+                console.warn(message, error);
+            } else {
+                console.warn(message);
+            }
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = message;
+            }
+            setRecordTimecode('No REC');
+            if (!recorderWarningShown) {
+                if (typeof alert === 'function') {
+                    alert(message);
+                }
+                recorderWarningShown = true;
+            }
+        }
+
+        function handleRecordingData(event) {
+            if (event.data && event.data.size > 0) {
+                recordedChunks.push(event.data);
+            }
+        }
+
+        function handleRecordingStop() {
+            if (recordingTimerId) {
+                clearInterval(recordingTimerId);
+                recordingTimerId = null;
+            }
+
+            recordingStartTime = null;
+            isRecording = false;
+            setRecordingUiState(false);
+
+            if (!recordedChunks.length) {
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'No audio captured.';
+                }
+                setRecordTimecode('00:00');
+                return;
+            }
+
+            const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : 'audio/webm';
+            const blob = new Blob(recordedChunks, { type: mimeType });
+
+            if (recordingPreviewUrl) {
+                URL.revokeObjectURL(recordingPreviewUrl);
+            }
+            recordingPreviewUrl = URL.createObjectURL(blob);
+
+            const audioEl = document.getElementById('recordingPreviewAudio');
+            const previewCard = document.getElementById('recordingPreviewCard');
+            const status = document.getElementById('recordingPreviewStatus');
+
+            if (audioEl) {
+                audioEl.src = recordingPreviewUrl;
+                audioEl.load();
+            }
+
+            if (previewCard) {
+                previewCard.classList.remove('hidden');
+            }
+
+            if (status) {
+                status.textContent = 'Take ready for review.';
+            }
+
+            setRecordTimecode('00:00');
+        }
+
+        function startRecording() {
+            if (!mediaRecorder) {
+                reportRecorderIssue('Recording is unavailable because MediaRecorder could not be initialized.');
+                return;
+            }
+
+            recordingStartTime = Date.now();
+            setRecordTimecode('00:00');
+            setRecordingUiState(true);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            const previousStatusText = status ? status.textContent : '';
+            if (status) {
+                status.textContent = 'Recording...';
+            }
+
+            const resumePromise = audioContext ? audioContext.resume() : Promise.resolve();
+            resumePromise.catch((error) => {
+                console.warn('Unable to resume audio context before recording start.', error);
+            }).finally(() => {
+                try {
+                    mediaRecorder.start();
+                    clearRecordingPreview();
+                    recordedChunks = [];
+                    if (status) {
+                        status.textContent = 'Recording...';
+                    }
+                    isRecording = true;
+                    updateRecordingTimecode();
+                    if (recordingTimerId) clearInterval(recordingTimerId);
+                    recordingTimerId = setInterval(updateRecordingTimecode, 250);
+                } catch (error) {
+                    isRecording = false;
+                    recordingStartTime = null;
+                    if (recordingTimerId) {
+                        clearInterval(recordingTimerId);
+                        recordingTimerId = null;
+                    }
+                    setRecordingUiState(false);
+                    reportRecorderIssue('Recording could not be started. See console for details.', error);
+                    if (status) {
+                        status.textContent = previousStatusText;
+                    }
+                }
+            });
+        }
+
+        function stopActiveRecording() {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                return;
+            }
+
+            isRecording = false;
+            recordingStartTime = null;
+
+            if (recordingTimerId) {
+                clearInterval(recordingTimerId);
+                recordingTimerId = null;
+            }
+
+            setRecordingUiState(false);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Finalizing take...';
+            }
+
+            try {
+                mediaRecorder.stop();
+            } catch (error) {
+                reportRecorderIssue('An error occurred while stopping the recording. See console for details.', error);
+            }
+        }
+
+        function ensureRecorderAvailable() {
+            if (mediaRecorder) {
+                return true;
+            }
+
+            reportRecorderIssue('Recording is unavailable because MediaRecorder could not be initialized.');
+            return false;
+        }
+
+        function handleSaveRecording() {
+            if (!recordedChunks.length) {
+                const status = document.getElementById('recordingPreviewStatus');
+                if (status) {
+                    status.textContent = 'Nothing to save yet.';
+                }
+                return;
+            }
+
+            const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : 'audio/webm';
+            const blob = new Blob(recordedChunks, { type: mimeType });
+            const downloadUrl = URL.createObjectURL(blob);
+
+            const timestamp = new Date();
+            const filename = `raw-house-take-${timestamp.getFullYear()}${String(timestamp.getMonth() + 1).padStart(2, '0')}${String(timestamp.getDate()).padStart(2, '0')}-${String(timestamp.getHours()).padStart(2, '0')}${String(timestamp.getMinutes()).padStart(2, '0')}${String(timestamp.getSeconds()).padStart(2, '0')}.webm`;
+
+            const anchor = document.createElement('a');
+            anchor.href = downloadUrl;
+            anchor.download = filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+
+            setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Download started.';
+            }
+        }
+
+        function handleDiscardRecording() {
+            clearRecordingPreview();
+            recordedChunks = [];
+            setRecordTimecode('00:00');
+
+            const status = document.getElementById('recordingPreviewStatus');
+            if (status) {
+                status.textContent = 'Recording discarded.';
+            }
+        }
+
+        // --- Control Handlers ---
+
+        function updateDistortion() {
+            const grit = getSliderValue('gritSlider');
+            document.getElementById('gritValue').textContent = grit;
+            if (distortionNode) {
+                distortionNode.curve = createDistortionCurve(grit); 
+            }
+        }
+        
+        function updateBPMDisplay() {
+            document.getElementById('bpmValue').textContent = getSliderValue('bpmSlider');
+        }
+        
+        function updateDrumVolumeDisplay() {
+            document.getElementById('drumVolumeValue').textContent = getSliderValue('drumVolumeSlider');
+        }
+
+        function updateDrumDecayDisplay() {
+            document.getElementById('drumDecayValue').textContent = getSliderValue('drumDecaySlider');
+        }
+
+
+        // --- Scheduling Logic ---
+
+        function scheduler() {
+            const bpm = getSliderValue('bpmSlider');
+            const secondsPerBeat = 60.0 / bpm; 
+            const secondsPerStep = secondsPerBeat / 4; 
+            const lookAhead = 0.1; 
+            const currentTime = audioContext.currentTime;
+
+            while (nextNoteTime < currentTime + lookAhead) {
+                const time = nextNoteTime;
+                
+                // Play instrument sounds
+                if (sequencer.drumHit.pattern[currentStep] === 1) playDrumHit(time);
+                if (sequencer.clap.pattern[currentStep] === 1) playClap(time);
+                // BASS TRACK REMOVED
+                if (sequencer.hihat.pattern[currentStep] === 1) playHiHat(time, true);
+                if (sequencer.openhat.pattern[currentStep] === 1) playHiHat(time, false);
+                if (sequencer.perc.pattern[currentStep] === 1) playPercussion(time);
+                
+                // Log event for 'Recording' (Conceptual)
+                if (isRecording) {
+                    console.log(`[REC] Step ${currentStep} played at ${time.toFixed(3)}s`);
+                }
+
+                // Visual Update 
+                const visualStep = currentStep;
+                document.querySelectorAll('.step-button').forEach(btn => btn.classList.remove('step-active'));
+                
+                Object.keys(sequencer).forEach(id => {
+                    const btn = document.getElementById(`${id}-step-${visualStep}`);
+                    if (btn) btn.classList.add('step-active');
+                });
+
+                // Advance to the next step
+                nextNoteTime += secondsPerStep;
+                currentStep = (currentStep + 1) % NUM_STEPS;
+            }
+
+            // Loop the scheduler
+            if (isPlaying) {
+                timerID = setTimeout(scheduler, 25.0); 
+            } else {
+                document.querySelectorAll('.step-button').forEach(btn => btn.classList.remove('step-active'));
+            }
+        }
+
+        function togglePlay() {
+            initAudio();
+
+            const button = document.getElementById('togglePlay');
+
+            if (!isPlaying) {
+                // FIX: Ensures audio context resumes correctly before starting the beat.
+                audioContext.resume().then(() => {
+                    isPlaying = true;
+                    currentStep = 0;
+                    // Set nextNoteTime slightly ahead of the current time (increased to 0.1 for stability)
+                    nextNoteTime = audioContext.currentTime + 0.1; 
+                    scheduler();
+                    button.textContent = 'STOP';
+                    button.classList.remove('glow-shadow');
+
+                    if (backTrackSource && backTrackSource.buffer) {
+                        playBackTrack(audioContext.currentTime);
+                    }
+                }).catch(e => console.error("Error resuming audio context:", e));
+
+
+            } else {
+                // STOP
+                isPlaying = false;
+                clearTimeout(timerID);
+                button.textContent = 'START';
+                button.classList.add('glow-shadow');
+
+                stopActiveRecording();
+
+                if (backTrackSource && backTrackSource.source) {
+                    try {
+                        backTrackSource.source.stop();
+                    } catch (e) {
+                        console.error("Backing track already stopped or error:", e);
+                    }
+                    backTrackSource.source = null;
+                }
+            }
+        }
+        
+        function toggleRecord() {
+            initAudio();
+
+            if (!ensureRecorderAvailable()) {
+                return;
+            }
+
+            if (mediaRecorder.state === 'recording') {
+                stopActiveRecording();
+            } else {
+                startRecording();
+            }
+        }
+
+        // --- Backing Track Loading Logic (Omitted for brevity, unchanged) ---
+
+        function calculatePlaybackRate() {
+            const mode = document.querySelector('input[name="backtrackMode"]:checked').value;
+            
+            if (mode === 'original') {
+                return 1.0;
+            }
+
+            // Tempo Sync Mode (Assumes track is a 4-bar loop)
+            if (backTrackSource && backTrackSource.buffer) {
+                const ASSUMED_BARS = 4;
+                const currentBPM = getSliderValue('bpmSlider');
+                const originalDuration = backTrackSource.buffer.duration;
+                const targetDuration = (60 / currentBPM) * 4 * ASSUMED_BARS;
+                
+                const rate = originalDuration / targetDuration;
+                return rate;
+            }
+            return 1.0; 
+        }
+
+        function playBackTrack(time) {
+            if (!backTrackSource || !backTrackSource.buffer) return;
+
+            if (backTrackSource.source) {
+                try { backTrackSource.source.stop(); } catch (e) {}
+            }
+
+            const source = audioContext.createBufferSource();
+            source.buffer = backTrackSource.buffer;
+            source.loop = true; 
+            source.connect(backTrackGain);
+            
+            source.playbackRate.value = calculatePlaybackRate();
+            
+            backTrackSource.source = source; 
+
+            source.start(time);
+        }
+
+        async function loadAudio(audioData, isUrl) {
+            const statusDiv = document.getElementById('backTrackStatus');
+            statusDiv.textContent = isUrl ? "Status: Loading audio from URL..." : "Status: Loading audio from file...";
+            
+            try {
+                let arrayBuffer;
+                
+                if (isUrl) {
+                    const response = await fetch(audioData);
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    arrayBuffer = await response.arrayBuffer();
+                } else {
+                    arrayBuffer = audioData;
+                }
+                
+                initAudio();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                backTrackSource = { buffer: audioBuffer, source: null }; 
+                
+                statusDiv.textContent = `Status: Track loaded (${(audioBuffer.duration).toFixed(1)}s, looped).`;
+                document.getElementById('backtrackLabel').textContent = "Track Loaded (VIOLET)";
+
+            } catch (error) {
+                console.error("Error loading or decoding audio:", error);
+                statusDiv.textContent = `Status: ERROR loading track.`;
+                backTrackSource = null;
+                document.getElementById('backtrackLabel').textContent = "Load Backing Track";
+            }
+        }
+        
+        // --- UI Generation and Setup ---
+
+        function generateTrackUI(id, data) {
+            const container = document.getElementById('sequencerContainer');
+            const trackElement = document.createElement('div');
+            trackElement.className = 'flex flex-col gap-3 mb-4 bg-gray-900/40 border border-gray-700/40 rounded-xl p-3';
+            trackElement.dataset.trackId = id;
+
+            const trackName = data.label || id.toUpperCase();
+
+            trackElement.innerHTML = `
+                <div class="flex flex-wrap items-center gap-2">
+                    <span id="${id}-label" class="text-xs sm:text-sm font-bold text-white track-label text-center rounded-lg py-1 px-3 hover:opacity-80 transition-opacity"
+                          style="background-color: ${data.color};">
+                          ${trackName}
+                    </span>
+                    <div class="flex items-center gap-2 text-[10px] text-gray-400">
+                        <span>MTR</span>
+                        <div class="meter-rail"><div id="${id}MeterFill" class="meter-fill"></div></div>
+                    </div>
+                    <div class="flex flex-wrap gap-2 ml-auto">
+                        <button class="pill-button bg-amber-500 text-gray-900 hover:bg-amber-400" data-track="${id}" data-role="customize">Customize</button>
+                        <button class="pill-button bg-gray-700 text-gray-200 hover:bg-gray-600" data-track="${id}" data-role="copy">Copy</button>
+                        <button class="pill-button bg-gray-700 text-gray-200 hover:bg-gray-600" data-track="${id}" data-role="paste">Paste</button>
+                        <button class="pill-button bg-gray-700 text-gray-200 hover:bg-gray-600" data-track="${id}" data-role="duplicate">Duplicate</button>
+                        <button class="pill-button bg-emerald-500 text-gray-900 hover:bg-emerald-400" data-track="${id}" data-role="save">Save</button>
+                        <button class="pill-button bg-blue-500 text-gray-900 hover:bg-blue-400" data-track="${id}" data-role="export">Export</button>
+                        <button class="pill-button bg-gray-700 text-gray-200 hover:bg-gray-600" data-track="${id}" data-role="import">Import</button>
+                    </div>
+                </div>
+                <input type="file" id="${id}-import-input" class="hidden" accept="application/json" />
+                <div id="${id}Track" class="flex flex-wrap gap-1 sm:gap-2 pl-1 sm:pl-4">
+                </div>
+            `;
+
+            container.appendChild(trackElement);
+
+            const label = document.getElementById(`${id}-label`);
+            if (label) {
+                label.addEventListener('click', (e) => {
+                    sequencer[id].muted = !sequencer[id].muted;
+                    e.target.classList.toggle('track-muted', sequencer[id].muted);
+                });
+            }
+
+            const trackMeter = document.getElementById(`${id}MeterFill`);
+            if (trackMeter) {
+                trackMeters[id] = trackMeter;
+            }
+
+            const importInput = document.getElementById(`${id}-import-input`);
+            if (importInput) {
+                importInput.addEventListener('change', (event) => {
+                    const file = event.target.files?.[0] || null;
+                    handleTrackImportFile(id, file);
+                    event.target.value = '';
+                });
+            }
+
+            trackElement.querySelectorAll('[data-track][data-role]').forEach((button) => {
+                button.addEventListener('click', (event) => {
+                    const role = event.currentTarget.getAttribute('data-role');
+                    switch (role) {
+                        case 'customize':
+                            openCustomizeModal(id);
+                            break;
+                        case 'copy':
+                            copyTrackPattern(id);
+                            break;
+                        case 'paste':
+                            pasteTrackPattern(id);
+                            break;
+                        case 'duplicate':
+                            duplicateTrackPattern(id);
+                            break;
+                        case 'save':
+                            saveTrackToFile(id);
+                            break;
+                        case 'export':
+                            exportTrackToClipboard(id);
+                            break;
+                        case 'import':
+                            if (importInput) {
+                                importInput.click();
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                });
+            });
+
+            const stepContainer = document.getElementById(`${id}Track`);
+            for (let i = 0; i < NUM_STEPS; i++) {
+                const button = document.createElement('button');
+                button.id = `${id}-step-${i}`;
+                button.type = 'button';
+                button.className = 'step-button flex-grow rounded-md transition-colors duration-150 ease-out';
+                button.addEventListener('click', () => handleStepToggle(id, i));
+                stepContainer.appendChild(button);
+                updateStepButton(id, i);
+            }
+        }
+
+        function handleStepToggle(trackId, index) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            const previous = track.pattern[index];
+            const nextValue = previous === 1 ? 0 : 1;
+            track.pattern[index] = nextValue;
+            updateStepButton(trackId, index);
+            recordHistory({ type: 'step', trackId, index, before: previous, after: nextValue });
+        }
+
+        function updateStepButton(trackId, index) {
+            const track = sequencer[trackId];
+            const button = document.getElementById(`${trackId}-step-${index}`);
+            if (!track || !button) return;
+            const isActive = track.pattern[index] === 1;
+            button.style.backgroundColor = isActive ? track.color : 'rgba(107, 114, 128, 0.3)';
+        }
+
+        function refreshTrackSteps(trackId) {
+            for (let i = 0; i < NUM_STEPS; i++) {
+                updateStepButton(trackId, i);
+            }
+        }
+
+        function serializeTrack(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return null;
+            return {
+                id: trackId,
+                label: track.label,
+                pattern: clonePattern(track.pattern),
+                settings: cloneSettings(track.settings),
+                selectedPreset: track.selectedPreset,
+                customSampleUrl: track.customSampleUrl || null,
+                customSampleName: track.customSampleName || null,
+            };
+        }
+
+        function copyTrackPattern(trackId) {
+            const snapshot = serializeTrack(trackId);
+            if (!snapshot) return;
+            historyState.clipboard = snapshot;
+            setProjectStatus(`Copied ${snapshot.label || trackId} configuration.`);
+        }
+
+        function pasteTrackPattern(trackId) {
+            if (!historyState.clipboard) {
+                setProjectStatus('Clipboard is empty. Copy a track first.');
+                return;
+            }
+            const track = sequencer[trackId];
+            if (!track) return;
+
+            const beforePattern = clonePattern(track.pattern);
+            const incomingPattern = clonePattern(historyState.clipboard.pattern || []);
+            for (let i = 0; i < NUM_STEPS; i++) {
+                track.pattern[i] = incomingPattern[i] || 0;
+            }
+            refreshTrackSteps(trackId);
+            recordHistory({ type: 'pattern', trackId, before: beforePattern, after: clonePattern(track.pattern) });
+
+            if (historyState.clipboard.settings) {
+                const beforeSettings = cloneSettings(track.settings);
+                track.settings = { ...track.settings, ...historyState.clipboard.settings };
+                updateTrackGainFromSettings(trackId);
+                recordHistory({ type: 'settings', trackId, before: beforeSettings, after: cloneSettings(track.settings) });
+            }
+
+            if (historyState.clipboard.selectedPreset) {
+                track.selectedPreset = historyState.clipboard.selectedPreset;
+            }
+
+            setProjectStatus(`Pasted pattern onto ${track.label}.`);
+        }
+
+        function duplicateTrackPattern(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            const beforePattern = clonePattern(track.pattern);
+            const half = Math.max(1, Math.floor(NUM_STEPS / 2));
+            const newPattern = new Array(NUM_STEPS).fill(0);
+            for (let i = 0; i < NUM_STEPS; i++) {
+                newPattern[i] = beforePattern[i % half];
+            }
+            track.pattern = newPattern;
+            refreshTrackSteps(trackId);
+            recordHistory({ type: 'pattern', trackId, before: beforePattern, after: clonePattern(newPattern) });
+            setProjectStatus(`Duplicated ${track.label} pattern across the bar.`);
+        }
+
+        function saveTrackToFile(trackId) {
+            const snapshot = serializeTrack(trackId);
+            if (!snapshot) return;
+            const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `${trackId}-track.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
+            setProjectStatus(`Saved ${snapshot.label || trackId} to file.`, true);
+        }
+
+        async function exportTrackToClipboard(trackId) {
+            const snapshot = serializeTrack(trackId);
+            if (!snapshot) return;
+            const payload = JSON.stringify(snapshot, null, 2);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(payload);
+                    setProjectStatus(`Exported ${snapshot.label || trackId} to clipboard.`);
+                    return;
+                } catch (error) {
+                    console.warn('Clipboard export failed, falling back to download.', error);
+                }
+            }
+            setProjectStatus('Clipboard unavailable. Downloading JSON instead.', true);
+            saveTrackToFile(trackId);
+        }
+
+        function handleTrackImportFile(trackId, file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const content = event.target?.result;
+                    const parsed = JSON.parse(content);
+                    const ok = await applyTrackImport(trackId, parsed, true);
+                    if (ok) {
+                        setProjectStatus(`Imported settings for ${sequencer[trackId].label}.`);
+                    }
+                } catch (error) {
+                    console.error('Track import failed', error);
+                    setProjectStatus('Track import failed. Check console.', true);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        async function ensureAudioReady() {
+            initAudio();
+            if (audioContext && audioContext.state === 'suspended') {
+                try {
+                    await audioContext.resume();
+                } catch (error) {
+                    console.warn('Unable to resume audio context.', error);
+                }
+            }
+        }
+
+        async function loadSampleFromFile(file) {
+            await ensureAudioReady();
+            const arrayBuffer = await file.arrayBuffer();
+            return audioContext.decodeAudioData(arrayBuffer);
+        }
+
+        async function loadSampleFromUrl(url) {
+            await ensureAudioReady();
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch audio: ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            return audioContext.decodeAudioData(arrayBuffer);
+        }
+
+        function assignCustomSample(trackId, audioBuffer, options = {}) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            track.customSample = audioBuffer;
+            track.customSampleName = options.name || track.customSampleName || '';
+            track.customSampleUrl = options.url || track.customSampleUrl || '';
+        }
+
+        async function applyTrackImport(trackId, data, captureHistory = false) {
+            const track = sequencer[trackId];
+            if (!track || !data) return false;
+            let success = true;
+
+            if (Array.isArray(data.pattern)) {
+                const beforePattern = clonePattern(track.pattern);
+                for (let i = 0; i < NUM_STEPS; i++) {
+                    track.pattern[i] = data.pattern[i] ? 1 : 0;
+                }
+                refreshTrackSteps(trackId);
+                if (captureHistory) {
+                    recordHistory({ type: 'pattern', trackId, before: beforePattern, after: clonePattern(track.pattern) });
+                }
+            }
+
+            if (data.settings) {
+                const beforeSettings = cloneSettings(track.settings);
+                track.settings = { ...track.settings, ...data.settings };
+                updateTrackGainFromSettings(trackId);
+                if (captureHistory) {
+                    recordHistory({ type: 'settings', trackId, before: beforeSettings, after: cloneSettings(track.settings) });
+                }
+            }
+
+            if (data.selectedPreset) {
+                track.selectedPreset = data.selectedPreset;
+            }
+
+            if (data.customSampleUrl) {
+                try {
+                    const buffer = await loadSampleFromUrl(data.customSampleUrl);
+                    assignCustomSample(trackId, buffer, { url: data.customSampleUrl, name: data.customSampleName || data.customSampleUrl });
+                } catch (error) {
+                    console.warn('Failed to load imported sample. Keeping previous sample.', error);
+                    setProjectStatus('Sample download failed during import. Pattern loaded without sample.', true);
+                    success = false;
+                }
+            } else if (data.customSampleUrl === null) {
+                track.customSample = null;
+                track.customSampleUrl = '';
+                track.customSampleName = '';
+            }
+            return success;
+        }
+
+        function closeCustomizeModal() {
+            const modal = document.getElementById('customizeModal');
+            if (modal) {
+                modal.classList.remove('active');
+            }
+            activeCustomizeTrackId = null;
+            pendingTrackConfig = null;
+        }
+
+        function updateCustomSampleStatus(message, tone = 'info') {
+            const statusEl = document.getElementById('customSampleStatus');
+            if (!statusEl) return;
+            let toneClass = 'text-gray-400';
+            if (tone === 'success') toneClass = 'text-emerald-400';
+            if (tone === 'error') toneClass = 'text-red-400';
+            statusEl.className = `text-[11px] ${toneClass}`;
+            statusEl.textContent = message;
+        }
+
+        function renderCustomizeParameters(track) {
+            const container = document.getElementById('parameterContainer');
+            if (!container || !pendingTrackConfig) return;
+            container.innerHTML = '';
+            (track.parameters || []).forEach((param) => {
+                let value = pendingTrackConfig.settings?.[param.id];
+                if (typeof value !== 'number') {
+                    const currentValue = track.settings?.[param.id];
+                    value = typeof currentValue === 'number' ? currentValue : param.min;
+                    if (!pendingTrackConfig.settings) pendingTrackConfig.settings = {};
+                    pendingTrackConfig.settings[param.id] = value;
+                }
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex flex-col gap-1';
+                wrapper.innerHTML = `
+                    <div class="flex items-center justify-between text-xs text-gray-300">
+                        <span>${param.label}</span>
+                        <span id="param-${param.id}-value">${formatParamValue(param, value)}</span>
+                    </div>
+                    <input type="range" min="${param.min}" max="${param.max}" step="${param.step || 0.01}" value="${value}" data-param="${param.id}" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
+                `;
+                container.appendChild(wrapper);
+            });
+
+            container.querySelectorAll('input[data-param]').forEach((inputEl) => {
+                inputEl.addEventListener('input', (event) => {
+                    const target = event.target;
+                    const paramId = target.getAttribute('data-param');
+                    const paramDef = (track.parameters || []).find((p) => p.id === paramId);
+                    const value = parseFloat(target.value);
+                    if (!pendingTrackConfig.settings) pendingTrackConfig.settings = {};
+                    pendingTrackConfig.settings[paramId] = value;
+                    const labelEl = document.getElementById(`param-${paramId}-value`);
+                    if (labelEl) {
+                        labelEl.textContent = formatParamValue(paramDef, value);
+                    }
+                });
+            });
+        }
+
+        function renderCustomizeModal(track) {
+            if (!pendingTrackConfig) return;
+            const title = document.getElementById('customizeModalTitle');
+            const subtitle = document.getElementById('customizeModalSubtitle');
+            if (title) title.textContent = `${track.label} Controls`;
+            if (subtitle) {
+                const presetLabel = (track.presets || []).find((preset) => preset.id === track.selectedPreset)?.name || track.selectedPreset;
+                subtitle.textContent = track.customSampleName ? `Custom sample: ${track.customSampleName}` : `Preset: ${presetLabel || 'Custom'}`;
+            }
+
+            const presetContainer = document.getElementById('presetContainer');
+            if (presetContainer) {
+                const options = (track.presets || []).map(preset => `<option value="${preset.id}">${preset.name}</option>`).join('');
+                presetContainer.innerHTML = `
+                    <label class="text-xs font-semibold text-gray-300 uppercase">Preset</label>
+                    <select id="customizePresetSelect" class="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded-md p-2 text-sm">
+                        ${options}
+                        <option value="custom">Custom / Manual</option>
+                    </select>
+                `;
+                const selectEl = document.getElementById('customizePresetSelect');
+                const presetId = pendingTrackConfig.presetId || track.selectedPreset || (track.presets?.[0]?.id ?? 'custom');
+                selectEl.value = presetId;
+                selectEl.addEventListener('change', (event) => {
+                    const selected = event.target.value;
+                    pendingTrackConfig.presetId = selected;
+                    if (selected !== 'custom') {
+                        const presetDef = (track.presets || []).find((p) => p.id === selected);
+                        if (presetDef?.settings) {
+                            pendingTrackConfig.settings = { ...pendingTrackConfig.settings, ...presetDef.settings };
+                        }
+                    }
+                    renderCustomizeParameters(track);
+                });
+            }
+
+            const urlInput = document.getElementById('customSampleUrl');
+            const fileInput = document.getElementById('customSampleFile');
+            if (urlInput) {
+                urlInput.value = pendingTrackConfig.customSampleUrl || '';
+                urlInput.onchange = () => {
+                    pendingTrackConfig.customSampleUrl = urlInput.value.trim();
+                    pendingTrackConfig.sampleDirty = true;
+                    if (pendingTrackConfig.customSampleUrl) {
+                        pendingTrackConfig.presetId = 'custom';
+                        updateCustomSampleStatus('Sample will be fetched when you apply.', 'info');
+                    } else {
+                        updateCustomSampleStatus('Custom sample cleared. Existing sample will be removed on apply.');
+                    }
+                };
+            }
+            if (fileInput) {
+                fileInput.value = '';
+                fileInput.onchange = async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                        const buffer = await loadSampleFromFile(file);
+                        pendingTrackConfig.customSample = buffer;
+                        pendingTrackConfig.customSampleName = file.name;
+                        pendingTrackConfig.customSampleUrl = '';
+                        pendingTrackConfig.presetId = 'custom';
+                        pendingTrackConfig.sampleDirty = false;
+                        updateCustomSampleStatus(`Loaded ${file.name}`, 'success');
+                    } catch (error) {
+                        console.error('Failed to load sample from file', error);
+                        updateCustomSampleStatus('Unable to read audio file.', 'error');
+                    }
+                };
+            }
+
+            updateCustomSampleStatus(pendingTrackConfig.customSampleName ? `Active sample: ${pendingTrackConfig.customSampleName}` : 'No custom sample loaded.');
+            renderCustomizeParameters(track);
+        }
+
+        function openCustomizeModal(trackId) {
+            const track = sequencer[trackId];
+            if (!track) return;
+            activeCustomizeTrackId = trackId;
+            pendingTrackConfig = {
+                presetId: track.selectedPreset,
+                settings: cloneSettings(track.settings),
+                customSample: track.customSample,
+                customSampleName: track.customSampleName,
+                customSampleUrl: track.customSampleUrl,
+                sampleDirty: false,
+            };
+            renderCustomizeModal(track);
+            const modal = document.getElementById('customizeModal');
+            if (modal) {
+                modal.classList.add('active');
+            }
+        }
+
+        async function applyCustomizeChanges() {
+            if (!activeCustomizeTrackId || !pendingTrackConfig) {
+                closeCustomizeModal();
+                return;
+            }
+            const trackId = activeCustomizeTrackId;
+            const track = sequencer[trackId];
+            if (!track) {
+                closeCustomizeModal();
+                return;
+            }
+
+            const beforeSettings = cloneSettings(track.settings);
+            const previousPreset = track.selectedPreset;
+            track.settings = { ...track.settings, ...pendingTrackConfig.settings };
+            updateTrackGainFromSettings(trackId);
+            const afterSettings = cloneSettings(track.settings);
+            const newPresetId = pendingTrackConfig.presetId || previousPreset;
+            track.selectedPreset = newPresetId;
+            recordHistory({ type: 'settings', trackId, before: beforeSettings, after: afterSettings, presetBefore: previousPreset, presetAfter: newPresetId });
+
+            if (pendingTrackConfig.sampleDirty && pendingTrackConfig.customSampleUrl) {
+                try {
+                    const buffer = await loadSampleFromUrl(pendingTrackConfig.customSampleUrl);
+                    pendingTrackConfig.customSample = buffer;
+                    pendingTrackConfig.customSampleName = pendingTrackConfig.customSampleUrl.split('/').pop();
+                    pendingTrackConfig.sampleDirty = false;
+                    updateCustomSampleStatus('Custom sample downloaded.', 'success');
+                } catch (error) {
+                    console.error('Unable to download custom sample', error);
+                    updateCustomSampleStatus('Failed to load custom sample from URL.', 'error');
+                    setProjectStatus('Failed to load custom sample from URL. Previous sample preserved.', true);
+                }
+            }
+
+            if (pendingTrackConfig.customSample) {
+                assignCustomSample(trackId, pendingTrackConfig.customSample, {
+                    name: pendingTrackConfig.customSampleName,
+                    url: pendingTrackConfig.customSampleUrl,
+                });
+            } else if (!pendingTrackConfig.customSampleUrl) {
+                track.customSample = null;
+                track.customSampleName = '';
+                track.customSampleUrl = '';
+            }
+
+            closeCustomizeModal();
+            setProjectStatus(`Applied new settings to ${track.label}.`);
+        }
+
+        function resetCustomizeConfig() {
+            if (!activeCustomizeTrackId || !pendingTrackConfig) return;
+            const track = sequencer[activeCustomizeTrackId];
+            if (!track) return;
+            const defaultPreset = (track.presets || [])[0];
+            pendingTrackConfig.presetId = defaultPreset ? defaultPreset.id : 'custom';
+            pendingTrackConfig.settings = defaultPreset?.settings ? { ...track.settings, ...defaultPreset.settings } : cloneSettings(track.settings);
+            if (track.settings?.volume && !pendingTrackConfig.settings.volume) {
+                pendingTrackConfig.settings.volume = track.settings.volume;
+            }
+            pendingTrackConfig.customSample = null;
+            pendingTrackConfig.customSampleName = '';
+            pendingTrackConfig.customSampleUrl = '';
+            pendingTrackConfig.sampleDirty = false;
+            renderCustomizeModal(track);
+            updateCustomSampleStatus('Reset to factory defaults.');
+        }
+
+        function serializeProject() {
+            const tracks = {};
+            Object.keys(sequencer).forEach((id) => {
+                tracks[id] = serializeTrack(id);
+            });
+            return {
+                version: '1.0',
+                createdAt: new Date().toISOString(),
+                tracks,
+            };
+        }
+
+        function saveProjectToFile() {
+            const snapshot = serializeProject();
+            const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `raw-house-project-${Date.now()}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
+            setProjectStatus('Project saved to disk.', true);
+        }
+
+        async function exportProjectToClipboard() {
+            const snapshot = serializeProject();
+            const payload = JSON.stringify(snapshot, null, 2);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(payload);
+                    setProjectStatus('Project exported to clipboard.');
+                    return;
+                } catch (error) {
+                    console.warn('Project clipboard export failed', error);
+                }
+            }
+            setProjectStatus('Clipboard unavailable. Downloading JSON instead.', true);
+            saveProjectToFile();
+        }
+
+        async function applyProjectImport(data) {
+            if (!data || !data.tracks) return;
+            const entries = Object.entries(data.tracks);
+            let hadWarnings = false;
+            for (const [trackId, trackData] of entries) {
+                if (sequencer[trackId]) {
+                    const ok = await applyTrackImport(trackId, trackData, true);
+                    if (!ok) {
+                        hadWarnings = true;
+                    }
+                }
+            }
+            if (hadWarnings) {
+                setProjectStatus('Project imported with warnings. See console for details.', true);
+            } else {
+                setProjectStatus('Project imported successfully.');
+            }
+        }
+
+        function handleProjectImport(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const parsed = JSON.parse(event.target?.result);
+                    await applyProjectImport(parsed);
+                } catch (error) {
+                    console.error('Project import failed', error);
+                    setProjectStatus('Project import failed. Check console.', true);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+
+        window.onload = function() {
+            // 1. Generate Track UIs Dynamically
+            Object.keys(sequencer).forEach(id => {
+                generateTrackUI(id, sequencer[id]);
+            });
+
+            startMeterLoop();
+            updateHistoryButtons();
+
+            // 2. Setup Main Controls
+            document.getElementById('togglePlay').addEventListener('click', togglePlay);
+            document.getElementById('toggleRecord').addEventListener('click', toggleRecord);
+
+            document.getElementById('saveRecording').addEventListener('click', handleSaveRecording);
+            document.getElementById('discardRecording').addEventListener('click', handleDiscardRecording);
+
+            const undoBtn = document.getElementById('undoAction');
+            const redoBtn = document.getElementById('redoAction');
+            if (undoBtn) undoBtn.addEventListener('click', undoLastAction);
+            if (redoBtn) redoBtn.addEventListener('click', redoLastAction);
+
+            // BPM Slider Control
+            document.getElementById('bpmSlider').addEventListener('input', () => {
+                updateBPMDisplay();
+                if (isPlaying && backTrackSource && backTrackSource.source) {
+                    backTrackSource.source.playbackRate.value = calculatePlaybackRate();
+                }
+            });
+
+            // Global Drum Volume Control
+            document.getElementById('drumVolumeSlider').addEventListener('input', () => {
+                updateDrumVolumeDisplay();
+                Object.keys(sequencer).forEach(id => updateTrackGainFromSettings(id));
+            });
+
+            // Global Drum Decay Control
+            document.getElementById('drumDecaySlider').addEventListener('input', updateDrumDecayDisplay);
+
+            // Grit Slider Control
+            document.getElementById('gritSlider').addEventListener('input', updateDistortion);
+            
+            // 3. Backing Track Panel Toggle
+            const backtrackPanel = document.getElementById('backtrackPanel');
+            document.getElementById('toggleBacktrackPanel').addEventListener('click', () => {
+                backtrackPanel.classList.toggle('hidden');
+            });
+
+            // 4. Backing Track Loaders (Listeners unchanged)
+            document.getElementById('audioUrlInput').addEventListener('change', (e) => {
+                const url = e.target.value.trim();
+                if (url) {
+                    if (isPlaying) togglePlay();
+                    loadAudio(url, true);
+                    document.getElementById('audioFileInput').value = '';
+                }
+            });
+
+            document.getElementById('audioFileInput').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    if (isPlaying) togglePlay();
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        loadAudio(event.target.result, false);
+                    };
+                    reader.readAsArrayBuffer(file);
+                    document.getElementById('audioUrlInput').value = '';
+                }
+            });
+
+            // 5. Sync Mode Listeners 
+            document.querySelectorAll('input[name="backtrackMode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    if (isPlaying && backTrackSource && backTrackSource.source) {
+                        backTrackSource.source.playbackRate.value = calculatePlaybackRate();
+                    }
+                });
+            });
+            
+            // Initial setup
+            updateDistortion(); 
+            updateBPMDisplay();
+            updateDrumVolumeDisplay();
+            updateDrumDecayDisplay();
+
+            // Initialize audio context on first user interaction with a click listener
+            document.body.addEventListener('click', initAudio, { once: true });
+
+            const saveProjectBtn = document.getElementById('saveProject');
+            const exportProjectBtn = document.getElementById('exportProject');
+            const importProjectBtn = document.getElementById('importProject');
+            const importProjectInput = document.getElementById('importProjectInput');
+            if (saveProjectBtn) saveProjectBtn.addEventListener('click', saveProjectToFile);
+            if (exportProjectBtn) exportProjectBtn.addEventListener('click', exportProjectToClipboard);
+            if (importProjectBtn && importProjectInput) {
+                importProjectBtn.addEventListener('click', () => importProjectInput.click());
+                importProjectInput.addEventListener('change', (event) => {
+                    handleProjectImport(event.target.files?.[0] || null);
+                    event.target.value = '';
+                });
+            }
+
+            const closeModalBtn = document.getElementById('closeCustomizeModal');
+            const applyModalBtn = document.getElementById('applyTrackConfig');
+            const resetModalBtn = document.getElementById('resetTrackConfig');
+            if (closeModalBtn) closeModalBtn.addEventListener('click', closeCustomizeModal);
+            if (resetModalBtn) resetModalBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                resetCustomizeConfig();
+            });
+            if (applyModalBtn) applyModalBtn.addEventListener('click', async (event) => {
+                event.preventDefault();
+                await applyCustomizeChanges();
+            });
+        };
+    </script>
+</body>
+</html>
+
