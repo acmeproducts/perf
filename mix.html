@@ -103,9 +103,12 @@
                     <button id="toggleRecord" class="px-3 py-2 font-bold rounded-full text-white bg-red-600 hover:bg-red-700 transition-colors text-xs">
                         <span id="recordIcon">REC</span>
                     </button>
-                    <div class="flex items-center gap-2 text-[10px] sm:text-xs text-gray-300 font-mono">
-                        <span id="recordLed" class="block w-2.5 h-2.5 rounded-full bg-gray-500"></span>
-                        <span id="recordTimecode">00:00</span>
+                    <div class="flex flex-col text-[10px] sm:text-xs text-gray-300 font-mono leading-tight">
+                        <div class="flex items-center gap-2">
+                            <span id="recordLed" class="block w-2.5 h-2.5 rounded-full bg-gray-500"></span>
+                            <span id="recordStatusLabel" class="uppercase tracking-wide">Standby</span>
+                        </div>
+                        <span id="recordTimecode" class="text-xs sm:text-sm">00:00</span>
                     </div>
                 </div>
             </div>
@@ -223,6 +226,9 @@
         let recorderWarningShown = false;
         let recorderSupportLogged = false;
 
+        const customSampleCache = new Map();
+        const customSampleLoads = new Map();
+
         // --- Audio Nodes ---
         let masterGainNode;
         let distortionNode;
@@ -258,6 +264,129 @@
         };
 
         // --- Utility Functions ---
+
+        function ensureTrackSampleState(track) {
+            if (!track) return;
+            if (!track.sample) {
+                track.sample = {
+                    mode: 'preset',
+                    presetId: null,
+                    fileName: null,
+                    url: null,
+                    audioBuffer: null,
+                };
+            } else {
+                track.sample.mode = track.sample.mode || 'preset';
+                track.sample.presetId = track.sample.presetId || null;
+                track.sample.fileName = track.sample.fileName || null;
+                track.sample.url = track.sample.url || null;
+                track.sample.audioBuffer = track.sample.audioBuffer || null;
+            }
+        }
+
+        async function fetchSampleBuffer(url) {
+            if (!url) {
+                throw new Error('Sample URL missing.');
+            }
+
+            if (customSampleCache.has(url)) {
+                return customSampleCache.get(url);
+            }
+
+            if (customSampleLoads.has(url)) {
+                return customSampleLoads.get(url);
+            }
+
+            initAudio();
+
+            if (!audioContext) {
+                throw new Error('Audio context unavailable while restoring custom sample.');
+            }
+
+            const pendingLoad = fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status} while fetching sample.`);
+                    }
+                    return response.arrayBuffer();
+                })
+                .then(arrayBuffer => audioContext.decodeAudioData(arrayBuffer.slice(0)))
+                .then(decoded => {
+                    customSampleCache.set(url, decoded);
+                    customSampleLoads.delete(url);
+                    return decoded;
+                })
+                .catch(error => {
+                    customSampleLoads.delete(url);
+                    throw error;
+                });
+
+            customSampleLoads.set(url, pendingLoad);
+            return pendingLoad;
+        }
+
+        function applyTrackSnapshot(trackId, snapshot) {
+            const track = sequencer[trackId];
+            if (!track || !snapshot) return Promise.resolve();
+
+            if (Array.isArray(snapshot.pattern)) {
+                for (let i = 0; i < NUM_STEPS; i++) {
+                    track.pattern[i] = snapshot.pattern[i] ? 1 : 0;
+                }
+            }
+
+            if (typeof snapshot.gain === 'number') {
+                track.gain = snapshot.gain;
+            }
+
+            if (typeof snapshot.decay === 'number') {
+                track.decay = snapshot.decay;
+            }
+
+            if (snapshot.params && track.params) {
+                track.params.value = snapshot.params.value ?? track.params.value;
+            }
+
+            if (!snapshot.sample) {
+                return Promise.resolve();
+            }
+
+            ensureTrackSampleState(track);
+
+            if (snapshot.sample.presetId) {
+                track.sample.presetId = snapshot.sample.presetId;
+            }
+
+            if (snapshot.sample.mode === 'custom' && snapshot.sample.url) {
+                track.sample.mode = 'custom';
+                track.sample.fileName = snapshot.sample.fileName || null;
+                track.sample.url = snapshot.sample.url;
+                track.sample.audioBuffer = null;
+
+                return fetchSampleBuffer(snapshot.sample.url)
+                    .then(buffer => {
+                        track.sample.audioBuffer = buffer;
+                        return true;
+                    })
+                    .catch(error => {
+                        console.warn(`Failed to restore custom sample for ${trackId}. Falling back to preset.`, error);
+                        track.sample.mode = 'preset';
+                        track.sample.fileName = null;
+                        track.sample.url = null;
+                        track.sample.audioBuffer = null;
+                        return false;
+                    });
+            }
+
+            track.sample.mode = 'preset';
+            track.sample.fileName = null;
+            track.sample.url = null;
+            track.sample.audioBuffer = null;
+
+            return Promise.resolve();
+        }
+
+        window.applyTrackSnapshot = applyTrackSnapshot;
 
         function midiToFreq(midiNote) {
             return 440 * Math.pow(2, (midiNote - 69) / 12);
@@ -547,6 +676,7 @@
                     status.textContent = 'Recording unavailable in this browser.';
                 }
                 setRecordTimecode('No REC');
+                setRecordStatusLabel('Unavailable');
                 return;
             }
 
@@ -566,6 +696,13 @@
             const timeEl = document.getElementById('recordTimecode');
             if (timeEl) {
                 timeEl.textContent = value;
+            }
+        }
+
+        function setRecordStatusLabel(value) {
+            const statusEl = document.getElementById('recordStatusLabel');
+            if (statusEl) {
+                statusEl.textContent = value;
             }
         }
 
@@ -591,6 +728,7 @@
 
             if (active) {
                 recordButton.classList.add('recording-active');
+                setRecordStatusLabel('Recording');
                 if (recordIcon) recordIcon.textContent = 'STOP';
                 if (led) {
                     led.classList.remove('bg-gray-500');
@@ -603,6 +741,7 @@
                     led.classList.remove('bg-red-500');
                     led.classList.add('bg-gray-500');
                 }
+                setRecordStatusLabel('Standby');
             }
         }
 
@@ -629,6 +768,9 @@
                 URL.revokeObjectURL(recordingPreviewUrl);
                 recordingPreviewUrl = null;
             }
+
+            setRecordTimecode('00:00');
+            setRecordStatusLabel('Standby');
         }
 
         function reportRecorderIssue(message, error) {
@@ -642,6 +784,7 @@
                 status.textContent = message;
             }
             setRecordTimecode('No REC');
+            setRecordStatusLabel('Unavailable');
             if (!recorderWarningShown) {
                 if (typeof alert === 'function') {
                     alert(message);
@@ -672,6 +815,7 @@
                     status.textContent = 'No audio captured.';
                 }
                 setRecordTimecode('00:00');
+                setRecordStatusLabel('Standby');
                 return;
             }
 
@@ -701,53 +845,7 @@
             }
 
             setRecordTimecode('00:00');
-        }
-
-        function startRecording() {
-            if (!mediaRecorder) {
-                reportRecorderIssue('Recording is unavailable because MediaRecorder could not be initialized.');
-                return;
-            }
-
-            recordingStartTime = Date.now();
-            setRecordTimecode('00:00');
-            setRecordingUiState(true);
-
-            const status = document.getElementById('recordingPreviewStatus');
-            const previousStatusText = status ? status.textContent : '';
-            if (status) {
-                status.textContent = 'Recording...';
-            }
-
-            const resumePromise = audioContext ? audioContext.resume() : Promise.resolve();
-            resumePromise.catch((error) => {
-                console.warn('Unable to resume audio context before recording start.', error);
-            }).finally(() => {
-                try {
-                    mediaRecorder.start();
-                    clearRecordingPreview();
-                    recordedChunks = [];
-                    if (status) {
-                        status.textContent = 'Recording...';
-                    }
-                    isRecording = true;
-                    updateRecordingTimecode();
-                    if (recordingTimerId) clearInterval(recordingTimerId);
-                    recordingTimerId = setInterval(updateRecordingTimecode, 250);
-                } catch (error) {
-                    isRecording = false;
-                    recordingStartTime = null;
-                    if (recordingTimerId) {
-                        clearInterval(recordingTimerId);
-                        recordingTimerId = null;
-                    }
-                    setRecordingUiState(false);
-                    reportRecorderIssue('Recording could not be started. See console for details.', error);
-                    if (status) {
-                        status.textContent = previousStatusText;
-                    }
-                }
-            });
+            setRecordStatusLabel('Preview');
         }
 
         function stopActiveRecording() {
@@ -764,6 +862,7 @@
             }
 
             setRecordingUiState(false);
+            setRecordStatusLabel('Finalizing');
 
             const status = document.getElementById('recordingPreviewStatus');
             if (status) {
@@ -787,6 +886,10 @@
         }
 
         function handleSaveRecording() {
+            if (!ensureRecorderAvailable()) {
+                return;
+            }
+
             if (!recordedChunks.length) {
                 const status = document.getElementById('recordingPreviewStatus');
                 if (status) {
@@ -820,7 +923,6 @@
         function handleDiscardRecording() {
             clearRecordingPreview();
             recordedChunks = [];
-            setRecordTimecode('00:00');
 
             const status = document.getElementById('recordingPreviewStatus');
             if (status) {
@@ -947,11 +1049,49 @@
                 return;
             }
 
+            const status = document.getElementById('recordingPreviewStatus');
+
             if (mediaRecorder.state === 'recording') {
                 stopActiveRecording();
-            } else {
-                startRecording();
+                return;
             }
+
+            clearRecordingPreview();
+            recordedChunks = [];
+
+            if (status) {
+                status.textContent = 'Arming recorder...';
+            }
+
+            setRecordStatusLabel('Arming');
+
+            const resumePromise = audioContext ? audioContext.resume() : Promise.resolve();
+            resumePromise.catch((error) => {
+                console.warn('Unable to resume audio context before recording start.', error);
+            }).finally(() => {
+                try {
+                    mediaRecorder.start();
+                    recordingStartTime = Date.now();
+                    isRecording = true;
+                    setRecordingUiState(true);
+                    setRecordTimecode('00:00');
+                    updateRecordingTimecode();
+                    if (recordingTimerId) clearInterval(recordingTimerId);
+                    recordingTimerId = setInterval(updateRecordingTimecode, 250);
+                    if (status) {
+                        status.textContent = 'Recording...';
+                    }
+                } catch (error) {
+                    isRecording = false;
+                    recordingStartTime = null;
+                    if (recordingTimerId) {
+                        clearInterval(recordingTimerId);
+                        recordingTimerId = null;
+                    }
+                    setRecordingUiState(false);
+                    reportRecorderIssue('Recording could not be started. See console for details.', error);
+                }
+            });
         }
 
         // --- Backing Track Loading Logic (Omitted for brevity, unchanged) ---
@@ -1188,6 +1328,7 @@
             if(drumHitSelect) {
                 drumHitSelect.value = 'deepKick'; // Defaulting to the KICK sound
             }
+
         };
     </script>
 </body>
