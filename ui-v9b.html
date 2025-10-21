@@ -3414,6 +3414,7 @@
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
+                this.folderImageCountCache = new Map();
                 this.loadStoredCredentials();
             }
             normalizeDriveFileMetadata(file, options = {}) {
@@ -3562,7 +3563,7 @@
                     nextPageToken = response.nextPageToken;
                 } while (nextPageToken);
 
-                return allFolders.map(folder => ({
+                const normalized = allFolders.map(folder => ({
                     id: folder.id,
                     name: folder.name,
                     type: 'folder',
@@ -3571,6 +3572,71 @@
                     itemCount: 0, // Google Drive API doesn't provide this in the list call
                     hasChildren: false // Assume false to not show a non-functional 'Browse' button
                 }));
+
+                return await this.annotateFoldersWithImageCounts(normalized);
+            }
+            async annotateFoldersWithImageCounts(folders = []) {
+                if (!Array.isArray(folders) || folders.length === 0) {
+                    return Array.isArray(folders) ? folders.slice() : [];
+                }
+
+                const results = folders.map(folder => ({ ...folder }));
+                let index = 0;
+                const maxConcurrency = Math.min(4, folders.length);
+                const workers = Array.from({ length: maxConcurrency }, () => (async () => {
+                    while (index < folders.length) {
+                        const currentIndex = index++;
+                        const sourceFolder = folders[currentIndex];
+                        const targetFolder = results[currentIndex];
+                        if (!sourceFolder || !sourceFolder.id) {
+                            continue;
+                        }
+
+                        try {
+                            const imageCount = await this.getImageCountForFolder(sourceFolder.id);
+                            targetFolder.imageCount = imageCount;
+                            targetFolder.itemCount = imageCount;
+                        } catch (error) {
+                            console.warn(`Failed to load image count for folder ${sourceFolder.id}:`, error);
+                        }
+                    }
+                })());
+
+                await Promise.all(workers);
+                return results;
+            }
+            async getImageCountForFolder(folderId) {
+                if (!folderId) { return 0; }
+                if (this.folderImageCountCache.has(folderId)) {
+                    return this.folderImageCountCache.get(folderId);
+                }
+
+                let count = 0;
+                let nextPageToken = null;
+                const baseQuery = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
+
+                do {
+                    let url = `/files?q=${encodeURIComponent(baseQuery)}&fields=files(mimeType,shortcutDetails(targetMimeType)),nextPageToken&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                    if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
+
+                    const response = await this.makeApiCall(url);
+                    const files = Array.isArray(response.files) ? response.files : [];
+
+                    files.forEach(file => {
+                        if (file?.mimeType?.startsWith('image/')) {
+                            count += 1;
+                            return;
+                        }
+                        if (file?.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails?.targetMimeType?.startsWith('image/')) {
+                            count += 1;
+                        }
+                    });
+
+                    nextPageToken = response.nextPageToken || null;
+                } while (nextPageToken);
+
+                this.folderImageCountCache.set(folderId, count);
+                return count;
             }
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = [];
@@ -6540,20 +6606,14 @@ this.updateImageCounters();
                     const div = document.createElement('div');
                     div.className = 'folder-item';
 
-                    let dateInfo = new Date(folder.modifiedTime).toLocaleDateString();
-                    if (folder.itemCount > 0) {
-                         dateInfo += ` • ${folder.itemCount} items`;
-                    }
-                    if (folder.hasChildren) {
-                        dateInfo += ` • Has subfolders`;
-                    }
+                    const metaInfo = this.formatFolderMeta(folder);
 
                     const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
 
                     div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                                      <div class="folder-info">
                                          <div class="folder-name">${folder.name}</div>
-                                         <div class="folder-date">${dateInfo}</div>
+                                         <div class="folder-date">${metaInfo}</div>
                                      </div>
                                      <div class="folder-actions">
                                          ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
@@ -6678,9 +6738,9 @@ this.updateImageCounters();
 
             formatFolderMeta(folder) {
                 const parts = [];
-                const itemCountRaw = folder?.itemCount;
+                const itemCountRaw = folder?.imageCount ?? folder?.itemCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
-                if (!Number.isNaN(itemCount) && Number.isFinite(itemCount)) {
+                if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     const label = itemCount === 1 ? 'image' : 'images';
                     parts.push(`${itemCount} ${label}`);
                 }
