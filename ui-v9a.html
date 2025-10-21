@@ -128,6 +128,78 @@
         .status.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
         .status.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
 .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
+.last-folder-banner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.05);
+    color: white;
+    margin-bottom: 16px;
+}
+.last-folder-banner.hidden { display: none; }
+.last-folder-link {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+}
+.last-folder-link:hover { text-decoration: underline; }
+.last-folder-meta {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+}
+.omni-search-container {
+    position: relative;
+    width: 100%;
+    margin-bottom: 16px;
+}
+.omni-search-container.hidden { display: none; }
+.omni-search-input {
+    width: 100%;
+}
+.omni-search-results {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: rgba(17, 24, 39, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+    z-index: 20;
+}
+.omni-search-results.hidden { display: none; }
+.omni-search-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 12px 14px;
+    background: transparent;
+    border: none;
+    color: white;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+}
+.omni-search-item:hover,
+.omni-search-item:focus {
+    background: rgba(245, 158, 11, 0.15);
+    outline: none;
+}
+.omni-search-name {
+    font-weight: 600;
+    font-size: 14px;
+}
+.omni-search-meta {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.65);
+}
         .folder-item {
             display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px;
             background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
@@ -750,6 +822,15 @@
         <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
             <h2 class="title" id="folder-title">Select Folder</h2>
             <div class="subtitle" id="folder-subtitle">Choose a folder containing images</div>
+            <div class="last-folder-banner hidden" id="last-folder-banner">
+                <span>Last folder:</span>
+                <a class="last-folder-link" id="last-folder-link" href="#"></a>
+                <span class="last-folder-meta" id="last-folder-meta"></span>
+            </div>
+            <div class="omni-search-container hidden" id="folder-search-container">
+                <input type="text" class="input omni-search-input" id="folder-search-input" placeholder="Search folders..." autocomplete="off">
+                <div class="omni-search-results hidden" id="folder-search-results" role="listbox"></div>
+            </div>
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-actions">
                 <button class="folder-button" id="folder-refresh-button">Refresh</button>
@@ -1022,6 +1103,21 @@
         
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
+        const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const loadLastFolderFromStorage = () => {
+            try {
+                const raw = localStorage.getItem(LAST_FOLDER_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.folderId && parsed.providerType) {
+                    return parsed;
+                }
+            } catch (error) {
+                console.warn('Failed to load last folder from storage:', error);
+            }
+            return null;
+        };
+        const OMNI_SEARCH_RESULT_LIMIT = 8;
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
@@ -1039,7 +1135,10 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             pendingBackgroundProbe: null,
-            showDebugToasts: true
+            showDebugToasts: true,
+            lastPickedFolder: loadLastFolderFromStorage(),
+            folderSearchDataset: [],
+            folderSearchTerm: ''
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -1160,6 +1259,12 @@
 
                     folderTitle: document.getElementById('folder-title'),
                     folderSubtitle: document.getElementById('folder-subtitle'),
+                    lastFolderBanner: document.getElementById('last-folder-banner'),
+                    lastFolderLink: document.getElementById('last-folder-link'),
+                    lastFolderMeta: document.getElementById('last-folder-meta'),
+                    folderSearchContainer: document.getElementById('folder-search-container'),
+                    folderSearchInput: document.getElementById('folder-search-input'),
+                    folderSearchResults: document.getElementById('folder-search-results'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
@@ -4648,6 +4753,41 @@
             },
             switchToCommonUI() {
                 Utils.showScreen('app-container');
+                this.persistLastPickedFolder();
+            },
+            persistLastPickedFolder() {
+                if (!state.currentFolder?.id || !state.providerType) {
+                    return;
+                }
+                const files = Array.isArray(state.imageFiles) ? state.imageFiles : [];
+                const fileCount = files.length;
+                let latestTimestamp = null;
+                for (const file of files) {
+                    const candidate = file?.modifiedTime || file?.createdTime || null;
+                    if (!candidate) continue;
+                    const parsed = Date.parse(candidate);
+                    if (Number.isNaN(parsed)) continue;
+                    if (latestTimestamp == null || parsed > latestTimestamp) {
+                        latestTimestamp = parsed;
+                    }
+                }
+                if (latestTimestamp == null) {
+                    latestTimestamp = Date.now();
+                }
+                const payload = {
+                    providerType: state.providerType,
+                    folderId: state.currentFolder.id,
+                    folderName: state.currentFolder.name || '',
+                    fileCount,
+                    lastUpdated: new Date(latestTimestamp).toISOString()
+                };
+                state.lastPickedFolder = payload;
+                try {
+                    localStorage.setItem(LAST_FOLDER_STORAGE_KEY, JSON.stringify(payload));
+                } catch (error) {
+                    console.warn('Failed to persist last folder:', error);
+                }
+                Folders.updateLastFolderBanner();
             },
             async returnToFolderSelection() {
                 if (state.isReturningToFolders) return;
@@ -6444,6 +6584,9 @@ this.updateImageCounters();
                 const { folderList, folderTitle } = Utils.elements;
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
                 folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
+                this.updateLastFolderBanner();
+                this.resetSearch();
+                this.setSearchDataset([]);
                 try {
                     const folders = await state.provider.getFolders();
                     this.display(folders);
@@ -6460,9 +6603,12 @@ this.updateImageCounters();
 
             display(folders) {
                 const { folderList } = Utils.elements;
+                this.setSearchDataset(folders);
+                this.resetSearch({ keepInput: false });
                 folderList.innerHTML = '';
                 if (!folders || folders.length === 0) {
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
+                    this.handleSearchInput('');
                     return;
                 }
 
@@ -6493,6 +6639,7 @@ this.updateImageCounters();
                 });
 
                 this.addEventListeners();
+                this.handleSearchInput(state.folderSearchTerm || '');
             },
 
             addEventListeners() {
@@ -6520,6 +6667,186 @@ this.updateImageCounters();
                         }
                     });
                 });
+            },
+
+            setSearchDataset(folders = []) {
+                state.folderSearchDataset = Array.isArray(folders) ? folders.slice() : [];
+                this.refreshSearchVisibility();
+            },
+
+            refreshSearchVisibility() {
+                const { folderSearchContainer } = Utils.elements;
+                if (!folderSearchContainer) return;
+                const hasFolders = Array.isArray(state.folderSearchDataset) && state.folderSearchDataset.length > 0;
+                folderSearchContainer.classList.toggle('hidden', !hasFolders);
+            },
+
+            resetSearch(options = {}) {
+                const { keepInput = false } = options;
+                const { folderSearchInput, folderSearchResults } = Utils.elements;
+                if (!keepInput && folderSearchInput) {
+                    folderSearchInput.value = '';
+                }
+                state.folderSearchTerm = keepInput && folderSearchInput ? folderSearchInput.value : '';
+                if (folderSearchResults) {
+                    folderSearchResults.innerHTML = '';
+                    folderSearchResults.classList.add('hidden');
+                }
+            },
+
+            handleSearchInput(term = '') {
+                const { folderSearchResults } = Utils.elements;
+                if (!folderSearchResults) return;
+                state.folderSearchTerm = term;
+                const query = term.trim().toLowerCase();
+                if (!query) {
+                    folderSearchResults.innerHTML = '';
+                    folderSearchResults.classList.add('hidden');
+                    return;
+                }
+
+                const matches = (state.folderSearchDataset || []).filter(folder => {
+                    if (!folder || !folder.name) return false;
+                    return folder.name.toLowerCase().includes(query);
+                });
+
+                this.renderSearchResults(matches.slice(0, OMNI_SEARCH_RESULT_LIMIT));
+            },
+
+            renderSearchResults(folders = []) {
+                const { folderSearchResults } = Utils.elements;
+                if (!folderSearchResults) return;
+                folderSearchResults.innerHTML = '';
+                if (!folders || folders.length === 0) {
+                    folderSearchResults.classList.add('hidden');
+                    return;
+                }
+
+                folders.forEach(folder => {
+                    if (!folder) return;
+                    const item = document.createElement('button');
+                    item.type = 'button';
+                    item.className = 'omni-search-item';
+                    item.dataset.folderId = folder.id || '';
+                    item.dataset.folderName = folder.name || '';
+
+                    const name = document.createElement('div');
+                    name.className = 'omni-search-name';
+                    name.textContent = folder.name || 'Untitled folder';
+
+                    const meta = document.createElement('div');
+                    meta.className = 'omni-search-meta';
+                    meta.textContent = this.formatFolderMeta(folder);
+
+                    item.appendChild(name);
+                    item.appendChild(meta);
+
+                    item.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        this.handleSearchSelection(folder);
+                    });
+
+                    folderSearchResults.appendChild(item);
+                });
+
+                folderSearchResults.classList.remove('hidden');
+            },
+
+            formatFolderMeta(folder) {
+                const parts = [];
+                const itemCountRaw = folder?.itemCount;
+                const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
+                if (!Number.isNaN(itemCount) && Number.isFinite(itemCount)) {
+                    const label = itemCount === 1 ? 'image' : 'images';
+                    parts.push(`${itemCount} ${label}`);
+                }
+
+                const timestamp = folder?.modifiedTime || folder?.createdTime || null;
+                if (timestamp) {
+                    const parsed = Date.parse(timestamp);
+                    if (!Number.isNaN(parsed)) {
+                        parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
+                    }
+                }
+
+                if (folder?.hasChildren) {
+                    parts.push('Contains subfolders');
+                }
+
+                return parts.length > 0 ? parts.join(' • ') : 'No recent activity';
+            },
+
+            handleSearchSelection(folder) {
+                if (!folder || !folder.id) return;
+                this.resetSearch();
+                if (state.folderMoveMode.active) {
+                    this.handleFolderMoveSelection(folder.id, folder.name || '');
+                    return;
+                }
+                if (!state.provider) {
+                    Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
+                    return;
+                }
+                App.initializeWithProvider(state.providerType, folder.id, folder.name || '', state.provider);
+            },
+
+            handleLastFolderClick() {
+                const lastFolder = state.lastPickedFolder;
+                if (!lastFolder || !lastFolder.folderId) {
+                    return;
+                }
+                if (lastFolder.providerType && lastFolder.providerType !== state.providerType) {
+                    Utils.showToast('Switch to the saved provider to reopen this folder.', 'info');
+                    return;
+                }
+                if (!state.provider) {
+                    Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
+                    return;
+                }
+                if (state.folderMoveMode.active) {
+                    this.handleFolderMoveSelection(lastFolder.folderId, lastFolder.folderName || '');
+                    return;
+                }
+                App.initializeWithProvider(state.providerType, lastFolder.folderId, lastFolder.folderName || '', state.provider);
+            },
+
+            updateLastFolderBanner() {
+                const { lastFolderBanner, lastFolderLink, lastFolderMeta } = Utils.elements;
+                if (!lastFolderBanner || !lastFolderLink) return;
+
+                const data = state.lastPickedFolder;
+                if (!data || !data.folderId || (data.providerType && data.providerType !== state.providerType)) {
+                    lastFolderBanner.classList.add('hidden');
+                    lastFolderLink.textContent = '';
+                    lastFolderLink.removeAttribute('data-folder-id');
+                    lastFolderLink.removeAttribute('data-provider-type');
+                    if (lastFolderMeta) {
+                        lastFolderMeta.textContent = '';
+                    }
+                    return;
+                }
+
+                lastFolderBanner.classList.remove('hidden');
+                lastFolderLink.textContent = data.folderName || 'Untitled folder';
+                lastFolderLink.setAttribute('data-folder-id', data.folderId);
+                lastFolderLink.setAttribute('data-provider-type', data.providerType || '');
+
+                if (lastFolderMeta) {
+                    const parts = [];
+                    const countRaw = data.fileCount;
+                    const count = typeof countRaw === 'number' ? countRaw : parseInt(countRaw, 10);
+                    if (!Number.isNaN(count) && Number.isFinite(count)) {
+                        const label = count === 1 ? 'image' : 'images';
+                        parts.push(`${count} ${label}`);
+                    }
+                    if (data.lastUpdated) {
+                        const parsed = Date.parse(data.lastUpdated);
+                        if (!Number.isNaN(parsed)) {
+                            parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
+                        }
+                    }
+                    lastFolderMeta.textContent = parts.join(' • ');
+                }
             },
 
             updateNavigation() {
@@ -6690,7 +7017,7 @@ this.updateImageCounters();
         const Events = {
             init() {
                 this.setupProviderSelection(); this.setupSettings(); this.setupAuth();
-                this.setupFolderManagement(); this.setupLoadingScreen();
+                this.setupFolderManagement(); this.setupFolderSearch(); this.setupLoadingScreen();
                 this.setupDetailsModal(); this.setupFocusMode(); this.setupTabs();
                 this.setupCopyButtons(); this.setupEmptyState(); this.setupPillCounters();
                 this.setupGridControls(); this.setupSearchFunctionality(); this.setupActionButtons();
@@ -6799,6 +7126,49 @@ this.updateImageCounters();
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
                 });
+
+                const { lastFolderLink } = Utils.elements;
+                if (lastFolderLink) {
+                    lastFolderLink.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        Folders.handleLastFolderClick();
+                    });
+                }
+            },
+            setupFolderSearch() {
+                const { folderSearchInput, folderSearchResults, folderSearchContainer } = Utils.elements;
+                if (folderSearchInput) {
+                    folderSearchInput.addEventListener('input', (event) => {
+                        Folders.handleSearchInput(event.target.value);
+                    });
+                    folderSearchInput.addEventListener('focus', () => {
+                        if (folderSearchInput.value) {
+                            Folders.handleSearchInput(folderSearchInput.value);
+                        }
+                    });
+                    folderSearchInput.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            Folders.resetSearch();
+                            folderSearchInput.blur();
+                        } else if (event.key === 'Enter') {
+                            if (folderSearchResults) {
+                                const firstItem = folderSearchResults.querySelector('.omni-search-item');
+                                if (firstItem) {
+                                    firstItem.click();
+                                    event.preventDefault();
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (folderSearchResults && folderSearchContainer) {
+                    document.addEventListener('click', (event) => {
+                        if (!folderSearchContainer.contains(event.target)) {
+                            folderSearchResults.classList.add('hidden');
+                        }
+                    });
+                }
             },
             setupLoadingScreen() {
                 Utils.elements.cancelLoading.addEventListener('click', () => {
