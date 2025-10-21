@@ -127,7 +127,32 @@
         .status.success { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
         .status.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
         .status.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
-.folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
+        .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
+        .last-folder-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 14px;
+        }
+        .last-folder-banner a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .last-folder-banner a:hover {
+            text-decoration: underline;
+        }
+        .last-folder-count {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 13px;
+        }
         .folder-item {
             display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px;
             background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
@@ -736,6 +761,10 @@
         <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
             <h2 class="title" id="folder-title">Select Folder</h2>
             <div class="subtitle" id="folder-subtitle">Choose a folder containing images</div>
+            <div class="last-folder-banner hidden" id="last-folder-banner">
+                <span>Last folder: <a href="#" id="last-folder-link"></a></span>
+                <span class="last-folder-count" id="last-folder-count"></span>
+            </div>
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-actions">
                 <button class="folder-button" id="folder-refresh-button">Refresh</button>
@@ -1011,6 +1040,7 @@
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             syncLog: null, visualCues: null, haptic: null, export: null,
             currentFolder: { id: null, name: '' },
+            lastPickedFolder: null,
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
@@ -1193,6 +1223,9 @@
 
                     folderTitle: document.getElementById('folder-title'),
                     folderSubtitle: document.getElementById('folder-subtitle'),
+                    lastFolderBanner: document.getElementById('last-folder-banner'),
+                    lastFolderLink: document.getElementById('last-folder-link'),
+                    lastFolderCount: document.getElementById('last-folder-count'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
@@ -1287,6 +1320,32 @@
                     contentRating: document.getElementById('content-rating'),
                     metadataTable: document.getElementById('metadata-table')
                 };
+            },
+
+            updateLastFolderBanner() {
+                const { lastFolderBanner, lastFolderLink, lastFolderCount } = this.elements;
+                if (!lastFolderBanner || !lastFolderLink || !lastFolderCount) return;
+
+                const data = state.lastPickedFolder;
+                const hasValidProvider = Boolean(data?.providerType && state.providerType && data.providerType === state.providerType);
+                const hasValidCount = Number.isFinite(data?.fileCount);
+
+                if (hasValidProvider && data?.folderId && data?.folderName && hasValidCount) {
+                    lastFolderLink.textContent = data.folderName;
+                    lastFolderLink.setAttribute('data-folder-id', data.folderId);
+                    lastFolderLink.setAttribute('data-provider-type', data.providerType || '');
+                    lastFolderLink.setAttribute('aria-label', `Reopen ${data.folderName}`);
+                    const count = data.fileCount;
+                    lastFolderCount.textContent = `${count} file${count === 1 ? '' : 's'} cached`;
+                    lastFolderBanner.classList.remove('hidden');
+                } else {
+                    lastFolderLink.textContent = '';
+                    lastFolderLink.removeAttribute('data-folder-id');
+                    lastFolderLink.removeAttribute('data-provider-type');
+                    lastFolderLink.removeAttribute('aria-label');
+                    lastFolderCount.textContent = '';
+                    lastFolderBanner.classList.add('hidden');
+                }
             },
             
             showScreen(screenId) {
@@ -3388,12 +3447,31 @@
                     state.navigationToken = navigationToken;
                     const loaded = await this.loadImages({ navigationToken });
                     if (loaded) {
+                        this.persistLastPickedFolder();
                         this.switchToCommonUI();
                     }
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
                     this.returnToFolderSelection();
                 }
+            },
+            persistLastPickedFolder() {
+                if (!state.providerType || !state.currentFolder?.id) {
+                    return;
+                }
+                const payload = {
+                    providerType: state.providerType,
+                    folderId: state.currentFolder.id,
+                    folderName: state.currentFolder.name || 'Untitled Folder',
+                    fileCount: Array.isArray(state.imageFiles) ? state.imageFiles.length : 0
+                };
+                state.lastPickedFolder = payload;
+                try {
+                    localStorage.setItem('orbital8_last_folder', JSON.stringify(payload));
+                } catch (error) {
+                    // Ignore storage failures (e.g., private browsing).
+                }
+                Utils.updateLastFolderBanner();
             },
             async loadImages(options = {}) {
                 const folderId = state.currentFolder.id;
@@ -3470,6 +3548,7 @@
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
                     state.sessionVisitedFolders.add(sessionKey);
+                    this.persistLastPickedFolder();
 
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
@@ -3573,6 +3652,7 @@
                         Core.initializeStacks();
                         Core.showEmptyState();
                         Core.updateStackCounts();
+                        this.persistLastPickedFolder();
                         Utils.showToast('No images found in this folder', 'info', true);
                         return true;
                     }
@@ -3605,6 +3685,7 @@
                         this.switchToCommonUI();
                         Core.initializeStacks();
                         Core.initializeImageDisplay();
+                        this.persistLastPickedFolder();
                     } else {
                         return false;
                     }
@@ -3662,6 +3743,7 @@
                     Core.updateStackCounts();
                     if (state.imageFiles.length > 0) Core.displayCurrentImage();
                     else Core.showEmptyState();
+                    this.persistLastPickedFolder();
                     Utils.showToast('Folder updated in background', 'info');
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
@@ -3764,6 +3846,7 @@
                     emptyState.classList.add('hidden');
                 }
                 Utils.showScreen('folder-screen');
+                Utils.updateLastFolderBanner();
 
                 try {
                     state.activeRequests?.abort();
@@ -5554,6 +5637,27 @@ this.updateImageCounters();
         const Folders = {
             async load() {
                 const { folderList, folderTitle } = Utils.elements;
+
+                let storedFolder = null;
+                try {
+                    const raw = localStorage.getItem('orbital8_last_folder');
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && parsed.folderId && parsed.folderName && parsed.providerType) {
+                            const parsedCount = Number(parsed.fileCount);
+                            storedFolder = {
+                                providerType: parsed.providerType,
+                                folderId: parsed.folderId,
+                                folderName: parsed.folderName,
+                                fileCount: Number.isFinite(parsedCount) ? parsedCount : null
+                            };
+                        }
+                    }
+                } catch (error) {
+                    storedFolder = null;
+                }
+                state.lastPickedFolder = storedFolder;
+                Utils.updateLastFolderBanner();
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
                 folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 try {
@@ -5911,6 +6015,23 @@ this.updateImageCounters();
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
                 });
+                if (Utils.elements.lastFolderLink) {
+                    Utils.elements.lastFolderLink.addEventListener('click', async (event) => {
+                        event.preventDefault();
+                        const saved = state.lastPickedFolder;
+                        const providerMatches = saved && saved.providerType === state.providerType;
+                        if (!providerMatches || !saved.folderId || !state.provider) {
+                            Utils.showToast('Saved folder unavailable. Please refresh your folders.', 'error', true);
+                            Utils.updateLastFolderBanner();
+                            return;
+                        }
+                        try {
+                            await App.initializeWithProvider(state.providerType, saved.folderId, saved.folderName, state.provider);
+                        } catch (error) {
+                            Utils.showToast(`Unable to open saved folder: ${error.message}`, 'error', true);
+                        }
+                    });
+                }
             },
             setupLoadingScreen() {
                 Utils.elements.cancelLoading.addEventListener('click', () => {
