@@ -2655,6 +2655,12 @@
                 const manifestRecord = await this.dbManager.getFolderManifest(context) || { ...context, folderId, entries: {}, requiresFullResync: false };
                 const entries = { ...(manifestRecord.entries || {}) };
                 const timestamp = options.timestamp || Date.now();
+                const normalizeVersion = (value, fallback = null) => {
+                    if (value == null) return fallback;
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : fallback;
+                };
+                const targetVersion = normalizeVersion(options.targetVersion, null);
                 const isoTimestamp = new Date(timestamp).toISOString();
                 const updatedIds = [];
                 files.forEach(file => {
@@ -2679,8 +2685,8 @@
                     folderId,
                     entries,
                     requiresFullResync: Boolean(manifestRecord.requiresFullResync),
-                    cloudVersion: options.targetVersion ?? manifestRecord.cloudVersion ?? null,
-                    localVersion: options.targetVersion ?? manifestRecord.localVersion ?? null,
+                    cloudVersion: normalizeVersion(targetVersion, normalizeVersion(manifestRecord.cloudVersion, null)),
+                    localVersion: normalizeVersion(targetVersion, normalizeVersion(manifestRecord.localVersion, null)),
                     manifestFileId: manifestRecord.manifestFileId || options.manifestFileId || null,
                     stateFileId: manifestRecord.stateFileId || options.stateFileId || null,
                     lastRemoteUpdate: timestamp,
@@ -2691,11 +2697,13 @@
                 let remoteResponse = null;
                 if (this.provider && typeof this.provider.saveFolderManifest === 'function') {
                     try {
+                        const providerCloudVersion = normalizeVersion(targetVersion, normalizeVersion(manifestPayload.cloudVersion, Date.now()));
+                        const providerLocalVersion = normalizeVersion(targetVersion, normalizeVersion(manifestPayload.localVersion, null));
                         remoteResponse = await this.provider.saveFolderManifest(folderId, {
                             entries,
                             requiresFullResync: manifestPayload.requiresFullResync,
-                            cloudVersion: options.targetVersion ?? manifestPayload.cloudVersion ?? Date.now(),
-                            localVersion: options.targetVersion ?? manifestPayload.localVersion ?? null,
+                            cloudVersion: providerCloudVersion,
+                            localVersion: providerLocalVersion,
                             manifestFileId: manifestPayload.manifestFileId,
                             stateFileId: manifestPayload.stateFileId
                         }, { manifestFileId: manifestPayload.manifestFileId, stateFileId: manifestPayload.stateFileId });
@@ -2706,14 +2714,14 @@
                             manifestPayload.stateFileId = remoteResponse.stateFileId;
                         }
                         if (remoteResponse?.cloudVersion != null) {
-                            manifestPayload.cloudVersion = remoteResponse.cloudVersion;
-                        } else if (options.targetVersion != null) {
-                            manifestPayload.cloudVersion = options.targetVersion;
+                            manifestPayload.cloudVersion = normalizeVersion(remoteResponse.cloudVersion, manifestPayload.cloudVersion);
+                        } else if (targetVersion != null) {
+                            manifestPayload.cloudVersion = targetVersion;
                         }
                         if (remoteResponse?.localVersion != null) {
-                            manifestPayload.localVersion = remoteResponse.localVersion;
-                        } else if (options.targetVersion != null) {
-                            manifestPayload.localVersion = options.targetVersion;
+                            manifestPayload.localVersion = normalizeVersion(remoteResponse.localVersion, manifestPayload.localVersion);
+                        } else if (targetVersion != null) {
+                            manifestPayload.localVersion = targetVersion;
                         }
                         if (remoteResponse?.updatedAt) {
                             manifestPayload.updatedAt = remoteResponse.updatedAt;
@@ -3104,8 +3112,15 @@
                         } catch (error) {
                             folderState = null;
                         }
-                        const baseVersion = Number(folderState?.localVersion || 0);
-                        const nextVersion = baseVersion + 1;
+                        const parseVersion = (value) => {
+                            if (value == null) return 0;
+                            const numeric = Number(value);
+                            return Number.isFinite(numeric) ? numeric : 0;
+                        };
+                        const localVersion = parseVersion(folderState?.localVersion);
+                        const cloudVersion = parseVersion(folderState?.cloudVersion);
+                        const baselineVersion = Math.max(localVersion, cloudVersion, 0);
+                        const nextVersion = Math.max(Date.now(), baselineVersion + 1);
                         let manifestResult = null;
                         try {
                             manifestResult = await coordinator.applyLocalManifestUpdates(folderId, files, {
@@ -3723,7 +3738,11 @@
                 }
             }
             async saveFolderManifest(folderId, manifest, options = {}) {
-                const cloudVersion = manifest.cloudVersion ?? Date.now();
+                const normalizeVersion = (value, fallback = Date.now()) => {
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : fallback;
+                };
+                const cloudVersion = normalizeVersion(manifest.cloudVersion);
                 const updatedAt = manifest.updatedAt || new Date().toISOString();
                 const payload = {
                     folderId,
@@ -4003,7 +4022,11 @@
             }
             async saveFolderManifest(folderId, manifest, options = {}) {
                 const headers = { 'Content-Type': 'application/json' };
-                const cloudVersion = manifest.cloudVersion ?? Date.now();
+                const normalizeVersion = (value, fallback = Date.now()) => {
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : fallback;
+                };
+                const cloudVersion = normalizeVersion(manifest.cloudVersion);
                 const updatedAt = manifest.updatedAt || new Date().toISOString();
                 const manifestPayload = {
                     folderId,
