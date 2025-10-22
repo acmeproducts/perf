@@ -22,7 +22,7 @@
 
 - Adopt Goji’s `App.getCurrentFolderContext` and context-enforced `DBManager.saveMetadata` so every persistence call carries folder/provider identity and fails fast when context is missing during development.
 
-- Replace the existing sync trigger flow with a simple, deterministic folder-open refresh: each time a folder loads, read its explicit `folderVersion` and per-item timestamps, fetch only items whose timestamps are newer than the cached copies, and reconcile them immediately without background probes or coordinators.
+- Replace the existing sync trigger flow with a simple, deterministic folder-open refresh: each time a folder loads, attempt the timestamp-based refresh first by reading its explicit `folderVersion` and per-item timestamps, fetching only items whose timestamps are newer than the cached copies, and reconciling them immediately without background probes or coordinators, but fall back to the cached folder payload when cloud sync fails or the device is offline; ensure the previous cache-hydration path remains intact so folders still render from IndexedDB without a successful refresh.
 
 - Preserve Goji’s stack-move workflow so sending items to trash (or other stacks) immediately updates the grid, aligning with the expectation that the trash stack opens straight into tile view.
 
