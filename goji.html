@@ -163,6 +163,14 @@
         .folder-action-btn.drill-btn:hover { background: rgba(245, 158, 11, 0.2); }
         .folder-action-btn.select-btn { border-color: rgba(16, 185, 129, 0.4); color: #10b981; }
         .folder-action-btn.select-btn:hover { background: rgba(16, 185, 129, 0.2); }
+
+        .folder-sync-status {
+            display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+            color: rgba(255, 255, 255, 0.75); font-size: 14px;
+        }
+        .folder-sync-status .spinner {
+            width: 16px; height: 16px; border-width: 2px;
+        }
         
         .spinner {
             width: 20px; height: 20px; border: 2px solid rgba(245, 158, 11, 0.3);
@@ -773,6 +781,10 @@
         <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
             <h2 class="title" id="folder-title">Select Folder</h2>
             <div class="subtitle" id="folder-subtitle">Choose a folder containing images</div>
+            <div class="folder-sync-status hidden" id="folder-sync-status" role="status" aria-live="polite">
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Saving recent changes…</span>
+            </div>
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-actions">
                 <button class="folder-button" id="folder-refresh-button">Refresh</button>
@@ -1127,6 +1139,7 @@
 
                     folderTitle: document.getElementById('folder-title'),
                     folderSubtitle: document.getElementById('folder-subtitle'),
+                    folderSyncStatus: document.getElementById('folder-sync-status'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
@@ -4841,11 +4854,44 @@
                 Utils.showScreen('app-container');
             },
             async returnToFolderSelection() {
-                try {
-                    if (state.syncManager) {
-                        await state.syncManager.flush({ reason: 'folder-switch' });
+                const folderSyncStatus = Utils.elements.folderSyncStatus;
+                let flushPromise = null;
+
+                if (state.syncManager) {
+                    try {
+                        flushPromise = state.syncManager.flush({ reason: 'folder-switch' });
+                    } catch (error) {
+                        Utils.showToast(`Failed to queue sync flush: ${error.message}`, 'error', true);
+                        state.syncLog?.log({
+                            event: 'sync:flush:start:error',
+                            level: 'error',
+                            details: `Unable to start background flush during folder switch: ${error.message}`,
+                            data: { reason: 'folder-switch' }
+                        });
                     }
-                    state.activeRequests.abort(); 
+                }
+
+                if (flushPromise && typeof flushPromise.then === 'function') {
+                    folderSyncStatus?.classList.remove('hidden');
+                    flushPromise
+                        .catch(error => {
+                            Utils.showToast(`Recent changes may not be saved: ${error.message}`, 'error', true);
+                            state.syncLog?.log({
+                                event: 'sync:flush:error',
+                                level: 'error',
+                                details: `Background flush failed during folder switch: ${error.message}`,
+                                data: { reason: 'folder-switch' }
+                            });
+                        })
+                        .finally(() => {
+                            folderSyncStatus?.classList.add('hidden');
+                        });
+                } else {
+                    folderSyncStatus?.classList.add('hidden');
+                }
+
+                try {
+                    state.activeRequests.abort();
                     this.resetViewState();
                     Utils.showScreen('folder-screen');
                     await Folders.load();
