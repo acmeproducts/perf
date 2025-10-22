@@ -4310,6 +4310,7 @@
                 // 1. Read any cached payload up front so we can hydrate offline.
                 // 2. Attempt exactly one refreshFolderFromCloud call that merges cloud changes.
                 // 3. Initialize the UI from whichever source populated state.imageFiles.
+                // This ensures we never juggle multiple sync entry points or re-run cloud retries.
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
@@ -4359,7 +4360,7 @@
                     }
 
                     if (cachedFiles.length > 0) {
-                        state.imageFiles = cachedFiles;
+                        state.imageFiles = cachedFiles.map(file => ({ ...file }));
                         await initializeFromState({ isFirstLoad: false });
                         Utils.showToast('Loaded from offline cache', 'info');
                         return true;
@@ -4453,6 +4454,8 @@
                 }
 
                 // Single network fetch followed by a diff against the cached payload.
+                // The helper always returns a boolean flag so callers can surface change hints
+                // without needing to understand the merge internals.
                 const result = await state.provider.getFilesAndMetadata(folderId);
                 if (navigationToken && !this.isNavigationActive(navigationToken)) {
                     return { changed: false };
