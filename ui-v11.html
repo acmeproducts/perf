@@ -1026,6 +1026,7 @@
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
             currentFolder: { id: null, name: '' },
+            currentFolderState: null,
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
@@ -2334,15 +2335,16 @@
                 if (!this.db || !record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
+                const updatedAt = record.updatedAt != null ? record.updatedAt : Date.now();
                 const payload = {
                     folderKey,
                     provider: record.providerType || record.provider || null,
                     folderId: record.folderId,
                     localVersion: record.localVersion ?? 0,
                     cloudVersion: record.cloudVersion ?? 0,
-                    lastLocalMutation: record.lastLocalMutation || null,
-                    lastCloudAck: record.lastCloudAck || null,
-                    updatedAt: Date.now()
+                    lastLocalMutation: record.lastLocalMutation ?? null,
+                    lastCloudAck: record.lastCloudAck ?? null,
+                    updatedAt
                 };
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
@@ -2436,6 +2438,7 @@
                 this.deltaHandler = null;
                 this.backgroundProbes = new Map();
                 this.backgroundProbeDelay = 500;
+                this.folderStateCache = new Map();
             }
             setDbManager(dbManager) { this.dbManager = dbManager; }
             setLogger(logger) { this.logger = logger; }
@@ -2449,6 +2452,49 @@
                 });
             }
             setDeltaHandler(callback) { this.deltaHandler = typeof callback === 'function' ? callback : null; }
+            resolveFolderKey(context) {
+                if (!context) return null;
+                if (this.dbManager && typeof this.dbManager.resolveFolderKey === 'function') {
+                    const key = this.dbManager.resolveFolderKey(context);
+                    if (key) return key;
+                }
+                if (typeof context === 'string') return context;
+                const source = context || {};
+                const folderId = source.folderId || source.id || null;
+                if (!folderId) return null;
+                const providerType = source.providerType || this.providerType || state.providerType || null;
+                return `${providerType || 'unknown'}::${folderId}`;
+            }
+            getCurrentFolderCacheKey() {
+                const folderId = state?.currentFolder?.id || null;
+                if (!folderId) return null;
+                return this.resolveFolderKey({ providerType: state.providerType || this.providerType || null, folderId });
+            }
+            getCachedFolderState(context) {
+                const key = this.resolveFolderKey(context);
+                if (!key) return null;
+                return this.folderStateCache.get(key) || null;
+            }
+            setCachedFolderState(context, nextState = {}) {
+                const key = this.resolveFolderKey(context);
+                if (!key) return nextState;
+                const snapshot = { ...(nextState || {}) };
+                this.folderStateCache.set(key, snapshot);
+                const currentKey = this.getCurrentFolderCacheKey();
+                if (currentKey && currentKey === key) {
+                    state.currentFolderState = { ...snapshot };
+                }
+                return snapshot;
+            }
+            clearCachedFolderState(context) {
+                const key = this.resolveFolderKey(context);
+                if (!key) return;
+                this.folderStateCache.delete(key);
+                const currentKey = this.getCurrentFolderCacheKey();
+                if (currentKey && currentKey === key) {
+                    state.currentFolderState = null;
+                }
+            }
             buildContext(folderId) {
                 return { providerType: this.providerType || state.providerType || null, folderId };
             }
@@ -2462,6 +2508,12 @@
                     this.dbManager.getFolderState(context),
                     this.dbManager.getFolderManifest(context)
                 ]);
+
+                if (folderState) {
+                    this.setCachedFolderState({ ...context, folderKey: folderState.folderKey }, folderState);
+                } else {
+                    this.clearCachedFolderState(context);
+                }
 
                 if (forceFullResync) {
                     this.logger?.log({ event: 'foldersync:prepare', level: 'warn', details: `Full resync forced for ${folderId}.` });
@@ -2669,19 +2721,46 @@
                 return saved;
             }
             async persistFolderState(folderId, updates = {}) {
-                if (!this.dbManager) return null;
                 const context = this.buildContext(folderId);
-                const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
+                let existing = this.getCachedFolderState(context);
+                if (!existing && this.dbManager) {
+                    existing = await this.dbManager.getFolderState(context);
+                    if (existing) {
+                        this.setCachedFolderState({ ...context, folderKey: existing.folderKey }, existing);
+                    }
+                }
+                if (!existing) {
+                    existing = { ...context, folderId, localVersion: 0, cloudVersion: 0, lastLocalMutation: null, lastCloudAck: null };
+                }
+
+                const timestampCandidates = [
+                    typeof updates.timestamp === 'number' ? updates.timestamp : null,
+                    typeof updates.lastLocalMutation === 'number' ? updates.lastLocalMutation : null,
+                    typeof updates.lastCloudAck === 'number' ? updates.lastCloudAck : null
+                ];
+                let timestamp = timestampCandidates.find(value => typeof value === 'number');
+                if (timestamp == null) {
+                    timestamp = Date.now();
+                }
+
+                const hasLocalMutation = Object.prototype.hasOwnProperty.call(updates, 'lastLocalMutation');
+                const hasCloudAck = Object.prototype.hasOwnProperty.call(updates, 'lastCloudAck');
                 const payload = {
                     ...existing,
                     ...context,
                     folderId,
+                    folderKey: existing.folderKey || this.resolveFolderKey(context),
                     localVersion: updates.localVersion ?? existing.localVersion ?? 0,
                     cloudVersion: updates.cloudVersion ?? existing.cloudVersion ?? 0,
-                    lastLocalMutation: updates.lastLocalMutation ?? existing.lastLocalMutation ?? null,
-                    lastCloudAck: updates.lastCloudAck ?? existing.lastCloudAck ?? null
+                    lastLocalMutation: hasLocalMutation ? (updates.lastLocalMutation ?? existing.lastLocalMutation ?? null) : existing.lastLocalMutation ?? null,
+                    lastCloudAck: hasCloudAck ? (updates.lastCloudAck ?? existing.lastCloudAck ?? null) : existing.lastCloudAck ?? null,
+                    updatedAt: timestamp
                 };
-                return await this.dbManager.saveFolderState(payload);
+                const snapshot = this.setCachedFolderState(context, payload);
+                if (this.dbManager) {
+                    await this.dbManager.saveFolderState(snapshot);
+                }
+                return snapshot;
             }
             async markRequiresFullResync(folderId, reason = 'manual') {
                 this.logger?.log({ event: 'foldersync:flag', level: 'warn', details: `Flagging ${folderId} for full resync (${reason}).` });
@@ -2765,9 +2844,19 @@
                 return { manifestFileId: manifestPayload.manifestFileId, cloudVersion: manifestPayload.cloudVersion };
             }
             async recordLocalFlush(folderId, options = {}) {
-                const timestamp = options.timestamp || Date.now();
+                const now = Date.now();
+                const timestamp = options.timestamp ?? now;
                 const context = this.buildContext(folderId);
-                const existing = await this.dbManager.getFolderState(context) || { ...context, folderId, localVersion: 0, cloudVersion: 0 };
+                let existing = this.getCachedFolderState(context);
+                if (!existing && this.dbManager) {
+                    existing = await this.dbManager.getFolderState(context);
+                    if (existing) {
+                        this.setCachedFolderState({ ...context, folderKey: existing.folderKey }, existing);
+                    }
+                }
+                if (!existing) {
+                    existing = { ...context, folderId, localVersion: 0, cloudVersion: 0, lastLocalMutation: null, lastCloudAck: null };
+                }
                 let nextVersion = Number(existing.localVersion || 0) + 1;
                 if (options.targetVersion != null) {
                     const numericTarget = Number(options.targetVersion);
@@ -2775,18 +2864,39 @@
                         nextVersion = numericTarget;
                     }
                 }
-                await this.dbManager.saveFolderState({ ...existing, ...context, folderId, localVersion: nextVersion, cloudVersion: nextVersion, lastLocalMutation: timestamp, lastCloudAck: timestamp });
+                const nextState = {
+                    ...existing,
+                    ...context,
+                    folderId,
+                    folderKey: existing.folderKey || this.resolveFolderKey(context),
+                    localVersion: nextVersion,
+                    cloudVersion: nextVersion,
+                    lastLocalMutation: timestamp,
+                    lastCloudAck: timestamp,
+                    updatedAt: timestamp
+                };
+                this.setCachedFolderState(context, nextState);
+                if (this.dbManager) {
+                    await this.dbManager.saveFolderState(nextState);
+                }
                 let manifestRecord = null;
                 if ((!options.remoteContext || !options.remoteContext.manifestFileId) && this.dbManager) {
                     manifestRecord = await this.dbManager.getFolderManifest(context);
                 }
                 if (this.provider && typeof this.provider.updateFolderVersionMarker === 'function') {
-                    try {
-                        const remoteContext = { ...(options.remoteContext || {}), manifestFileId: manifestRecord?.manifestFileId };
-                        await this.provider.updateFolderVersionMarker(folderId, nextVersion, remoteContext);
-                        this.logger?.log({ event: 'foldersync:version:bump', level: 'info', details: `Pushed folder version ${nextVersion} to cloud.`, data: { folderId } });
-                    } catch (error) {
-                        this.logger?.log({ event: 'foldersync:version:error', level: 'error', details: `Failed to push folder version: ${error.message}` });
+                    const remoteContext = { ...(options.remoteContext || {}), manifestFileId: manifestRecord?.manifestFileId };
+                    const maxAttempts = 2;
+                    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                        try {
+                            await this.provider.updateFolderVersionMarker(folderId, nextVersion, remoteContext);
+                            this.logger?.log({ event: 'foldersync:version:bump', level: 'info', details: `Pushed folder version ${nextVersion} to cloud.`, data: { folderId, attempt } });
+                            break;
+                        } catch (error) {
+                            this.logger?.log({ event: 'foldersync:version:error', level: 'error', details: `Failed to push folder version (attempt ${attempt}): ${error.message}` });
+                            if (attempt === maxAttempts) {
+                                break;
+                            }
+                        }
                     }
                 }
                 return nextVersion;
