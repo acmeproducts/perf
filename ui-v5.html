@@ -6512,6 +6512,7 @@
                 const providerLabel = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
                 folderTitle.textContent = `${providerLabel} - Select Folder`;
                 const context = this.getListingContext(options.contextOverride || {});
+                const initialListingKey = context.listingKey;
                 const snapshot = await this.getSnapshot(context);
                 let renderedFromSnapshot = false;
                 if (snapshot) {
@@ -6529,11 +6530,15 @@
                 }
                 try {
                     const folders = await state.provider.getFolders();
+                    const latestContext = this.getListingContext();
+                    if (latestContext.listingKey !== initialListingKey) {
+                        await this.persistSnapshot(context, folders, { refreshDeferred: false, requiresRefresh: false });
+                        return;
+                    }
                     const decorated = this.decorateFolders(folders);
                     this.display(decorated);
                     this.updateNavigation();
-                    const latestContext = this.getListingContext();
-                    const persisted = await this.persistSnapshot(latestContext, decorated, { refreshDeferred: false, requiresRefresh: false });
+                    const persisted = await this.persistSnapshot(latestContext, folders, { refreshDeferred: false, requiresRefresh: false });
                     await this.markSnapshotPresented(persisted);
                 } catch (error) {
                     state.syncLog?.log({ event: 'folders:list:remote:error', level: 'error', details: error.message });
