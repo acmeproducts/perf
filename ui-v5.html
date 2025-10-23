@@ -2186,6 +2186,15 @@
             constructor() {
                 this.db = null;
             }
+            normalizeMetadata(metadata) {
+                if (!metadata || typeof metadata !== 'object') {
+                    return { lastUpdated: 0 };
+                }
+                const normalized = { ...metadata };
+                const numericTimestamp = Number(normalized.lastUpdated);
+                normalized.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                return normalized;
+            }
             async init() {
                 return new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 6);
@@ -2241,8 +2250,37 @@
                     const transaction = this.db.transaction('metadata', 'readonly');
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
-                    request.onsuccess = () => resolve(request.result ? request.result.metadata : null);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (!record || !record.metadata) {
+                            resolve(null);
+                            return;
+                        }
+                        resolve(this.normalizeMetadata(record.metadata));
+                    };
                     request.onerror = () => reject(request.error);
+                });
+            }
+            async getManyMetadata(fileIds = []) {
+                if (!this.db || !Array.isArray(fileIds) || fileIds.length === 0) {
+                    return new Map();
+                }
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readonly');
+                    const store = transaction.objectStore('metadata');
+                    const results = new Map();
+                    transaction.oncomplete = () => resolve(results);
+                    transaction.onerror = (event) => reject(event.target.error);
+                    fileIds.forEach(fileId => {
+                        if (!fileId) return;
+                        const request = store.get(fileId);
+                        request.onsuccess = () => {
+                            const record = request.result;
+                            if (record && record.metadata) {
+                                results.set(fileId, this.normalizeMetadata(record.metadata));
+                            }
+                        };
+                    });
                 });
             }
             async saveMetadata(fileId, metadata, context = {}) {
@@ -2251,7 +2289,7 @@
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
+                    const record = { id: fileId, metadata: this.normalizeMetadata(metadata) };
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -2786,6 +2824,24 @@
                     normalized.shortcutDetails = file.shortcutDetails || null;
                 }
 
+                const appProps = normalized.appProperties || {};
+                const timestampCandidates = [
+                    appProps.orbital8FileUpdated,
+                    appProps.orbital8LastUpdated,
+                    appProps.slideboxLastUpdated,
+                    appProps.slideboxUpdatedAt,
+                    appProps.lastUpdated
+                ];
+                let resolvedTimestamp = null;
+                for (const candidate of timestampCandidates) {
+                    const numeric = Number(candidate);
+                    if (Number.isFinite(numeric)) {
+                        resolvedTimestamp = numeric;
+                        break;
+                    }
+                }
+                normalized.lastUpdated = resolvedTimestamp ?? 0;
+
                 return normalized;
             }
             async fetchRawFilesByIds(fileIds = [], options = {}) {
@@ -3143,8 +3199,26 @@
                 await this.makeApiCall(`/files/${fileId}?addParents=${targetFolderId}&removeParents=${previousParents}&fields=id,parents`, { method: 'PATCH' });
                 return true;
             }
-            async updateFileMetadata(fileId, metadata) {
-                await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
+            async updateFileMetadata(fileId, metadata = {}, options = {}) {
+                if (!fileId || !metadata || typeof metadata !== 'object') {
+                    return false;
+                }
+                let baseProperties = {};
+                try {
+                    const existing = await this.makeApiCall(`/files/${fileId}?fields=appProperties&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+                    baseProperties = existing?.appProperties || {};
+                } catch (error) {
+                    baseProperties = {};
+                }
+                const sanitized = { ...baseProperties };
+                Object.entries(metadata).forEach(([key, value]) => {
+                    if (value === undefined) return;
+                    sanitized[key] = typeof value === 'string' ? value : String(value ?? '');
+                });
+                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ appProperties: sanitized })
+                });
                 return true;
             }
             async updateUserMetadata(fileId, updates) {
@@ -3229,13 +3303,23 @@
                 while(nextLink) {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: state.activeRequests.signal });
                     const data = await response.json();
-                    const files = data.value.filter(item => item.file && item.file.mimeType && item.file.mimeType.startsWith('image/'))
-                        .map(item => ({
-                            id: item.id, name: item.name, type: 'file', mimeType: item.file.mimeType, size: item.size || 0,
-                            createdTime: item.createdDateTime, modifiedTime: item.lastModifiedDateTime,
-                            thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
-                            downloadUrl: item['@microsoft.graph.downloadUrl']
-                        }));
+                    const files = data.value
+                        .filter(item => item.file && item.file.mimeType && item.file.mimeType.startsWith('image/'))
+                        .map(item => {
+                            const parsedUpdated = item.lastModifiedDateTime ? Date.parse(item.lastModifiedDateTime) : NaN;
+                            return {
+                                id: item.id,
+                                name: item.name,
+                                type: 'file',
+                                mimeType: item.file.mimeType,
+                                size: item.size || 0,
+                                createdTime: item.createdDateTime,
+                                modifiedTime: item.lastModifiedDateTime,
+                                thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
+                                downloadUrl: item['@microsoft.graph.downloadUrl'],
+                                lastUpdated: Number.isFinite(parsedUpdated) ? parsedUpdated : 0
+                            };
+                        });
                     allFiles.push(...files);
                     nextLink = data['@odata.nextLink'];
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
@@ -3582,19 +3666,37 @@
             async processAllMetadata(files, isFirstLoad = false, options = {}) {
                  const { navigationToken = null } = options;
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+
+                 const fileIds = files.map(file => file.id).filter(Boolean);
+                 let cachedMetadata = new Map();
+                 if (fileIds.length > 0) {
+                    try {
+                        cachedMetadata = await state.dbManager.getManyMetadata(fileIds);
+                    } catch (error) {
+                        console.warn('Failed to prefetch cached metadata:', error);
+                        cachedMetadata = new Map();
+                    }
+                 }
+
                  for (let i = 0; i < files.length; i++) {
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
                     }
                     const file = files[i];
                     try {
-                        const metadata = await state.dbManager.getMetadata(file.id);
+                        const metadata = cachedMetadata.get(file.id);
                         if (metadata) {
                             Object.assign(file, metadata);
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                        }
+                        const numericTimestamp = Number(file.lastUpdated);
+                        if (!Number.isFinite(numericTimestamp)) {
+                            file.lastUpdated = 0;
+                        } else {
+                            file.lastUpdated = numericTimestamp;
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -3614,12 +3716,17 @@
                     tags: [],
                     qualityRating: 0,
                     contentRating: 0,
-                    notes: '', 
-                    stackSequence: 0, 
+                    notes: '',
+                    stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {}, 
-                    metadataStatus: 'pending' 
+                    extractedMetadata: {},
+                    metadataStatus: 'pending',
+                    lastUpdated: 0
                 };
+                 const directTimestamp = Number(file.lastUpdated);
+                 if (Number.isFinite(directTimestamp)) {
+                    baseMetadata.lastUpdated = directTimestamp;
+                 }
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
                     baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
@@ -3628,6 +3735,20 @@
                     baseMetadata.notes = file.appProperties.notes || '';
                     baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
                     baseMetadata.favorite = file.appProperties.favorite === 'true';
+                    const timestampCandidates = [
+                        file.appProperties.orbital8FileUpdated,
+                        file.appProperties.orbital8LastUpdated,
+                        file.appProperties.slideboxLastUpdated,
+                        file.appProperties.slideboxUpdatedAt,
+                        file.appProperties.lastUpdated
+                    ];
+                    for (const candidate of timestampCandidates) {
+                        const numeric = Number(candidate);
+                        if (Number.isFinite(numeric)) {
+                            baseMetadata.lastUpdated = numeric;
+                            break;
+                        }
+                    }
                  }
                  const numericSequence = Number(baseMetadata.stackSequence);
                  if (!Number.isFinite(numericSequence) || numericSequence === 0) {
@@ -3731,23 +3852,26 @@
                 }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
-                const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui' } = options;
+                const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui', providerSilent = true } = options;
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
                     const timestamp = Date.now();
-                    Object.assign(file, updates, { localUpdatedAt: timestamp });
+                    const updatesWithTimestamp = { ...updates, lastUpdated: timestamp };
+                    Object.assign(file, updatesWithTimestamp, { localUpdatedAt: timestamp });
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+                    await this.persistFileMetadata(file, { reason: operationType, silent: providerSilent });
                     if (state.syncManager) {
                         const change = {
                             fileId,
-                            updates,
+                            updates: updatesWithTimestamp,
                             operationType,
                             origin,
                             localUpdatedAt: timestamp,
+                            lastUpdated: timestamp,
                             folderId: state.currentFolder.id,
                             providerType: state.providerType,
-                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id }
+                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence, folderId: state.currentFolder.id, lastUpdated: file.lastUpdated }
                         };
                         const queueOptions = { debounce: !skipDebounce };
                         if (skipDebounce) {
@@ -3759,7 +3883,7 @@
                                     level: 'error',
                                     fileId,
                                     details: `Immediate metadata sync failed: ${reason}`,
-                                    data: { updates, operationType, origin }
+                                    data: { updates: updatesWithTimestamp, operationType, origin }
                                 });
                                 Utils.showToast(`Immediate sync failed: ${reason}`, 'error', true);
                             };
@@ -3769,21 +3893,73 @@
                             await queuePromise;
                         }
                     }
-                    if (state.folderTimestampService && state.currentFolder?.id) {
-                        state.folderTimestampService
-                            .touch({ providerType: state.providerType, folderId: state.currentFolder.id }, { timestamp })
-                            .catch(error => {
-                                state.syncLog?.log({
-                                    event: 'folder-timestamp:touch:failed',
-                                    level: 'warn',
-                                    details: `Failed to record folder timestamp for ${state.currentFolder.id}`,
-                                    data: { error: error?.message || String(error) }
-                                });
-                            });
-                    }
+                    this.touchFolderTimestamp(timestamp, { reason: operationType });
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
+            },
+            buildProviderMetadataSnapshot(file) {
+                if (!file) return {};
+                const toNumericString = (value, fallback = 0) => {
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? String(numeric) : String(fallback);
+                };
+                const tags = Array.isArray(file.tags) ? file.tags.filter(tag => typeof tag === 'string' && tag.trim().length > 0).join(',') : '';
+                const payload = {
+                    slideboxStack: file.stack || 'in',
+                    slideboxTags: tags,
+                    qualityRating: toNumericString(file.qualityRating, 0),
+                    contentRating: toNumericString(file.contentRating, 0),
+                    notes: typeof file.notes === 'string' ? file.notes : '',
+                    stackSequence: toNumericString(file.stackSequence, 0),
+                    favorite: file.favorite ? 'true' : 'false',
+                    orbital8FileUpdated: toNumericString(file.lastUpdated, 0)
+                };
+                if (file.metadataStatus && typeof file.metadataStatus === 'string') {
+                    payload.metadataStatus = file.metadataStatus;
+                }
+                return payload;
+            },
+            async persistFileMetadata(file, options = {}) {
+                if (!file || !file.id || !state.provider || typeof state.provider.updateFileMetadata !== 'function') {
+                    return;
+                }
+                const { reason = 'metadata:update', silent = true } = options;
+                const payload = this.buildProviderMetadataSnapshot(file);
+                try {
+                    await state.provider.updateFileMetadata(file.id, payload, { reason });
+                } catch (error) {
+                    const message = error?.message || String(error);
+                    state.syncLog?.log({
+                        event: 'provider:metadata:update-error',
+                        level: 'warn',
+                        fileId: file.id,
+                        details: `Failed to sync metadata to provider (${reason}): ${message}`,
+                        data: { providerType: state.providerType }
+                    });
+                    if (!silent) {
+                        Utils.showToast(`Failed to sync metadata to provider: ${message}`, 'error', true);
+                    }
+                }
+            },
+            touchFolderTimestamp(timestamp, options = {}) {
+                const { reason = 'mutation' } = options;
+                if (!state.folderTimestampService || !state.currentFolder?.id) {
+                    return;
+                }
+                if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+                    return;
+                }
+                state.folderTimestampService
+                    .touch({ providerType: state.providerType, folderId: state.currentFolder.id }, { timestamp })
+                    .catch(error => {
+                        state.syncLog?.log({
+                            event: 'folder-timestamp:touch:failed',
+                            level: 'warn',
+                            details: `Failed to record folder timestamp for ${state.currentFolder.id}`,
+                            data: { error: error?.message || String(error), reason }
+                        });
+                    });
             },
             async deleteFile(fileId, options = {}) {
                 const { source = 'ui', originStack = null, name = null } = options;
@@ -3914,7 +4090,8 @@
                 file.metadataStatus = 'loading';
                 try {
                     const metadata = await state.metadataExtractor.fetchMetadata(file);
-                    let finalMetadata = { ...file };
+                    const timestamp = Date.now();
+                    let finalMetadata = { ...file, lastUpdated: timestamp, localUpdatedAt: timestamp };
                     if (metadata.error) {
                         finalMetadata.metadataStatus = 'error';
                         finalMetadata.extractedMetadata = { 'Error': metadata.error };
@@ -3925,13 +4102,19 @@
                     }
                     await state.dbManager.saveMetadata(file.id, finalMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
                     Object.assign(file, finalMetadata);
+                    await this.persistFileMetadata(file, { reason: 'metadata:extract', silent: true });
+                    this.touchFolderTimestamp(timestamp, { reason: 'metadata:extract' });
                 } catch (error) {
                     if (error.name === 'AbortError') return;
                     console.warn(`Background metadata extraction failed for ${file.name}: ${error.message}`);
                     file.metadataStatus = 'error';
                     file.extractedMetadata = { 'Error': error.message };
                     file.prompt = `Metadata Error: ${error.message}`;
+                    file.lastUpdated = Date.now();
+                    file.localUpdatedAt = file.lastUpdated;
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+                    await this.persistFileMetadata(file, { reason: 'metadata:extract:error', silent: true });
+                    this.touchFolderTimestamp(file.lastUpdated, { reason: 'metadata:extract:error' });
                 }
             }
         };
@@ -4541,13 +4724,16 @@ this.updateImageCounters();
                 
                 const newStack = [...topItems, ...bottomItems];
                 const timestamp = Date.now();
-                
-                newStack.forEach((file, i) => {
-                    file.stackSequence = timestamp - i;
-                });
 
-                for(const file of newStack) {
-                    await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+                for (let index = 0; index < newStack.length; index++) {
+                    const file = newStack[index];
+                    const newSequence = timestamp - index;
+                    await App.updateUserMetadata(file.id, { stackSequence: newSequence }, {
+                        skipDebounce: true,
+                        operationType: 'stack:reorder',
+                        origin: 'grid:reorder',
+                        providerSilent: true
+                    });
                 }
 
                 state.stacks[state.grid.stack] = newStack;
