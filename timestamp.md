@@ -82,7 +82,7 @@ javascript// Store 1: folderCache
     }
 }
 Google Drive Cloud Storage
-Location: appProperties directly on each image file
+Location: appProperties directly on each image file **and** on the folder itself
 javascript// File: image1.png
 // appProperties (hidden metadata attached to file):
 {
@@ -96,17 +96,21 @@ javascript// File: image1.png
     itemTimestamp: '1696789234567'  // Our explicit timestamp
 }
 
-// Folder-level version marker
-// Special file: .orbital8-folder-version.json in the folder
+// Folder-level timestamp lives on the folder's own appProperties
+// Folder: /drive/folders/folder-123
 {
-    folderId: 'folder-123',
-    folderVersion: 1696789234567,  // Increments with ANY metadata change
-    lastUpdatedBy: 'device-A',
-    lastUpdatedAt: '2024-01-15T10:30:00Z'
+    appProperties: {
+        orbital8LastUpdated: '1696789234567',  // Increments with ANY metadata change
+        orbital8CloudVersion: '1696789234567'  // Mirrors manifest cloud version
+    }
 }
+
+// Manifest marker: .orbital8-state.json keeps authoritative cloud version data
+// appProperties.orbital8CloudVersion is read before loading cached manifests
+
 OneDrive Cloud Storage
-Location: approot:/${fileId}.json (one JSON file per image)
-javascript// File: /me/drive/special/approot/file-abc.json
+Location: approot:/${fileId}.json (one JSON file per image) and approot:/state/${folderId}.json for folder timestamps
+javascript// File: /me/drive/special/approot:/file-abc.json:/content
 {
     stack: 'in',
     tags: ['#favorite', '#landscape'],
@@ -119,11 +123,12 @@ javascript// File: /me/drive/special/approot/file-abc.json
     lastUpdated: '2024-01-15T10:30:00Z'
 }
 
-// Folder-level version marker
-// File: /me/drive/special/approot/folder-versions/folder-123.json
+// Folder-level timestamp marker stored in /state/${folderId}.json
+// File: /me/drive/special/approot:/state/folder-123.json:/content
 {
     folderId: 'folder-123',
-    folderVersion: 1696789234567,  // Increments with ANY metadata change
+    lastUpdated: 1696789234567,  // Increments with ANY metadata change
+    cloudVersion: 1696789234567,
     lastUpdatedBy: 'device-A',
     lastUpdatedAt: '2024-01-15T10:30:00Z'
 }
@@ -134,11 +139,11 @@ Device A Opens Folder
 │ Step 1: Check Cloud for Folder Version             │
 └─────────────────────────────────────────────────────┘
 
-READ: Cloud folder version file
-  - GDrive: GET /files?q=name='.orbital8-folder-version.json' and parents='folder-123'
-  - OneDrive: GET /me/drive/special/approot:/folder-versions/folder-123.json:/content
+READ: Cloud folder version marker
+  - GDrive: GET /files?q='folder-123' in parents and name='.orbital8-state.json' (inspect appProperties.orbital8CloudVersion)
+  - OneDrive: GET /me/drive/special/approot:/state/folder-123.json:/content
   
-RETURNS: { folderVersion: 1696789234567 }
+RETURNS: { cloudVersion: 1696789234567 }
 
 ┌─────────────────────────────────────────────────────┐
 │ Step 2: Compare with Local Cached Version          │
@@ -316,27 +321,28 @@ ONEDRIVE:
 └─────────────────────────────────────────────────────┘
 
 READ current folder version:
-  - GDrive: GET folder-version file → { folderVersion: 1696789234567 }
-  - OneDrive: GET folder-123.json → { folderVersion: 1696789234567 }
+  - GDrive: GET .orbital8-state.json → { appProperties: { orbital8CloudVersion: '1696789234567' } }
+  - OneDrive: GET /state/folder-123.json → { cloudVersion: 1696789234567 }
 
 INCREMENT and WRITE new version:
 
 GOOGLE DRIVE:
-  PATCH .orbital8-folder-version.json
+  PATCH /files/folder-123?supportsAllDrives=true
   Body: {
-    folderId: 'folder-123',
-    folderVersion: 1696789250000,  // INCREMENTED TO NEW TIMESTAMP
-    lastUpdatedBy: 'device-A',
-    lastUpdatedAt: new Date().toISOString()
+    appProperties: {
+      orbital8LastUpdated: '1696789250000'
+    }
   }
+  PATCH manifest (.orbital8-state.json) appProperties
+  Body: { appProperties: { orbital8CloudVersion: '1696789250000' } }
 
 ONEDRIVE:
-  PUT /me/drive/special/approot:/folder-versions/folder-123.json:/content
+  PUT /me/drive/special/approot:/state/folder-123.json:/content
   Body: {
     folderId: 'folder-123',
-    folderVersion: 1696789250000,  // INCREMENTED TO NEW TIMESTAMP
-    lastUpdatedBy: 'device-A',
-    lastUpdatedAt: new Date().toISOString()
+    lastUpdated: 1696789250000,  // INCREMENTED TO NEW TIMESTAMP
+    cloudVersion: 1696789250000,
+    updatedAt: new Date().toISOString()
   }
 
 ┌─────────────────────────────────────────────────────┐
@@ -532,41 +538,31 @@ state.imageFiles = files with metadata from IndexedDB
 Display immediately - data is current.
 
 CRITICAL IMPLEMENTATION DETAILS
-1. Folder Version File Location
+1. Folder Version Marker Location
 Google Drive:
-javascript// Store as hidden file in the folder itself
-const query = `name='.orbital8-folder-version.json' and '${folderId}' in parents and trashed=false`;
-const response = await makeApiCall(`/files?q=${encodeURIComponent(query)}&fields=files(id)`);
-
-if (response.files.length === 0) {
-  // Create new version file
-  await makeApiCall('/files', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: '.orbital8-folder-version.json',
-      parents: [folderId],
-      mimeType: 'application/json'
-    })
-  });
-}
-
-// Update content
-await makeApiCall(`/upload/drive/v3/files/${fileId}?uploadType=media`, {
+javascript// Update the folder appProperties for quick timestamp reads
+await makeApiCall(`/files/${folderId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
   method: 'PATCH',
-  body: JSON.stringify({ folderVersion: Date.now(), ... })
+  body: JSON.stringify({ appProperties: { orbital8LastUpdated: String(Date.now()) } })
+});
+
+// Mirror the same value on the manifest's orbital8CloudVersion
+await makeApiCall(`/files/${manifestFileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+  method: 'PATCH',
+  body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(Date.now()) } })
 });
 OneDrive:
-javascript// Store in approot under folder-versions/
-const endpoint = `/me/drive/special/approot:/folder-versions/${folderId}.json:/content`;
+javascript// Persist the marker inside the /state virtual folder
+const endpoint = `/me/drive/special/approot:/state/${folderId}.json:/content`;
 
 await makeApiCall(endpoint, {
   method: 'PUT',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     folderId,
-    folderVersion: Date.now(),
-    lastUpdatedBy: deviceId,
-    lastUpdatedAt: new Date().toISOString()
+    lastUpdated: Date.now(),
+    cloudVersion: Date.now(),
+    updatedAt: new Date().toISOString()
   })
 });
 2. Atomic Folder Version Updates

@@ -35,10 +35,14 @@
 - `GoogleDriveProvider.loadFolderManifest()` (~L3688-L3732): fetches `.orbital8-state.json`, including fallback behavior.
 - `GoogleDriveProvider.getFolderVersion()` (~L3733-L3753): inspects manifest metadata to determine cloud version/manifest file ID.
 - `GoogleDriveProvider.saveFolderManifest()` (~L3754-L3802): creates or updates the Drive manifest file and logs duplicates.
+- `GoogleDriveProvider.getFolderTimestamp()` (~L3307-L3345): reads `appProperties.orbital8LastUpdated` from the folder for timestamp reconciliation.
+- `GoogleDriveProvider.setFolderTimestamp()` (~L3348-L3377): patches the folder appProperties to bump `orbital8LastUpdated` while preserving existing keys.
 - `GoogleDriveProvider.updateFolderVersionMarker()` (~L3803-L3816): updates Drive appProperties or creates manifests when missing.
 - `OneDriveProvider.loadFolderManifest()` (~L3954-L3988): retrieves the OneDrive manifest/state files with error handling.
 - `OneDriveProvider.getFolderVersion()` (~L3989-L4010): reads OneDrive state file for cloud version information.
 - `OneDriveProvider.saveFolderManifest()` (~L4011-L4041): writes manifest/state JSON blobs back to OneDrive special folders.
+- `OneDriveProvider.getFolderTimestamp()` (~L3564-L3588): downloads `/state/${folderId}.json` and normalizes the `lastUpdated` marker.
+- `OneDriveProvider.setFolderTimestamp()` (~L3585-L3606): overwrites `/state/${folderId}.json` with the refreshed `lastUpdated` payload.
 - `OneDriveProvider.updateFolderVersionMarker()` (~L4042-L4055): updates the OneDrive state file (creating manifests if necessary).
 
 ## Offline queue utilities (`SyncManager`)
