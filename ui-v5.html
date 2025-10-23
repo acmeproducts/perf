@@ -8,6 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Orbital8 Goji Version</title>
     <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js"></script>
+    <script type="module" src="stack-sequence-helpers.js"></script>
     <style>
         :root {
             --accent: #f59e0b;
@@ -1142,8 +1143,13 @@
             folderSearchDataset: [],
             folderSearchTerm: '',
             folderTimestamps: new Map(),
-            folderSummaries: new Map()
+            folderSummaries: new Map(),
+            pendingSequenceCanonicalizations: new Map()
         };
+        const SequenceHelpers = window.StackSequenceHelpers;
+        if (!SequenceHelpers) {
+            throw new Error('StackSequenceHelpers unavailable');
+        }
         const DriveLinkHelper = {
             extractFileId(input) {
                 if (!input) return null;
@@ -4059,6 +4065,7 @@
                     }
 
                     state.imageFiles = cloudFiles;
+                    this.flushPendingSequenceCanonicalizations({ reason: 'metadata:bootstrap', fireAndForget: true });
                     this.switchToCommonUI();
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
@@ -4085,6 +4092,11 @@
                  const effectiveContext = folderContext && typeof folderContext === 'object'
                     ? { providerType: folderContext.providerType || state.providerType, folderId: folderContext.folderId || state.currentFolder?.id }
                     : { providerType: state.providerType, folderId: state.currentFolder?.id };
+
+                 const totalFiles = Array.isArray(files) ? files.length : 0;
+                 const deterministicBase = Math.max(SequenceHelpers.MAX_SEQUENCE_BASE - totalFiles, 1);
+                 const sequenceTracker = SequenceHelpers.createSequenceTracker({ deterministicBase });
+                 const canonicalizationQueue = [];
 
                  let cachedMetadata = new Map();
                  if (state.dbManager) {
@@ -4124,7 +4136,7 @@
                     }
 
                     const file = files[i];
-                    const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
+                    const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length, deterministicBase });
                     const cached = cachedMetadata.get(file.id);
                     let finalMetadata = null;
                     let shouldPersist = false;
@@ -4197,6 +4209,17 @@
                         shouldPersist = true;
                     }
 
+                    const canonicalizationResult = SequenceHelpers.ensureCanonicalSequence(file, finalMetadata, {
+                        index: i,
+                        tracker: sequenceTracker,
+                        deterministicBase,
+                        queue: canonicalizationQueue,
+                        reason: 'metadata:bootstrap'
+                    });
+                    if (canonicalizationResult.updated) {
+                        shouldPersist = true;
+                    }
+
                     const numericTimestamp = Number(finalMetadata.lastUpdated);
                     if (Number.isFinite(numericTimestamp) && numericTimestamp > latestTimestamp) {
                         latestTimestamp = numericTimestamp;
@@ -4221,6 +4244,10 @@
                     }
                     if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
+
+                 if (canonicalizationQueue.length > 0) {
+                    this.recordPendingSequenceCanonicalizations(canonicalizationQueue, { context: effectiveContext, deterministicBase });
+                 }
 
                  cachedMetadata.forEach((_, id) => {
                     if (!seenIds.has(id) && state.dbManager) {
@@ -4274,6 +4301,91 @@
                     }
                  }
             },
+            recordPendingSequenceCanonicalizations(updates = [], options = {}) {
+                if (!Array.isArray(updates) || updates.length === 0) {
+                    return;
+                }
+                if (!(state.pendingSequenceCanonicalizations instanceof Map)) {
+                    state.pendingSequenceCanonicalizations = new Map();
+                }
+                const reason = options?.reason || 'metadata:bootstrap';
+                updates.forEach(update => {
+                    if (!update || !update.fileId) {
+                        return;
+                    }
+                    state.pendingSequenceCanonicalizations.set(update.fileId, {
+                        ...update,
+                        reason,
+                        recordedAt: Date.now(),
+                        context: options?.context || null
+                    });
+                });
+                if (state.syncLog && updates.length > 0) {
+                    state.syncLog.log({
+                        event: 'stack-sequence:canonicalize:queue',
+                        level: 'info',
+                        details: `Queued ${updates.length} canonical stack sequence ${updates.length === 1 ? 'update' : 'updates'} (${reason}).`,
+                        data: { count: updates.length, reason }
+                    });
+                }
+            },
+            async flushPendingSequenceCanonicalizations(options = {}) {
+                const { fireAndForget = false, reason = 'metadata:canonicalize' } = options;
+                if (!(state.pendingSequenceCanonicalizations instanceof Map) || state.pendingSequenceCanonicalizations.size === 0) {
+                    return;
+                }
+                const updates = Array.from(state.pendingSequenceCanonicalizations.values());
+                state.pendingSequenceCanonicalizations.clear();
+
+                const runFlush = async () => {
+                    if (updates.length === 0) {
+                        return;
+                    }
+                    state.syncLog?.log({
+                        event: 'stack-sequence:canonicalize:flush',
+                        level: 'info',
+                        details: `Persisting ${updates.length} canonical stack sequence ${updates.length === 1 ? 'update' : 'updates'} (${reason}).`,
+                        data: { count: updates.length, reason }
+                    });
+
+                    for (const update of updates) {
+                        if (!update?.fileId || !Number.isFinite(Number(update.stackSequence))) {
+                            continue;
+                        }
+                        try {
+                            state.syncLog?.log({
+                                event: 'stack-sequence:canonicalize',
+                                level: 'info',
+                                fileId: update.fileId,
+                                details: `Persisting canonical stack sequence ${update.stackSequence} for ${STACK_NAMES[update.stack] || update.stack || 'unknown stack'}.`,
+                                data: { stack: update.stack, stackSequence: update.stackSequence, index: update.index, reason }
+                            });
+                            await this.updateUserMetadata(update.fileId, { stackSequence: update.stackSequence }, {
+                                skipDebounce: true,
+                                origin: reason,
+                                operationType: 'stack:canonicalize',
+                                providerSilent: true
+                            });
+                        } catch (error) {
+                            state.pendingSequenceCanonicalizations.set(update.fileId, update);
+                            state.syncLog?.log({
+                                event: 'stack-sequence:canonicalize:error',
+                                level: 'error',
+                                fileId: update.fileId,
+                                details: `Failed to persist canonical stack sequence: ${error?.message || String(error)}`,
+                                data: { stack: update.stack, stackSequence: update.stackSequence, index: update.index, reason }
+                            });
+                        }
+                    }
+                };
+
+                if (fireAndForget) {
+                    runFlush();
+                    return;
+                }
+
+                await runFlush();
+            },
             generateDefaultMetadata(file, context = {}) {
                  const baseMetadata = {
                     stack: 'in',
@@ -4317,15 +4429,24 @@
                  const numericSequence = Number(baseMetadata.stackSequence);
                  if (!Number.isFinite(numericSequence) || numericSequence === 0) {
                     const timestampSource = file.modifiedTime || file.createdTime || null;
-                    let fallbackSequence = Date.now();
+                    const indexOffset = typeof context.index === 'number' ? context.index : 0;
+                    let fallbackSequence = Number.NaN;
                     if (timestampSource) {
                         const parsed = Date.parse(timestampSource);
                         if (!Number.isNaN(parsed)) {
-                            fallbackSequence = parsed;
+                            fallbackSequence = parsed - indexOffset;
                         }
                     }
-                    const indexOffset = typeof context.index === 'number' ? context.index : 0;
-                    baseMetadata.stackSequence = fallbackSequence - indexOffset;
+                    if (!Number.isFinite(fallbackSequence)) {
+                        const deterministicBase = Number.isFinite(context?.deterministicBase)
+                            ? Number(context.deterministicBase)
+                            : SequenceHelpers.MAX_SEQUENCE_BASE;
+                        fallbackSequence = SequenceHelpers.computeDeterministicSequenceCandidate({
+                            deterministicBase,
+                            index: indexOffset
+                        });
+                    }
+                    baseMetadata.stackSequence = fallbackSequence;
                  }
                  return baseMetadata;
             },
