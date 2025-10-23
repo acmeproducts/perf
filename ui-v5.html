@@ -2326,6 +2326,32 @@
                     });
                 });
             }
+            async getMetadataByFolder(context = {}) {
+                if (!this.db) {
+                    return new Map();
+                }
+                const folderKey = this.resolveFolderKey(context);
+                if (!folderKey) {
+                    return new Map();
+                }
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('metadata', 'readonly');
+                    const store = transaction.objectStore('metadata');
+                    const index = store.index('folderKey');
+                    const results = new Map();
+                    transaction.oncomplete = () => resolve(results);
+                    transaction.onerror = (event) => reject(event.target.error);
+                    const request = index.getAll(IDBKeyRange.only(folderKey));
+                    request.onsuccess = () => {
+                        const records = request.result || [];
+                        records.forEach(record => {
+                            if (record && record.id && record.metadata) {
+                                results.set(record.id, this.normalizeMetadata(record.metadata));
+                            }
+                        });
+                    };
+                });
+            }
             async saveMetadata(fileId, metadata, context = {}) {
                 if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
@@ -3884,6 +3910,27 @@
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, 0, 'Fetching from cloud...');
 
+                const folderContext = { providerType: state.providerType, folderId };
+                let folderTimestampHint = null;
+                if (state.folderTimestampService && typeof state.provider?.getFolderTimestamp === 'function') {
+                    try {
+                        const timestampResponse = await state.provider.getFolderTimestamp(folderId, { signal: state.activeRequests?.signal });
+                        if (timestampResponse && Number.isFinite(Number(timestampResponse.lastUpdated))) {
+                            folderTimestampHint = Number(timestampResponse.lastUpdated);
+                        }
+                    } catch (error) {
+                        state.syncLog?.log({
+                            event: 'folder-timestamp:load:error',
+                            level: 'warn',
+                            details: `Failed to fetch folder timestamp for ${folderId}`,
+                            data: { error: error?.message || String(error) }
+                        });
+                    }
+                    if (!this.isNavigationActive(navigationToken)) {
+                        return false;
+                    }
+                }
+
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     if (!this.isNavigationActive(navigationToken)) {
@@ -3893,6 +3940,26 @@
                     const cloudFiles = Array.isArray(result?.files) ? result.files.slice() : [];
 
                     if (cloudFiles.length === 0) {
+                        if (state.folderTimestampService && folderContext.folderId) {
+                            const fallbackTimestamp = typeof folderTimestampHint === 'number' && Number.isFinite(folderTimestampHint)
+                                ? folderTimestampHint
+                                : Date.now();
+                            try {
+                                await state.folderTimestampService.reconcile(folderContext, {
+                                    cloudHint: folderTimestampHint,
+                                    fallbackTimestamp,
+                                    skipCloudFetch: folderTimestampHint != null,
+                                    allowCloudWrite: false
+                                });
+                            } catch (error) {
+                                state.syncLog?.log({
+                                    event: 'folder-timestamp:reconcile:error',
+                                    level: 'warn',
+                                    details: `Failed to reconcile timestamp for ${folderContext.folderId}`,
+                                    data: { error: error?.message || String(error) }
+                                });
+                            }
+                        }
                         state.imageFiles = [];
                         this.switchToCommonUI();
                         Core.initializeStacks();
@@ -3902,7 +3969,7 @@
                         return true;
                     }
 
-                    await this.processAllMetadata(cloudFiles, true, { navigationToken });
+                    await this.processAllMetadata(cloudFiles, true, { navigationToken, folderContext, folderTimestampHint });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
@@ -3928,51 +3995,200 @@
                 }
             },
             async processAllMetadata(files, isFirstLoad = false, options = {}) {
-                 const { navigationToken = null } = options;
+                 const { navigationToken = null, folderContext = null, folderTimestampHint = null } = options;
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
 
-                 const fileIds = files.map(file => file.id).filter(Boolean);
+                 const effectiveContext = folderContext && typeof folderContext === 'object'
+                    ? { providerType: folderContext.providerType || state.providerType, folderId: folderContext.folderId || state.currentFolder?.id }
+                    : { providerType: state.providerType, folderId: state.currentFolder?.id };
+
                  let cachedMetadata = new Map();
-                 if (fileIds.length > 0) {
+                 if (state.dbManager) {
                     try {
-                        cachedMetadata = await state.dbManager.getManyMetadata(fileIds);
+                        if (typeof state.dbManager.getMetadataByFolder === 'function' && effectiveContext.folderId) {
+                            cachedMetadata = await state.dbManager.getMetadataByFolder(effectiveContext);
+                        } else {
+                            const fileIds = files.map(file => file.id).filter(Boolean);
+                            if (fileIds.length > 0) {
+                                cachedMetadata = await state.dbManager.getManyMetadata(fileIds);
+                            }
+                        }
                     } catch (error) {
                         console.warn('Failed to prefetch cached metadata:', error);
                         cachedMetadata = new Map();
                     }
                  }
 
+                 const seenIds = new Set();
+                 const saves = [];
+                 const deletes = [];
+                 let latestTimestamp = 0;
+
+                 const arraysEqual = (a, b) => {
+                    if (!Array.isArray(a) && !Array.isArray(b)) return true;
+                    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+                    if (a.length !== b.length) return false;
+                    for (let i = 0; i < a.length; i += 1) {
+                        if (a[i] !== b[i]) return false;
+                    }
+                    return true;
+                 };
+
                  for (let i = 0; i < files.length; i++) {
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
                     }
+
                     const file = files[i];
-                    try {
-                        const metadata = cachedMetadata.get(file.id);
-                        if (metadata) {
-                            Object.assign(file, metadata);
+                    const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
+                    const cached = cachedMetadata.get(file.id);
+                    let finalMetadata = null;
+                    let shouldPersist = false;
+
+                    if (cached) {
+                        seenIds.add(file.id);
+                        const cachedTimestamp = Number(cached.lastUpdated);
+                        const remoteTimestamp = Number(defaultMetadata.lastUpdated);
+                        const normalizedCachedTimestamp = Number.isFinite(cachedTimestamp) ? cachedTimestamp : 0;
+                        const normalizedRemoteTimestamp = Number.isFinite(remoteTimestamp) ? remoteTimestamp : 0;
+                        const merged = { ...cached };
+                        const remoteFields = {
+                            stack: defaultMetadata.stack,
+                            tags: Array.isArray(defaultMetadata.tags) ? defaultMetadata.tags : [],
+                            qualityRating: defaultMetadata.qualityRating,
+                            contentRating: defaultMetadata.contentRating,
+                            notes: defaultMetadata.notes,
+                            stackSequence: defaultMetadata.stackSequence,
+                            favorite: defaultMetadata.favorite,
+                            lastUpdated: normalizedRemoteTimestamp
+                        };
+
+                        if (normalizedRemoteTimestamp > normalizedCachedTimestamp) {
+                            const hadDifferences = (
+                                merged.stack !== remoteFields.stack ||
+                                !arraysEqual(merged.tags, remoteFields.tags) ||
+                                Number(merged.qualityRating) !== Number(remoteFields.qualityRating) ||
+                                Number(merged.contentRating) !== Number(remoteFields.contentRating) ||
+                                merged.notes !== remoteFields.notes ||
+                                Number(merged.stackSequence) !== Number(remoteFields.stackSequence) ||
+                                Boolean(merged.favorite) !== Boolean(remoteFields.favorite) ||
+                                normalizedCachedTimestamp !== normalizedRemoteTimestamp
+                            );
+                            Object.assign(merged, remoteFields, {
+                                localUpdatedAt: Math.max(
+                                    normalizedRemoteTimestamp,
+                                    Number(merged.localUpdatedAt) || 0
+                                )
+                            });
+                            if (hadDifferences) {
+                                shouldPersist = true;
+                            }
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
-                            Object.assign(file, defaultMetadata);
-                            await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                            merged.lastUpdated = normalizedCachedTimestamp;
+                            if (!Array.isArray(merged.tags) && Array.isArray(remoteFields.tags)) {
+                                merged.tags = remoteFields.tags;
+                            }
+                            ['stack', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite'].forEach(key => {
+                                if (merged[key] === undefined && remoteFields[key] !== undefined) {
+                                    merged[key] = remoteFields[key];
+                                }
+                            });
                         }
-                        const numericTimestamp = Number(file.lastUpdated);
-                        if (!Number.isFinite(numericTimestamp)) {
-                            file.lastUpdated = 0;
-                        } else {
-                            file.lastUpdated = numericTimestamp;
+
+                        if (!Array.isArray(merged.tags)) {
+                            merged.tags = [];
                         }
-                    } catch (error) {
-                        console.error(`Failed to process metadata for ${file.name}:`, error);
+                        finalMetadata = merged;
+                    } else {
+                        finalMetadata = { ...defaultMetadata };
+                        if (!Number.isFinite(Number(finalMetadata.lastUpdated))) {
+                            finalMetadata.lastUpdated = 0;
+                        }
+                        if (!Number.isFinite(Number(finalMetadata.localUpdatedAt))) {
+                            finalMetadata.localUpdatedAt = finalMetadata.lastUpdated || Date.now();
+                        }
+                        if (!Array.isArray(finalMetadata.tags)) {
+                            finalMetadata.tags = [];
+                        }
+                        shouldPersist = true;
                     }
+
+                    const numericTimestamp = Number(finalMetadata.lastUpdated);
+                    if (Number.isFinite(numericTimestamp) && numericTimestamp > latestTimestamp) {
+                        latestTimestamp = numericTimestamp;
+                    }
+
+                    Object.assign(file, finalMetadata);
+
+                    if (shouldPersist && state.dbManager) {
+                        saves.push(
+                            state.dbManager.saveMetadata(
+                                file.id,
+                                finalMetadata,
+                                { folderId: effectiveContext.folderId, providerType: effectiveContext.providerType }
+                            ).catch(error => {
+                                console.warn(`Failed to persist metadata for ${file.id}:`, error);
+                            })
+                        );
+                    }
+
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
-                if (!navigationToken || this.isNavigationActive(navigationToken)) {
+
+                 cachedMetadata.forEach((_, id) => {
+                    if (!seenIds.has(id) && state.dbManager) {
+                        deletes.push(
+                            state.dbManager.deleteMetadata(id).catch(error => {
+                                console.warn(`Failed to remove metadata for ${id}:`, error);
+                            })
+                        );
+                    }
+                 });
+
+                 if (saves.length > 0) {
+                    await Promise.allSettled(saves);
+                 }
+                 if (deletes.length > 0) {
+                    await Promise.allSettled(deletes);
+                 }
+
+                 if (!navigationToken || this.isNavigationActive(navigationToken)) {
                     this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
-                }
+                 }
+
+                 if (state.folderTimestampService && effectiveContext.folderId) {
+                    const timestampCandidates = [];
+                    if (typeof folderTimestampHint === 'number' && Number.isFinite(folderTimestampHint)) {
+                        timestampCandidates.push(folderTimestampHint);
+                    }
+                    if (Number.isFinite(latestTimestamp) && latestTimestamp > 0) {
+                        timestampCandidates.push(latestTimestamp);
+                    }
+                    if (timestampCandidates.length > 0) {
+                        const fallbackTimestamp = Math.max(...timestampCandidates);
+                        try {
+                            await state.folderTimestampService.reconcile(
+                                effectiveContext,
+                                {
+                                    cloudHint: folderTimestampHint,
+                                    fallbackTimestamp,
+                                    skipCloudFetch: folderTimestampHint != null,
+                                    allowCloudWrite: false
+                                }
+                            );
+                        } catch (error) {
+                            state.syncLog?.log({
+                                event: 'folder-timestamp:reconcile:error',
+                                level: 'warn',
+                                details: `Failed to reconcile timestamp for ${effectiveContext.folderId}`,
+                                data: { error: error?.message || String(error) }
+                            });
+                        }
+                    }
+                 }
             },
             generateDefaultMetadata(file, context = {}) {
                  const baseMetadata = {
@@ -4157,7 +4373,7 @@
                             await queuePromise;
                         }
                     }
-                    this.touchFolderTimestamp(timestamp, { reason: operationType });
+                    await this.touchFolderTimestamp(timestamp, { reason: operationType });
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -4206,7 +4422,7 @@
                     }
                 }
             },
-            touchFolderTimestamp(timestamp, options = {}) {
+            async touchFolderTimestamp(timestamp, options = {}) {
                 const { reason = 'mutation' } = options;
                 if (!state.folderTimestampService || !state.currentFolder?.id) {
                     return;
@@ -4214,16 +4430,19 @@
                 if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
                     return;
                 }
-                state.folderTimestampService
-                    .touch({ providerType: state.providerType, folderId: state.currentFolder.id }, { timestamp })
-                    .catch(error => {
-                        state.syncLog?.log({
-                            event: 'folder-timestamp:touch:failed',
-                            level: 'warn',
-                            details: `Failed to record folder timestamp for ${state.currentFolder.id}`,
-                            data: { error: error?.message || String(error), reason }
-                        });
+                try {
+                    await state.folderTimestampService.touch(
+                        { providerType: state.providerType, folderId: state.currentFolder.id },
+                        { timestamp }
+                    );
+                } catch (error) {
+                    state.syncLog?.log({
+                        event: 'folder-timestamp:touch:failed',
+                        level: 'warn',
+                        details: `Failed to record folder timestamp for ${state.currentFolder.id}`,
+                        data: { error: error?.message || String(error), reason }
                     });
+                }
             },
             async deleteFile(fileId, options = {}) {
                 const { source = 'ui', originStack = null, name = null } = options;
@@ -4367,7 +4586,7 @@
                     await state.dbManager.saveMetadata(file.id, finalMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
                     Object.assign(file, finalMetadata);
                     await this.persistFileMetadata(file, { reason: 'metadata:extract', silent: true });
-                    this.touchFolderTimestamp(timestamp, { reason: 'metadata:extract' });
+                    await this.touchFolderTimestamp(timestamp, { reason: 'metadata:extract' });
                 } catch (error) {
                     if (error.name === 'AbortError') return;
                     console.warn(`Background metadata extraction failed for ${file.name}: ${error.message}`);
@@ -4378,7 +4597,7 @@
                     file.localUpdatedAt = file.lastUpdated;
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                     await this.persistFileMetadata(file, { reason: 'metadata:extract:error', silent: true });
-                    this.touchFolderTimestamp(file.lastUpdated, { reason: 'metadata:extract:error' });
+                    await this.touchFolderTimestamp(file.lastUpdated, { reason: 'metadata:extract:error' });
                 }
             }
         };
