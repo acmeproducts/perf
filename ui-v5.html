@@ -1141,7 +1141,8 @@
             showDebugToasts: true,
             folderSearchDataset: [],
             folderSearchTerm: '',
-            folderTimestamps: new Map()
+            folderTimestamps: new Map(),
+            folderSummaries: new Map()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -2223,7 +2224,7 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 6);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 7);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
 
@@ -2253,6 +2254,22 @@
 
                         if (folderTimestampStore && !folderTimestampStore.indexNames.contains('providerType')) {
                             folderTimestampStore.createIndex('providerType', 'providerType', { unique: false });
+                        }
+
+                        let folderSummaryStore = null;
+                        if (!db.objectStoreNames.contains('folderSummaries')) {
+                            folderSummaryStore = db.createObjectStore('folderSummaries', { keyPath: 'key' });
+                        } else if (event.target.transaction) {
+                            folderSummaryStore = event.target.transaction.objectStore('folderSummaries');
+                        }
+
+                        if (folderSummaryStore) {
+                            if (!folderSummaryStore.indexNames.contains('providerType')) {
+                                folderSummaryStore.createIndex('providerType', 'providerType', { unique: false });
+                            }
+                            if (!folderSummaryStore.indexNames.contains('parentKey')) {
+                                folderSummaryStore.createIndex('parentKey', 'parentKey', { unique: false });
+                            }
                         }
                     };
                     request.onsuccess = (event) => {
@@ -2351,6 +2368,64 @@
                         keys.forEach(key => store.delete(key));
                     };
                     request.onerror = () => reject(request.error);
+                });
+            }
+            resolveParentKey(context = {}) {
+                const providerType = context.providerType || context.provider || 'unknown';
+                const viewKey = context.viewKey || context.parentId || 'root';
+                return `${providerType}::${viewKey}`;
+            }
+            normalizeFolderSummary(summary = {}) {
+                const normalized = { ...summary };
+                normalized.imageCount = Number.isFinite(Number(normalized.imageCount)) ? Number(normalized.imageCount) : 0;
+                const timestamp = Number(normalized.lastUpdated);
+                normalized.lastUpdated = Number.isFinite(timestamp) ? timestamp : null;
+                normalized.marker = normalized.marker != null ? String(normalized.marker) : null;
+                normalized.updatedAt = Number.isFinite(Number(normalized.updatedAt)) ? Number(normalized.updatedAt) : Date.now();
+                return normalized;
+            }
+            async getFolderSummaries(context = {}) {
+                if (!this.db) return [];
+                const parentKey = this.resolveParentKey(context);
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderSummaries', 'readonly');
+                    const store = transaction.objectStore('folderSummaries');
+                    const index = store.index('parentKey');
+                    const request = index.getAll(IDBKeyRange.only(parentKey));
+                    request.onsuccess = () => {
+                        const rows = Array.isArray(request.result) ? request.result : [];
+                        resolve(rows.map(row => this.normalizeFolderSummary(row)));
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderSummaries(context = {}, summaries = []) {
+                if (!this.db || !Array.isArray(summaries) || summaries.length === 0) {
+                    return;
+                }
+                const parentKey = this.resolveParentKey(context);
+                const providerType = context.providerType || context.provider || 'unknown';
+                const parentId = context.parentId || null;
+                const viewKey = context.viewKey || context.parentId || 'root';
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderSummaries', 'readwrite');
+                    const store = transaction.objectStore('folderSummaries');
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error);
+                    summaries.forEach(summary => {
+                        if (!summary || !summary.folderId) return;
+                        const normalized = this.normalizeFolderSummary({
+                            ...summary,
+                            key: `${providerType}::${summary.folderId}`,
+                            providerType,
+                            parentKey,
+                            parentId,
+                            viewKey,
+                            name: summary.name || '',
+                            hasChildren: Boolean(summary.hasChildren)
+                        });
+                        store.put(normalized);
+                    });
                 });
             }
             async getFolderTimestamp(context = {}) {
@@ -2788,6 +2863,8 @@
                 if (this.constructor === BaseProvider) {
                     throw new Error("Abstract classes can't be instantiated.");
                 }
+                this.currentParentId = null;
+                this.currentViewKey = 'root';
             }
             // Authentication
             async authenticate() { throw new Error("Method 'authenticate()' must be implemented."); }
@@ -2803,11 +2880,97 @@
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
             async moveFileToFolder(fileId, targetFolderId) { throw new Error("Method 'moveFileToFolder(fileId, targetFolderId)' must be implemented."); }
             async deleteFile(fileId) { throw new Error("Method 'deleteFile(fileId)' must be implemented."); }
+            getProviderType() {
+                if (this.providerType) return this.providerType;
+                if (this.name) return this.name;
+                return state.providerType || 'unknown';
+            }
+            getDefaultViewKey() { return 'root'; }
+            getFolderViewContext() {
+                return {
+                    providerType: this.getProviderType(),
+                    parentId: this.currentParentId || null,
+                    viewKey: this.currentViewKey || this.getDefaultViewKey()
+                };
+            }
+            deriveFolderMarker(folder) {
+                if (!folder) return null;
+                if (folder.cloudMarker != null) return folder.cloudMarker;
+                if (folder.appProperties?.orbital8LastUpdated != null) {
+                    return String(folder.appProperties.orbital8LastUpdated);
+                }
+                if (folder.appProperties?.lastUpdated != null) {
+                    return String(folder.appProperties.lastUpdated);
+                }
+                if (folder.modifiedTime) return folder.modifiedTime;
+                if (folder.createdTime) return folder.createdTime;
+                return null;
+            }
+            async getFolderSummaryMap(context = {}) {
+                if (!state?.dbManager || typeof state.dbManager.getFolderSummaries !== 'function') {
+                    return new Map();
+                }
+                try {
+                    const summaries = await state.dbManager.getFolderSummaries({ ...this.getFolderViewContext(), ...context });
+                    return new Map(summaries.map(summary => [summary.folderId, summary]));
+                } catch (error) {
+                    state.syncLog?.log({
+                        event: 'provider:folder-summary:read-error',
+                        level: 'warn',
+                        details: 'Failed to read folder summaries from IndexedDB.',
+                        data: { error: error?.message || String(error) }
+                    });
+                    return new Map();
+                }
+            }
+            async persistFolderSummaries(context = {}, folders = []) {
+                if (!state?.dbManager || typeof state.dbManager.saveFolderSummaries !== 'function') {
+                    return;
+                }
+                if (!Array.isArray(folders) || folders.length === 0) {
+                    return;
+                }
+                const resolvedContext = { ...this.getFolderViewContext(), ...context };
+                const summaries = folders
+                    .filter(folder => folder && folder.id)
+                    .map(folder => {
+                        const marker = this.deriveFolderMarker(folder);
+                        const imageCount = Number.isFinite(folder.imageCount)
+                            ? Number(folder.imageCount)
+                            : (Number.isFinite(folder.itemCount) ? Number(folder.itemCount) : 0);
+                        const lastUpdated = typeof folder.lastUpdated === 'number' && Number.isFinite(folder.lastUpdated)
+                            ? Number(folder.lastUpdated)
+                            : null;
+                        return {
+                            folderId: folder.id,
+                            name: folder.name || '',
+                            hasChildren: Boolean(folder.hasChildren),
+                            imageCount,
+                            itemCount: Number.isFinite(folder.itemCount) ? Number(folder.itemCount) : imageCount,
+                            lastUpdated,
+                            marker,
+                            updatedAt: Date.now(),
+                            modifiedTime: folder.modifiedTime || null,
+                            createdTime: folder.createdTime || null
+                        };
+                    });
+                try {
+                    await state.dbManager.saveFolderSummaries(resolvedContext, summaries);
+                } catch (error) {
+                    state.syncLog?.log({
+                        event: 'provider:folder-summary:write-error',
+                        level: 'warn',
+                        details: 'Failed to persist folder summaries.',
+                        data: { error: error?.message || String(error) }
+                    });
+                }
+            }
         }
         class GoogleDriveProvider extends BaseProvider {
             constructor() {
                 super();
                 this.name = 'googledrive';
+                this.providerType = 'googledrive';
                 this.clientId = '567988062464-fa6c1ovesqeudqs5398vv4mbo6q068p9.apps.googleusercontent.com';
                 this.redirectUri = window.location.origin + window.location.pathname;
                 this.scope = 'https://www.googleapis.com/auth/drive';
@@ -2967,7 +3130,7 @@
                 if (isJson) { return await response.json(); }
                 return response;
             }
-            async getFolders() {
+            async getFolders(options = {}) {
                 const allFolders = [];
                 let nextPageToken = null;
 
@@ -2981,24 +3144,43 @@
                     nextPageToken = response.nextPageToken;
                 } while (nextPageToken);
 
-                const normalized = allFolders.map(folder => ({
-                    id: folder.id,
-                    name: folder.name,
-                    type: 'folder',
-                    createdTime: folder.createdTime,
-                    modifiedTime: folder.modifiedTime,
-                    itemCount: 0, // Google Drive API doesn't provide this in the list call
-                    hasChildren: false, // Assume false to not show a non-functional 'Browse' button
-                    appProperties: folder.appProperties || {}
-                }));
+                this.currentParentId = 'root';
+                this.currentViewKey = this.getDefaultViewKey();
+                const context = { ...this.getFolderViewContext(), ...options.context };
+                const summaryMap = await this.getFolderSummaryMap(context);
 
-                return await this.annotateFoldersWithImageCounts(normalized);
+                const normalized = allFolders.map(folder => {
+                    const cached = summaryMap.get(folder.id);
+                    const marker = this.deriveFolderMarker(folder);
+                    const cachedCount = Number.isFinite(cached?.imageCount) ? cached.imageCount : 0;
+                    const cachedTimestamp = typeof cached?.lastUpdated === 'number' && Number.isFinite(cached.lastUpdated)
+                        ? cached.lastUpdated
+                        : null;
+                    return {
+                        id: folder.id,
+                        name: folder.name,
+                        type: 'folder',
+                        createdTime: folder.createdTime,
+                        modifiedTime: folder.modifiedTime,
+                        itemCount: cachedCount,
+                        imageCount: cachedCount,
+                        hasChildren: false,
+                        appProperties: folder.appProperties || {},
+                        lastUpdated: cachedTimestamp,
+                        cloudMarker: marker
+                    };
+                });
+
+                const annotated = await this.annotateFoldersWithImageCounts(normalized, { summaryMap });
+                await this.persistFolderSummaries(context, annotated);
+                return annotated;
             }
-            async annotateFoldersWithImageCounts(folders = []) {
+            async annotateFoldersWithImageCounts(folders = [], options = {}) {
                 if (!Array.isArray(folders) || folders.length === 0) {
                     return Array.isArray(folders) ? folders.slice() : [];
                 }
 
+                const summaryMap = options.summaryMap instanceof Map ? options.summaryMap : new Map();
                 const results = folders.map(folder => ({ ...folder }));
                 let index = 0;
                 const maxConcurrency = Math.min(4, folders.length);
@@ -3012,9 +3194,21 @@
                         }
 
                         try {
+                            const marker = this.deriveFolderMarker(sourceFolder);
+                            targetFolder.cloudMarker = marker;
+                            const cached = summaryMap.get(sourceFolder.id);
+                            if (cached && cached.marker === marker && Number.isFinite(cached.imageCount)) {
+                                targetFolder.imageCount = cached.imageCount;
+                                targetFolder.itemCount = cached.imageCount;
+                                if (typeof cached.lastUpdated === 'number' && Number.isFinite(cached.lastUpdated)) {
+                                    targetFolder.lastUpdated = cached.lastUpdated;
+                                }
+                                continue;
+                            }
                             const imageCount = await this.getImageCountForFolder(sourceFolder.id);
                             targetFolder.imageCount = imageCount;
                             targetFolder.itemCount = imageCount;
+                            targetFolder.lastUpdated = Date.now();
                         } catch (error) {
                             console.warn(`Failed to load image count for folder ${sourceFolder.id}:`, error);
                         }
@@ -3267,6 +3461,7 @@
             constructor() {
                 super();
                 this.name = 'onedrive';
+                this.providerType = 'onedrive';
                 this.apiBase = 'https://graph.microsoft.com/v1.0';
                 this.isAuthenticated = false;
                 this.activeAccount = null;
@@ -3424,30 +3619,72 @@
                 if (downloadsFolder) { return downloadsFolder; }
                 return { id: 'root', name: 'Root', folder: true };
             }
-            async getFolders() {
+            async getFolders(options = {}) {
                 const downloadsFolder = await this.getDownloadsFolder();
-                this.currentParentId = downloadsFolder.id; this.currentParentPath = downloadsFolder.name;
                 this.breadcrumb = [{ id: downloadsFolder.id, name: downloadsFolder.name }];
-                return await this.loadFoldersInParent(downloadsFolder.id);
+                this.currentParentId = downloadsFolder.id;
+                this.currentParentPath = downloadsFolder.name;
+                this.currentViewKey = this.getDefaultViewKey();
+                const context = { ...this.getFolderViewContext(), parentId: downloadsFolder.id, viewKey: this.getDefaultViewKey(), ...options.context };
+                return await this.loadFoldersInParent(downloadsFolder.id, { context });
             }
-            async loadFoldersInParent(parentId) {
+            async loadFoldersInParent(parentId, options = {}) {
+                const contextOverrides = options.context || {};
+                const viewKey = contextOverrides.viewKey || parentId || this.currentViewKey || this.getDefaultViewKey();
+                this.currentParentId = parentId;
+                this.currentViewKey = viewKey;
+                const context = { ...this.getFolderViewContext(), parentId, viewKey, ...contextOverrides };
+                const summaryMap = await this.getFolderSummaryMap(context);
                 const folders = [];
                 let endpoint = parentId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${parentId}/children`;
                 let nextLink = `${this.apiBase}${endpoint}`;
                 do {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''));
                     const data = await response.json();
-                    const folderItems = data.value.filter(item => item.folder).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
+                    const folderItems = data.value
+                        .filter(item => item.folder)
+                        .map(folder => {
+                            const normalized = {
+                                id: folder.id,
+                                name: folder.name,
+                                type: 'folder',
+                                createdTime: folder.createdDateTime,
+                                modifiedTime: folder.lastModifiedDateTime,
+                                itemCount: folder.folder.childCount || 0,
+                                imageCount: folder.folder.childCount || 0,
+                                hasChildren: (folder.folder.childCount || 0) > 0,
+                                lastUpdated: null,
+                                cloudMarker: folder.lastModifiedDateTime
+                            };
+                            const marker = this.deriveFolderMarker(normalized);
+                            normalized.cloudMarker = marker;
+                            const cached = summaryMap.get(normalized.id);
+                            if (cached && cached.marker === marker && Number.isFinite(cached.imageCount)) {
+                                normalized.imageCount = cached.imageCount;
+                                normalized.itemCount = cached.imageCount;
+                                if (typeof cached.lastUpdated === 'number' && Number.isFinite(cached.lastUpdated)) {
+                                    normalized.lastUpdated = cached.lastUpdated;
+                                }
+                            } else if (cached && typeof cached.lastUpdated === 'number' && Number.isFinite(cached.lastUpdated)) {
+                                normalized.lastUpdated = cached.lastUpdated;
+                            } else {
+                                const parsedModified = normalized.modifiedTime ? Date.parse(normalized.modifiedTime) : NaN;
+                                normalized.lastUpdated = Number.isFinite(parsedModified) ? parsedModified : null;
+                            }
+                            return normalized;
+                        });
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
-                return folders.sort((a, b) => a.name.localeCompare(b.name));
+                const sorted = folders.sort((a, b) => a.name.localeCompare(b.name));
+                await this.persistFolderSummaries(context, sorted);
+                return sorted;
             }
             async drillIntoFolder(folder) {
                 this.breadcrumb.push({ id: folder.id, name: folder.name });
                 this.currentParentId = folder.id;
                 this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
-                return await this.loadFoldersInParent(folder.id);
+                return await this.loadFoldersInParent(folder.id, { context: { viewKey: folder.id } });
             }
             async navigateToParent() {
                 if (this.breadcrumb.length <= 1) { return await this.getFolders(); }
@@ -3455,7 +3692,8 @@
                 const parentFolder = this.breadcrumb[this.breadcrumb.length - 1];
                 this.currentParentId = parentFolder.id;
                 this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
-                return await this.loadFoldersInParent(parentFolder.id);
+                const isRoot = this.breadcrumb.length === 1;
+                return await this.loadFoldersInParent(parentFolder.id, { context: { viewKey: isRoot ? this.getDefaultViewKey() : parentFolder.id } });
             }
             getCurrentPath() { return this.currentParentPath; }
             canGoUp() { return this.breadcrumb.length > 1; }
@@ -5943,23 +6181,132 @@ this.updateImageCounters();
             }
         };
         const Folders = {
+            resolveSnapshotKey(context = {}) {
+                const providerType = context.providerType || state.providerType || 'unknown';
+                const viewKey = context.viewKey || context.parentId || 'root';
+                return `${providerType}::${viewKey}`;
+            },
+            getCurrentContext() {
+                if (state?.provider && typeof state.provider.getFolderViewContext === 'function') {
+                    return state.provider.getFolderViewContext();
+                }
+                return { providerType: state.providerType || 'unknown', viewKey: 'root' };
+            },
+            cloneFolders(folders = []) {
+                return (Array.isArray(folders) ? folders : []).map(folder => {
+                    const rawLastUpdated = typeof folder?.lastUpdated === 'number'
+                        ? Number(folder.lastUpdated)
+                        : (typeof folder?.lastUpdated === 'string' ? Number(folder.lastUpdated) : null);
+                    const normalizedLastUpdated = Number.isFinite(rawLastUpdated) ? rawLastUpdated : null;
+                    const rawItemCount = Number(folder?.itemCount);
+                    const itemCount = Number.isFinite(rawItemCount) ? rawItemCount : 0;
+                    const rawImageCount = Number(folder?.imageCount);
+                    const imageCount = Number.isFinite(rawImageCount) ? rawImageCount : itemCount;
+                    return {
+                        id: folder?.id || null,
+                        name: folder?.name || 'Untitled folder',
+                        type: folder?.type || 'folder',
+                        createdTime: folder?.createdTime || null,
+                        modifiedTime: folder?.modifiedTime || null,
+                        itemCount,
+                        imageCount,
+                        hasChildren: Boolean(folder?.hasChildren),
+                        lastUpdated: normalizedLastUpdated,
+                        appProperties: folder?.appProperties || null,
+                        cloudMarker: folder?.cloudMarker || null
+                    };
+                }).filter(folder => folder.id);
+            },
+            summaryToFolder(summary = {}) {
+                const rawImageCount = Number(summary.imageCount);
+                const rawItemCount = Number(summary.itemCount);
+                const count = Number.isFinite(rawImageCount) ? rawImageCount : (Number.isFinite(rawItemCount) ? rawItemCount : 0);
+                const rawTimestamp = typeof summary.lastUpdated === 'number' ? Number(summary.lastUpdated) : (typeof summary.lastUpdated === 'string' ? Number(summary.lastUpdated) : null);
+                const timestamp = Number.isFinite(rawTimestamp) ? rawTimestamp : null;
+                return {
+                    id: summary.folderId || summary.id || null,
+                    name: summary.name || 'Untitled folder',
+                    type: 'folder',
+                    createdTime: summary.createdTime || null,
+                    modifiedTime: summary.modifiedTime || null,
+                    itemCount: count,
+                    imageCount: count,
+                    hasChildren: Boolean(summary.hasChildren),
+                    lastUpdated: timestamp,
+                    appProperties: summary.appProperties || null,
+                    cloudMarker: summary.marker || null
+                };
+            },
+            async loadSnapshot(context = {}) {
+                const key = this.resolveSnapshotKey(context);
+                if (state.folderSummaries.has(key)) {
+                    return this.cloneFolders(state.folderSummaries.get(key));
+                }
+                if (!state?.dbManager || typeof state.dbManager.getFolderSummaries !== 'function') {
+                    return [];
+                }
+                try {
+                    const records = await state.dbManager.getFolderSummaries(context);
+                    const folders = records.map(record => this.summaryToFolder(record)).filter(folder => folder.id);
+                    state.folderSummaries.set(key, this.cloneFolders(folders));
+                    return this.cloneFolders(folders);
+                } catch (error) {
+                    state.syncLog?.log({
+                        event: 'folders:snapshot:load-error',
+                        level: 'warn',
+                        details: 'Failed to load folder snapshot from IndexedDB.',
+                        data: { error: error?.message || String(error) }
+                    });
+                    return [];
+                }
+            },
+            cacheSnapshot(context = {}, folders = []) {
+                const key = this.resolveSnapshotKey(context);
+                const snapshot = this.cloneFolders(folders);
+                state.folderSummaries.set(key, snapshot);
+            },
             async load() {
                 const { folderList, folderTitle } = Utils.elements;
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
                 folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 this.resetSearch();
                 this.setSearchDataset([]);
+                const context = this.getCurrentContext();
+                let initialRendered = false;
                 try {
-                    const folders = await state.provider.getFolders();
-                    this.display(folders);
+                    const snapshot = await this.loadSnapshot(context);
+                    if (Array.isArray(snapshot) && snapshot.length > 0) {
+                        this.display(snapshot);
+                        this.updateNavigation();
+                        initialRendered = true;
+                    }
+                } catch (error) {
+                    state.syncLog?.log({
+                        event: 'folders:snapshot:render-error',
+                        level: 'warn',
+                        details: 'Failed to render cached folder snapshot.',
+                        data: { error: error?.message || String(error) }
+                    });
+                }
+                try {
+                    const folders = await state.provider.getFolders({ context });
+                    const refreshedContext = state.provider?.getFolderViewContext?.() || context;
+                    this.cacheSnapshot(refreshedContext, folders);
+                    if (!initialRendered) {
+                        this.display(folders);
+                    }
                     this.updateNavigation();
                 } catch (error) {
-                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
-                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">
-                                                <span>Failed to load folders.</span>
-                                                <button id="retry-folders" class="folder-action-btn" style="margin-top: 15px;">Retry</button>
-                                            </div>`;
-                    document.getElementById('retry-folders').addEventListener('click', () => this.load());
+                    if (initialRendered) {
+                        Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                    } else {
+                        Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                        folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">
+                                                    <span>Failed to load folders.</span>
+                                                    <button id="retry-folders" class="folder-action-btn" style="margin-top: 15px;">Retry</button>
+                                                </div>`;
+                        document.getElementById('retry-folders').addEventListener('click', () => this.load());
+                    }
                 }
             },
 
@@ -5993,40 +6340,12 @@ this.updateImageCounters();
                                      </div>`;
                     folderList.appendChild(div);
 
-                    const metaElement = div.querySelector('.folder-date');
-                    if (metaElement && state.folderTimestampService && folder?.id) {
-                        const parsedModified = folder?.modifiedTime ? Date.parse(folder.modifiedTime) : NaN;
-                        const parsedCreated = folder?.createdTime ? Date.parse(folder.createdTime) : NaN;
-                        const fallbackTimestamp = Number.isFinite(folder?.lastUpdated) ? folder.lastUpdated : (Number.isFinite(parsedModified) ? parsedModified : (Number.isFinite(parsedCreated) ? parsedCreated : null));
-                        state.folderTimestampService
-                            .reconcile({ providerType: state.providerType, folderId: folder.id }, {
-                                fallbackTimestamp,
-                                cloudHint: folder?.appProperties,
-                                allowCloudWrite: false,
-                                skipCloudFetch: Boolean(folder?.appProperties)
-                            })
-                            .then(result => {
-                                if (!result || typeof result.lastUpdated !== 'number' || !Number.isFinite(result.lastUpdated)) {
-                                    return;
-                                }
-                                folder.lastUpdated = result.lastUpdated;
-                                if (metaElement.isConnected) {
-                                    metaElement.textContent = this.formatFolderMeta(folder);
-                                }
-                            })
-                            .catch(error => {
-                                state.syncLog?.log({
-                                    event: 'folder-timestamp:hydrate:error',
-                                    level: 'warn',
-                                    details: `Failed to hydrate timestamp for folder ${folder.id}`,
-                                    data: { error: error?.message || String(error) }
-                                });
-                            });
-                    }
                 });
 
                 this.addEventListeners();
                 this.handleSearchInput(state.folderSearchTerm || '');
+                const currentContext = this.getCurrentContext();
+                this.cacheSnapshot(currentContext, folders);
             },
 
             addEventListeners() {
