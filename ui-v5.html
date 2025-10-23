@@ -2526,6 +2526,7 @@
             constructor(globalState) {
                 this.state = globalState;
                 this.memory = globalState.folderTimestamps || new Map();
+                this.pendingCloudWrites = new Map();
             }
             log(event, details, level = 'info', data = {}) {
                 if (this.state?.syncLog && typeof this.state.syncLog.log === 'function') {
@@ -2721,12 +2722,77 @@
                 }
                 return { lastUpdated: latest.lastUpdated, source: latest.source };
             }
+            getPendingKey(resolved = {}) {
+                const providerType = resolved.providerType || this.state?.providerType || 'unknown';
+                const folderId = resolved.folderId || this.state?.currentFolder?.id || 'unknown';
+                return `${providerType}::${folderId}`;
+            }
+            registerPendingCloudWrite(resolved, executor, meta = {}) {
+                const key = this.getPendingKey(resolved);
+                const timestamp = meta.timestamp;
+                const reason = meta.reason || 'touch';
+                this.log('folder-timestamp:cloud:touch-deferred:queued', 'Queued deferred folder timestamp write', 'info', {
+                    folderId: resolved.folderId,
+                    providerType: resolved.providerType,
+                    timestamp,
+                    reason
+                });
+                let trackedPromise = null;
+                const run = async () => {
+                    try {
+                        await executor();
+                        this.log('folder-timestamp:cloud:touch-deferred:success', 'Deferred folder timestamp write completed', 'info', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            timestamp,
+                            reason
+                        });
+                    } catch (error) {
+                        this.log('folder-timestamp:cloud:touch-deferred:error', 'Deferred folder timestamp write failed', 'warn', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            timestamp,
+                            reason,
+                            error: error?.message || String(error)
+                        });
+                        throw error;
+                    }
+                };
+                trackedPromise = run().finally(() => {
+                    if (this.pendingCloudWrites.get(key) === trackedPromise) {
+                        this.pendingCloudWrites.delete(key);
+                    }
+                });
+                this.pendingCloudWrites.set(key, trackedPromise);
+                return trackedPromise;
+            }
+            async flushPendingCloudWrites(options = {}) {
+                const pending = Array.from(this.pendingCloudWrites.values());
+                if (pending.length === 0) {
+                    return { flushed: 0, results: [] };
+                }
+                const reason = options.reason || 'flush';
+                this.log('folder-timestamp:cloud:flush:start', `Flushing ${pending.length} deferred timestamp writes`, 'info', {
+                    reason,
+                    pending: pending.length
+                });
+                const results = await Promise.allSettled(pending);
+                const resolvedCount = results.filter(result => result.status === 'fulfilled').length;
+                const rejectedCount = results.filter(result => result.status === 'rejected').length;
+                this.log('folder-timestamp:cloud:flush:complete', `Flushed ${pending.length} deferred timestamp writes`, 'info', {
+                    reason,
+                    resolved: resolvedCount,
+                    rejected: rejectedCount
+                });
+                return { flushed: pending.length, results };
+            }
             async touch(context = {}, options = {}) {
                 const resolved = this.resolveContext(context);
                 if (!resolved.folderId) {
                     return { lastUpdated: null, source: null };
                 }
                 const timestamp = this.normalizeTimestampInput(options.timestamp) ?? Date.now();
+                const reason = options.reason || 'touch';
                 this.setMemoryRecord(resolved, timestamp);
                 if (this.state?.dbManager) {
                     try {
@@ -2740,13 +2806,28 @@
                     }
                 }
                 if (!options.skipCloud && this.supportsCloud(resolved)) {
+                    const provider = this.state?.provider;
+                    if (!provider || typeof provider.setFolderTimestamp !== 'function') {
+                        this.log('folder-timestamp:cloud:touch-error', 'Provider unavailable for folder timestamp write', 'warn', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            reason
+                        });
+                        return { lastUpdated: timestamp, source: 'memory' };
+                    }
+                    const executeCloudWrite = () => provider.setFolderTimestamp(resolved.folderId, timestamp, { existing: options.cloudHint });
                     try {
-                        await this.state.provider.setFolderTimestamp(resolved.folderId, timestamp, { existing: options.cloudHint });
+                        if (options.deferCloudWrite) {
+                            this.registerPendingCloudWrite(resolved, executeCloudWrite, { timestamp, reason });
+                        } else {
+                            await executeCloudWrite();
+                        }
                     } catch (error) {
                         this.log('folder-timestamp:cloud:touch-error', 'Failed to push folder timestamp to provider', 'warn', {
                             folderId: resolved.folderId,
                             providerType: resolved.providerType,
-                            error: error?.message || String(error)
+                            error: error?.message || String(error),
+                            reason
                         });
                     }
                 }
@@ -3861,6 +3942,9 @@
                 }
             },
             async backToProviderSelection() {
+                if (state.folderTimestampService) {
+                    await state.folderTimestampService.flushPendingCloudWrites({ reason: 'provider-screen' });
+                }
                 if (state.syncManager) {
                     await state.syncManager.flush({ reason: 'provider-screen' });
                     await state.syncManager.stop();
@@ -4279,6 +4363,9 @@
                 Utils.showScreen('folder-screen');
 
                 try {
+                    if (state.folderTimestampService) {
+                        await state.folderTimestampService.flushPendingCloudWrites({ reason: 'folder-switch' });
+                    }
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
@@ -4433,7 +4520,7 @@
                 try {
                     await state.folderTimestampService.touch(
                         { providerType: state.providerType, folderId: state.currentFolder.id },
-                        { timestamp }
+                        { timestamp, reason, deferCloudWrite: true }
                     );
                 } catch (error) {
                     state.syncLog?.log({
