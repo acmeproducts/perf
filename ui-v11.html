@@ -3535,6 +3535,7 @@
                 if (this.constructor === BaseProvider) {
                     throw new Error("Abstract classes can't be instantiated.");
                 }
+                this._skippedFileIds = new Set();
             }
             // Authentication
             async authenticate() { throw new Error("Method 'authenticate()' must be implemented."); }
@@ -3550,6 +3551,21 @@
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
             async moveFileToFolder(fileId, targetFolderId) { throw new Error("Method 'moveFileToFolder(fileId, targetFolderId)' must be implemented."); }
             async deleteFile(fileId) { throw new Error("Method 'deleteFile(fileId)' must be implemented."); }
+            recordSkippedFileId(fileId) {
+                if (!fileId) return;
+                this._skippedFileIds.add(fileId);
+            }
+            recordSkippedFileIds(fileIds = []) {
+                if (!Array.isArray(fileIds)) return;
+                for (const id of fileIds) {
+                    this.recordSkippedFileId(id);
+                }
+            }
+            consumeSkippedFileIds() {
+                const ids = Array.from(this._skippedFileIds);
+                this._skippedFileIds.clear();
+                return ids;
+            }
         }
         class GoogleDriveProvider extends BaseProvider {
             constructor() {
@@ -3601,7 +3617,7 @@
             async fetchRawFilesByIds(fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
                 const signal = options.signal;
-                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,shortcutDetails(targetId,targetMimeType)';
+                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,trashed,shortcutDetails(targetId,targetMimeType)';
                 const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=${fields}&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal }));
                 const responses = await Promise.allSettled(requests);
                 return responses
@@ -3712,6 +3728,7 @@
                 const allFiles = [];
                 let nextPageToken = null;
                 const signal = state.activeRequests?.signal;
+                const skippedShortcutIds = new Set();
 
                 do {
                     const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
@@ -3739,13 +3756,28 @@
                             .map(file => file.shortcutDetails?.targetId)
                             .filter(Boolean))];
 
-                        if (targetIds.length > 0) {
+                        if (targetIds.length === 0) {
+                            shortcutCandidates.forEach(shortcut => {
+                                skippedShortcutIds.add(shortcut.id);
+                                this.recordSkippedFileId(shortcut.id);
+                            });
+                        } else {
                             const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal });
                             const targetMap = new Map(targetFiles.map(target => [target.id, target]));
                             resolvedShortcuts = shortcutCandidates
                                 .map(shortcut => {
-                                    const target = targetMap.get(shortcut.shortcutDetails?.targetId);
-                                    if (!target || !target.mimeType?.startsWith('image/')) { return null; }
+                                    const targetId = shortcut.shortcutDetails?.targetId;
+                                    const target = targetMap.get(targetId);
+                                    if (!target || !target.mimeType?.startsWith('image/')) {
+                                        skippedShortcutIds.add(shortcut.id);
+                                        this.recordSkippedFileId(shortcut.id);
+                                        return null;
+                                    }
+                                    if (target.trashed === true) {
+                                        skippedShortcutIds.add(shortcut.id);
+                                        this.recordSkippedFileId(shortcut.id);
+                                        return null;
+                                    }
                                     return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
                                 })
                                 .filter(Boolean);
@@ -3756,6 +3788,10 @@
                     nextPageToken = response.nextPageToken;
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
                 } while (nextPageToken);
+
+                if (skippedShortcutIds.size > 0) {
+                    this.recordSkippedFileIds(Array.from(skippedShortcutIds));
+                }
 
                 return { folders: [], files: allFiles };
             }
@@ -3883,6 +3919,7 @@
                     .filter(Boolean))];
 
                 if (targetIds.length === 0) {
+                    shortcutCandidates.forEach(shortcut => this.recordSkippedFileId(shortcut.id));
                     return normalized;
                 }
 
@@ -3890,8 +3927,16 @@
                 const targetMap = new Map(targetFiles.map(target => [target.id, target]));
                 const resolvedShortcuts = shortcutCandidates
                     .map(shortcut => {
-                        const target = targetMap.get(shortcut.shortcutDetails?.targetId);
-                        if (!target || !target.mimeType?.startsWith('image/')) { return null; }
+                        const targetId = shortcut.shortcutDetails?.targetId;
+                        const target = targetMap.get(targetId);
+                        if (!target || !target.mimeType?.startsWith('image/')) {
+                            this.recordSkippedFileId(shortcut.id);
+                            return null;
+                        }
+                        if (target.trashed === true) {
+                            this.recordSkippedFileId(shortcut.id);
+                            return null;
+                        }
                         return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
                     })
                     .filter(Boolean);
@@ -4435,9 +4480,15 @@
                         }
                         cloudFiles = await state.provider.fetchFilesByIds(folderId, changedIds, { signal: state.activeRequests?.signal });
                     }
+                    const skippedFileIds = typeof state.provider.consumeSkippedFileIds === 'function'
+                        ? state.provider.consumeSkippedFileIds()
+                        : [];
+                    const skippedSet = new Set((skippedFileIds || []).filter(Boolean));
 
                     const mergedMap = new Map((cachedFiles || []).map(file => [file.id, file]));
-                    const incompleteDelta = changedIds.length > 0 && cloudFiles.length !== changedIds.length;
+                    const expectedFetched = changedIds.length;
+                    const effectiveFetched = cloudFiles.length + skippedSet.size;
+                    const incompleteDelta = expectedFetched > 0 && effectiveFetched !== expectedFetched;
                     for (const file of cloudFiles) {
                         const existing = mergedMap.get(file.id) || {};
                         mergedMap.set(file.id, { ...existing, ...file });
@@ -4445,6 +4496,14 @@
                     const removedIds = diff.removedIds || [];
                     for (const removed of removedIds) {
                         mergedMap.delete(removed);
+                    }
+                    skippedSet.forEach(id => mergedMap.delete(id));
+
+                    let combinedRemovedIds = removedIds;
+                    if (skippedSet.size > 0) {
+                        const removalSet = new Set(removedIds);
+                        skippedSet.forEach(id => removalSet.add(id));
+                        combinedRemovedIds = Array.from(removalSet);
                     }
 
                     state.imageFiles = Array.from(mergedMap.values());
@@ -4456,16 +4515,16 @@
                     for (const file of cloudFiles) {
                         await state.dbManager.saveMetadata(file.id, file, { folderId, providerType: state.providerType });
                     }
-                    for (const removed of removedIds) {
+                    for (const removed of combinedRemovedIds) {
                         await state.dbManager.deleteMetadata(removed);
                     }
 
-                    await this.processAllMetadata(state.imageFiles, false);
+                    await this.processAllMetadata(state.imageFiles, false, { skippedFileIds });
                     await state.dbManager.saveFolderCache(folderId, state.imageFiles);
 
                     const manifestRecord = remoteManifest ? { ...remoteManifest } : { entries: coordinator?.buildManifestFromFiles(folderId, state.imageFiles) };
                     manifestRecord.requiresFullResync = Boolean(manifestRecord.requiresFullResync || incompleteDelta);
-                    const diffSummary = { changed: changedIds.length, removed: removedIds.length };
+                    const diffSummary = { changed: changedIds.length, removed: combinedRemovedIds.length };
                     await coordinator?.persistManifest(folderId, manifestRecord, {
                         cloudVersion: remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null,
                         localVersion: folderState?.localVersion ?? null,
@@ -4502,7 +4561,7 @@
 
                     const summary = [];
                     if (changedIds.length > 0) summary.push(`${changedIds.length} updated`);
-                    if (removedIds.length > 0) summary.push(`${removedIds.length} removed`);
+                    if (combinedRemovedIds.length > 0) summary.push(`${combinedRemovedIds.length} removed`);
                     if (summary.length > 0) {
                         Utils.showToast(`Folder updated (${summary.join(', ')})`, 'info');
                     }
@@ -4513,7 +4572,7 @@
                     state.syncLog?.log({
                         event: 'foldersync:delta-apply',
                         level: 'success',
-                        details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
+                        details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${combinedRemovedIds.length} removals.`,
                         data: { cloudVersion: updatedCloudVersion }
                     });
                     return hasImages;
@@ -4555,8 +4614,18 @@
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
+                    const skippedFileIds = typeof state.provider.consumeSkippedFileIds === 'function'
+                        ? state.provider.consumeSkippedFileIds()
+                        : [];
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const mergeResult = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const { mergedFiles, newIds, updatedIds, hasChanges } = mergeResult;
+                    let removedIds = mergeResult.removedIds || [];
+                    if (Array.isArray(skippedFileIds) && skippedFileIds.length > 0) {
+                        const removalSet = new Set(removedIds);
+                        skippedFileIds.forEach(id => removalSet.add(id));
+                        removedIds = Array.from(removalSet);
+                    }
 
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
@@ -4577,7 +4646,7 @@
                     }
 
                     state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached);
+                    await this.processAllMetadata(state.imageFiles, !hadCached, { skippedFileIds });
                     if (hasChanges || !hadCached) {
                         await state.dbManager.saveFolderCache(folderId, state.imageFiles);
                     }
@@ -4675,8 +4744,17 @@
                     const folderId = state.currentFolder.id;
                     const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                     const result = await state.provider.getFilesAndMetadata(folderId);
+                    const skippedFileIds = typeof state.provider.consumeSkippedFileIds === 'function'
+                        ? state.provider.consumeSkippedFileIds()
+                        : [];
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const { mergedFiles, updatedIds, hasChanges, removedIds: baseRemovedIds } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    let removedIds = baseRemovedIds || [];
+                    if (Array.isArray(skippedFileIds) && skippedFileIds.length > 0) {
+                        const removalSet = new Set(removedIds);
+                        skippedFileIds.forEach(id => removalSet.add(id));
+                        removedIds = Array.from(removalSet);
+                    }
 
                     if (!hasChanges) {
                         return;
@@ -4692,7 +4770,7 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
-                    await this.processAllMetadata(mergedFiles);
+                    await this.processAllMetadata(mergedFiles, false, { skippedFileIds });
                     await state.dbManager.saveFolderCache(folderId, mergedFiles);
                     state.imageFiles = mergedFiles;
                     Core.initializeStacks();
@@ -4704,9 +4782,11 @@
                     console.warn("Background refresh failed:", error.message);
                 }
             },
-            async processAllMetadata(files, isFirstLoad = false) {
-                 if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
-                 for (let i = 0; i < files.length; i++) {
+            async processAllMetadata(files, isFirstLoad = false, options = {}) {
+                const skippedFileIds = Array.isArray(options.skippedFileIds) ? options.skippedFileIds.filter(Boolean) : [];
+                const skippedSet = new Set(skippedFileIds);
+                if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+                for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     try {
                         const metadata = await state.dbManager.getMetadata(file.id);
@@ -4720,7 +4800,14 @@
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                }
+                if (skippedSet.size > 0 && state.dbManager) {
+                    try {
+                        await Promise.all(Array.from(skippedSet).map(id => state.dbManager.deleteMetadata(id)));
+                    } catch (cleanupError) {
+                        console.warn('Failed to cleanup skipped metadata:', cleanupError);
+                    }
                 }
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
