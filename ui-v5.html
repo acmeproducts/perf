@@ -1114,7 +1114,8 @@
             isImageTransitioning: false,
             showDebugToasts: true,
             folderSearchDataset: [],
-            folderSearchTerm: ''
+            folderSearchTerm: '',
+            folderTimestamps: new Map()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -2187,7 +2188,7 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 6);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
 
@@ -2206,6 +2207,17 @@
 
                         if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
                             metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
+                        }
+
+                        let folderTimestampStore = null;
+                        if (!db.objectStoreNames.contains('folderTimestamps')) {
+                            folderTimestampStore = db.createObjectStore('folderTimestamps', { keyPath: 'key' });
+                        } else if (event.target.transaction) {
+                            folderTimestampStore = event.target.transaction.objectStore('folderTimestamps');
+                        }
+
+                        if (folderTimestampStore && !folderTimestampStore.indexNames.contains('providerType')) {
+                            folderTimestampStore.createIndex('providerType', 'providerType', { unique: false });
                         }
                     };
                     request.onsuccess = (event) => {
@@ -2277,13 +2289,321 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+            async getFolderTimestamp(context = {}) {
+                if (!this.db) return null;
+                const key = this.resolveFolderKey(context);
+                if (!key) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderTimestamps', 'readonly');
+                    const store = transaction.objectStore('folderTimestamps');
+                    const request = store.get(key);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (!record || typeof record.lastUpdated !== 'number') {
+                            resolve(null);
+                            return;
+                        }
+                        resolve({
+                            key,
+                            folderId: record.folderId || null,
+                            providerType: record.providerType || null,
+                            lastUpdated: record.lastUpdated,
+                            updatedAt: record.updatedAt || null
+                        });
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderTimestamp(context = {}, timestamp) {
+                if (!this.db) return null;
+                const key = this.resolveFolderKey(context);
+                if (!key || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+                    return null;
+                }
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    const store = transaction.objectStore('folderTimestamps');
+                    const record = {
+                        key,
+                        folderId: context.folderId || null,
+                        providerType: context.providerType || null,
+                        lastUpdated: timestamp,
+                        updatedAt: Date.now()
+                    };
+                    const request = store.put(record);
+                    request.onsuccess = () => resolve(record);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async deleteFolderTimestamp(context = {}) {
+                if (!this.db) return;
+                const key = this.resolveFolderKey(context);
+                if (!key) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    const store = transaction.objectStore('folderTimestamps');
+                    const request = store.delete(key);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
             async clearFolderData(context, fileIds = []) {
                 const targets = [];
                 if (Array.isArray(fileIds) && fileIds.length > 0) {
                     targets.push(...fileIds.map(id => this.deleteMetadata(id)));
                 }
                 targets.push(this.deleteMetadataByFolder(context));
+                targets.push(this.deleteFolderTimestamp(context));
                 await Promise.all(targets);
+            }
+        }
+        class FolderTimestampService {
+            constructor(globalState) {
+                this.state = globalState;
+                this.memory = globalState.folderTimestamps || new Map();
+            }
+            log(event, details, level = 'info', data = {}) {
+                if (this.state?.syncLog && typeof this.state.syncLog.log === 'function') {
+                    this.state.syncLog.log({ event, details, level, data });
+                }
+            }
+            normalizeTimestampInput(value) {
+                if (typeof value === 'number') {
+                    return Number.isFinite(value) ? value : null;
+                }
+                if (value instanceof Date) {
+                    const time = value.getTime();
+                    return Number.isFinite(time) ? time : null;
+                }
+                if (typeof value === 'string') {
+                    const numeric = Number(value);
+                    if (Number.isFinite(numeric)) {
+                        return numeric;
+                    }
+                    const parsed = Date.parse(value);
+                    return Number.isFinite(parsed) ? parsed : null;
+                }
+                return null;
+            }
+            resolveContext(context = {}) {
+                const providerType = context.providerType || this.state.providerType || null;
+                const folderId = context.folderId || this.state.currentFolder?.id || null;
+                return { providerType, folderId };
+            }
+            resolveKey(context = {}) {
+                if (!this.state?.dbManager || typeof this.state.dbManager.resolveFolderKey !== 'function') {
+                    return null;
+                }
+                return this.state.dbManager.resolveFolderKey(context);
+            }
+            getMemoryRecord(context = {}) {
+                const key = this.resolveKey(context);
+                if (!key || !this.memory?.has(key)) {
+                    return null;
+                }
+                const record = this.memory.get(key);
+                if (!record || typeof record.lastUpdated !== 'number' || !Number.isFinite(record.lastUpdated)) {
+                    return null;
+                }
+                return { lastUpdated: record.lastUpdated, source: 'memory', raw: record };
+            }
+            setMemoryRecord(context = {}, timestamp) {
+                const key = this.resolveKey(context);
+                if (!key) return;
+                if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
+                    this.memory.set(key, { lastUpdated: timestamp, updatedAt: Date.now(), source: 'memory' });
+                } else if (this.memory.has(key)) {
+                    this.memory.delete(key);
+                }
+            }
+            async getIndexedRecord(context = {}) {
+                if (!this.state?.dbManager || typeof this.state.dbManager.getFolderTimestamp !== 'function') {
+                    return null;
+                }
+                try {
+                    const record = await this.state.dbManager.getFolderTimestamp(context);
+                    if (!record || typeof record.lastUpdated !== 'number' || !Number.isFinite(record.lastUpdated)) {
+                        return null;
+                    }
+                    return { lastUpdated: record.lastUpdated, source: 'indexeddb', raw: record };
+                } catch (error) {
+                    this.log('folder-timestamp:indexeddb:read-error', 'Failed to read folder timestamp from IndexedDB', 'error', {
+                        folderId: context.folderId,
+                        providerType: context.providerType,
+                        error: error?.message || String(error)
+                    });
+                    return null;
+                }
+            }
+            resolveCloudHint(hint) {
+                if (!hint) return null;
+                if (typeof hint === 'number' && Number.isFinite(hint)) {
+                    return { lastUpdated: hint, source: 'cloud', raw: hint };
+                }
+                if (hint instanceof Date) {
+                    return this.resolveCloudHint(hint.getTime());
+                }
+                if (typeof hint === 'string') {
+                    const normalized = this.normalizeTimestampInput(hint);
+                    return normalized != null ? { lastUpdated: normalized, source: 'cloud', raw: hint } : null;
+                }
+                if (typeof hint === 'object') {
+                    if (hint.orbital8LastUpdated != null) {
+                        const normalized = this.normalizeTimestampInput(hint.orbital8LastUpdated);
+                        if (normalized != null) {
+                            return { lastUpdated: normalized, source: 'cloud', raw: hint };
+                        }
+                    }
+                    if (hint.lastUpdated != null) {
+                        const normalized = this.normalizeTimestampInput(hint.lastUpdated);
+                        if (normalized != null) {
+                            return { lastUpdated: normalized, source: 'cloud', raw: hint };
+                        }
+                    }
+                    if (hint.appProperties) {
+                        return this.resolveCloudHint(hint.appProperties);
+                    }
+                }
+                return null;
+            }
+            supportsCloud(context = {}) {
+                const provider = this.state?.provider;
+                if (!provider || !context.providerType) return false;
+                if (context.providerType !== this.state.providerType) return false;
+                return typeof provider.getFolderTimestamp === 'function' && typeof provider.setFolderTimestamp === 'function';
+            }
+            async fetchCloudRecord(context = {}, options = {}) {
+                if (!this.supportsCloud(context)) {
+                    return null;
+                }
+                try {
+                    const response = await this.state.provider.getFolderTimestamp(context.folderId, options);
+                    if (!response) {
+                        return null;
+                    }
+                    const candidate = this.normalizeTimestampInput(response.lastUpdated ?? response.cloudVersion ?? response.timestamp);
+                    if (candidate != null) {
+                        return { lastUpdated: candidate, source: 'cloud', raw: response.raw || response.appProperties || response };
+                    }
+                    return null;
+                } catch (error) {
+                    this.log('folder-timestamp:cloud:read-error', 'Failed to fetch folder timestamp from provider', 'warn', {
+                        folderId: context.folderId,
+                        providerType: context.providerType,
+                        error: error?.message || String(error)
+                    });
+                    return null;
+                }
+            }
+            async reconcile(context = {}, options = {}) {
+                const resolved = this.resolveContext(context);
+                if (!resolved.folderId) {
+                    return { lastUpdated: null, source: null };
+                }
+                const fallbackTimestamp = this.normalizeTimestampInput(options.fallbackTimestamp);
+                const memoryRecord = this.getMemoryRecord(resolved);
+                const indexedRecord = await this.getIndexedRecord(resolved);
+                let cloudRecord = null;
+                if (options.cloudHint) {
+                    cloudRecord = this.resolveCloudHint(options.cloudHint);
+                }
+                if (!cloudRecord && options.skipCloudFetch !== true) {
+                    cloudRecord = await this.fetchCloudRecord(resolved, options);
+                }
+                const candidates = [];
+                if (memoryRecord) candidates.push(memoryRecord);
+                if (indexedRecord) candidates.push(indexedRecord);
+                if (cloudRecord) candidates.push(cloudRecord);
+                if (fallbackTimestamp != null) {
+                    candidates.push({ lastUpdated: fallbackTimestamp, source: 'fallback' });
+                }
+                if (candidates.length === 0) {
+                    return { lastUpdated: null, source: null };
+                }
+                const latest = candidates.reduce((best, candidate) => {
+                    if (!best || candidate.lastUpdated > best.lastUpdated) {
+                        return candidate;
+                    }
+                    return best;
+                }, null);
+                if (!latest || typeof latest.lastUpdated !== 'number' || !Number.isFinite(latest.lastUpdated)) {
+                    return { lastUpdated: null, source: null };
+                }
+                this.setMemoryRecord(resolved, latest.lastUpdated);
+                if (indexedRecord?.lastUpdated !== latest.lastUpdated && this.state?.dbManager) {
+                    try {
+                        await this.state.dbManager.saveFolderTimestamp(resolved, latest.lastUpdated);
+                    } catch (error) {
+                        this.log('folder-timestamp:indexeddb:write-error', 'Failed to persist folder timestamp to IndexedDB', 'error', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            error: error?.message || String(error)
+                        });
+                    }
+                }
+                const allowCloudWrite = options.allowCloudWrite !== false;
+                const shouldWriteCloud = allowCloudWrite && this.supportsCloud(resolved) && ['memory', 'indexeddb'].includes(latest.source || '') && (!cloudRecord || cloudRecord.lastUpdated !== latest.lastUpdated);
+                if (shouldWriteCloud) {
+                    try {
+                        await this.state.provider.setFolderTimestamp(resolved.folderId, latest.lastUpdated, { existing: cloudRecord?.raw || options.cloudHint });
+                    } catch (error) {
+                        this.log('folder-timestamp:cloud:write-error', 'Failed to persist folder timestamp to provider', 'warn', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            error: error?.message || String(error)
+                        });
+                    }
+                }
+                return { lastUpdated: latest.lastUpdated, source: latest.source };
+            }
+            async touch(context = {}, options = {}) {
+                const resolved = this.resolveContext(context);
+                if (!resolved.folderId) {
+                    return { lastUpdated: null, source: null };
+                }
+                const timestamp = this.normalizeTimestampInput(options.timestamp) ?? Date.now();
+                this.setMemoryRecord(resolved, timestamp);
+                if (this.state?.dbManager) {
+                    try {
+                        await this.state.dbManager.saveFolderTimestamp(resolved, timestamp);
+                    } catch (error) {
+                        this.log('folder-timestamp:indexeddb:touch-error', 'Failed to save touch timestamp to IndexedDB', 'error', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            error: error?.message || String(error)
+                        });
+                    }
+                }
+                if (!options.skipCloud && this.supportsCloud(resolved)) {
+                    try {
+                        await this.state.provider.setFolderTimestamp(resolved.folderId, timestamp, { existing: options.cloudHint });
+                    } catch (error) {
+                        this.log('folder-timestamp:cloud:touch-error', 'Failed to push folder timestamp to provider', 'warn', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            error: error?.message || String(error)
+                        });
+                    }
+                }
+                return { lastUpdated: timestamp, source: 'memory' };
+            }
+            async forget(context = {}) {
+                const resolved = this.resolveContext(context);
+                const key = this.resolveKey(resolved);
+                if (key && this.memory?.has(key)) {
+                    this.memory.delete(key);
+                }
+                if (this.state?.dbManager) {
+                    try {
+                        await this.state.dbManager.deleteFolderTimestamp(resolved);
+                    } catch (error) {
+                        this.log('folder-timestamp:indexeddb:forget-error', 'Failed to delete folder timestamp from IndexedDB', 'warn', {
+                            folderId: resolved.folderId,
+                            providerType: resolved.providerType,
+                            error: error?.message || String(error)
+                        });
+                    }
+                }
             }
         }
         class VisualCueManager {
@@ -2570,7 +2890,7 @@
                 let nextPageToken = null;
 
                 do {
-                    let url = '/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime),nextPageToken&pageSize=100&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true';
+                    let url = '/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime,appProperties),nextPageToken&pageSize=100&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true';
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
                     const response = await this.makeApiCall(url);
@@ -2586,7 +2906,8 @@
                     createdTime: folder.createdTime,
                     modifiedTime: folder.modifiedTime,
                     itemCount: 0, // Google Drive API doesn't provide this in the list call
-                    hasChildren: false // Assume false to not show a non-functional 'Browse' button
+                    hasChildren: false, // Assume false to not show a non-functional 'Browse' button
+                    appProperties: folder.appProperties || {}
                 }));
 
                 return await this.annotateFoldersWithImageCounts(normalized);
@@ -2725,6 +3046,48 @@
                     }
                     throw error;
                 }
+            }
+            async getFolderTimestamp(folderId, options = {}) {
+                if (!folderId) return null;
+                try {
+                    const response = await this.makeApiCall(`/files/${folderId}?fields=appProperties,modifiedTime&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal: options.signal });
+                    const appProps = response?.appProperties || {};
+                    const appTimestamp = appProps?.orbital8LastUpdated;
+                    const normalized = typeof appTimestamp !== 'undefined' ? Number(appTimestamp) : NaN;
+                    if (Number.isFinite(normalized)) {
+                        return { lastUpdated: normalized, raw: appProps };
+                    }
+                    const modified = response?.modifiedTime ? Date.parse(response.modifiedTime) : NaN;
+                    if (Number.isFinite(modified)) {
+                        return { lastUpdated: modified, raw: appProps };
+                    }
+                    return null;
+                } catch (error) {
+                    if (/404/.test(error?.message || '')) {
+                        return null;
+                    }
+                    throw error;
+                }
+            }
+            async setFolderTimestamp(folderId, timestamp, options = {}) {
+                if (!folderId || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+                    return null;
+                }
+                let baseProperties = options?.existing;
+                if (!baseProperties || typeof baseProperties !== 'object') {
+                    try {
+                        const existing = await this.makeApiCall(`/files/${folderId}?fields=appProperties&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal: options.signal });
+                        baseProperties = existing?.appProperties || {};
+                    } catch (error) {
+                        baseProperties = {};
+                    }
+                }
+                const nextProperties = { ...baseProperties, orbital8LastUpdated: String(timestamp) };
+                await this.makeApiCall(`/files/${folderId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ appProperties: nextProperties })
+                });
+                return { lastUpdated: timestamp };
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -2896,6 +3259,35 @@
                     }
                     return null;
                 }
+            }
+            async getFolderTimestamp(folderId, options = {}) {
+                if (!folderId) return null;
+                try {
+                    const response = await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
+                    const data = await response.json();
+                    const value = Number(data?.lastUpdated ?? data?.cloudVersion ?? data?.localVersion ?? NaN);
+                    if (Number.isFinite(value)) {
+                        return { lastUpdated: value, raw: data };
+                    }
+                    return null;
+                } catch (error) {
+                    if (/404/.test(error?.message || '')) {
+                        return null;
+                    }
+                    throw error;
+                }
+            }
+            async setFolderTimestamp(folderId, timestamp, options = {}) {
+                if (!folderId || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+                    return null;
+                }
+                const baseline = options?.existing && typeof options.existing === 'object' ? { ...options.existing } : {};
+                baseline.lastUpdated = timestamp;
+                await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
+                    method: 'PUT',
+                    body: JSON.stringify(baseline)
+                });
+                return { lastUpdated: timestamp };
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -3377,6 +3769,18 @@
                             await queuePromise;
                         }
                     }
+                    if (state.folderTimestampService && state.currentFolder?.id) {
+                        state.folderTimestampService
+                            .touch({ providerType: state.providerType, folderId: state.currentFolder.id }, { timestamp })
+                            .catch(error => {
+                                state.syncLog?.log({
+                                    event: 'folder-timestamp:touch:failed',
+                                    level: 'warn',
+                                    details: `Failed to record folder timestamp for ${state.currentFolder.id}`,
+                                    data: { error: error?.message || String(error) }
+                                });
+                            });
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -3479,6 +3883,9 @@
                     const currentFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
                     const fileIds = currentFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType: state.providerType, folderId }, fileIds);
+                    if (state.folderTimestampService) {
+                        await state.folderTimestampService.forget({ providerType: state.providerType, folderId });
+                    }
                     Utils.showToast('Folder metadata cleared. Resyncing...', 'info');
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
@@ -5099,6 +5506,37 @@ this.updateImageCounters();
                                          <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
                     folderList.appendChild(div);
+
+                    const metaElement = div.querySelector('.folder-date');
+                    if (metaElement && state.folderTimestampService && folder?.id) {
+                        const parsedModified = folder?.modifiedTime ? Date.parse(folder.modifiedTime) : NaN;
+                        const parsedCreated = folder?.createdTime ? Date.parse(folder.createdTime) : NaN;
+                        const fallbackTimestamp = Number.isFinite(folder?.lastUpdated) ? folder.lastUpdated : (Number.isFinite(parsedModified) ? parsedModified : (Number.isFinite(parsedCreated) ? parsedCreated : null));
+                        state.folderTimestampService
+                            .reconcile({ providerType: state.providerType, folderId: folder.id }, {
+                                fallbackTimestamp,
+                                cloudHint: folder?.appProperties,
+                                allowCloudWrite: false,
+                                skipCloudFetch: Boolean(folder?.appProperties)
+                            })
+                            .then(result => {
+                                if (!result || typeof result.lastUpdated !== 'number' || !Number.isFinite(result.lastUpdated)) {
+                                    return;
+                                }
+                                folder.lastUpdated = result.lastUpdated;
+                                if (metaElement.isConnected) {
+                                    metaElement.textContent = this.formatFolderMeta(folder);
+                                }
+                            })
+                            .catch(error => {
+                                state.syncLog?.log({
+                                    event: 'folder-timestamp:hydrate:error',
+                                    level: 'warn',
+                                    details: `Failed to hydrate timestamp for folder ${folder.id}`,
+                                    data: { error: error?.message || String(error) }
+                                });
+                            });
+                    }
                 });
 
                 this.addEventListeners();
@@ -5224,12 +5662,29 @@ this.updateImageCounters();
                     parts.push(`${itemCount} ${label}`);
                 }
 
-                const timestamp = folder?.modifiedTime || folder?.createdTime || null;
-                if (timestamp) {
-                    const parsed = Date.parse(timestamp);
-                    if (!Number.isNaN(parsed)) {
-                        parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
+                let timestampValue = null;
+                if (typeof folder?.lastUpdated === 'number' && Number.isFinite(folder.lastUpdated)) {
+                    timestampValue = folder.lastUpdated;
+                } else if (typeof folder?.lastUpdated === 'string') {
+                    const numeric = Number(folder.lastUpdated);
+                    if (Number.isFinite(numeric)) {
+                        timestampValue = numeric;
                     }
+                }
+                if (timestampValue == null && folder?.modifiedTime) {
+                    const parsedModified = Date.parse(folder.modifiedTime);
+                    if (Number.isFinite(parsedModified)) {
+                        timestampValue = parsedModified;
+                    }
+                }
+                if (timestampValue == null && folder?.createdTime) {
+                    const parsedCreated = Date.parse(folder.createdTime);
+                    if (Number.isFinite(parsedCreated)) {
+                        timestampValue = parsedCreated;
+                    }
+                }
+                if (timestampValue != null) {
+                    parts.push(`Updated ${new Date(timestampValue).toLocaleDateString()}`);
                 }
 
                 if (folder?.hasChildren) {
@@ -5820,6 +6275,7 @@ this.updateImageCounters();
                 state.export = new ExportSystem();
                 state.dbManager = new DBManager();
                 await state.dbManager.init();
+                state.folderTimestampService = new FolderTimestampService(state);
                 window.__orbitalAppState = state;
                 window.__orbitalDbManager = state.dbManager;
                 state.syncManager = null;
