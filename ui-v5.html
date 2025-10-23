@@ -128,29 +128,6 @@
         .status.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
         .status.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
         .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
-        .last-folder-banner {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 4px;
-            padding: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 12px;
-            background: rgba(255, 255, 255, 0.05);
-            color: white;
-            margin-bottom: 16px;
-        }
-        .last-folder-banner.hidden { display: none; }
-        .last-folder-link {
-            color: var(--accent);
-            font-weight: 600;
-            text-decoration: none;
-        }
-        .last-folder-link:hover { text-decoration: underline; }
-        .last-folder-meta {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.7);
-        }
         .folder-card {
             max-height: 80vh;
             display: flex;
@@ -165,21 +142,6 @@
         .folder-card .subtitle {
             margin-bottom: 0;
             color: rgba(255, 255, 255, 0.65);
-        }
-        .folder-card .last-folder-banner {
-            align-items: flex-start;
-            text-align: left;
-            gap: 6px;
-        }
-        .folder-card .last-folder-row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: wrap;
-            width: 100%;
-        }
-        .folder-card .last-folder-meta {
-            margin-top: 0;
         }
         .folder-card .omni-search-container {
             margin-bottom: 12px;
@@ -857,13 +819,6 @@
         <div class="card folder-card">
             <h2 class="title" id="folder-title">Select Folder</h2>
             <div class="subtitle" id="folder-subtitle">Choose a folder containing images</div>
-            <div class="last-folder-banner hidden" id="last-folder-banner">
-                <div class="last-folder-row">
-                    <span class="last-folder-label">Last folder:</span>
-                    <a class="last-folder-link" id="last-folder-link" href="#"></a>
-                </div>
-                <span class="last-folder-meta" id="last-folder-meta"></span>
-            </div>
             <div class="omni-search-container hidden" id="folder-search-container">
                 <input type="text" class="input omni-search-input" id="folder-search-input" placeholder="Search folders..." autocomplete="off">
                 <div class="omni-search-results hidden" id="folder-search-results" role="listbox"></div>
@@ -1140,20 +1095,6 @@
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const SHARE_URL_TEMPLATE = "https://drive.google.com/file/d/${fileId}/view?usp=sharing";
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
-        const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
-        const loadLastFolderFromStorage = () => {
-            try {
-                const raw = localStorage.getItem(LAST_FOLDER_STORAGE_KEY);
-                if (!raw) return null;
-                const parsed = JSON.parse(raw);
-                if (parsed && parsed.folderId && parsed.providerType) {
-                    return parsed;
-                }
-            } catch (error) {
-                console.warn('Failed to load last folder from storage:', error);
-            }
-            return null;
-        };
         const OMNI_SEARCH_RESULT_LIMIT = 8;
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
@@ -1170,10 +1111,8 @@
             isReturningToFolders: false,
             navigationToken: null,
             activeRequests: new AbortController(),
-            sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
             showDebugToasts: true,
-            lastPickedFolder: loadLastFolderFromStorage(),
             folderSearchDataset: [],
             folderSearchTerm: ''
         };
@@ -1300,9 +1239,6 @@
 
                     folderTitle: document.getElementById('folder-title'),
                     folderSubtitle: document.getElementById('folder-subtitle'),
-                    lastFolderBanner: document.getElementById('last-folder-banner'),
-                    lastFolderLink: document.getElementById('last-folder-link'),
-                    lastFolderMeta: document.getElementById('last-folder-meta'),
                     folderSearchContainer: document.getElementById('folder-search-container'),
                     folderSearchInput: document.getElementById('folder-search-input'),
                     folderSearchResults: document.getElementById('folder-search-results'),
@@ -3205,129 +3141,19 @@
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
-
-                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                try {
-                    const existingFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
-                    const synced = await this.syncFolderFromCloud(sessionKey, {
-                        navigationToken,
-                        existingFiles,
-                        isForced: Boolean(options.forceFullResync)
-                    });
-                    return synced !== false;
-                } catch (error) {
-                    if (error?.name !== 'AbortError') {
-                        Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
-                    }
-                    await this.returnToFolderSelection();
-                    return false;
-                }
-            },
-            mergeCloudWithExisting(cloudFiles, existingFiles = []) {
-                const cachedMap = new Map(existingFiles.map(file => [file.id, file]));
-                const merged = [];
-                const newIds = [];
-                const updatedIds = [];
-                const removedIds = [];
-
-                const normalizeForComparison = (value) => {
-                    if (value === null || value === undefined) return null;
-                    if (Array.isArray(value)) {
-                        return value.map(item => normalizeForComparison(item));
-                    }
-                    if (typeof value === 'object') {
-                        const normalized = {};
-                        Object.keys(value)
-                            .sort()
-                            .forEach(key => {
-                                normalized[key] = normalizeForComparison(value[key]);
-                            });
-                        return normalized;
-                    }
-                    return value;
-                };
-
-                const hasProviderDifferences = (cached = {}, cloud = {}) => {
-                    const primitiveFields = [
-                        'name', 'size', 'mimeType', 'createdTime', 'modifiedTime',
-                        'thumbnailLink', 'webContentLink', 'webViewLink', 'downloadUrl',
-                        'md5Checksum', 'checksum', 'width', 'height'
-                    ];
-                    for (const field of primitiveFields) {
-                        if ((cached?.[field] ?? null) !== (cloud?.[field] ?? null)) {
-                            return true;
-                        }
-                    }
-
-                    const structuredFields = [
-                        'appProperties', 'shortcutDetails', 'parents',
-                        'imageMediaMetadata', 'videoMediaMetadata', 'thumbnails'
-                    ];
-                    for (const field of structuredFields) {
-                        const cachedValue = normalizeForComparison(cached?.[field]);
-                        const cloudValue = normalizeForComparison(cloud?.[field]);
-                        if (JSON.stringify(cachedValue) !== JSON.stringify(cloudValue)) {
-                            return true;
-                        }
-                    }
-
-                    return false;
-                };
-
-                for (const cloudFile of cloudFiles) {
-                    const cached = cachedMap.get(cloudFile.id);
-                    if (!cached) {
-                        merged.push({ ...cloudFile });
-                        newIds.push(cloudFile.id);
-                    } else {
-                        const mergedFile = { ...cached, ...cloudFile };
-                        if (hasProviderDifferences(cached, cloudFile)) {
-                            updatedIds.push(cloudFile.id);
-                        }
-                        merged.push(mergedFile);
-                        cachedMap.delete(cloudFile.id);
-                    }
-                }
-
-                for (const removedId of cachedMap.keys()) {
-                    removedIds.push(removedId);
-                }
-
-                return {
-                    mergedFiles: merged,
-                    newIds,
-                    updatedIds,
-                    removedIds,
-                    hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
-                };
-            },
-            async syncFolderFromCloud(sessionKey, options = {}) {
-                const folderId = state.currentFolder.id;
-                const existingFiles = Array.isArray(options.existingFiles) ? options.existingFiles : [];
-                const navigationToken = options.navigationToken || state.navigationToken;
-                if (!this.isNavigationActive(navigationToken)) {
-                    return false;
-                }
-                const hadExisting = existingFiles.length > 0;
-
                 Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, hadExisting ? existingFiles.length : 0, hadExisting ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                Utils.updateLoadingProgress(0, 0, 'Fetching from cloud...');
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
-                    const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithExisting(cloudFiles, existingFiles);
 
-                    if (mergedFiles.length === 0) {
+                    const cloudFiles = Array.isArray(result?.files) ? result.files.slice() : [];
+
+                    if (cloudFiles.length === 0) {
                         state.imageFiles = [];
-                        const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                        if (!this.isNavigationActive(navigationToken)) {
-                            return false;
-                        }
-                        state.sessionVisitedFolders.add(key);
                         this.switchToCommonUI();
                         Core.initializeStacks();
                         Core.showEmptyState();
@@ -3336,25 +3162,12 @@
                         return true;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    await this.processAllMetadata(mergedFiles, !hadExisting, { navigationToken });
+                    await this.processAllMetadata(cloudFiles, true, { navigationToken });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
 
-                    state.imageFiles = mergedFiles;
-                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                    state.sessionVisitedFolders.add(key);
-
+                    state.imageFiles = cloudFiles;
                     this.switchToCommonUI();
                     Core.initializeStacks();
                     Core.initializeImageDisplay();
@@ -3365,59 +3178,13 @@
                         Core.showEmptyState();
                     }
 
-                    if (hadExisting && hasChanges) {
-                        const diffSummary = [];
-                        if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
-                        if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
-                        if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
-                        const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
-                        Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
-                    }
-
                     return true;
                 } catch (error) {
-                    if (error.name !== 'AbortError') {
+                    if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    this.returnToFolderSelection();
+                    await this.returnToFolderSelection();
                     return false;
-                }
-            },
-            async refreshFolderInBackground() {
-                try {
-                    const navigationToken = state.navigationToken;
-                    const folderId = state.currentFolder.id;
-                    const existingFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
-                    const result = await state.provider.getFilesAndMetadata(folderId);
-                    const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithExisting(cloudFiles, existingFiles);
-
-                    if (!hasChanges) {
-                        return;
-                    }
-
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    await this.processAllMetadata(mergedFiles, false, { navigationToken });
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return;
-                    }
-                    state.imageFiles = mergedFiles;
-                    Core.initializeStacks();
-                    Core.updateStackCounts();
-                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
-                    else Core.showEmptyState();
-                    Utils.showToast('Folder updated in background', 'info');
-                } catch (error) {
-                    console.warn("Background refresh failed:", error.message);
                 }
             },
             async processAllMetadata(files, isFirstLoad = false, options = {}) {
@@ -3487,41 +3254,6 @@
             },
             switchToCommonUI() {
                 Utils.showScreen('app-container');
-                this.persistLastPickedFolder();
-            },
-            persistLastPickedFolder() {
-                if (!state.currentFolder?.id || !state.providerType) {
-                    return;
-                }
-                const files = Array.isArray(state.imageFiles) ? state.imageFiles : [];
-                const fileCount = files.length;
-                let latestTimestamp = null;
-                for (const file of files) {
-                    const candidate = file?.modifiedTime || file?.createdTime || null;
-                    if (!candidate) continue;
-                    const parsed = Date.parse(candidate);
-                    if (Number.isNaN(parsed)) continue;
-                    if (latestTimestamp == null || parsed > latestTimestamp) {
-                        latestTimestamp = parsed;
-                    }
-                }
-                if (latestTimestamp == null) {
-                    latestTimestamp = Date.now();
-                }
-                const payload = {
-                    providerType: state.providerType,
-                    folderId: state.currentFolder.id,
-                    folderName: state.currentFolder.name || '',
-                    fileCount,
-                    lastUpdated: new Date(latestTimestamp).toISOString()
-                };
-                state.lastPickedFolder = payload;
-                try {
-                    localStorage.setItem(LAST_FOLDER_STORAGE_KEY, JSON.stringify(payload));
-                } catch (error) {
-                    console.warn('Failed to persist last folder:', error);
-                }
-                Folders.updateLastFolderBanner();
             },
             isNavigationActive(token = null) {
                 if (state.isReturningToFolders) {
@@ -3742,17 +3474,15 @@
                     Utils.showToast('No folder selected to reset', 'error');
                     return;
                 }
-                const providerType = state.providerType;
                 try {
                     state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
                     const currentFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
                     const fileIds = currentFiles.map(file => file.id);
-                    await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
-                    state.sessionVisitedFolders.delete(`${providerType || 'unknown'}::${folderId}`);
+                    await state.dbManager.clearFolderData({ providerType: state.providerType, folderId }, fileIds);
                     Utils.showToast('Folder metadata cleared. Resyncing...', 'info');
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
-                    await this.loadImages({ forceFullResync: true, navigationToken });
+                    await this.loadImages({ navigationToken });
                 } catch (error) {
                     Utils.showToast(`Reset failed: ${error.message}`, 'error', true);
                     state.syncLog?.log({ event: 'foldersync:reset-error', level: 'error', details: `Reset failed: ${error.message}` });
@@ -5324,7 +5054,6 @@ this.updateImageCounters();
                 const { folderList, folderTitle } = Utils.elements;
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
                 folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
-                this.updateLastFolderBanner();
                 this.resetSearch();
                 this.setSearchDataset([]);
                 try {
@@ -5522,65 +5251,6 @@ this.updateImageCounters();
                     return;
                 }
                 App.initializeWithProvider(state.providerType, folder.id, folder.name || '', state.provider);
-            },
-
-            handleLastFolderClick() {
-                const lastFolder = state.lastPickedFolder;
-                if (!lastFolder || !lastFolder.folderId) {
-                    return;
-                }
-                if (lastFolder.providerType && lastFolder.providerType !== state.providerType) {
-                    Utils.showToast('Switch to the saved provider to reopen this folder.', 'info');
-                    return;
-                }
-                if (!state.provider) {
-                    Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
-                    return;
-                }
-                if (state.folderMoveMode.active) {
-                    this.handleFolderMoveSelection(lastFolder.folderId, lastFolder.folderName || '');
-                    return;
-                }
-                App.initializeWithProvider(state.providerType, lastFolder.folderId, lastFolder.folderName || '', state.provider);
-            },
-
-            updateLastFolderBanner() {
-                const { lastFolderBanner, lastFolderLink, lastFolderMeta } = Utils.elements;
-                if (!lastFolderBanner || !lastFolderLink) return;
-
-                const data = state.lastPickedFolder;
-                if (!data || !data.folderId || (data.providerType && data.providerType !== state.providerType)) {
-                    lastFolderBanner.classList.add('hidden');
-                    lastFolderLink.textContent = '';
-                    lastFolderLink.removeAttribute('data-folder-id');
-                    lastFolderLink.removeAttribute('data-provider-type');
-                    if (lastFolderMeta) {
-                        lastFolderMeta.textContent = '';
-                    }
-                    return;
-                }
-
-                lastFolderBanner.classList.remove('hidden');
-                lastFolderLink.textContent = data.folderName || 'Untitled folder';
-                lastFolderLink.setAttribute('data-folder-id', data.folderId);
-                lastFolderLink.setAttribute('data-provider-type', data.providerType || '');
-
-                if (lastFolderMeta) {
-                    const parts = [];
-                    const countRaw = data.fileCount;
-                    const count = typeof countRaw === 'number' ? countRaw : parseInt(countRaw, 10);
-                    if (!Number.isNaN(count) && Number.isFinite(count)) {
-                        const label = count === 1 ? 'image' : 'images';
-                        parts.push(`${count} ${label}`);
-                    }
-                    if (data.lastUpdated) {
-                        const parsed = Date.parse(data.lastUpdated);
-                        if (!Number.isNaN(parsed)) {
-                            parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
-                        }
-                    }
-                    lastFolderMeta.textContent = parts.join(' • ');
-                }
             },
 
             updateNavigation() {
@@ -5860,13 +5530,6 @@ this.updateImageCounters();
                     }
                 });
 
-                const { lastFolderLink } = Utils.elements;
-                if (lastFolderLink) {
-                    lastFolderLink.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        Folders.handleLastFolderClick();
-                    });
-                }
             },
             setupFolderSearch() {
                 const { folderSearchInput, folderSearchResults, folderSearchContainer } = Utils.elements;
