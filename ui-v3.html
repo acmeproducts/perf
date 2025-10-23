@@ -3165,9 +3165,43 @@
                     const timestamp = Date.now();
                     Object.assign(file, updates, { localUpdatedAt: timestamp });
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+                    const provider = state.provider;
+                    if (provider && typeof provider.updateFileMetadata === 'function') {
+                        const metadataPayload = this.buildProviderMetadataPayload(file);
+                        await provider.updateFileMetadata(fileId, metadataPayload);
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
+            },
+            buildProviderMetadataPayload(file) {
+                const tags = Array.isArray(file.tags) ? file.tags : [];
+                const stackSequence = Number.isFinite(Number(file.stackSequence)) ? Number(file.stackSequence) : 0;
+                const qualityRating = Number.isFinite(Number(file.qualityRating)) ? Number(file.qualityRating) : 0;
+                const contentRating = Number.isFinite(Number(file.contentRating)) ? Number(file.contentRating) : 0;
+                const normalized = {
+                    stack: file.stack || 'in',
+                    stackSequence,
+                    tags,
+                    notes: file.notes || '',
+                    qualityRating,
+                    contentRating,
+                    favorite: Utils.normalizeFavorite(file.favorite)
+                };
+
+                if (state.providerType === 'googledrive') {
+                    return {
+                        slideboxStack: normalized.stack,
+                        slideboxTags: tags.join(','),
+                        qualityRating: String(normalized.qualityRating),
+                        contentRating: String(normalized.contentRating),
+                        notes: normalized.notes,
+                        stackSequence: String(normalized.stackSequence),
+                        favorite: normalized.favorite ? 'true' : 'false'
+                    };
+                }
+
+                return normalized;
             },
             async deleteFile(fileId, options = {}) {
                 const { source = 'ui', originStack = null, name = null } = options;
