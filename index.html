@@ -999,7 +999,9 @@
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
-            pendingBackgroundProbe: null
+            pendingBackgroundProbe: null,
+            folderListings: new Map(),
+            folderSummaries: new Map()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -1964,7 +1966,7 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 6);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -1999,6 +2001,14 @@
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
                         }
+                        if (oldVersion < 5 && !db.objectStoreNames.contains('folderListings')) {
+                            const listings = db.createObjectStore('folderListings', { keyPath: 'listingKey' });
+                            listings.createIndex('provider', 'providerType', { unique: false });
+                        }
+                        if (oldVersion < 6 && !db.objectStoreNames.contains('folderSummaries')) {
+                            const summaries = db.createObjectStore('folderSummaries', { keyPath: 'folderKey' });
+                            summaries.createIndex('provider', 'providerType', { unique: false });
+                        }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
                             if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
@@ -2020,6 +2030,16 @@
                 if (folderKey) return folderKey;
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
+            }
+            resolveListingKey(input) {
+                if (!input) return null;
+                if (typeof input === 'string') return input;
+                const providerType = input.providerType || input.provider || 'unknown';
+                if (input.listingKey) return input.listingKey;
+                const pathKey = Array.isArray(input.pathSegments) && input.pathSegments.length > 0
+                    ? input.pathSegments.join('/')
+                    : (input.pathKey || input.parentId || 'root');
+                return `${providerType}::${pathKey}`;
             }
             async getFolderCache(folderId) {
                 if (!this.db) return null;
@@ -2047,6 +2067,55 @@
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
                     const request = store.delete(folderId);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async getFolderListingSnapshot(context) {
+                if (!this.db) return null;
+                const listingKey = this.resolveListingKey(context);
+                if (!listingKey) return null;
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderListings', 'readonly');
+                    const store = tx.objectStore('folderListings');
+                    const request = store.get(listingKey);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderListingSnapshot(record) {
+                if (!this.db || !record) return null;
+                const listingKey = this.resolveListingKey(record);
+                if (!listingKey) return null;
+                const payload = {
+                    listingKey,
+                    providerType: record.providerType || record.provider || 'unknown',
+                    parentId: record.parentId || 'root',
+                    pathSegments: Array.isArray(record.pathSegments) ? record.pathSegments : [],
+                    breadcrumb: Array.isArray(record.breadcrumb) ? record.breadcrumb : [],
+                    folders: Array.isArray(record.folders) ? record.folders : [],
+                    updatedAt: record.updatedAt || Date.now(),
+                    refreshDeferred: Boolean(record.refreshDeferred),
+                    requiresRefresh: Boolean(record.requiresRefresh),
+                    lastPresentedAt: record.lastPresentedAt || null,
+                    markerVersion: record.markerVersion ?? null
+                };
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderListings', 'readwrite');
+                    const store = tx.objectStore('folderListings');
+                    const request = store.put(payload);
+                    request.onsuccess = () => resolve(payload);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async deleteFolderListingSnapshot(context) {
+                if (!this.db) return;
+                const listingKey = this.resolveListingKey(context);
+                if (!listingKey) return;
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderListings', 'readwrite');
+                    const store = tx.objectStore('folderListings');
+                    const request = store.delete(listingKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
                 });
@@ -2102,6 +2171,71 @@
                         const keys = request.result || [];
                         keys.forEach(key => store.delete(key));
                     };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async getFolderSummary(context) {
+                if (!this.db) return null;
+                const folderKey = this.resolveFolderKey(context);
+                if (!folderKey) return null;
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderSummaries', 'readonly');
+                    const store = tx.objectStore('folderSummaries');
+                    const request = store.get(folderKey);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderSummary(record) {
+                if (!this.db || !record) return null;
+                const folderKey = this.resolveFolderKey(record);
+                if (!folderKey) return null;
+                const payload = {
+                    folderKey,
+                    providerType: record.providerType || record.provider || 'unknown',
+                    folderId: record.folderId,
+                    itemCount: record.itemCount ?? 0,
+                    stackCounts: record.stackCounts || null,
+                    cloudVersion: record.cloudVersion ?? null,
+                    localVersion: record.localVersion ?? null,
+                    updatedAt: record.updatedAt || Date.now(),
+                    lastVisitedAt: record.lastVisitedAt || null,
+                    lastPresentedAt: record.lastPresentedAt || null,
+                    lastReason: record.lastReason || null
+                };
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderSummaries', 'readwrite');
+                    const store = tx.objectStore('folderSummaries');
+                    const request = store.put(payload);
+                    request.onsuccess = () => resolve(payload);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async deleteFolderSummary(context) {
+                if (!this.db) return;
+                const folderKey = this.resolveFolderKey(context);
+                if (!folderKey) return;
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderSummaries', 'readwrite');
+                    const store = tx.objectStore('folderSummaries');
+                    const request = store.delete(folderKey);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async getAllFolderSummaries(options = {}) {
+                if (!this.db) return [];
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('folderSummaries', 'readonly');
+                    const store = tx.objectStore('folderSummaries');
+                    let request;
+                    if (options.providerType) {
+                        const index = store.index('provider');
+                        request = index.getAll(IDBKeyRange.only(options.providerType));
+                    } else {
+                        request = store.getAll();
+                    }
+                    request.onsuccess = () => resolve(request.result || []);
                     request.onerror = () => reject(request.error);
                 });
             }
@@ -3299,6 +3433,8 @@
             async getFilesAndMetadata(folderId) { throw new Error("Method 'getFilesAndMetadata(folderId)' must be implemented."); }
             async drillIntoFolder(folder) { throw new Error("Method 'drillIntoFolder(folder)' must be implemented."); }
             async navigateToParent() { throw new Error("Method 'navigateToParent()' must be implemented."); }
+            getFolderListingContext() { return { parentId: 'root', pathSegments: ['root'], breadcrumb: [] }; }
+            setFolderListingContext() { /* optional override for providers */ }
 
             // File Writing/Manipulation
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
@@ -3316,6 +3452,14 @@
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
                 this.loadStoredCredentials();
+            }
+            getFolderListingContext() {
+                return {
+                    providerType: this.name || 'googledrive',
+                    parentId: 'root',
+                    pathSegments: ['root'],
+                    breadcrumb: [{ id: 'root', name: 'Root' }]
+                };
             }
             loadStoredCredentials() {
                 this.accessToken = localStorage.getItem('google_access_token');
@@ -3620,6 +3764,28 @@
                     this.msalInstance.setActiveAccount(accounts[0]);
                     this.activeAccount = accounts[0];
                     this.isAuthenticated = true;
+                }
+            }
+            getFolderListingContext() {
+                const breadcrumb = Array.isArray(this.breadcrumb) && this.breadcrumb.length > 0
+                    ? this.breadcrumb.map(entry => ({ ...entry }))
+                    : [{ id: this.currentParentId || 'root', name: this.currentParentPath || 'Root' }];
+                const pathSegments = breadcrumb.map(entry => entry.id);
+                return {
+                    providerType: this.name || 'onedrive',
+                    parentId: this.currentParentId || 'root',
+                    pathSegments: pathSegments.length > 0 ? pathSegments : ['root'],
+                    breadcrumb
+                };
+            }
+            setFolderListingContext(snapshot = {}) {
+                if (!snapshot) return;
+                if (snapshot.parentId) {
+                    this.currentParentId = snapshot.parentId;
+                }
+                if (Array.isArray(snapshot.breadcrumb) && snapshot.breadcrumb.length > 0) {
+                    this.breadcrumb = snapshot.breadcrumb.map(entry => ({ ...entry }));
+                    this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
                 }
             }
             initMSAL() {
@@ -4026,6 +4192,7 @@
                     state.pendingBackgroundProbe = null;
                     await this.applyDeltaFromCoordinator(pending);
                 }
+                await this.persistCurrentFolderSummary({ reason: 'cache-hydrate' });
             },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
@@ -4070,6 +4237,8 @@
                 const remoteManifest = preparation?.remoteManifest || null;
                 const folderState = preparation?.folderState || null;
                 const coordinator = state.folderSyncCoordinator;
+                let summaryCloudVersion = remoteManifest?.cloudVersion ?? folderState?.cloudVersion ?? null;
+                let summaryLocalVersion = folderState?.localVersion ?? summaryCloudVersion;
 
                 if (!background) {
                     Utils.showScreen('loading-screen');
@@ -4130,6 +4299,8 @@
                         localVersion: Math.max(folderState?.localVersion ?? 0, updatedCloudVersion),
                         lastCloudAck: Date.now()
                     });
+                    summaryCloudVersion = updatedCloudVersion ?? summaryCloudVersion;
+                    summaryLocalVersion = Math.max(folderState?.localVersion ?? 0, updatedCloudVersion ?? 0);
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     state.sessionVisitedFolders.add(key);
@@ -4164,6 +4335,11 @@
                         details: `Delta applied for ${folderId}: ${changedIds.length} updates, ${removedIds.length} removals.`,
                         data: { cloudVersion: updatedCloudVersion }
                     });
+                    await this.persistCurrentFolderSummary({
+                        cloudVersion: summaryCloudVersion,
+                        localVersion: summaryLocalVersion,
+                        reason: background ? 'delta-background' : 'delta-sync'
+                    });
                 } catch (error) {
                     state.syncLog?.log({ event: 'foldersync:delta-error', level: 'error', details: `Delta sync failed: ${error.message}` });
                     Utils.showToast(`Delta sync failed: ${error.message}`, 'error', true);
@@ -4192,11 +4368,44 @@
                     background: true
                 });
             },
+            async persistCurrentFolderSummary(options = {}) {
+                const folderId = state.currentFolder?.id;
+                if (!folderId || !state.dbManager) return null;
+                const providerType = state.providerType || state.provider?.name || 'unknown';
+                const stackCounts = {
+                    in: state.stacks?.in?.length || 0,
+                    out: state.stacks?.out?.length || 0,
+                    priority: state.stacks?.priority?.length || 0,
+                    trash: state.stacks?.trash?.length || 0
+                };
+                let folderState = null;
+                try {
+                    folderState = await state.dbManager.getFolderState({ providerType, folderId });
+                } catch (error) {
+                    state.syncLog?.log({ event: 'folders:summary:state:error', level: 'warn', details: error.message });
+                }
+                const payload = {
+                    providerType,
+                    folderId,
+                    itemCount: state.imageFiles?.length || 0,
+                    stackCounts,
+                    cloudVersion: options.cloudVersion ?? folderState?.cloudVersion ?? null,
+                    localVersion: options.localVersion ?? folderState?.localVersion ?? null,
+                    updatedAt: Date.now(),
+                    lastVisitedAt: Date.now(),
+                    lastReason: options.reason || 'unknown'
+                };
+                await state.dbManager.saveFolderSummary(payload);
+                Folders.applySummaryToSnapshots(payload);
+                return payload;
+            },
             async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
                 const folderId = state.currentFolder.id;
                 const hadCached = cachedFiles.length > 0;
                 const coordinator = state.folderSyncCoordinator;
                 const preparation = options.preparation || null;
+                let summaryCloudVersion = preparation?.remoteManifest?.cloudVersion ?? preparation?.folderState?.cloudVersion ?? null;
+                let summaryLocalVersion = preparation?.folderState?.localVersion ?? summaryCloudVersion;
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
 
@@ -4293,10 +4502,18 @@
                             localVersion: Math.max(manifestPayload.localVersion ?? 0, manifestPayload.cloudVersion ?? 0),
                             lastCloudAck: Date.now()
                         });
+                        summaryCloudVersion = manifestPayload.cloudVersion ?? summaryCloudVersion;
+                        summaryLocalVersion = Math.max(manifestPayload.localVersion ?? 0, manifestPayload.cloudVersion ?? 0);
                         if (manifestPayload.requiresFullResync) {
                             await coordinator.markRequiresFullResync(folderId, 'manifest-save-failed');
                         }
                     }
+
+                    await this.persistCurrentFolderSummary({
+                        cloudVersion: summaryCloudVersion,
+                        localVersion: summaryLocalVersion,
+                        reason: 'sync-folder'
+                    });
 
                     if (hadCached && hasChanges) {
                         const diffSummary = [];
@@ -4343,6 +4560,7 @@
                     if (state.imageFiles.length > 0) Core.displayCurrentImage();
                     else Core.showEmptyState();
                     Utils.showToast('Folder updated in background', 'info');
+                    await this.persistCurrentFolderSummary({ reason: 'background-refresh' });
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
                 }
@@ -4411,6 +4629,7 @@
                 Utils.showScreen('folder-screen');
 
                 try {
+                    await this.persistCurrentFolderSummary({ reason: 'navigate-away' });
                     if (state.syncManager) {
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
@@ -6153,72 +6372,230 @@
             }
         };
         const Folders = {
-            async load() {
-                const { folderList, folderTitle } = Utils.elements;
-                folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
-                folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
-                try {
-                    const folders = await state.provider.getFolders();
-                    this.display(folders);
-                    this.updateNavigation();
-                } catch (error) {
-                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
-                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">
-                                                <span>Failed to load folders.</span>
-                                                <button id="retry-folders" class="folder-action-btn" style="margin-top: 15px;">Retry</button>
-                                            </div>`;
-                    document.getElementById('retry-folders').addEventListener('click', () => this.load());
+            buildListingKey(context = {}) {
+                const providerType = context.providerType || state.providerType || 'unknown';
+                const segments = Array.isArray(context.pathSegments) && context.pathSegments.length > 0
+                    ? context.pathSegments.join('/')
+                    : (context.parentId || 'root');
+                return `${providerType}::${segments}`;
+            },
+            getListingContext(overrides = {}) {
+                const providerType = state.providerType || state.provider?.name || 'unknown';
+                const baseContext = {
+                    providerType,
+                    parentId: overrides.parentId || 'root',
+                    pathSegments: overrides.pathSegments || ['root'],
+                    breadcrumb: overrides.breadcrumb || []
+                };
+                if (state.provider && typeof state.provider.getFolderListingContext === 'function') {
+                    try {
+                        const providerContext = state.provider.getFolderListingContext(overrides) || {};
+                        baseContext.parentId = providerContext.parentId || baseContext.parentId;
+                        baseContext.pathSegments = Array.isArray(providerContext.pathSegments) && providerContext.pathSegments.length > 0
+                            ? providerContext.pathSegments
+                            : baseContext.pathSegments;
+                        baseContext.breadcrumb = Array.isArray(providerContext.breadcrumb) ? providerContext.breadcrumb : baseContext.breadcrumb;
+                        if (providerContext.markerVersion != null) {
+                            baseContext.markerVersion = providerContext.markerVersion;
+                        }
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'folders:list:context:error', level: 'warn', details: `Failed to read provider context: ${error.message}` });
+                    }
+                }
+                baseContext.providerType = providerType;
+                baseContext.listingKey = this.buildListingKey(baseContext);
+                return baseContext;
+            },
+            applyProviderContext(snapshot) {
+                if (!snapshot) return;
+                if (state.provider && typeof state.provider.setFolderListingContext === 'function') {
+                    try {
+                        state.provider.setFolderListingContext(snapshot);
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'folders:list:apply-context:error', level: 'warn', details: error.message });
+                    }
                 }
             },
-
+            decorateFolders(folders = []) {
+                const providerType = state.providerType || 'unknown';
+                return folders.map(folder => {
+                    const decorated = { ...folder };
+                    const summary = state.folderSummaries.get(`${providerType}::${folder.id}`) || null;
+                    if (summary) {
+                        if (summary.itemCount != null && !Number.isNaN(Number(summary.itemCount))) {
+                            decorated.itemCount = summary.itemCount;
+                        }
+                        if (summary.stackCounts) {
+                            decorated.stackCounts = summary.stackCounts;
+                        }
+                        decorated.summaryUpdatedAt = summary.updatedAt || summary.lastVisitedAt || null;
+                    }
+                    return decorated;
+                });
+            },
+            async getSnapshot(context) {
+                const key = context.listingKey || this.buildListingKey(context);
+                if (state.folderListings.has(key)) {
+                    return state.folderListings.get(key);
+                }
+                if (!state.dbManager) return null;
+                try {
+                    const snapshot = await state.dbManager.getFolderListingSnapshot({ ...context, listingKey: key });
+                    if (snapshot) {
+                        snapshot.listingKey = key;
+                        state.folderListings.set(key, snapshot);
+                        this.applyProviderContext(snapshot);
+                    }
+                    return snapshot || null;
+                } catch (error) {
+                    state.syncLog?.log({ event: 'folders:list:snapshot:error', level: 'warn', details: error.message });
+                    return null;
+                }
+            },
+            async persistSnapshot(context, folders, extras = {}) {
+                if (!state.dbManager) return null;
+                const key = context.listingKey || this.buildListingKey(context);
+                const snapshot = {
+                    listingKey: key,
+                    providerType: context.providerType,
+                    parentId: context.parentId || 'root',
+                    pathSegments: Array.isArray(context.pathSegments) ? context.pathSegments.slice() : [context.parentId || 'root'],
+                    breadcrumb: Array.isArray(context.breadcrumb) ? context.breadcrumb.slice() : [],
+                    folders: this.decorateFolders(folders).map(folder => ({ ...folder })),
+                    updatedAt: extras.updatedAt || Date.now(),
+                    refreshDeferred: Boolean(extras.refreshDeferred),
+                    requiresRefresh: Boolean(extras.requiresRefresh),
+                    lastPresentedAt: extras.lastPresentedAt || null,
+                    markerVersion: extras.markerVersion ?? context.markerVersion ?? null
+                };
+                state.folderListings.set(key, snapshot);
+                await state.dbManager.saveFolderListingSnapshot(snapshot);
+                this.applyProviderContext(snapshot);
+                return snapshot;
+            },
+            async markSnapshotPresented(snapshot) {
+                if (!snapshot) return;
+                snapshot.lastPresentedAt = Date.now();
+                state.folderListings.set(snapshot.listingKey, snapshot);
+                await state.dbManager?.saveFolderListingSnapshot(snapshot);
+            },
+            async markSnapshotDeferred(snapshot) {
+                if (!snapshot) {
+                    return;
+                }
+                if (!snapshot.refreshDeferred) {
+                    snapshot.refreshDeferred = true;
+                }
+                snapshot.lastPresentedAt = Date.now();
+                state.folderListings.set(snapshot.listingKey, snapshot);
+                await state.dbManager?.saveFolderListingSnapshot(snapshot);
+            },
+            shouldFetchRemote({ snapshot, options = {} }) {
+                if (options.forceRefresh) return true;
+                if (!snapshot) return true;
+                if (snapshot.requiresRefresh) return true;
+                if (options.markerOverride === true) return true;
+                if (snapshot.refreshDeferred) return true;
+                return false;
+            },
+            async renderSnapshot(snapshot) {
+                if (!snapshot) return false;
+                this.applyProviderContext(snapshot);
+                const decorated = this.decorateFolders(snapshot.folders || []);
+                this.display(decorated);
+                this.updateNavigation();
+                await this.markSnapshotPresented(snapshot);
+                return true;
+            },
+            async load(options = {}) {
+                const { folderList, folderTitle } = Utils.elements;
+                const providerLabel = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
+                folderTitle.textContent = `${providerLabel} - Select Folder`;
+                const context = this.getListingContext(options.contextOverride || {});
+                const snapshot = await this.getSnapshot(context);
+                let renderedFromSnapshot = false;
+                if (snapshot) {
+                    renderedFromSnapshot = await this.renderSnapshot(snapshot);
+                } else {
+                    folderList.innerHTML = `<div style=\"display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);\"><div class=\"spinner\"></div><span>Loading folders...</span></div>`;
+                }
+                this.updateNavigation();
+                const needsRemote = this.shouldFetchRemote({ snapshot, options });
+                if (!needsRemote) {
+                    if (snapshot) {
+                        await this.markSnapshotDeferred(snapshot);
+                    }
+                    return;
+                }
+                try {
+                    const folders = await state.provider.getFolders();
+                    const decorated = this.decorateFolders(folders);
+                    this.display(decorated);
+                    this.updateNavigation();
+                    const latestContext = this.getListingContext();
+                    const persisted = await this.persistSnapshot(latestContext, decorated, { refreshDeferred: false, requiresRefresh: false });
+                    await this.markSnapshotPresented(persisted);
+                } catch (error) {
+                    state.syncLog?.log({ event: 'folders:list:remote:error', level: 'error', details: error.message });
+                    if (!renderedFromSnapshot) {
+                        folderList.innerHTML = `<div style=\"text-align: center; padding: 40px; color: #ef4444;\"><span>Failed to load folders.</span><button id=\"retry-folders\" class=\"folder-action-btn\" style=\"margin-top: 15px;\">Retry</button></div>`;
+                        document.getElementById('retry-folders').addEventListener('click', () => this.load({ forceRefresh: true }));
+                    }
+                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                }
+            },
             display(folders) {
                 const { folderList } = Utils.elements;
                 folderList.innerHTML = '';
                 if (!folders || folders.length === 0) {
-                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
+                    folderList.innerHTML = `<div style=\"text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);\"><span>No folders found</span></div>`;
                     return;
                 }
-
                 folders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
-
-                    let dateInfo = new Date(folder.modifiedTime).toLocaleDateString();
+                    let dateInfo = folder.modifiedTime ? new Date(folder.modifiedTime).toLocaleDateString() : '';
                     if (folder.itemCount > 0) {
-                         dateInfo += ` • ${folder.itemCount} items`;
+                        dateInfo = dateInfo ? `${dateInfo} • ${folder.itemCount} items` : `${folder.itemCount} items`;
                     }
                     if (folder.hasChildren) {
-                        dateInfo += ` • Has subfolders`;
+                        dateInfo = dateInfo ? `${dateInfo} • Has subfolders` : 'Has subfolders';
                     }
-
+                    if (folder.summaryUpdatedAt) {
+                        const summaryDate = new Date(folder.summaryUpdatedAt);
+                        if (!Number.isNaN(summaryDate.valueOf())) {
+                            dateInfo = dateInfo ? `${dateInfo} • Cached ${summaryDate.toLocaleDateString()}` : `Cached ${summaryDate.toLocaleDateString()}`;
+                        }
+                    }
                     const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
-
-                    div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
-                                     <div class="folder-info">
-                                         <div class="folder-name">${folder.name}</div>
-                                         <div class="folder-date">${dateInfo}</div>
+                    div.innerHTML = `<svg class=\"folder-icon\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\" style=\"color: ${iconColor};\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z\"></path></svg>
+                                     <div class=\"folder-info\">
+                                         <div class=\"folder-name\">${folder.name}</div>
+                                         <div class=\"folder-date\">${dateInfo}</div>
                                      </div>
-                                     <div class="folder-actions">
+                                     <div class=\"folder-actions\">
                                          ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
                     folderList.appendChild(div);
                 });
-
                 this.addEventListeners();
             },
-
             addEventListeners() {
                 document.querySelectorAll('#folder-list .drill-btn').forEach(btn => {
                     btn.addEventListener('click', async (e) => {
                         e.stopPropagation();
+                        const { folderId, folderName } = e.target.dataset;
                         try {
-                            const { folderId, folderName } = e.target.dataset;
                             const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
-                            this.display(subfolders);
+                            const decorated = this.decorateFolders(subfolders);
+                            this.display(decorated);
                             this.updateNavigation();
+                            const context = this.getListingContext();
+                            const snapshot = await this.persistSnapshot(context, decorated, { refreshDeferred: false, requiresRefresh: false });
+                            await this.markSnapshotPresented(snapshot);
                         } catch (error) {
-                             Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
+                            Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
                         }
                     });
                 });
@@ -6234,30 +6611,26 @@
                     });
                 });
             },
-
             updateNavigation() {
                 const { folderSubtitle, folderRefreshButton } = Utils.elements;
                 const provider = state.provider;
-
-                if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
+                if (typeof provider?.getCurrentPath === 'function' && provider.getCurrentPath()) {
                     folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
                     folderSubtitle.classList.remove('hidden');
                 } else {
                     folderSubtitle.classList.add('hidden');
                 }
-
-                if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
+                if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
                     folderRefreshButton.textContent = '← Go Up';
                 } else {
                     folderRefreshButton.textContent = 'Refresh';
                 }
             },
-
             async handleFolderMoveSelection(folderId, folderName) {
                 const filesToMove = state.folderMoveMode.files;
                 Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
                 try {
-                    for(let i = 0; i < filesToMove.length; i++) {
+                    for (let i = 0; i < filesToMove.length; i++) {
                         const fileId = filesToMove[i];
                         await state.provider.moveFileToFolder(fileId, folderId);
                         const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
@@ -6272,21 +6645,347 @@
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     state.folderMoveMode = { active: false, files: [] };
                     Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
-                } catch (error) { Utils.showToast('Error moving files', 'error', true); App.returnToFolderSelection(); }
+                } catch (error) {
+                    Utils.showToast('Error moving files', 'error', true);
+                    App.returnToFolderSelection();
+                }
             },
-            updateOneDriveNavigation() {
-                const currentPath = state.provider.getCurrentPath();
-                const canGoUp = state.provider.canGoUp();
-                Utils.elements.onedriveFolderSubtitle.textContent = `Current: ${currentPath}`;
-                const refreshBtn = Utils.elements.onedriveRefreshFolders;
-                if (canGoUp) {
-                    refreshBtn.textContent = '← Go Up';
-                    refreshBtn.onclick = async () => {
+            applySummaryToSnapshots(summary) {
+                if (!summary || !summary.folderId) return;
+                const providerType = summary.providerType || state.providerType || 'unknown';
+                const key = `${providerType}::${summary.folderId}`;
+                state.folderSummaries.set(key, summary);
+                state.folderListings.forEach((snapshot) => {
+                    if (!snapshot || !Array.isArray(snapshot.folders)) return;
+                    let changed = false;
+                    snapshot.folders = snapshot.folders.map(folder => {
+                        if (folder.id !== summary.folderId) return folder;
+                        changed = true;
+                        const updated = { ...folder };
+                        if (summary.itemCount != null) {
+                            updated.itemCount = summary.itemCount;
+                        }
+                        if (summary.stackCounts) {
+                            updated.stackCounts = summary.stackCounts;
+                        }
+                        updated.summaryUpdatedAt = summary.updatedAt || summary.lastVisitedAt || Date.now();
+                        return updated;
+                    });
+                    if (changed) {
+                        if (summary.lastReason && !['navigate-away', 'cache-hydrate'].includes(summary.lastReason)) {
+                            snapshot.requiresRefresh = true;
+                        }
+                        state.folderListings.set(snapshot.listingKey, snapshot);
+                        const persistPromise = state.dbManager?.saveFolderListingSnapshot(snapshot);
+                        if (persistPromise && typeof persistPromise.catch === 'function') {
+                            persistPromise.catch(error => {
+                                state.syncLog?.log({ event: 'folders:list:snapshot-save:error', level: 'warn', details: error.message });
+                            });
+                        }
+                    }
+                });
+            }
+        };
+
+                if (state.provider && typeof state.provider.getFolderListingContext === 'function') {
+                    try {
+                        const providerContext = state.provider.getFolderListingContext(overrides) || {};
+                        baseContext.parentId = providerContext.parentId || baseContext.parentId;
+                        baseContext.pathSegments = Array.isArray(providerContext.pathSegments) && providerContext.pathSegments.length > 0
+                            ? providerContext.pathSegments
+                            : baseContext.pathSegments;
+                        baseContext.breadcrumb = Array.isArray(providerContext.breadcrumb) ? providerContext.breadcrumb : baseContext.breadcrumb;
+                        if (providerContext.markerVersion != null) {
+                            baseContext.markerVersion = providerContext.markerVersion;
+                        }
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'folders:list:context:error', level: 'warn', details: `Failed to read provider context: ${error.message}` });
+                    }
+                }
+                baseContext.providerType = providerType;
+                baseContext.listingKey = this.buildListingKey(baseContext);
+                return baseContext;
+            },
+            applyProviderContext(snapshot) {
+                if (!snapshot) return;
+                if (state.provider && typeof state.provider.setFolderListingContext === 'function') {
+                    try {
+                        state.provider.setFolderListingContext(snapshot);
+                    } catch (error) {
+                        state.syncLog?.log({ event: 'folders:list:apply-context:error', level: 'warn', details: error.message });
+                    }
+                }
+            },
+            decorateFolders(folders = []) {
+                const providerType = state.providerType || 'unknown';
+                return folders.map(folder => {
+                    const decorated = { ...folder };
+                    const summary = state.folderSummaries.get(`${providerType}::${folder.id}`) || null;
+                    if (summary) {
+                        if (summary.itemCount != null && !Number.isNaN(Number(summary.itemCount))) {
+                            decorated.itemCount = summary.itemCount;
+                        }
+                        if (summary.stackCounts) {
+                            decorated.stackCounts = summary.stackCounts;
+                        }
+                        decorated.summaryUpdatedAt = summary.updatedAt || summary.lastVisitedAt || null;
+                    }
+                    return decorated;
+                });
+            },
+            async getSnapshot(context) {
+                const key = context.listingKey || this.buildListingKey(context);
+                if (state.folderListings.has(key)) {
+                    return state.folderListings.get(key);
+                }
+                if (!state.dbManager) return null;
+                try {
+                    const snapshot = await state.dbManager.getFolderListingSnapshot({ ...context, listingKey: key });
+                    if (snapshot) {
+                        snapshot.listingKey = key;
+                        state.folderListings.set(key, snapshot);
+                        this.applyProviderContext(snapshot);
+                    }
+                    return snapshot || null;
+                } catch (error) {
+                    state.syncLog?.log({ event: 'folders:list:snapshot:error', level: 'warn', details: error.message });
+                    return null;
+                }
+            },
+            async persistSnapshot(context, folders, extras = {}) {
+                if (!state.dbManager) return null;
+                const key = context.listingKey || this.buildListingKey(context);
+                const snapshot = {
+                    listingKey: key,
+                    providerType: context.providerType,
+                    parentId: context.parentId || 'root',
+                    pathSegments: Array.isArray(context.pathSegments) ? context.pathSegments.slice() : [context.parentId || 'root'],
+                    breadcrumb: Array.isArray(context.breadcrumb) ? context.breadcrumb.slice() : [],
+                    folders: this.decorateFolders(folders).map(folder => ({ ...folder })),
+                    updatedAt: extras.updatedAt || Date.now(),
+                    refreshDeferred: Boolean(extras.refreshDeferred),
+                    requiresRefresh: Boolean(extras.requiresRefresh),
+                    lastPresentedAt: extras.lastPresentedAt || null,
+                    markerVersion: extras.markerVersion ?? context.markerVersion ?? null
+                };
+                state.folderListings.set(key, snapshot);
+                await state.dbManager.saveFolderListingSnapshot(snapshot);
+                this.applyProviderContext(snapshot);
+                return snapshot;
+            },
+            async markSnapshotPresented(snapshot) {
+                if (!snapshot) return;
+                snapshot.lastPresentedAt = Date.now();
+                state.folderListings.set(snapshot.listingKey, snapshot);
+                await state.dbManager?.saveFolderListingSnapshot(snapshot);
+            },
+            async markSnapshotDeferred(snapshot) {
+                if (!snapshot) {
+                    return;
+                }
+                if (!snapshot.refreshDeferred) {
+                    snapshot.refreshDeferred = true;
+                }
+                snapshot.lastPresentedAt = Date.now();
+                state.folderListings.set(snapshot.listingKey, snapshot);
+                await state.dbManager?.saveFolderListingSnapshot(snapshot);
+            },
+            shouldFetchRemote({ snapshot, options = {} }) {
+                if (options.forceRefresh) return true;
+                if (!snapshot) return true;
+                if (snapshot.requiresRefresh) return true;
+                if (options.markerOverride === true) return true;
+                if (snapshot.refreshDeferred) return true;
+                return false;
+            },
+            async renderSnapshot(snapshot) {
+                if (!snapshot) return false;
+                this.applyProviderContext(snapshot);
+                const decorated = this.decorateFolders(snapshot.folders || []);
+                this.display(decorated);
+                this.updateNavigation();
+                await this.markSnapshotPresented(snapshot);
+                return true;
+            },
+            async load(options = {}) {
+                const { folderList, folderTitle } = Utils.elements;
+                const providerLabel = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
+                folderTitle.textContent = `${providerLabel} - Select Folder`;
+                const context = this.getListingContext(options.contextOverride || {});
+                const snapshot = await this.getSnapshot(context);
+                let renderedFromSnapshot = false;
+                if (snapshot) {
+                    renderedFromSnapshot = await this.renderSnapshot(snapshot);
+                } else {
+                    folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
+                }
+                this.updateNavigation();
+                const needsRemote = this.shouldFetchRemote({ snapshot, options });
+                if (!needsRemote) {
+                    if (snapshot) {
+                        await this.markSnapshotDeferred(snapshot);
+                    }
+                    return;
+                }
+                try {
+                    const folders = await state.provider.getFolders();
+                    const decorated = this.decorateFolders(folders);
+                    this.display(decorated);
+                    this.updateNavigation();
+                    const latestContext = this.getListingContext();
+                    const persisted = await this.persistSnapshot(latestContext, decorated, { refreshDeferred: false, requiresRefresh: false });
+                    await this.markSnapshotPresented(persisted);
+                } catch (error) {
+                    state.syncLog?.log({ event: 'folders:list:remote:error', level: 'error', details: error.message });
+                    if (!renderedFromSnapshot) {
+                        folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;"><span>Failed to load folders.</span><button id="retry-folders" class="folder-action-btn" style="margin-top: 15px;">Retry</button></div>`;
+                        document.getElementById('retry-folders').addEventListener('click', () => this.load({ forceRefresh: true }));
+                    }
+                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                }
+            },
+            display(folders) {
+                const { folderList } = Utils.elements;
+                folderList.innerHTML = '';
+                if (!folders || folders.length === 0) {
+                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
+                    return;
+                }
+                folders.forEach(folder => {
+                    const div = document.createElement('div');
+                    div.className = 'folder-item';
+                    let dateInfo = folder.modifiedTime ? new Date(folder.modifiedTime).toLocaleDateString() : '';
+                    if (folder.itemCount > 0) {
+                        dateInfo = dateInfo ? `${dateInfo} • ${folder.itemCount} items` : `${folder.itemCount} items`;
+                    }
+                    if (folder.hasChildren) {
+                        dateInfo = dateInfo ? `${dateInfo} • Has subfolders` : 'Has subfolders';
+                    }
+                    if (folder.summaryUpdatedAt) {
+                        const summaryDate = new Date(folder.summaryUpdatedAt);
+                        if (!Number.isNaN(summaryDate.valueOf())) {
+                            dateInfo = dateInfo ? `${dateInfo} • Cached ${summaryDate.toLocaleDateString()}` : `Cached ${summaryDate.toLocaleDateString()}`;
+                        }
+                    }
+                    const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
+                    div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                                     <div class="folder-info">
+                                         <div class="folder-name">${folder.name}</div>
+                                         <div class="folder-date">${dateInfo}</div>
+                                     </div>
+                                     <div class="folder-actions">
+                                         ${folder.hasChildren ? `<button class=\"folder-action-btn drill-btn\" data-folder-id=\"${folder.id}\" data-folder-name=\"${folder.name}\">Browse →</button>` : ''}
+                                         <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
+                                     </div>`;
+                    folderList.appendChild(div);
+                });
+                this.addEventListeners();
+            },
+            addEventListeners() {
+                document.querySelectorAll('#folder-list .drill-btn').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const { folderId, folderName } = e.target.dataset;
                         try {
-                            const folders = await state.provider.navigateToParent();
-                            this.displayOneDriveFolders(folders); this.updateOneDriveNavigation();
-                        } catch (error) { Utils.showToast('Error navigating to parent folder', 'error', true); }
-                    };
+                            const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
+                            const decorated = this.decorateFolders(subfolders);
+                            this.display(decorated);
+                            this.updateNavigation();
+                            const context = this.getListingContext();
+                            const snapshot = await this.persistSnapshot(context, decorated, { refreshDeferred: false, requiresRefresh: false });
+                            await this.markSnapshotPresented(snapshot);
+                        } catch (error) {
+                            Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
+                        }
+                    });
+                });
+                document.querySelectorAll('#folder-list .select-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const { folderId, folderName } = e.target.dataset;
+                        if (state.folderMoveMode.active) {
+                            this.handleFolderMoveSelection(folderId, folderName);
+                        } else {
+                            App.initializeWithProvider(state.providerType, folderId, folderName, state.provider);
+                        }
+                    });
+                });
+            },
+            updateNavigation() {
+                const { folderSubtitle, folderRefreshButton } = Utils.elements;
+                const provider = state.provider;
+                if (typeof provider?.getCurrentPath === 'function' && provider.getCurrentPath()) {
+                    folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
+                    folderSubtitle.classList.remove('hidden');
+                } else {
+                    folderSubtitle.classList.add('hidden');
+                }
+                if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
+                    folderRefreshButton.textContent = '← Go Up';
+                } else {
+                    folderRefreshButton.textContent = 'Refresh';
+                }
+            },
+            async handleFolderMoveSelection(folderId, folderName) {
+                const filesToMove = state.folderMoveMode.files;
+                Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
+                try {
+                    for (let i = 0; i < filesToMove.length; i++) {
+                        const fileId = filesToMove[i];
+                        await state.provider.moveFileToFolder(fileId, folderId);
+                        const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
+                        if (fileIndex > -1) {
+                            const [file] = state.imageFiles.splice(fileIndex, 1);
+                            const stackIndex = state.stacks[file.stack].findIndex(f => f.id === fileId);
+                            if (stackIndex > -1) { state.stacks[file.stack].splice(stackIndex, 1); }
+                        }
+                        Utils.updateLoadingProgress(i + 1, filesToMove.length);
+                    }
+                    Utils.showToast(`Moved ${filesToMove.length} images to ${folderName}`, 'success', true);
+                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    state.folderMoveMode = { active: false, files: [] };
+                    Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
+                } catch (error) {
+                    Utils.showToast('Error moving files', 'error', true);
+                    App.returnToFolderSelection();
+                }
+            },
+            applySummaryToSnapshots(summary) {
+                if (!summary || !summary.folderId) return;
+                const providerType = summary.providerType || state.providerType || 'unknown';
+                const key = `${providerType}::${summary.folderId}`;
+                state.folderSummaries.set(key, summary);
+                state.folderListings.forEach((snapshot) => {
+                    if (!snapshot || !Array.isArray(snapshot.folders)) return;
+                    let changed = false;
+                    snapshot.folders = snapshot.folders.map(folder => {
+                        if (folder.id !== summary.folderId) return folder;
+                        changed = true;
+                        const updated = { ...folder };
+                        if (summary.itemCount != null) {
+                            updated.itemCount = summary.itemCount;
+                        }
+                        if (summary.stackCounts) {
+                            updated.stackCounts = summary.stackCounts;
+                        }
+                        updated.summaryUpdatedAt = summary.updatedAt || summary.lastVisitedAt || Date.now();
+                        return updated;
+                    });
+                    if (changed) {
+                        if (summary.lastReason && !['navigate-away', 'cache-hydrate'].includes(summary.lastReason)) {
+                            snapshot.requiresRefresh = true;
+                        }
+                        state.folderListings.set(snapshot.listingKey, snapshot);
+                        const persistPromise = state.dbManager?.saveFolderListingSnapshot(snapshot);
+                        if (persistPromise && typeof persistPromise.catch === 'function') {
+                            persistPromise.catch(error => {
+                                state.syncLog?.log({ event: 'folders:list:snapshot-save:error', level: 'warn', details: error.message });
+                            });
+                        }
+                    }
+                });
+            }
+        };
                 } else {
                     refreshBtn.textContent = 'Refresh';
                     refreshBtn.onclick = () => this.loadOneDriveFolders();
@@ -6480,13 +7179,10 @@
                 Utils.elements.folderRefreshButton.addEventListener('click', async () => {
                     try {
                         const provider = state.provider;
-                        if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
-                            const folders = await provider.navigateToParent();
-                            Folders.display(folders);
-                            Folders.updateNavigation();
-                        } else {
-                            await Folders.load();
+                        if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
+                            await provider.navigateToParent();
                         }
+                        await Folders.load({ forceRefresh: true });
                     } catch (error) {
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
@@ -6744,6 +7440,12 @@
                 state.export = new ExportSystem();
                 state.dbManager = new DBManager();
                 await state.dbManager.init();
+                const persistedSummaries = await state.dbManager.getAllFolderSummaries();
+                persistedSummaries.forEach(summary => {
+                    if (!summary || !summary.folderId) return;
+                    const key = `${summary.providerType || 'unknown'}::${summary.folderId}`;
+                    state.folderSummaries.set(key, summary);
+                });
                 state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
                 state.folderSyncCoordinator.setDeltaHandler((payload) => App.applyDeltaFromCoordinator(payload));
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });

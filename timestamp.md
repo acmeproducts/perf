@@ -81,6 +81,42 @@ javascript// Store 1: folderCache
         lastChecked: 1696789234567     // When we last checked cloud
     }
 }
+
+// Store 4: folderListings (provider + path snapshots)
+{
+    keyPath: 'listingKey',
+    structure: {
+        listingKey: 'onedrive::root/downloads',
+        providerType: 'onedrive',
+        parentId: 'folder-123',
+        pathSegments: ['root', 'downloads'],
+        breadcrumb: [{ id: 'root', name: 'Root' }, { id: 'folder-123', name: 'Downloads' }],
+        folders: [ /* serialized folder entries shown in UI */ ],
+        updatedAt: 1696789234567,
+        refreshDeferred: false,          // first visit uses cache, next visit fetches cloud
+        requiresRefresh: false,          // marker forcing immediate refresh next load
+        lastPresentedAt: 1696789234567,  // when we last rendered this snapshot
+        markerVersion: 42                // optional provider marker version if available
+    }
+}
+
+// Store 5: folderSummaries (per-folder counts and markers)
+{
+    keyPath: 'folderKey',
+    structure: {
+        folderKey: 'googledrive::folder-123',
+        providerType: 'googledrive',
+        folderId: 'folder-123',
+        itemCount: 128,
+        stackCounts: { in: 64, out: 32, priority: 20, trash: 12 },
+        cloudVersion: 1696789234567,
+        localVersion: 1696789234560,
+        updatedAt: 1696789234567,
+        lastVisitedAt: 1696789234567,
+        lastPresentedAt: 1696789234567,
+        lastReason: 'sync-folder'        // why the summary was updated
+    }
+}
 Google Drive Cloud Storage
 Location: appProperties directly on each image file
 javascript// File: image1.png
