@@ -1157,7 +1157,7 @@
         const OMNI_SEARCH_RESULT_LIMIT = 8;
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
-            syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
+            syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null,
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
@@ -2251,46 +2251,25 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
-                        const oldVersion = event.oldVersion || 0;
 
-                        if (oldVersion < 1 && !db.objectStoreNames.contains('folderCache')) {
-                            db.createObjectStore('folderCache', { keyPath: 'folderId' });
+                        ['folderCache', 'syncQueue', 'folderState', 'folderManifests'].forEach(storeName => {
+                            if (db.objectStoreNames.contains(storeName)) {
+                                db.deleteObjectStore(storeName);
+                            }
+                        });
+
+                        let metadataStore = null;
+                        if (!db.objectStoreNames.contains('metadata')) {
+                            metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
+                        } else if (event.target.transaction) {
+                            metadataStore = event.target.transaction.objectStore('metadata');
                         }
 
-                        if (oldVersion < 2) {
-                            let metadataStore;
-                            if (!db.objectStoreNames.contains('metadata')) {
-                                metadataStore = db.createObjectStore('metadata', { keyPath: 'id' });
-                            } else {
-                                metadataStore = request.transaction.objectStore('metadata');
-                            }
-                            if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
-                                metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
-                            }
-                            if (!db.objectStoreNames.contains('syncQueue')) {
-                                db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
-                            }
-                        }
-
-                        if (oldVersion < 3 && !db.objectStoreNames.contains('folderState')) {
-                            const folderState = db.createObjectStore('folderState', { keyPath: 'folderKey' });
-                            folderState.createIndex('provider', 'provider', { unique: false });
-                            folderState.createIndex('folderId', 'folderId', { unique: false });
-                        }
-
-                        if (oldVersion < 4 && !db.objectStoreNames.contains('folderManifests')) {
-                            const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
-                            manifestStore.createIndex('provider', 'provider', { unique: false });
-                            manifestStore.createIndex('folderId', 'folderId', { unique: false });
-                        }
-                        if (db.objectStoreNames.contains('metadata')) {
-                            const metadataStore = request.transaction.objectStore('metadata');
-                            if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
-                                metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
-                            }
+                        if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
+                            metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
                         }
                     };
                     request.onsuccess = (event) => {
@@ -2307,36 +2286,6 @@
                 if (folderKey) return folderKey;
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
-            }
-            async getFolderCache(folderId) {
-                if (!this.db) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderCache', 'readonly');
-                    const store = transaction.objectStore('folderCache');
-                    const request = store.get(folderId);
-                    request.onsuccess = () => resolve(request.result ? request.result.files : null);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async saveFolderCache(folderId, files) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderCache', 'readwrite');
-                    const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async deleteFolderCache(folderId) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderCache', 'readwrite');
-                    const store = transaction.objectStore('folderCache');
-                    const request = store.delete(folderId);
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
-                });
             }
             async getMetadata(fileId) {
                 if (!this.db) return null;
@@ -2392,182 +2341,13 @@
                     request.onerror = () => reject(request.error);
                 });
             }
-            async addToSyncQueue(operation) {
-                if (!this.db) return null;
-                const entry = {
-                    fileId: operation.fileId,
-                    updates: operation.updates || {},
-                    operationType: operation.operationType || 'metadata:update',
-                    origin: operation.origin || 'ui',
-                    localUpdatedAt: operation.localUpdatedAt || Date.now(),
-                    pendingFlush: Boolean(operation.pendingFlush),
-                    metadataSnapshot: operation.metadataSnapshot || null,
-                    retryCount: operation.retryCount || 0,
-                    folderId: operation.folderId || null,
-                    providerType: operation.providerType || null,
-                    folderKey: operation.folderKey || null
-                };
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('syncQueue', 'readwrite');
-                    const store = transaction.objectStore('syncQueue');
-                    const request = store.add(entry);
-                    request.onsuccess = () => resolve(request.result);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async readSyncQueue() {
-                if (!this.db) return [];
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('syncQueue', 'readonly');
-                    const store = transaction.objectStore('syncQueue');
-                    const request = store.getAll();
-                    request.onsuccess = () => {
-                        const results = request.result || [];
-                        results.sort((a, b) => (a.localUpdatedAt || 0) - (b.localUpdatedAt || 0));
-                        resolve(results);
-                    };
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async deleteFromSyncQueue(ids) {
-                if (!this.db) return;
-                const targetIds = Array.isArray(ids) ? ids : [ids];
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('syncQueue', 'readwrite');
-                    const store = transaction.objectStore('syncQueue');
-                    targetIds.forEach(id => { store.delete(id); });
-                    transaction.oncomplete = () => resolve();
-                    transaction.onerror = () => reject(transaction.error);
-                });
-            }
-            async updateSyncQueueEntry(id, updates) {
-                if (!this.db) return false;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('syncQueue', 'readwrite');
-                    const store = transaction.objectStore('syncQueue');
-                    const getRequest = store.get(id);
-                    getRequest.onsuccess = () => {
-                        const entry = getRequest.result;
-                        if (!entry) { resolve(false); return; }
-                        Object.assign(entry, updates);
-                        const putRequest = store.put(entry);
-                        putRequest.onsuccess = () => resolve(true);
-                        putRequest.onerror = () => reject(putRequest.error);
-                    };
-                    getRequest.onerror = () => reject(getRequest.error);
-                });
-            }
-            async markPendingFlush(ids, pending = true) {
-                if (!this.db) return;
-                const targetIds = Array.isArray(ids) ? ids : [ids];
-                await Promise.all(targetIds.map(id => this.updateSyncQueueEntry(id, { pendingFlush: pending })));
-            }
-            async getFolderState(context) {
-                if (!this.db) return null;
-                const folderKey = this.resolveFolderKey(context);
-                if (!folderKey) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderState', 'readonly');
-                    const store = transaction.objectStore('folderState');
-                    const request = store.get(folderKey);
-                    request.onsuccess = () => resolve(request.result || null);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async saveFolderState(record) {
-                if (!this.db || !record) return;
-                const folderKey = this.resolveFolderKey(record);
-                if (!folderKey) return;
-                const payload = {
-                    folderKey,
-                    provider: record.providerType || record.provider || null,
-                    folderId: record.folderId,
-                    localVersion: record.localVersion ?? 0,
-                    cloudVersion: record.cloudVersion ?? 0,
-                    lastLocalMutation: record.lastLocalMutation || null,
-                    lastCloudAck: record.lastCloudAck || null,
-                    updatedAt: Date.now()
-                };
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderState', 'readwrite');
-                    const store = transaction.objectStore('folderState');
-                    const request = store.put(payload);
-                    request.onsuccess = () => resolve(payload);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async deleteFolderState(context) {
-                if (!this.db) return;
-                const folderKey = this.resolveFolderKey(context);
-                if (!folderKey) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderState', 'readwrite');
-                    const store = transaction.objectStore('folderState');
-                    const request = store.delete(folderKey);
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async getFolderManifest(context) {
-                if (!this.db) return null;
-                const folderKey = this.resolveFolderKey(context);
-                if (!folderKey) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderManifests', 'readonly');
-                    const store = transaction.objectStore('folderManifests');
-                    const request = store.get(folderKey);
-                    request.onsuccess = () => resolve(request.result || null);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async saveFolderManifest(record) {
-                if (!this.db || !record) return;
-                const folderKey = this.resolveFolderKey(record);
-                if (!folderKey) return;
-                const payload = {
-                    folderKey,
-                    provider: record.providerType || record.provider || null,
-                    folderId: record.folderId,
-                    entries: record.entries || {},
-                    cloudVersion: record.cloudVersion ?? null,
-                    localVersion: record.localVersion ?? null,
-                    requiresFullResync: Boolean(record.requiresFullResync),
-                    lastUpdated: record.lastUpdated || Date.now(),
-                    lastRemoteUpdate: record.lastRemoteUpdate || null,
-                    lastDiffSummary: record.lastDiffSummary || null
-                };
-                if (record.manifestFileId) {
-                    payload.manifestFileId = record.manifestFileId;
-                }
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderManifests', 'readwrite');
-                    const store = transaction.objectStore('folderManifests');
-                    const request = store.put(payload);
-                    request.onsuccess = () => resolve(payload);
-                    request.onerror = () => reject(request.error);
-                });
-            }
-            async deleteFolderManifest(context) {
-                if (!this.db) return;
-                const folderKey = this.resolveFolderKey(context);
-                if (!folderKey) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderManifests', 'readwrite');
-                    const store = transaction.objectStore('folderManifests');
-                    const request = store.delete(folderKey);
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
-                });
-            }
             async clearFolderData(context, fileIds = []) {
-                const folderKey = this.resolveFolderKey(context);
-                if (!folderKey) return;
-                await Promise.all([
-                    this.deleteFolderCache(context.folderId || context),
-                    this.deleteFolderState(context),
-                    this.deleteFolderManifest(context),
-                    fileIds.length > 0 ? Promise.all(fileIds.map(id => this.deleteMetadata(id))) : this.deleteMetadataByFolder(context)
-                ]);
+                const targets = [];
+                if (Array.isArray(fileIds) && fileIds.length > 0) {
+                    targets.push(...fileIds.map(id => this.deleteMetadata(id)));
+                }
+                targets.push(this.deleteMetadataByFolder(context));
+                await Promise.all(targets);
             }
         }
         class VisualCueManager {
@@ -2989,43 +2769,6 @@
 
                 return { folders: [], files: allFiles };
             }
-            async loadFolderManifest(folderId, options = {}) {
-                try {
-                    const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
-                    const url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,appProperties,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1`;
-                    const response = await this.makeApiCall(url, { signal: options.signal });
-                    const manifestFile = response.files && response.files[0];
-                    if (!manifestFile) {
-                        return null;
-                    }
-                    const fileId = manifestFile.id;
-                    let manifestData = {};
-                    try {
-                        const mediaResponse = await this.makeApiCall(`/files/${fileId}?alt=media`, { method: 'GET', signal: options.signal }, false);
-                        const text = await mediaResponse.text();
-                        manifestData = text ? JSON.parse(text) : {};
-                    } catch (error) {
-                        if (/403|404/.test(error.message || '')) {
-                            state.syncLog?.log({ event: 'manifest:fetch:forbidden', level: 'error', details: `Drive denied manifest content for ${folderId}: ${error.message}` });
-                            return { entries: {}, requiresFullResync: true, cloudVersion: Date.now(), manifestFileId: fileId };
-                        }
-                        throw error;
-                    }
-                    const cloudVersion = Number(manifestData.cloudVersion || manifestFile.appProperties?.orbital8CloudVersion || Date.now());
-                    return {
-                        entries: manifestData.entries || {},
-                        requiresFullResync: Boolean(manifestData.requiresFullResync),
-                        cloudVersion,
-                        manifestFileId: fileId
-                    };
-                } catch (error) {
-                    if (/403|404/.test(error.message || '')) {
-                        state.syncLog?.log({ event: 'manifest:fetch:fallback', level: 'warn', details: `Manifest lookup failed for ${folderId}: ${error.message}` });
-                        return { entries: {}, requiresFullResync: true, cloudVersion: Date.now() };
-                    }
-                    throw error;
-                }
-            }
             async getFolderVersion(folderId, options = {}) {
                 try {
                     const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
@@ -3046,68 +2789,6 @@
                     }
                     throw error;
                 }
-            }
-            async saveFolderManifest(folderId, manifest, options = {}) {
-                const cloudVersion = manifest.cloudVersion ?? Date.now();
-                const payload = {
-                    folderId,
-                    provider: 'googledrive',
-                    cloudVersion,
-                    requiresFullResync: Boolean(manifest.requiresFullResync),
-                    entries: manifest.entries || {},
-                    updatedAt: new Date().toISOString()
-                };
-                const metadata = {
-                    name: '.orbital8-state.json',
-                    parents: [folderId],
-                    mimeType: 'application/json',
-                    appProperties: { orbital8CloudVersion: String(cloudVersion) }
-                };
-                const headers = { 'Content-Type': 'application/json' };
-                let fileId = manifest.manifestFileId || options.manifestFileId || null;
-                let discoveredManifests = null;
-                if (!fileId) {
-                    try {
-                        const query = `'${folderId}' in parents and name = '.orbital8-state.json' and trashed=false`;
-                        const lookupUrl = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=10`;
-                        const lookupResponse = await this.makeApiCall(lookupUrl, { signal: options.signal });
-                        const files = Array.isArray(lookupResponse?.files) ? lookupResponse.files : [];
-                        if (files.length > 0) {
-                            fileId = files[0].id;
-                            discoveredManifests = files;
-                        }
-                    } catch (error) {
-                        state.syncLog?.log({ event: 'manifest:lookup:fallback', level: 'warn', details: `Failed to locate existing manifest for ${folderId}: ${error.message}` });
-                    }
-                }
-                if (!fileId) {
-                    const createResponse = await this.makeApiCall('/files?supportsAllDrives=true&includeItemsFromAllDrives=true', { method: 'POST', body: JSON.stringify(metadata) });
-                    fileId = createResponse.id;
-                }
-                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata.appProperties }) });
-                if (Array.isArray(discoveredManifests) && discoveredManifests.length > 1) {
-                    const duplicateIds = discoveredManifests.slice(1).map(file => file.id);
-                    state.syncLog?.log({ event: 'manifest:duplicates', level: 'warn', details: `Detected ${duplicateIds.length} duplicate manifest files for ${folderId}.`, data: { duplicates: duplicateIds } });
-                }
-                const uploadUrl = `/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-                await this.makeApiCall(uploadUrl, { method: 'PATCH', body: JSON.stringify(payload), headers, signal: options.signal }, false);
-                state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted Drive manifest for ${folderId}`, data: { provider: 'googledrive', entries: Object.keys(payload.entries || {}).length, cloudVersion } });
-                return { cloudVersion, manifestFileId: fileId };
-            }
-            async updateFolderVersionMarker(folderId, version, options = {}) {
-                let fileId = options.manifestFileId;
-                if (!fileId) {
-                    const manifest = await this.loadFolderManifest(folderId, { signal: options.signal });
-                    fileId = manifest?.manifestFileId;
-                }
-                if (!fileId) {
-                    await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false });
-                    return;
-                }
-                await this.makeApiCall(`/files/${fileId}?supportsAllDrives=true&includeItemsFromAllDrives=true`, {
-                    method: 'PATCH',
-                    body: JSON.stringify({ appProperties: { orbital8CloudVersion: String(version) } })
-                });
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
@@ -3172,7 +2853,6 @@
                 if (!file) return;
                 Object.assign(file, updates);
                 await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
             }
 
             async deleteFile(fileId) {
@@ -3263,41 +2943,6 @@
                 }
                 return { folders: [], files: allFiles };
             }
-            async loadFolderManifest(folderId, options = {}) {
-                try {
-                    const manifestResponse = await this.makeApiCall(`/me/drive/special/approot:/manifests/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
-                    const manifestData = await manifestResponse.json();
-                    let cloudVersion = manifestData.cloudVersion ?? null;
-                    try {
-                        const stateResponse = await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
-                        const stateData = await stateResponse.json();
-                        if (stateData && stateData.cloudVersion != null) {
-                            cloudVersion = stateData.cloudVersion;
-                        }
-                    } catch (stateError) {
-                        if (!/404/.test(String(stateError.message))) {
-                            throw stateError;
-                        }
-                    }
-                    return {
-                        entries: manifestData.entries || {},
-                        requiresFullResync: Boolean(manifestData.requiresFullResync),
-                        cloudVersion: Number(cloudVersion ?? Date.now())
-                    };
-                } catch (error) {
-                    if (/404/.test(String(error.message))) {
-                        return null;
-                    }
-                    if (/401/.test(String(error.message))) {
-                        throw error;
-                    }
-                    if (/403/.test(String(error.message))) {
-                        state.syncLog?.log({ event: 'manifest:fetch:forbidden', level: 'error', details: `OneDrive manifest forbidden: ${error.message}` });
-                        return { entries: {}, requiresFullResync: true, cloudVersion: Date.now() };
-                    }
-                    throw error;
-                }
-            }
             async getFolderVersion(folderId, options = {}) {
                 try {
                     const stateResponse = await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, { method: 'GET', signal: options.signal });
@@ -3314,48 +2959,6 @@
                         throw error;
                     }
                     return null;
-                }
-            }
-            async saveFolderManifest(folderId, manifest, options = {}) {
-                const headers = { 'Content-Type': 'application/json' };
-                const cloudVersion = manifest.cloudVersion ?? Date.now();
-                const manifestPayload = {
-                    folderId,
-                    cloudVersion,
-                    requiresFullResync: Boolean(manifest.requiresFullResync),
-                    entries: manifest.entries || {},
-                    updatedAt: new Date().toISOString()
-                };
-                await this.makeApiCall(`/me/drive/special/approot:/manifests/${folderId}.json:/content`, {
-                    method: 'PUT',
-                    headers,
-                    body: JSON.stringify(manifestPayload),
-                    signal: options.signal
-                });
-                await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
-                    method: 'PUT',
-                    headers,
-                    body: JSON.stringify({ folderId, cloudVersion, updatedAt: new Date().toISOString() }),
-                    signal: options.signal
-                });
-                state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted OneDrive manifest for ${folderId}`, data: { provider: 'onedrive', entries: Object.keys(manifestPayload.entries || {}).length, cloudVersion } });
-                return { cloudVersion };
-            }
-            async updateFolderVersionMarker(folderId, version, options = {}) {
-                const headers = { 'Content-Type': 'application/json' };
-                try {
-                    await this.makeApiCall(`/me/drive/special/approot:/state/${folderId}.json:/content`, {
-                        method: 'PUT',
-                        headers,
-                        body: JSON.stringify({ folderId, cloudVersion: version, updatedAt: new Date().toISOString() }),
-                        signal: options.signal
-                    });
-                } catch (error) {
-                    if (/404/.test(String(error.message))) {
-                        await this.saveFolderManifest(folderId, { entries: {}, cloudVersion: version, requiresFullResync: false }, options);
-                    } else {
-                        throw error;
-                    }
                 }
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
@@ -3505,7 +3108,6 @@
                 const isGoogle = type === 'googledrive';
                 state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
                 state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
-                state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
 
                 if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
@@ -3562,7 +3164,6 @@
                     await state.syncManager.stop();
                     state.syncManager.setProviderContext({ provider: null, providerType: null });
                 }
-                state.folderSyncCoordinator?.setProviderContext({ provider: null, providerType: null });
                 state.provider = null;
                 state.providerType = null;
                 state.navigationToken = Symbol('navigation');
@@ -3585,7 +3186,6 @@
                             state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
                             state.syncManager.start();
                         }
-                        state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                     }
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
@@ -3607,63 +3207,14 @@
                 }
 
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                if (!this.isNavigationActive(navigationToken)) {
-                    return false;
-                }
-                const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
-                const coordinator = state.folderSyncCoordinator;
-                let preparation = null;
-
                 try {
-                    if (coordinator) {
-                        preparation = await coordinator.prepareFolder(folderId, { forceFullResync: Boolean(options.forceFullResync) });
-                        if (!this.isNavigationActive(navigationToken)) {
-                            return false;
-                        }
-                    }
-
-                    const shouldFullSync = Boolean(
-                        preparation?.mode === 'full' ||
-                        cachedFiles.length === 0 ||
-                        isFirstSessionVisit ||
-                        options.forceFullResync
-                    );
-
-                    const mustRefreshFromCloud = true; // Always refresh to capture latest cloud changes per folder load.
-                    const canUseCache = !mustRefreshFromCloud && !shouldFullSync && (preparation?.mode === 'cache' || !coordinator);
-
-                    if (!canUseCache) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, navigationToken });
-                        return synced !== false;
-                    }
-
-                    state.imageFiles = cachedFiles;
-                    await this.processAllMetadata(state.imageFiles, false, { navigationToken });
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return false;
-                    }
-
-                    Utils.showScreen('app-container');
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
-                    state.sessionVisitedFolders.add(sessionKey);
-
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return false;
-                    }
-
-                    const cacheLog = {
-                        event: 'foldersync:cache-hit',
-                        level: 'info',
-                        details: `Hydrated ${folderId} from cache`
-                    };
-                    if (preparation?.remoteVersion != null) {
-                        cacheLog.data = { cloudVersion: preparation.remoteVersion };
-                    }
-                    state.syncLog?.log(cacheLog);
-
-                    return state.imageFiles.length > 0;
+                    const existingFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
+                    const synced = await this.syncFolderFromCloud(sessionKey, {
+                        navigationToken,
+                        existingFiles,
+                        isForced: Boolean(options.forceFullResync)
+                    });
+                    return synced !== false;
                 } catch (error) {
                     if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
@@ -3672,8 +3223,8 @@
                     return false;
                 }
             },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
-                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
+            mergeCloudWithExisting(cloudFiles, existingFiles = []) {
+                const cachedMap = new Map(existingFiles.map(file => [file.id, file]));
                 const merged = [];
                 const newIds = [];
                 const updatedIds = [];
@@ -3750,17 +3301,17 @@
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
-            async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
+            async syncFolderFromCloud(sessionKey, options = {}) {
                 const folderId = state.currentFolder.id;
-                const hadCached = cachedFiles.length > 0;
-                const coordinator = state.folderSyncCoordinator;
-                const preparation = options.preparation || null;
+                const existingFiles = Array.isArray(options.existingFiles) ? options.existingFiles : [];
                 const navigationToken = options.navigationToken || state.navigationToken;
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
+                const hadExisting = existingFiles.length > 0;
+
                 Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                Utils.updateLoadingProgress(0, hadExisting ? existingFiles.length : 0, hadExisting ? 'Syncing with cloud...' : 'Fetching from cloud...');
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
@@ -3768,10 +3319,9 @@
                         return false;
                     }
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithExisting(cloudFiles, existingFiles);
 
                     if (mergedFiles.length === 0) {
-                        await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
                         const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                         if (!this.isNavigationActive(navigationToken)) {
@@ -3782,32 +3332,6 @@
                         Core.initializeStacks();
                         Core.showEmptyState();
                         Core.updateStackCounts();
-
-                        if (coordinator) {
-                            const manifestEntries = coordinator.buildManifestFromFiles(folderId, []);
-                            const fallbackVersion = preparation?.localManifest?.cloudVersion ?? preparation?.remoteVersion ?? Date.now();
-                            const fallbackLocalVersion = preparation?.localManifest?.localVersion ?? fallbackVersion;
-                            const manifestPayload = {
-                                entries: manifestEntries,
-                                requiresFullResync: false,
-                                cloudVersion: fallbackVersion,
-                                localVersion: fallbackLocalVersion,
-                                manifestFileId: preparation?.localManifest?.manifestFileId || preparation?.manifestFileId || null
-                            };
-                            if (this.isNavigationActive(navigationToken)) {
-                                await coordinator.persistManifest(folderId, manifestPayload, {
-                                    cloudVersion: manifestPayload.cloudVersion,
-                                    localVersion: manifestPayload.localVersion,
-                                    lastDiffSummary: { new: 0, updated: 0, removed: cachedFiles.length }
-                                });
-                                await coordinator.persistFolderState(folderId, {
-                                    cloudVersion: manifestPayload.cloudVersion,
-                                    localVersion: manifestPayload.localVersion,
-                                    lastCloudAck: Date.now()
-                                });
-                            }
-                        }
-
                         Utils.showToast('No images found in this folder', 'info', true);
                         return true;
                     }
@@ -3822,93 +3346,26 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
-                    state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached, { navigationToken });
+                    await this.processAllMetadata(mergedFiles, !hadExisting, { navigationToken });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
-                    if (hasChanges || !hadCached) {
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
-                    }
 
+                    state.imageFiles = mergedFiles;
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                    if (this.isNavigationActive(navigationToken)) {
-                        state.sessionVisitedFolders.add(key);
-                        this.switchToCommonUI();
-                        Core.initializeStacks();
-                        Core.initializeImageDisplay();
+                    state.sessionVisitedFolders.add(key);
+
+                    this.switchToCommonUI();
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+                    Core.updateStackCounts();
+                    if (state.imageFiles.length > 0) {
+                        Core.displayCurrentImage();
                     } else {
-                        return false;
+                        Core.showEmptyState();
                     }
 
-                    if (coordinator) {
-                        const manifestEntries = coordinator.buildManifestFromFiles(folderId, state.imageFiles);
-                        let manifestFileId = preparation?.manifestFileId ?? preparation?.localManifest?.manifestFileId ?? null;
-                        if (!manifestFileId && state.provider && typeof state.provider.loadFolderManifest === 'function') {
-                            try {
-                                const lookup = await state.provider.loadFolderManifest(folderId, { signal: state.activeRequests?.signal });
-                                if (lookup?.manifestFileId) {
-                                    manifestFileId = lookup.manifestFileId;
-                                }
-                            } catch (error) {
-                                state.syncLog?.log({ event: 'manifest:lookup:pre-save', level: 'warn', details: `Manifest lookup before save failed: ${error.message}` });
-                            }
-                        }
-
-                        const baseCloudVersion = preparation?.localManifest?.cloudVersion ?? preparation?.remoteVersion ?? Date.now();
-                        const baseLocalVersion = preparation?.localManifest?.localVersion ?? baseCloudVersion;
-                        let remoteManifestResponse = null;
-                        let manifestRequiresRescan = false;
-
-                        if (state.provider && typeof state.provider.saveFolderManifest === 'function' && this.isNavigationActive(navigationToken)) {
-                            try {
-                                const manifestOptions = { manifestFileId };
-                                remoteManifestResponse = await state.provider.saveFolderManifest(folderId, {
-                                    entries: manifestEntries,
-                                    requiresFullResync: false,
-                                    cloudVersion: baseCloudVersion,
-                                    localVersion: baseLocalVersion,
-                                    manifestFileId
-                                }, manifestOptions);
-                                state.syncLog?.log({ event: 'manifest:save', level: 'info', details: `Persisted manifest for ${folderId}`, data: { entries: Object.keys(manifestEntries).length } });
-                            } catch (error) {
-                                if (error?.name === 'AbortError') {
-                                    state.syncLog?.log({ event: 'manifest:save:aborted', level: 'warn', details: `Manifest save cancelled: ${error.message}` });
-                                } else {
-                                    manifestRequiresRescan = true;
-                                    state.syncLog?.log({ event: 'manifest:save:error', level: 'error', details: `Manifest save failed: ${error.message}` });
-                                }
-                            }
-                        }
-
-                        const finalCloudVersion = remoteManifestResponse?.cloudVersion ?? baseCloudVersion;
-                        const finalLocalVersion = remoteManifestResponse?.localVersion ?? baseLocalVersion;
-                        const finalManifestFileId = remoteManifestResponse?.manifestFileId ?? manifestFileId ?? preparation?.localManifest?.manifestFileId ?? null;
-                        const manifestPayload = {
-                            entries: manifestEntries,
-                            requiresFullResync: manifestRequiresRescan,
-                            cloudVersion: finalCloudVersion,
-                            localVersion: finalLocalVersion,
-                            manifestFileId: finalManifestFileId
-                        };
-                        if (this.isNavigationActive(navigationToken)) {
-                            await coordinator.persistManifest(folderId, manifestPayload, {
-                                cloudVersion: manifestPayload.cloudVersion,
-                                localVersion: manifestPayload.localVersion,
-                                lastDiffSummary: { new: newIds.length, updated: updatedIds.length, removed: removedIds.length }
-                            });
-                            await coordinator.persistFolderState(folderId, {
-                                cloudVersion: manifestPayload.cloudVersion,
-                                localVersion: Math.max(manifestPayload.localVersion ?? 0, manifestPayload.cloudVersion ?? 0),
-                                lastCloudAck: Date.now()
-                            });
-                            if (manifestPayload.requiresFullResync) {
-                                await coordinator.markRequiresFullResync(folderId, 'manifest-save-failed');
-                            }
-                        }
-                    }
-
-                    if (hadCached && hasChanges) {
+                    if (hadExisting && hasChanges) {
                         const diffSummary = [];
                         if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
                         if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
@@ -3916,21 +3373,24 @@
                         const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
                         Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
                     }
+
+                    return true;
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
                     this.returnToFolderSelection();
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
                 try {
                     const navigationToken = state.navigationToken;
                     const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const existingFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithExisting(cloudFiles, existingFiles);
 
                     if (!hasChanges) {
                         return;
@@ -3939,7 +3399,7 @@
                     for (const updatedId of updatedIds) {
                         const updatedFile = mergedFiles.find(file => file.id === updatedId);
                         if (updatedFile) {
-                        await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
+                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
                         }
                     }
                     if (removedIds.length > 0) {
@@ -3950,7 +3410,6 @@
                     if (!this.isNavigationActive(navigationToken)) {
                         return;
                     }
-                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
                     state.imageFiles = mergedFiles;
                     Core.initializeStacks();
                     Core.updateStackCounts();
@@ -4099,7 +3558,7 @@
                         await state.syncManager.flush({ reason: 'folder-switch' });
                     }
                     state.activeRequests?.abort();
-                    // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
+                    // Abort pending navigation/network calls.
                     state.activeRequests = new AbortController();
                     this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
@@ -4155,7 +3614,6 @@
                     const timestamp = Date.now();
                     Object.assign(file, updates, { localUpdatedAt: timestamp });
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     if (state.syncManager) {
                         const change = {
                             fileId,
@@ -4211,9 +3669,6 @@
                 const stackBefore = originStack || file?.stack || null;
                 const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
                 const fileName = name || file?.name || '';
-                const persistState = async () => {
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
-                };
                 const restoreState = async (reason) => {
                     if (!file) { return false; }
                     if (fileIndex > -1) {
@@ -4226,7 +3681,6 @@
                     } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
                         state.stacks[file.stack].push(file);
                     }
-                    await persistState();
                     state.syncLog?.log({
                         event: 'provider:trash:rollback',
                         level: 'warn',
@@ -4236,8 +3690,6 @@
                     });
                     return true;
                 };
-                await persistState();
-
                 const provider = state.provider;
                 const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
                 if (!provider || typeof provider.deleteFile !== 'function') {
@@ -4293,12 +3745,11 @@
                 const providerType = state.providerType;
                 try {
                     state.syncLog?.log({ event: 'foldersync:reset', level: 'warn', details: `Resetting folder ${folderId}.` });
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                    const fileIds = cachedFiles.map(file => file.id);
+                    const currentFiles = Array.isArray(state.imageFiles) ? state.imageFiles : [];
+                    const fileIds = currentFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
-                    await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset');
                     state.sessionVisitedFolders.delete(`${providerType || 'unknown'}::${folderId}`);
-                    Utils.showToast('Folder cache cleared. Resyncing...', 'info');
+                    Utils.showToast('Folder metadata cleared. Resyncing...', 'info');
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
                     await this.loadImages({ forceFullResync: true, navigationToken });
@@ -4961,7 +4412,6 @@ this.updateImageCounters();
                 for(const file of newStack) {
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                 }
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
 
                 state.stacks[state.grid.stack] = newStack;
                 state.currentStackPosition = 0;
@@ -6167,7 +5617,6 @@ this.updateImageCounters();
                         Utils.updateLoadingProgress(i + 1, filesToMove.length);
                     }
                     Utils.showToast(`Moved ${filesToMove.length} images to ${folderName}`, 'success', true);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     state.folderMoveMode = { active: false, files: [] };
                     Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
                 } catch (error) { Utils.showToast('Error moving files', 'error', true); App.returnToFolderSelection(); }
@@ -6710,7 +6159,6 @@ this.updateImageCounters();
                 await state.dbManager.init();
                 window.__orbitalAppState = state;
                 window.__orbitalDbManager = state.dbManager;
-                state.folderSyncCoordinator = null;
                 state.syncManager = null;
                 state.metadataExtractor = new MetadataExtractor();
                 Utils.showScreen('provider-screen');
