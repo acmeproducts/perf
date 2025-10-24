@@ -4007,11 +4007,11 @@
                     tags: [],
                     qualityRating: 0,
                     contentRating: 0,
-                    notes: '', 
-                    stackSequence: 0, 
+                    notes: '',
+                    stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {}, 
-                    metadataStatus: 'pending' 
+                    extractedMetadata: {},
+                    metadataStatus: 'pending'
                 };
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
@@ -4036,6 +4036,85 @@
                     baseMetadata.stackSequence = fallbackSequence - indexOffset;
                  }
                  return baseMetadata;
+            },
+            async handleUploadComplete(newFiles = []) {
+                if (!Array.isArray(newFiles) || newFiles.length === 0) {
+                    return;
+                }
+
+                const inboxStackName = 'in';
+                const inboxStack = state.stacks[inboxStackName] || (state.stacks[inboxStackName] = []);
+                const existingIds = new Set(state.imageFiles.map(file => file.id));
+                const candidates = [];
+
+                newFiles.forEach((file, index) => {
+                    if (!file || !file.id || existingIds.has(file.id)) {
+                        return;
+                    }
+
+                    const baseMetadata = this.generateDefaultMetadata(file, { index });
+                    const merged = {
+                        ...file,
+                        ...baseMetadata,
+                        stack: inboxStackName
+                    };
+
+                    if (!merged.appProperties || typeof merged.appProperties !== 'object') {
+                        merged.appProperties = {};
+                    }
+
+                    candidates.push(merged);
+                    existingIds.add(merged.id);
+                });
+
+                if (candidates.length === 0) {
+                    return;
+                }
+
+                const epoch = Date.now();
+                const numericSequences = inboxStack
+                    .map(entry => Number(entry.stackSequence))
+                    .filter(sequence => Number.isFinite(sequence));
+                const baseSequence = (numericSequences.length > 0 ? Math.min(...numericSequences) : epoch) - 1;
+
+                const { sequenceEpoch } = Utils.resequenceStackEntries(candidates, {
+                    baseSequence,
+                    direction: 'desc',
+                    sequenceEpoch: epoch
+                });
+
+                const updatedInbox = [...inboxStack, ...candidates];
+                state.stacks[inboxStackName] = Core.sortFiles(updatedInbox);
+
+                candidates.forEach(candidate => {
+                    state.imageFiles.push(candidate);
+                });
+
+                Core.updateStackCounts();
+
+                for (const candidate of candidates) {
+                    const candidateSequenceEpoch = Number.isFinite(Number(candidate.sequenceEpoch))
+                        ? Number(candidate.sequenceEpoch)
+                        : sequenceEpoch;
+                    await this.updateUserMetadata(candidate.id, {
+                        stack: inboxStackName,
+                        stackSequence: candidate.stackSequence,
+                        sequenceEpoch: candidateSequenceEpoch,
+                        appProperties: candidate.appProperties
+                    }, { skipDebounce: true, operationType: 'stack:append' });
+                }
+
+                if (state.dbManager?.saveTimestampSnapshot) {
+                    try {
+                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                    } catch (snapshotError) {
+                        console.warn('Failed to persist timestamps after upload append:', snapshotError);
+                    }
+                }
+
+                if (typeof Grid !== 'undefined' && typeof Grid.syncWithStack === 'function') {
+                    Grid.syncWithStack(inboxStackName, { preselectFirst: false });
+                }
             },
             switchToCommonUI() {
                 Utils.showScreen('app-container');
@@ -4177,72 +4256,86 @@
                     if (state.dbManager?.saveFolderCache) {
                         await state.dbManager.saveFolderCache(folderContext, cachePayload);
                     }
-                    state.timestampAuthority.recordItemUpdate(file.id, timestamp);
+                    const authorityTimestampCandidate = Number(mergedUpdates.sequenceEpoch);
+                    const authorityTimestamp = Number.isFinite(authorityTimestampCandidate)
+                        ? authorityTimestampCandidate
+                        : timestamp;
+                    state.timestampAuthority.recordItemUpdate(file.id, authorityTimestamp);
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
             },
             async deleteFile(fileId, options = {}) {
-                const { source = 'ui', originStack = null, name = null } = options;
-                const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
-                let file = null;
-                let stackRemoval = null;
-                if (fileIndex > -1) {
-                    const removed = state.imageFiles.splice(fileIndex, 1);
-                    file = removed && removed.length ? removed[0] : null;
-                    if (file && file.stack && state.stacks[file.stack]) {
-                        const stackArray = state.stacks[file.stack];
-                        const stackIndex = stackArray.findIndex(f => f.id === fileId);
-                        if (stackIndex > -1) {
-                            stackRemoval = { name: file.stack, index: stackIndex };
-                            stackArray.splice(stackIndex, 1);
-                        }
-                    }
+                const { source = 'ui', originStack = null } = options;
+                const file = state.imageFiles.find(entry => entry.id === fileId);
+                if (!file) {
+                    return false;
                 }
-                const stackBefore = originStack || file?.stack || null;
-                const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
-                const fileName = name || file?.name || '';
-                const persistState = async () => {
-                    const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
-                    const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
-                    if (state.dbManager?.saveFolderCache) {
-                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
-                    }
-                };
-                const restoreState = async (reason) => {
-                    if (!file) { return false; }
-                    if (fileIndex > -1) {
-                        state.imageFiles.splice(fileIndex, 0, file);
-                    } else {
-                        state.imageFiles.push(file);
-                    }
-                    if (stackRemoval && state.stacks[stackRemoval.name]) {
-                        state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
-                    } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
-                        state.stacks[file.stack].push(file);
-                    }
-                    await persistState();
-                    return true;
-                };
-                await persistState();
 
                 const provider = state.provider;
-                const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
                 if (!provider || typeof provider.deleteFile !== 'function') {
-                    await restoreState('missing provider recycle support');
                     Utils.showToast('Provider recycle bin unavailable. Item restored locally.', 'error', true);
                     return false;
                 }
 
+                const originalStack = originStack || file.stack || 'in';
+                const originArray = state.stacks[originalStack] || (state.stacks[originalStack] = []);
+                const originIndex = originArray.findIndex(entry => entry.id === fileId);
+                if (originIndex > -1) {
+                    originArray.splice(originIndex, 1);
+                }
+
+                const previousAppProperties = file.appProperties ? { ...file.appProperties } : null;
 
                 try {
                     await provider.deleteFile(fileId);
-                    return true;
-                } catch (e) {
-                    await restoreState('provider recycle failure');
-                    Utils.showToast(`Failed to move to recycle bin: ${e.message}`, 'error', true);
+                } catch (error) {
+                    if (originIndex > -1) {
+                        originArray.splice(Math.max(0, originIndex), 0, file);
+                        state.stacks[originalStack] = Core.sortFiles(originArray);
+                    }
+                    Utils.showToast(`Failed to move to recycle bin: ${error.message}`, 'error', true);
                     return false;
                 }
+
+                const trashStackName = 'trash';
+                const trashArray = state.stacks[trashStackName] || (state.stacks[trashStackName] = []);
+                const epoch = Date.now();
+                const numericSequences = trashArray
+                    .map(entry => Number(entry.stackSequence))
+                    .filter(sequence => Number.isFinite(sequence));
+                const baseSequence = (numericSequences.length > 0 ? Math.min(...numericSequences) : epoch) - 1;
+
+                if (!file.appProperties || typeof file.appProperties !== 'object') {
+                    file.appProperties = previousAppProperties ? { ...previousAppProperties } : {};
+                }
+
+                const { sequenceEpoch } = Utils.resequenceStackEntries([file], {
+                    baseSequence,
+                    direction: 'desc',
+                    sequenceEpoch: epoch
+                });
+
+                file.stack = trashStackName;
+                trashArray.push(file);
+                state.stacks[trashStackName] = Core.sortFiles(trashArray);
+
+                await this.updateUserMetadata(fileId, {
+                    stack: trashStackName,
+                    stackSequence: file.stackSequence,
+                    sequenceEpoch,
+                    appProperties: file.appProperties
+                }, { skipDebounce: true, operationType: 'stack:move:trash', source });
+
+                if (state.dbManager?.saveTimestampSnapshot) {
+                    try {
+                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                    } catch (snapshotError) {
+                        console.warn('Failed to persist timestamps after recycle move:', snapshotError);
+                    }
+                }
+
+                return true;
             },
             async resetCurrentFolder() {
                 const folderId = state.currentFolder?.id;
@@ -4685,6 +4778,7 @@
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
                     Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
+                    Grid.syncWithStack('trash', { preselectFirst: false });
                 } catch (error) {
                     Utils.showToast(`Failed to delete ${currentFile.name}`, 'error', true);
                 } finally {
