@@ -5667,7 +5667,8 @@ this.updateImageCounters();
                         const allFiles = state.grid.lazyLoadState.allFiles || [];
                         let targetIndex = allFiles.findIndex(file => file.id === dropTargetId);
                         if (targetIndex === -1) { targetIndex = allFiles.length; }
-                        await persistGridReorderDrop(session.selectedIds, targetIndex);
+                        const dropContext = { targetId: dropTargetId, targetIndex };
+                        await persistGridReorderDrop(session.selectedIds, dropContext);
                     } else {
                         const dropRole = dropTarget.dataset.gridDropTarget;
                         if (dropRole === 'stack') {
@@ -5971,8 +5972,15 @@ this.updateImageCounters();
             }
         };
 
-        async function persistGridReorderDrop(selectedIds, targetIndex) {
+        async function persistGridReorderDrop(selectedIds, dropContext) {
             if (!Array.isArray(selectedIds) || selectedIds.length === 0) { return; }
+
+            const contextType = typeof dropContext;
+            const targetIndex = contextType === 'number'
+                ? dropContext
+                : (dropContext && Number.isFinite(dropContext.targetIndex) ? dropContext.targetIndex : null);
+            const targetId = contextType === 'object' && dropContext ? dropContext.targetId : null;
+
             const stackName = state.grid.stack;
             if (!stackName) { return; }
 
@@ -5980,7 +5988,7 @@ this.updateImageCounters();
             if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
 
             const lazyState = state.grid.lazyLoadState || {};
-            const allFiles = Array.isArray(lazyState.allFiles) ? lazyState.allFiles : stackArray;
+            const viewOrder = Array.isArray(lazyState.allFiles) ? lazyState.allFiles : stackArray;
             const selectedSet = new Set(selectedIds);
             const movingItems = [];
             const remainingItems = [];
@@ -5992,16 +6000,61 @@ this.updateImageCounters();
 
             if (movingItems.length === 0) { return; }
 
-            const clampedIndex = Math.max(0, Math.min(Number.isFinite(targetIndex) ? targetIndex : 0, allFiles.length));
-            let insertionIndex = remainingItems.length;
+            const stackIndexMap = new Map();
+            const prefixNonSelected = new Array(stackArray.length + 1).fill(0);
+            for (let i = 0; i < stackArray.length; i++) {
+                const file = stackArray[i];
+                const fileId = file?.id;
+                if (fileId) { stackIndexMap.set(fileId, i); }
+                const increment = file && !selectedSet.has(fileId) ? 1 : 0;
+                prefixNonSelected[i + 1] = prefixNonSelected[i] + increment;
+            }
 
-            if (clampedIndex < allFiles.length) {
-                let count = 0;
-                for (let i = 0; i < clampedIndex; i++) {
-                    const candidate = allFiles[i];
-                    if (candidate && !selectedSet.has(candidate.id)) { count += 1; }
+            const computeInsertionFromStackIndex = (stackIndex) => {
+                if (typeof stackIndex !== 'number' || stackIndex < 0) { return null; }
+                const boundedIndex = Math.min(stackIndex, stackArray.length);
+                const count = prefixNonSelected[boundedIndex];
+                return Math.min(count, remainingItems.length);
+            };
+
+            let insertionIndex = remainingItems.length;
+            let insertionResolved = false;
+
+            if (targetId && stackIndexMap.has(targetId)) {
+                const stackIndex = stackIndexMap.get(targetId);
+                const computed = computeInsertionFromStackIndex(stackIndex);
+                if (computed !== null) {
+                    insertionIndex = computed;
+                    insertionResolved = true;
                 }
-                insertionIndex = Math.min(count, remainingItems.length);
+            }
+
+            if (!insertionResolved && Number.isInteger(targetIndex)) {
+                if (targetIndex >= viewOrder.length) {
+                    insertionIndex = remainingItems.length;
+                    insertionResolved = true;
+                } else if (targetIndex >= 0) {
+                    for (let i = targetIndex; i < viewOrder.length; i++) {
+                        const candidate = viewOrder[i];
+                        const candidateId = candidate?.id;
+                        if (!candidateId || selectedSet.has(candidateId)) { continue; }
+                        if (stackIndexMap.has(candidateId)) {
+                            const stackIndex = stackIndexMap.get(candidateId);
+                            const computed = computeInsertionFromStackIndex(stackIndex);
+                            if (computed !== null) {
+                                insertionIndex = computed;
+                                insertionResolved = true;
+                            }
+                        }
+                        if (insertionResolved) { break; }
+                    }
+                }
+            }
+
+            if (!insertionResolved) {
+                Utils.showToast('Unable to determine drop location for reorder. Try again.', 'error', true);
+                state.grid.isDirty = false;
+                return;
             }
 
             const newStackOrder = [
