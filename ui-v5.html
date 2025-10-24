@@ -3487,26 +3487,18 @@
                 return true;
             }
             async updateFileMetadata(fileId, metadata) {
-                await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
+                const appProperties = metadata?.appProperties || metadata || {};
+                if (!appProperties || typeof appProperties !== 'object') {
+                    return false;
+                }
+                await this.makeApiCall(`/files/${fileId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ appProperties })
+                });
                 return true;
             }
             async updateUserMetadata(fileId, updates, options = {}) {
-                const file = state.imageFiles.find(f => f.id === fileId);
-                if (!file) return;
-                const nextAppProperties = updates && typeof updates.appProperties === 'object'
-                    ? { ...(file.appProperties || {}), ...updates.appProperties }
-                    : file.appProperties;
-                const mergedUpdates = { ...updates };
-                if (nextAppProperties) {
-                    mergedUpdates.appProperties = nextAppProperties;
-                }
-                Object.assign(file, mergedUpdates);
-                await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
-                const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
-                if (state.dbManager?.saveFolderCache) {
-                    await state.dbManager.saveFolderCache(folderContext, cachePayload);
-                }
+                return App.updateUserMetadata(fileId, updates, options);
             }
 
             async deleteFile(fileId) {
@@ -3788,8 +3780,17 @@
                 return true;
             }
             async updateFileMetadata(fileId, metadata) {
-                // Placeholder for Phase 2: Sync metadata to OneDrive
-                return Promise.resolve(true);
+                const payload = metadata?.metadata || metadata || {};
+                if (!payload || typeof payload !== 'object') {
+                    return false;
+                }
+                const body = JSON.stringify(payload);
+                await this.makeApiCall(`/me/drive/special/approot:/metadata/${fileId}.json:/content`, {
+                    method: 'PUT',
+                    body,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                return true;
             }
             async deleteFile(fileId) {
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'DELETE' });
@@ -4826,6 +4827,90 @@
                     detailsButton.style.display = 'none';
                 }
             },
+            serializeMetadataForCloud(file) {
+                if (!file) { return null; }
+                const toNumber = (value) => {
+                    if (value == null) { return null; }
+                    if (typeof value === 'number' && Number.isFinite(value)) { return value; }
+                    if (value instanceof Date) {
+                        const ms = value.getTime();
+                        return Number.isFinite(ms) ? ms : null;
+                    }
+                    if (typeof value === 'string') {
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) { return numeric; }
+                        const parsed = Date.parse(value);
+                        return Number.isNaN(parsed) ? null : parsed;
+                    }
+                    return null;
+                };
+                const normalizedTags = typeof TagService?.normalizeTagList === 'function'
+                    ? TagService.normalizeTagList(file.tags || [])
+                    : (Array.isArray(file.tags) ? file.tags.filter(Boolean) : []);
+                const sequenceEpoch = toNumber(file.sequenceEpoch)
+                    ?? toNumber(file.updatedAt)
+                    ?? toNumber(file.folderUpdatedAt)
+                    ?? Date.now();
+                const stackSequence = toNumber(file.stackSequence) ?? sequenceEpoch;
+                const folderUpdatedAt = toNumber(file.folderUpdatedAt) ?? sequenceEpoch;
+                const updatedAt = toNumber(file.updatedAt) ?? folderUpdatedAt;
+                return {
+                    stack: file.stack || 'in',
+                    tags: normalizedTags,
+                    notes: file.notes || '',
+                    qualityRating: Number.isFinite(Number(file.qualityRating)) ? Number(file.qualityRating) : 0,
+                    contentRating: Number.isFinite(Number(file.contentRating)) ? Number(file.contentRating) : 0,
+                    favorite: Boolean(file.favorite),
+                    stackSequence,
+                    sequenceEpoch,
+                    folderUpdatedAt,
+                    updatedAt,
+                    localUpdatedAt: toNumber(file.localUpdatedAt) ?? Date.now()
+                };
+            },
+            composeProviderMetadata(file, serialized = null) {
+                if (!file) { return null; }
+                const snapshot = serialized || this.serializeMetadataForCloud(file);
+                if (!snapshot) { return null; }
+                const sequenceEpoch = Number.isFinite(snapshot.sequenceEpoch) ? snapshot.sequenceEpoch : Date.now();
+                const folderUpdatedAt = Number.isFinite(snapshot.folderUpdatedAt)
+                    ? snapshot.folderUpdatedAt
+                    : sequenceEpoch;
+                if (state.providerType === 'googledrive') {
+                    const appProperties = { ...(file.appProperties || {}) };
+                    appProperties.slideboxStack = snapshot.stack || 'in';
+                    appProperties.slideboxTags = snapshot.tags.join(',');
+                    appProperties.notes = snapshot.notes || '';
+                    appProperties.qualityRating = String(Number.isFinite(snapshot.qualityRating) ? snapshot.qualityRating : 0);
+                    appProperties.contentRating = String(Number.isFinite(snapshot.contentRating) ? snapshot.contentRating : 0);
+                    appProperties.stackSequence = String(Number.isFinite(snapshot.stackSequence)
+                        ? snapshot.stackSequence
+                        : sequenceEpoch);
+                    appProperties.favorite = snapshot.favorite ? 'true' : 'false';
+                    appProperties.orbital8SequenceEpoch = String(sequenceEpoch);
+                    appProperties.orbital8FolderUpdatedAt = String(folderUpdatedAt);
+                    file.appProperties = appProperties;
+                    return { appProperties };
+                }
+                if (state.providerType === 'onedrive') {
+                    return {
+                        metadata: {
+                            stack: snapshot.stack,
+                            tags: snapshot.tags,
+                            notes: snapshot.notes || '',
+                            qualityRating: snapshot.qualityRating || 0,
+                            contentRating: snapshot.contentRating || 0,
+                            favorite: snapshot.favorite,
+                            stackSequence: snapshot.stackSequence,
+                            sequenceEpoch: sequenceEpoch,
+                            folderUpdatedAt,
+                            updatedAt: snapshot.updatedAt,
+                            localUpdatedAt: snapshot.localUpdatedAt
+                        }
+                    };
+                }
+                return null;
+            },
             async updateUserMetadata(fileId, updates, options = {}) {
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
@@ -4857,6 +4942,8 @@
                     }
                     file.updatedAt = authorityTimestamp;
                     file.folderUpdatedAt = authorityTimestamp;
+                    const serialized = this.serializeMetadataForCloud(file);
+                    const providerPayload = this.composeProviderMetadata(file, serialized);
                     const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
                     await state.dbManager.saveMetadata(file.id, file, folderContext);
                     const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
@@ -4865,6 +4952,14 @@
                     }
                     if (state.timestampAuthority) {
                         state.timestampAuthority.recordItemUpdate(file.id, authorityTimestamp);
+                    }
+                    if (providerPayload && state.provider && typeof state.provider.updateFileMetadata === 'function') {
+                        try {
+                            await state.provider.updateFileMetadata(fileId, providerPayload);
+                        } catch (providerError) {
+                            console.warn('Failed to persist metadata to provider:', providerError);
+                            Utils.showToast('Saved locally, but cloud sync failed. Check your connection and try again.', 'error', true);
+                        }
                     }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
