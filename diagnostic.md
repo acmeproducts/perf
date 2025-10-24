@@ -5,6 +5,7 @@
 - **Timestamp architecture bloat**: The new folder/item timestamp design adds services (`FolderTimestampService`, extra IndexedDB stores) without delivering the promised simple sync behavior.
 - **Incomplete freshness checks**: Folder loads still rely on heavy timestamp comparisons yet fall back to full fetches, creating complex and fragile refresh logic.
 - **Inconsistent state reconciliation**: Remote changes and deletions (especially Drive trash) are not deterministically merged, leading to out-of-sync stacks and broken drag/drop ordering.
+- **Permanent Drive share links**: `ui-v4.html` hard-codes the reusable template `https://drive.google.com/file/d/${fileId}/view?usp=sharing`, so Drive exports no longer rely on the short-lived `uc?id=…&export=view` downloads.
 
 ## Outline of Root Causes
 1. **Architecture pivot**
