@@ -1447,6 +1447,9 @@
                     file.stackSequence = sequence;
                     file.sequenceEpoch = epochCandidate;
                     file.appProperties.orbital8SequenceEpoch = String(epochCandidate);
+                    file.appProperties.orbital8FolderUpdatedAt = String(epochCandidate);
+                    file.updatedAt = epochCandidate;
+                    file.folderUpdatedAt = epochCandidate;
 
                     assignments.push({
                         file,
@@ -2727,6 +2730,37 @@
                 const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
                 const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId) : null) || apiDownloadUrl;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
+                const parseTimestamp = (value) => {
+                    if (value == null) return null;
+                    if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+                    if (typeof value === 'number') {
+                        return Number.isFinite(value) ? value : null;
+                    }
+                    if (typeof value === 'string') {
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) {
+                            return numeric;
+                        }
+                        const parsed = Date.parse(value);
+                        return Number.isNaN(parsed) ? null : parsed;
+                    }
+                    return null;
+                };
+
+                const rawAppProps = {
+                    ...(file?.appProperties || {}),
+                    ...(target?.appProperties || {})
+                };
+                const sequenceEpoch = parseTimestamp(rawAppProps.orbital8SequenceEpoch);
+                const folderUpdatedAt = parseTimestamp(rawAppProps.orbital8FolderUpdatedAt);
+                const modifiedStamp = parseTimestamp(target?.modifiedTime || file?.modifiedTime);
+                const createdStamp = parseTimestamp(target?.createdTime || file?.createdTime);
+                const updatedAt = sequenceEpoch ?? folderUpdatedAt ?? modifiedStamp ?? createdStamp ?? null;
+
+                if (updatedAt != null) {
+                    rawAppProps.orbital8SequenceEpoch = String(sequenceEpoch ?? updatedAt);
+                    rawAppProps.orbital8FolderUpdatedAt = String(folderUpdatedAt ?? updatedAt);
+                }
 
                 const normalized = {
                     id: effectiveId,
@@ -2740,10 +2774,20 @@
                     downloadUrl,
                     viewUrl,
                     driveApiDownloadUrl: apiDownloadUrl,
-                    appProperties: target?.appProperties || file?.appProperties || {},
+                    appProperties: rawAppProps,
                     parents: file?.parents || target?.parents || [],
                     targetFileId: targetId || fallbackId || null
                 };
+
+                if (sequenceEpoch != null) {
+                    normalized.sequenceEpoch = sequenceEpoch;
+                }
+                if (folderUpdatedAt != null) {
+                    normalized.folderUpdatedAt = folderUpdatedAt;
+                }
+                if (updatedAt != null) {
+                    normalized.updatedAt = updatedAt;
+                }
 
                 if (options.useShortcutId) {
                     normalized.shortcutId = file.id;
@@ -2939,13 +2983,19 @@
                 this.folderImageCountCache.set(folderId, count);
                 return count;
             }
-            async getFilesAndMetadata(folderId = 'root') {
+            async getFilesAndMetadata(folderId = 'root', options = {}) {
                 const allFiles = [];
                 let nextPageToken = null;
-                const signal = state.activeRequests?.signal;
+                const signal = options.signal || state.activeRequests?.signal;
+                const includeTrashed = Boolean(options.includeTrashed);
 
                 do {
-                    const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                    const queryParts = [
+                        `'${folderId}' in parents`,
+                        includeTrashed ? null : 'trashed=false',
+                        "(mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')"
+                    ].filter(Boolean);
+                    const query = queryParts.join(' and ');
                     let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,shortcutDetails(targetId,targetMimeType)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
@@ -3258,12 +3308,31 @@
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: state.activeRequests.signal });
                     const data = await response.json();
                     const files = data.value.filter(item => item.file && item.file.mimeType && item.file.mimeType.startsWith('image/'))
-                        .map(item => ({
-                            id: item.id, name: item.name, type: 'file', mimeType: item.file.mimeType, size: item.size || 0,
-                            createdTime: item.createdDateTime, modifiedTime: item.lastModifiedDateTime,
-                            thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
-                            downloadUrl: item['@microsoft.graph.downloadUrl']
-                        }));
+                        .map(item => {
+                            const timestampSource = item.fileSystemInfo?.lastModifiedDateTime
+                                || item.lastModifiedDateTime
+                                || item.createdDateTime
+                                || null;
+                            const parsedStamp = timestampSource ? Date.parse(timestampSource) : NaN;
+                            const updatedAt = Number.isNaN(parsedStamp) ? null : parsedStamp;
+                            const normalized = {
+                                id: item.id,
+                                name: item.name,
+                                type: 'file',
+                                mimeType: item.file.mimeType,
+                                size: item.size || 0,
+                                createdTime: item.createdDateTime,
+                                modifiedTime: item.lastModifiedDateTime,
+                                thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
+                                downloadUrl: item['@microsoft.graph.downloadUrl']
+                            };
+                            if (updatedAt != null) {
+                                normalized.updatedAt = updatedAt;
+                                normalized.sequenceEpoch = updatedAt;
+                                normalized.folderUpdatedAt = updatedAt;
+                            }
+                            return normalized;
+                        });
                     allFiles.push(...files);
                     nextLink = data['@odata.nextLink'];
                     if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
@@ -3369,17 +3438,31 @@
                 const results = await Promise.allSettled(requests);
                 const fulfilled = results.filter(result => result.status === 'fulfilled').map(result => result.value);
                 const items = await Promise.all(fulfilled.map(response => response.json()));
-                return items.map(item => ({
-                    id: item.id,
-                    name: item.name,
-                    type: 'file',
-                    mimeType: item.file?.mimeType || 'application/octet-stream',
-                    size: item.size || 0,
-                    createdTime: item.createdDateTime,
-                    modifiedTime: item.lastModifiedDateTime,
-                    thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
-                    downloadUrl: item['@microsoft.graph.downloadUrl']
-                }));
+                return items.map(item => {
+                    const timestampSource = item.fileSystemInfo?.lastModifiedDateTime
+                        || item.lastModifiedDateTime
+                        || item.createdDateTime
+                        || null;
+                    const parsedStamp = timestampSource ? Date.parse(timestampSource) : NaN;
+                    const updatedAt = Number.isNaN(parsedStamp) ? null : parsedStamp;
+                    const normalized = {
+                        id: item.id,
+                        name: item.name,
+                        type: 'file',
+                        mimeType: item.file?.mimeType || 'application/octet-stream',
+                        size: item.size || 0,
+                        createdTime: item.createdDateTime,
+                        modifiedTime: item.lastModifiedDateTime,
+                        thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
+                        downloadUrl: item['@microsoft.graph.downloadUrl']
+                    };
+                    if (updatedAt != null) {
+                        normalized.updatedAt = updatedAt;
+                        normalized.sequenceEpoch = updatedAt;
+                        normalized.folderUpdatedAt = updatedAt;
+                    }
+                    return normalized;
+                });
             }
             async getDownloadsFolder() {
                 const response = await this.makeApiCall('/me/drive/root/children');
@@ -3677,6 +3760,45 @@
                     return fallback;
                 }
             },
+            resolveFileUpdatedAt(file) {
+                const toNumber = (value) => {
+                    if (value == null) return null;
+                    if (value instanceof Date) {
+                        const ms = value.getTime();
+                        return Number.isFinite(ms) ? ms : null;
+                    }
+                    if (typeof value === 'number') {
+                        return Number.isFinite(value) ? value : null;
+                    }
+                    if (typeof value === 'string') {
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) {
+                            return numeric;
+                        }
+                        const parsed = Date.parse(value);
+                        return Number.isNaN(parsed) ? null : parsed;
+                    }
+                    return null;
+                };
+                const appProperties = file?.appProperties || {};
+                const candidates = [
+                    file?.updatedAt,
+                    file?.sequenceEpoch,
+                    file?.folderUpdatedAt,
+                    file?.localUpdatedAt,
+                    appProperties?.orbital8SequenceEpoch,
+                    appProperties?.orbital8FolderUpdatedAt,
+                    file?.modifiedTime,
+                    file?.createdTime
+                ];
+                for (const candidate of candidates) {
+                    const parsed = toNumber(candidate);
+                    if (parsed != null) {
+                        return parsed;
+                    }
+                }
+                return null;
+            },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
                 const merged = [];
@@ -3729,17 +3851,75 @@
                 };
 
                 for (const cloudFile of cloudFiles) {
+                    if (!cloudFile || !cloudFile.id) {
+                        continue;
+                    }
+                    const incomingUpdatedAt = this.resolveFileUpdatedAt(cloudFile);
+                    if (incomingUpdatedAt != null) {
+                        cloudFile.updatedAt = incomingUpdatedAt;
+                        cloudFile.folderUpdatedAt = incomingUpdatedAt;
+                        if (!Number.isFinite(Number(cloudFile.sequenceEpoch))) {
+                            cloudFile.sequenceEpoch = incomingUpdatedAt;
+                        }
+                        if (!cloudFile.appProperties || typeof cloudFile.appProperties !== 'object') {
+                            cloudFile.appProperties = {};
+                        }
+                        cloudFile.appProperties.orbital8FolderUpdatedAt = String(incomingUpdatedAt);
+                        if (!cloudFile.appProperties.orbital8SequenceEpoch && Number.isFinite(Number(cloudFile.sequenceEpoch))) {
+                            cloudFile.appProperties.orbital8SequenceEpoch = String(cloudFile.sequenceEpoch);
+                        }
+                    }
+
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
                         merged.push({ ...cloudFile });
                         newIds.push(cloudFile.id);
-                    } else {
-                        const mergedFile = { ...cached, ...cloudFile };
-                        if (hasProviderDifferences(cached, cloudFile)) {
-                            updatedIds.push(cloudFile.id);
+                        if (state.timestampAuthority && typeof state.timestampAuthority.recordItemUpdate === 'function') {
+                            const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : Date.now();
+                            state.timestampAuthority.recordItemUpdate(cloudFile.id, recordStamp);
                         }
-                        merged.push(mergedFile);
+                        continue;
+                    }
+
+                    const cachedStamp = this.resolveFileUpdatedAt(cached);
+                    let shouldRefresh = true;
+                    if (state.timestampAuthority && typeof state.timestampAuthority.needsItemRefresh === 'function') {
+                        shouldRefresh = state.timestampAuthority.needsItemRefresh(cloudFile.id, incomingUpdatedAt);
+                    }
+
+                    if (!shouldRefresh) {
+                        const preserved = { ...cached };
+                        if (cachedStamp != null) {
+                            preserved.updatedAt = cachedStamp;
+                        }
+                        merged.push(preserved);
                         cachedMap.delete(cloudFile.id);
+                        continue;
+                    }
+
+                    const mergedFile = { ...cached, ...cloudFile };
+                    if (!mergedFile.appProperties || typeof mergedFile.appProperties !== 'object') {
+                        mergedFile.appProperties = {};
+                    }
+                    if (incomingUpdatedAt != null) {
+                        mergedFile.updatedAt = incomingUpdatedAt;
+                        mergedFile.folderUpdatedAt = incomingUpdatedAt;
+                        if (!Number.isFinite(Number(mergedFile.sequenceEpoch))) {
+                            mergedFile.sequenceEpoch = incomingUpdatedAt;
+                        }
+                        mergedFile.appProperties.orbital8FolderUpdatedAt = String(incomingUpdatedAt);
+                        if (!mergedFile.appProperties.orbital8SequenceEpoch && Number.isFinite(Number(mergedFile.sequenceEpoch))) {
+                            mergedFile.appProperties.orbital8SequenceEpoch = String(mergedFile.sequenceEpoch);
+                        }
+                    }
+                    if (hasProviderDifferences(cached, cloudFile) || (cachedStamp ?? null) !== (incomingUpdatedAt ?? null)) {
+                        updatedIds.push(cloudFile.id);
+                    }
+                    merged.push(mergedFile);
+                    cachedMap.delete(cloudFile.id);
+                    if (state.timestampAuthority && typeof state.timestampAuthority.recordItemUpdate === 'function') {
+                        const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : Date.now();
+                        state.timestampAuthority.recordItemUpdate(cloudFile.id, recordStamp);
                     }
                 }
 
@@ -3754,6 +3934,191 @@
                     removedIds,
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
+            },
+            ensureStackSequences(files = [], options = {}) {
+                const newIds = Array.isArray(options.newIds) ? new Set(options.newIds) : new Set();
+                const changed = [];
+                if (!Array.isArray(files) || files.length === 0) {
+                    return changed;
+                }
+                const epoch = Date.now();
+                STACKS.forEach(stackName => {
+                    const stackFiles = files.filter(file => (file.stack || 'in') === stackName);
+                    if (stackFiles.length === 0) {
+                        return;
+                    }
+                    const needsResequence = stackFiles.filter(file => {
+                        const numericSequence = Number(file.stackSequence);
+                        return newIds.has(file.id) || !Number.isFinite(numericSequence) || numericSequence === 0;
+                    });
+                    if (needsResequence.length === 0) {
+                        stackFiles.forEach(file => {
+                            const updatedAt = Number(file.updatedAt);
+                            if (Number.isFinite(updatedAt)) {
+                                if (!file.appProperties || typeof file.appProperties !== 'object') {
+                                    file.appProperties = {};
+                                }
+                                if (!file.appProperties.orbital8FolderUpdatedAt) {
+                                    file.appProperties.orbital8FolderUpdatedAt = String(updatedAt);
+                                }
+                                if (!file.appProperties.orbital8SequenceEpoch && Number.isFinite(Number(file.sequenceEpoch))) {
+                                    file.appProperties.orbital8SequenceEpoch = String(file.sequenceEpoch);
+                                }
+                            }
+                        });
+                        return;
+                    }
+                    const existingSequences = stackFiles
+                        .filter(file => !needsResequence.includes(file))
+                        .map(file => Number(file.stackSequence))
+                        .filter(Number.isFinite);
+                    const baseSequence = existingSequences.length > 0
+                        ? Math.min(...existingSequences) - 1
+                        : epoch;
+                    const { assignments } = Utils.resequenceStackEntries(needsResequence, {
+                        baseSequence,
+                        direction: 'desc',
+                        sequenceEpoch: epoch
+                    });
+                    assignments.forEach(({ file }) => {
+                        if (!file.appProperties || typeof file.appProperties !== 'object') {
+                            file.appProperties = {};
+                        }
+                        file.updatedAt = file.sequenceEpoch;
+                        file.folderUpdatedAt = file.sequenceEpoch;
+                        file.appProperties.orbital8SequenceEpoch = String(file.sequenceEpoch);
+                        file.appProperties.orbital8FolderUpdatedAt = String(file.sequenceEpoch);
+                        changed.push(file);
+                        if (state.timestampAuthority && typeof state.timestampAuthority.recordItemUpdate === 'function') {
+                            state.timestampAuthority.recordItemUpdate(file.id, file.sequenceEpoch);
+                        }
+                    });
+                });
+                return changed;
+            },
+            async applyProviderDelta(options = {}) {
+                const providerFiles = Array.isArray(options.providerFiles) ? options.providerFiles : [];
+                const cachedFiles = Array.isArray(options.cachedFiles) ? options.cachedFiles : [];
+                const navigationToken = options.navigationToken || state.navigationToken;
+                if (!this.isNavigationActive(navigationToken)) {
+                    return false;
+                }
+                const folderContext = options.folderContext || { providerType: state.providerType, folderId: state.currentFolder.id };
+                const folderId = folderContext.folderId;
+                const providerType = folderContext.providerType || state.providerType || 'unknown';
+                const cacheKey = options.cacheKey || `${providerType}::${folderId}`;
+                const recordStamp = Number.isFinite(options.recordStamp) ? Number(options.recordStamp) : Date.now();
+                const hadCached = Boolean(options.hadCached);
+                const hasDisplayedCache = Boolean(options.hasDisplayedCache);
+                const mode = options.mode === 'background' ? 'background' : 'interactive';
+
+                const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(providerFiles, cachedFiles);
+
+                if (mergedFiles.length === 0) {
+                    const cachePayload = state.folderCache.set(providerType, folderId, { files: [], timestamp: recordStamp });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                    }
+                    state.imageFiles = [];
+                    if (!this.isNavigationActive(navigationToken)) {
+                        return false;
+                    }
+                    state.sessionVisitedFolders.add(cacheKey);
+                    if (mode !== 'background' && !hasDisplayedCache) {
+                        this.switchToCommonUI();
+                    }
+                    Core.initializeStacks();
+                    Core.showEmptyState();
+                    Core.updateStackCounts();
+
+                    if (mode === 'interactive') {
+                        Utils.showToast('No images found in this folder', 'info', true);
+                    }
+
+                    if (state.timestampAuthority && typeof state.timestampAuthority.recordFolderUpdate === 'function') {
+                        state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                    }
+                    if (state.dbManager?.saveTimestampSnapshot && state.timestampAuthority) {
+                        try {
+                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                        } catch (snapshotError) {
+                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                        }
+                    }
+                    return true;
+                }
+
+                for (const updatedId of updatedIds) {
+                    const updatedFile = mergedFiles.find(file => file.id === updatedId);
+                    if (updatedFile && state.dbManager?.saveMetadata) {
+                        await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType });
+                    }
+                }
+                if (removedIds.length > 0 && state.dbManager?.deleteMetadata) {
+                    await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
+                }
+
+                state.imageFiles = mergedFiles.map(file => ({ ...file }));
+                await this.processAllMetadata(state.imageFiles, !hadCached, { navigationToken });
+                if (!this.isNavigationActive(navigationToken)) {
+                    return false;
+                }
+
+                const resequenced = this.ensureStackSequences(state.imageFiles, { newIds });
+                if (resequenced.length > 0 && state.dbManager?.saveMetadata) {
+                    const tasks = resequenced.map(file => state.dbManager.saveMetadata(file.id, file, { folderId, providerType }));
+                    await Promise.allSettled(tasks);
+                }
+
+                const cachePayload = state.folderCache.set(providerType, folderId, { files: state.imageFiles, timestamp: recordStamp });
+                if (state.dbManager?.saveFolderCache) {
+                    await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                }
+
+                if (!this.isNavigationActive(navigationToken)) {
+                    return false;
+                }
+
+                state.sessionVisitedFolders.add(cacheKey);
+                if (mode === 'interactive') {
+                    if (!hasDisplayedCache) {
+                        this.switchToCommonUI();
+                    }
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+                } else {
+                    Core.initializeStacks();
+                    Core.updateStackCounts();
+                    if (state.imageFiles.length > 0) {
+                        Core.displayCurrentImage();
+                    } else {
+                        Core.showEmptyState();
+                    }
+                }
+
+                if (mode === 'interactive' && hadCached && hasChanges) {
+                    const diffSummary = [];
+                    if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
+                    if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
+                    if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
+                    const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
+                    Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
+                } else if (mode === 'background' && hasChanges) {
+                    Utils.showToast('Folder updated in background', 'info');
+                }
+
+                if (state.timestampAuthority && typeof state.timestampAuthority.recordFolderUpdate === 'function') {
+                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                }
+                if (state.dbManager?.saveTimestampSnapshot && state.timestampAuthority) {
+                    try {
+                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                    } catch (snapshotError) {
+                        console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                    }
+                }
+
+                return true;
             },
             async refreshFolderContents(cachedFiles, sessionKey, options = {}) {
                 const folderId = state.currentFolder.id;
@@ -3821,88 +4186,19 @@
                         return false;
                     }
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
-
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : Date.now();
 
-                    if (mergedFiles.length === 0) {
-                        const cachePayload = state.folderCache.set(state.providerType, folderId, { files: [], timestamp: recordStamp });
-                        if (state.dbManager?.saveFolderCache) {
-                            await state.dbManager.saveFolderCache(folderContext, cachePayload);
-                        }
-                        state.imageFiles = [];
-                        if (!this.isNavigationActive(navigationToken)) {
-                            return false;
-                        }
-                        state.sessionVisitedFolders.add(key);
-                        this.switchToCommonUI();
-                        Core.initializeStacks();
-                        Core.showEmptyState();
-                        Core.updateStackCounts();
-
-                        Utils.showToast('No images found in this folder', 'info', true);
-                        state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
-                        if (state.dbManager?.saveTimestampSnapshot) {
-                            try {
-                                await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                            } catch (snapshotError) {
-                                console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                            }
-                        }
-                        return true;
-                    }
-
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    state.imageFiles = mergedFiles.map(file => ({ ...file }));
-                    await this.processAllMetadata(state.imageFiles, !hadCached, { navigationToken });
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return false;
-                    }
-
-                    const cachePayload = state.folderCache.set(state.providerType, folderId, { files: state.imageFiles, timestamp: recordStamp });
-                    if (state.dbManager?.saveFolderCache) {
-                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
-                    }
-
-                    if (this.isNavigationActive(navigationToken)) {
-                        state.sessionVisitedFolders.add(key);
-                        if (!hasDisplayedCache) {
-                            this.switchToCommonUI();
-                        }
-                        Core.initializeStacks();
-                        Core.initializeImageDisplay();
-                    } else {
-                        return false;
-                    }
-
-                    if (hadCached && hasChanges) {
-                        const diffSummary = [];
-                        if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
-                        if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
-                        if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
-                        const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
-                        Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
-                    }
-
-                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
-                    if (state.dbManager?.saveTimestampSnapshot) {
-                        try {
-                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                        } catch (snapshotError) {
-                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                        }
-                    }
-                    return true;
+                    return await this.applyProviderDelta({
+                        providerFiles: cloudFiles,
+                        cachedFiles,
+                        navigationToken,
+                        folderContext,
+                        cacheKey: key,
+                        recordStamp,
+                        hadCached,
+                        hasDisplayedCache
+                    });
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
@@ -3929,45 +4225,17 @@
                     }
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
-
-                    if (!hasChanges) {
-                        return;
-                    }
-
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                        await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    await this.processAllMetadata(mergedFiles, false, { navigationToken });
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return;
-                    }
-                    state.imageFiles = mergedFiles.map(file => ({ ...file }));
-                    const recordStamp = Date.now();
-                    const cachePayload = state.folderCache.set(state.providerType, folderId, { files: state.imageFiles, timestamp: recordStamp });
-                    if (state.dbManager?.saveFolderCache) {
-                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
-                    }
-                    Core.initializeStacks();
-                    Core.updateStackCounts();
-                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
-                    else Core.showEmptyState();
-                    Utils.showToast('Folder updated in background', 'info');
-                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
-                    if (state.dbManager?.saveTimestampSnapshot) {
-                        try {
-                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                        } catch (snapshotError) {
-                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                        }
-                    }
+                    await this.applyProviderDelta({
+                        providerFiles: cloudFiles,
+                        cachedFiles,
+                        navigationToken,
+                        folderContext,
+                        cacheKey: `${state.providerType || 'unknown'}::${folderId}`,
+                        recordStamp: Date.now(),
+                        hadCached: cachedFiles.length > 0,
+                        hasDisplayedCache: true,
+                        mode: 'background'
+                    });
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
                 }
@@ -4002,6 +4270,25 @@
                 }
             },
             generateDefaultMetadata(file, context = {}) {
+                 const parseTimestamp = (value) => {
+                    if (value == null) return null;
+                    if (value instanceof Date) {
+                        return Number.isFinite(value.getTime()) ? value.getTime() : null;
+                    }
+                    if (typeof value === 'number') {
+                        return Number.isFinite(value) ? value : null;
+                    }
+                    if (typeof value === 'string') {
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) {
+                            return numeric;
+                        }
+                        const parsed = Date.parse(value);
+                        return Number.isNaN(parsed) ? null : parsed;
+                    }
+                    return null;
+                };
+
                  const baseMetadata = {
                     stack: 'in',
                     tags: [],
@@ -4011,7 +4298,10 @@
                     stackSequence: 0,
                     favorite: false,
                     extractedMetadata: {},
-                    metadataStatus: 'pending'
+                    metadataStatus: 'pending',
+                    sequenceEpoch: 0,
+                    updatedAt: null,
+                    folderUpdatedAt: null
                 };
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
@@ -4022,18 +4312,51 @@
                     baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
                     baseMetadata.favorite = file.appProperties.favorite === 'true';
                  }
+                 const appPropsEpoch = file.appProperties
+                    ? (parseTimestamp(file.appProperties.orbital8SequenceEpoch)
+                        ?? parseTimestamp(file.appProperties.orbital8FolderUpdatedAt))
+                    : null;
+                 const metadataEpochCandidate = parseTimestamp(file.sequenceEpoch)
+                    ?? parseTimestamp(file.updatedAt)
+                    ?? parseTimestamp(file.folderUpdatedAt)
+                    ?? appPropsEpoch;
+
                  const numericSequence = Number(baseMetadata.stackSequence);
                  if (!Number.isFinite(numericSequence) || numericSequence === 0) {
-                    const timestampSource = file.modifiedTime || file.createdTime || null;
-                    let fallbackSequence = Date.now();
-                    if (timestampSource) {
-                        const parsed = Date.parse(timestampSource);
-                        if (!Number.isNaN(parsed)) {
-                            fallbackSequence = parsed;
+                    let fallbackSequence = metadataEpochCandidate;
+                    if (!Number.isFinite(fallbackSequence)) {
+                        const timestampSource = file.modifiedTime || file.createdTime || null;
+                        if (timestampSource) {
+                            const parsed = Date.parse(timestampSource);
+                            if (!Number.isNaN(parsed)) {
+                                fallbackSequence = parsed;
+                            }
                         }
+                    }
+                    if (!Number.isFinite(fallbackSequence)) {
+                        fallbackSequence = Date.now();
                     }
                     const indexOffset = typeof context.index === 'number' ? context.index : 0;
                     baseMetadata.stackSequence = fallbackSequence - indexOffset;
+                    baseMetadata.sequenceEpoch = fallbackSequence;
+                 } else {
+                    baseMetadata.sequenceEpoch = metadataEpochCandidate ?? numericSequence;
+                 }
+
+                 if (!Number.isFinite(baseMetadata.sequenceEpoch)) {
+                    baseMetadata.sequenceEpoch = Number.isFinite(Number(baseMetadata.stackSequence))
+                        ? Number(baseMetadata.stackSequence)
+                        : Date.now();
+                 }
+
+                 if (Number.isFinite(baseMetadata.sequenceEpoch)) {
+                    baseMetadata.updatedAt = baseMetadata.sequenceEpoch;
+                    baseMetadata.folderUpdatedAt = baseMetadata.sequenceEpoch;
+                    if (!file.appProperties || typeof file.appProperties !== 'object') {
+                        file.appProperties = {};
+                    }
+                    file.appProperties.orbital8SequenceEpoch = String(baseMetadata.sequenceEpoch);
+                    file.appProperties.orbital8FolderUpdatedAt = String(baseMetadata.sequenceEpoch);
                  }
                  return baseMetadata;
             },
@@ -4244,23 +4567,36 @@
                         : file.appProperties;
                     const mergedUpdates = { ...updates };
                     if (nextAppProperties) {
+                        const rawSequence = mergedUpdates.sequenceEpoch ?? file.sequenceEpoch;
+                        const parsedSequence = Number(rawSequence);
+                        const authoritySequence = Number.isFinite(parsedSequence) ? parsedSequence : null;
+                        const authorityTimestamp = authoritySequence ?? timestamp;
+                        nextAppProperties.orbital8FolderUpdatedAt = String(authorityTimestamp);
+                        if (authoritySequence != null) {
+                            nextAppProperties.orbital8SequenceEpoch = String(authoritySequence);
+                        }
                         mergedUpdates.appProperties = nextAppProperties;
                     }
                     Object.assign(file, mergedUpdates, { localUpdatedAt: timestamp });
                     if (nextAppProperties) {
                         file.appProperties = nextAppProperties;
                     }
+                    const authoritySequence = Number(mergedUpdates.sequenceEpoch);
+                    const authorityTimestamp = Number.isFinite(authoritySequence) ? authoritySequence : timestamp;
+                    if (Number.isFinite(authoritySequence)) {
+                        file.sequenceEpoch = authoritySequence;
+                    }
+                    file.updatedAt = authorityTimestamp;
+                    file.folderUpdatedAt = authorityTimestamp;
                     const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
                     await state.dbManager.saveMetadata(file.id, file, folderContext);
                     const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
                     if (state.dbManager?.saveFolderCache) {
                         await state.dbManager.saveFolderCache(folderContext, cachePayload);
                     }
-                    const authorityTimestampCandidate = Number(mergedUpdates.sequenceEpoch);
-                    const authorityTimestamp = Number.isFinite(authorityTimestampCandidate)
-                        ? authorityTimestampCandidate
-                        : timestamp;
-                    state.timestampAuthority.recordItemUpdate(file.id, authorityTimestamp);
+                    if (state.timestampAuthority) {
+                        state.timestampAuthority.recordItemUpdate(file.id, authorityTimestamp);
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
