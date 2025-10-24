@@ -5380,12 +5380,23 @@ this.updateImageCounters();
             },
             
             async close() {
+                let persistenceResult = { error: null };
+                let cleanupApplied = false;
+                const applyCleanup = () => {
+                    if (cleanupApplied) return;
+                    cleanupApplied = true;
+                    Utils.hideModal('grid-modal');
+                    this.resetSearch();
+                    this.destroyLazyLoad();
+                };
+
                 try {
                     if (state.grid.isDirty) {
-                        await this.reorderStackOnClose();
+                        persistenceResult = await this.reorderStackOnClose();
                     }
-                    Utils.hideModal('grid-modal');
-                    this.resetSearch(); this.destroyLazyLoad();
+
+                    applyCleanup();
+
                     const selectedImages = state.grid.selected;
                     if (selectedImages.length === 1) {
                         const selectedFileId = selectedImages[0];
@@ -5393,10 +5404,20 @@ this.updateImageCounters();
                         const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
                         if (selectedIndex !== -1) { state.currentStackPosition = selectedIndex; }
                     }
+
+                    state.grid.stack = null;
+                    state.grid.selected = [];
+                    state.grid.isDirty = false;
                     await Core.displayCurrentImage();
-                    state.grid.stack = null; state.grid.selected = [];
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
+                    applyCleanup();
+                } finally {
+                    applyCleanup();
+                }
+
+                if (persistenceResult?.error) {
+                    console.warn('Grid.close: stack reorder persisted locally but failed remotely:', persistenceResult.error);
                 }
             },
 
@@ -5641,6 +5662,10 @@ this.updateImageCounters();
 
             async reorderStackOnClose() {
                 const stackArray = state.stacks[state.grid.stack];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) {
+                    return { error: null };
+                }
+
                 let topItems = []; let bottomItems = [];
 
                 if (state.grid.filtered.length > 0) {
@@ -5651,8 +5676,10 @@ this.updateImageCounters();
                     const selectedIds = new Set(state.grid.selected);
                     topItems = stackArray.filter(f => selectedIds.has(f.id)).sort((a,b) => a.name.localeCompare(b.name));
                     bottomItems = stackArray.filter(f => !selectedIds.has(f.id));
-                } else { return; }
-                
+                } else {
+                    return { error: null };
+                }
+
                 const newStack = [...topItems, ...bottomItems];
                 const epochBase = Date.now();
                 const { sequenceEpoch } = Utils.resequenceStackEntries(newStack, {
@@ -5661,12 +5688,20 @@ this.updateImageCounters();
                     sequenceEpoch: epochBase
                 });
 
+                let persistenceError = null;
                 for (const file of newStack) {
-                    await App.updateUserMetadata(file.id, {
-                        stackSequence: file.stackSequence,
-                        sequenceEpoch,
-                        appProperties: file.appProperties
-                    }, { skipDebounce: true, operationType: 'stack:grid-resequence' });
+                    try {
+                        await App.updateUserMetadata(file.id, {
+                            stackSequence: file.stackSequence,
+                            sequenceEpoch,
+                            appProperties: file.appProperties
+                        }, { skipDebounce: true, operationType: 'stack:grid-resequence' });
+                    } catch (error) {
+                        if (!persistenceError) {
+                            persistenceError = error instanceof Error ? error : new Error(String(error));
+                        }
+                        console.error('Failed to persist stack sequence for file', file?.id, error);
+                    }
                 }
 
                 try {
@@ -5677,7 +5712,14 @@ this.updateImageCounters();
 
                 state.stacks[state.grid.stack] = newStack;
                 state.currentStackPosition = 0;
+
+                if (persistenceError) {
+                    Utils.showToast('Updated stack order locally, but failed to sync changes. Please try again.', 'error', true);
+                    return { error: persistenceError };
+                }
+
                 Utils.showToast('Stack order updated', 'success');
+                return { error: null };
             }
         };
         const Details = {
