@@ -1155,6 +1155,58 @@
             return null;
         };
         const OMNI_SEARCH_RESULT_LIMIT = 8;
+        class TimestampAuthority {
+            constructor() {
+                this.folderTimestamps = new Map();
+                this.itemTimestamps = new Map();
+            }
+            hydrateFromCache(cache) {
+                if (cache && Array.isArray(cache.folders)) {
+                    cache.folders.forEach(({ id, updatedAt }) => {
+                        if (id) {
+                            this.folderTimestamps.set(id, updatedAt);
+                        }
+                    });
+                }
+                if (cache && Array.isArray(cache.items)) {
+                    cache.items.forEach(({ id, updatedAt }) => {
+                        if (id) {
+                            this.itemTimestamps.set(id, updatedAt);
+                        }
+                    });
+                }
+            }
+            recordFolderUpdate(folderId, updatedAt) {
+                if (!folderId) return;
+                const timestamp = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : Date.now();
+                this.folderTimestamps.set(folderId, timestamp);
+            }
+            recordItemUpdate(itemId, updatedAt) {
+                if (!itemId) return;
+                const timestamp = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : Date.now();
+                this.itemTimestamps.set(itemId, timestamp);
+            }
+            needsFolderRefresh(folderId, incomingStamp) {
+                const current = this.folderTimestamps.get(folderId) ?? 0;
+                if (incomingStamp == null || !Number.isFinite(Number(incomingStamp))) {
+                    return true;
+                }
+                return Number(incomingStamp) > current;
+            }
+            needsItemRefresh(itemId, incomingStamp) {
+                const current = this.itemTimestamps.get(itemId) ?? 0;
+                if (incomingStamp == null || !Number.isFinite(Number(incomingStamp))) {
+                    return true;
+                }
+                return Number(incomingStamp) > current;
+            }
+            export() {
+                return {
+                    folders: Array.from(this.folderTimestamps, ([id, updatedAt]) => ({ id, updatedAt })),
+                    items: Array.from(this.itemTimestamps, ([id, updatedAt]) => ({ id, updatedAt }))
+                };
+            }
+        }
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             visualCues: null, haptic: null, export: null,
@@ -1167,6 +1219,9 @@
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
+            timestampAuthority: new TimestampAuthority(),
+            cachedFolderEntries: new Map(),
+            cachedStacksByFolder: new Map(),
             isReturningToFolders: false,
             navigationToken: null,
             activeRequests: new AbortController(),
@@ -2074,7 +2129,7 @@
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2108,6 +2163,9 @@
                             const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
+                        if (oldVersion < 5 && !db.objectStoreNames.contains('timestamps')) {
+                            db.createObjectStore('timestamps', { keyPath: 'key' });
                         }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
@@ -2391,6 +2449,62 @@
                     this.deleteFolderManifest(context),
                     fileIds.length > 0 ? Promise.all(fileIds.map(id => this.deleteMetadata(id))) : this.deleteMetadataByFolder(context)
                 ]);
+            }
+            async loadTimestampSnapshot() {
+                if (!this.db || !this.db.objectStoreNames.contains('timestamps')) {
+                    return { folders: [], items: [] };
+                }
+                return new Promise((resolve, reject) => {
+                    try {
+                        const transaction = this.db.transaction('timestamps', 'readonly');
+                        const store = transaction.objectStore('timestamps');
+                        const snapshot = { folders: [], items: [] };
+                        const foldersRequest = store.get('folders');
+                        const itemsRequest = store.get('items');
+
+                        foldersRequest.onsuccess = () => {
+                            const result = foldersRequest.result;
+                            if (result) {
+                                const value = Array.isArray(result.value) ? result.value : result.value ?? result;
+                                if (Array.isArray(value)) {
+                                    snapshot.folders = value;
+                                }
+                            }
+                        };
+                        itemsRequest.onsuccess = () => {
+                            const result = itemsRequest.result;
+                            if (result) {
+                                const value = Array.isArray(result.value) ? result.value : result.value ?? result;
+                                if (Array.isArray(value)) {
+                                    snapshot.items = value;
+                                }
+                            }
+                        };
+                        transaction.oncomplete = () => resolve(snapshot);
+                        transaction.onerror = () => reject(transaction.error);
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            }
+            async saveTimestampSnapshot(snapshot) {
+                if (!this.db || !this.db.objectStoreNames.contains('timestamps')) {
+                    return;
+                }
+                const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : [];
+                const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+                return new Promise((resolve, reject) => {
+                    try {
+                        const transaction = this.db.transaction('timestamps', 'readwrite');
+                        const store = transaction.objectStore('timestamps');
+                        store.put({ key: 'folders', value: folders });
+                        store.put({ key: 'items', value: items });
+                        transaction.oncomplete = () => resolve();
+                        transaction.onerror = () => reject(transaction.error);
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
             }
         }
         class GoogleDriveProvider extends BaseProvider {
@@ -3282,14 +3396,39 @@
                 }
 
                 try {
-                    const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { navigationToken });
-                    return synced !== false;
+                    const refreshed = await this.refreshFolderContents(cachedFiles, sessionKey, { navigationToken });
+                    return refreshed !== false;
                 } catch (error) {
                     if (error?.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
                     await this.returnToFolderSelection();
                     return false;
+                }
+            },
+            async loadFolderManifest(folderId, options = {}) {
+                const fallback = { manifest: null, incomingUpdatedAt: null, needsRefresh: true };
+                if (!folderId || !state.provider || typeof state.provider.loadFolderManifest !== 'function') {
+                    return fallback;
+                }
+                try {
+                    const manifest = await state.provider.loadFolderManifest(folderId, options);
+                    if (!manifest) {
+                        return fallback;
+                    }
+                    const candidate = manifest.cloudVersion ?? manifest.updatedAt ?? manifest.lastUpdated ?? null;
+                    const incomingUpdatedAt = Number(candidate);
+                    if (!Number.isFinite(incomingUpdatedAt)) {
+                        return { manifest, incomingUpdatedAt: null, needsRefresh: true };
+                    }
+                    const needsRefresh = state.timestampAuthority.needsFolderRefresh(folderId, incomingUpdatedAt);
+                    return { manifest, incomingUpdatedAt, needsRefresh };
+                } catch (error) {
+                    if (error?.name === 'AbortError') {
+                        throw error;
+                    }
+                    console.warn('Failed to load folder manifest:', error);
+                    return fallback;
                 }
             },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
@@ -3370,13 +3509,40 @@
                     hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
                 };
             },
-            async syncFolderFromCloud(cachedFiles, sessionKey, options = {}) {
+            async refreshFolderContents(cachedFiles, sessionKey, options = {}) {
                 const folderId = state.currentFolder.id;
-                const hadCached = cachedFiles.length > 0;
+                const hadCached = Array.isArray(cachedFiles) && cachedFiles.length > 0;
                 const navigationToken = options.navigationToken || state.navigationToken;
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
+
+                let manifestInfo = { manifest: null, incomingUpdatedAt: null, needsRefresh: true };
+                try {
+                    manifestInfo = await this.loadFolderManifest(folderId, { signal: options.signal });
+                } catch (error) {
+                    if (error?.name === 'AbortError') {
+                        throw error;
+                    }
+                    manifestInfo = { manifest: null, incomingUpdatedAt: null, needsRefresh: true };
+                }
+
+                const incomingUpdatedAt = manifestInfo?.incomingUpdatedAt ?? null;
+                const requiresRemoteFetch = !hadCached || manifestInfo?.needsRefresh !== false;
+
+                if (!requiresRemoteFetch && hadCached) {
+                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                    state.imageFiles = cachedFiles.slice();
+                    if (!this.isNavigationActive(navigationToken)) {
+                        return false;
+                    }
+                    state.sessionVisitedFolders.add(key);
+                    this.switchToCommonUI();
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+                    return true;
+                }
+
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
 
@@ -3389,7 +3555,9 @@
                     const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
                     if (mergedFiles.length === 0) {
-                        await state.dbManager.saveFolderCache(folderId, []);
+                        if (state.dbManager?.saveFolderCache) {
+                            await state.dbManager.saveFolderCache(folderId, []);
+                        }
                         state.imageFiles = [];
                         const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                         if (!this.isNavigationActive(navigationToken)) {
@@ -3402,6 +3570,15 @@
                         Core.updateStackCounts();
 
                         Utils.showToast('No images found in this folder', 'info', true);
+                        const recordStamp = incomingUpdatedAt ?? Date.now();
+                        state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                        if (state.dbManager?.saveTimestampSnapshot) {
+                            try {
+                                await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                            } catch (snapshotError) {
+                                console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                            }
+                        }
                         return true;
                     }
 
@@ -3441,6 +3618,16 @@
                         if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
                         const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
                         Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
+                    }
+
+                    const recordStamp = incomingUpdatedAt ?? Date.now();
+                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                    if (state.dbManager?.saveTimestampSnapshot) {
+                        try {
+                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                        } catch (snapshotError) {
+                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                        }
                     }
                 } catch (error) {
                     if (error.name !== 'AbortError') {
@@ -3483,6 +3670,15 @@
                     if (state.imageFiles.length > 0) Core.displayCurrentImage();
                     else Core.showEmptyState();
                     Utils.showToast('Folder updated in background', 'info');
+                    const recordStamp = Date.now();
+                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                    if (state.dbManager?.saveTimestampSnapshot) {
+                        try {
+                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                        } catch (snapshotError) {
+                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                        }
+                    }
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
                 }
@@ -6090,14 +6286,27 @@ this.updateImageCounters();
                 });
             }
         };
+        async function initializeServices() {
+            state.dbManager = new DBManager();
+            await state.dbManager.init();
+            if (state.dbManager?.loadTimestampSnapshot) {
+                try {
+                    const cachedTimestamps = await state.dbManager.loadTimestampSnapshot();
+                    if (cachedTimestamps) {
+                        state.timestampAuthority.hydrateFromCache(cachedTimestamps);
+                    }
+                } catch (error) {
+                    console.warn('Failed to hydrate timestamp authority from cache:', error);
+                }
+            }
+        }
         async function initApp() {
             try {
                 Utils.init();
                 state.visualCues = new VisualCueManager();
                 state.haptic = new HapticFeedbackManager();
                 state.export = new ExportSystem();
-                state.dbManager = new DBManager();
-                await state.dbManager.init();
+                await initializeServices();
                 window.__orbitalAppState = state;
                 window.__orbitalDbManager = state.dbManager;
                 state.metadataExtractor = new MetadataExtractor();
