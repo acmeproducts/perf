@@ -4330,12 +4330,56 @@
                         options.forceFullResync
                     );
 
-                    const mustRefreshFromCloud = true; // Always refresh to capture latest cloud changes per folder load.
-                    const canUseCache = !mustRefreshFromCloud && !shouldFullSync && (preparation?.mode === 'cache' || !coordinator);
+                    // CROSS-DEVICE SYNC INSTRUCTION:
+                    // 1. Always probe the folder on the provider first so every load sees the latest cloud changes.
+                    // 2. syncFolderFromCloud is responsible for diffing against cachedFiles and only pulling changed items.
+                    // 3. If that cloud probe fails but we have a cache, hydrate from IndexedDB and keep the user working offline.
+                    // 4. If there is no cache, surface the cloud failure so the user can retry with a connection.
+                    const mustRefreshFromCloud = true; // Always attempt a cloud refresh before showing cached data.
+                    const hasUsableCache = cachedFiles.length > 0 && !shouldFullSync;
+                    let cloudRefreshAttempted = false;
+                    let cloudRefreshError = null;
 
-                    if (!canUseCache) {
-                        const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, navigationToken });
-                        return synced !== false;
+                    if (mustRefreshFromCloud) {
+                        try {
+                            cloudRefreshAttempted = true;
+                            const synced = await this.syncFolderFromCloud(cachedFiles, sessionKey, { preparation, navigationToken });
+                            if (synced !== false) {
+                                return true;
+                            }
+                        } catch (error) {
+                            if (error?.name === 'AbortError') {
+                                throw error;
+                            }
+
+                            cloudRefreshError = error;
+
+                            if (hasUsableCache) {
+                                state.syncLog?.log({
+                                    event: 'foldersync:cloud-refresh:error',
+                                    level: 'warn',
+                                    details: `Cloud refresh failed for ${folderId}. Falling back to cache: ${error.message}`
+                                });
+                            }
+                        }
+                    }
+
+                    if (cloudRefreshAttempted && !cloudRefreshError && hasUsableCache) {
+                        state.syncLog?.log({
+                            event: 'foldersync:cloud-refresh:noop',
+                            level: 'info',
+                            details: `No cloud changes detected for ${folderId}. Using cached data.`
+                        });
+                    }
+
+                    if (!hasUsableCache) {
+                        if (cloudRefreshError) {
+                            throw cloudRefreshError;
+                        }
+                        if (cloudRefreshAttempted) {
+                            throw new Error('Cloud refresh returned no data and no cache is available.');
+                        }
+                        return false;
                     }
 
                     state.imageFiles = cachedFiles;
