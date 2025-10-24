@@ -1207,6 +1207,91 @@
                 };
             }
         }
+        class FolderCache {
+            constructor() {
+                this.entries = new Map();
+            }
+            static makeKey(providerType, folderId) {
+                if (!folderId) return null;
+                const provider = providerType || 'unknown';
+                return `${provider}::${folderId}`;
+            }
+            static parseCompositeKey(rawKey, fallbackProvider = 'unknown') {
+                if (typeof rawKey !== 'string') {
+                    return { providerType: fallbackProvider, folderId: rawKey || null };
+                }
+                const separatorIndex = rawKey.indexOf('::');
+                if (separatorIndex === -1) {
+                    return { providerType: fallbackProvider, folderId: rawKey };
+                }
+                const providerType = rawKey.slice(0, separatorIndex) || fallbackProvider;
+                const folderId = rawKey.slice(separatorIndex + 2) || rawKey;
+                return { providerType, folderId };
+            }
+            hydrate(records = []) {
+                if (!Array.isArray(records)) return;
+                records.forEach(record => {
+                    if (!record) return;
+                    const compositeKey = record.folderKey || record.folderId || null;
+                    if (!compositeKey) return;
+                    const derived = FolderCache.parseCompositeKey(compositeKey, record.providerType);
+                    const providerType = record.providerType || derived.providerType || 'unknown';
+                    const folderId = record.originalFolderId || derived.folderId || null;
+                    if (!folderId) return;
+                    const files = Array.isArray(record.files)
+                        ? record.files.map(file => ({ ...file }))
+                        : [];
+                    const timestamp = Number.isFinite(record.timestamp) ? record.timestamp : 0;
+                    const key = FolderCache.makeKey(providerType, folderId);
+                    this.entries.set(key, { folderId, providerType, files, timestamp });
+                });
+            }
+            get(providerType, folderId) {
+                const key = FolderCache.makeKey(providerType, folderId);
+                if (!key || !this.entries.has(key)) {
+                    return null;
+                }
+                const entry = this.entries.get(key);
+                return {
+                    folderId: entry.folderId,
+                    providerType: entry.providerType,
+                    files: entry.files.map(file => ({ ...file })),
+                    timestamp: entry.timestamp
+                };
+            }
+            set(providerType, folderId, data = {}) {
+                const key = FolderCache.makeKey(providerType, folderId);
+                if (!key) return null;
+                const existing = this.entries.get(key) || {};
+                const files = Array.isArray(data.files)
+                    ? data.files.map(file => ({ ...file }))
+                    : Array.isArray(existing.files)
+                        ? existing.files.map(file => ({ ...file }))
+                        : [];
+                const timestamp = Number.isFinite(data.timestamp)
+                    ? data.timestamp
+                    : Number.isFinite(existing.timestamp)
+                        ? existing.timestamp
+                        : Date.now();
+                const entry = { folderId, providerType: providerType || 'unknown', files, timestamp };
+                this.entries.set(key, entry);
+                return { ...entry, files: entry.files.map(file => ({ ...file })) };
+            }
+            delete(providerType, folderId) {
+                const key = FolderCache.makeKey(providerType, folderId);
+                if (!key) return;
+                this.entries.delete(key);
+            }
+            export() {
+                return Array.from(this.entries.values()).map(entry => ({
+                    folderKey: FolderCache.makeKey(entry.providerType, entry.folderId),
+                    providerType: entry.providerType,
+                    originalFolderId: entry.folderId,
+                    files: entry.files.map(file => ({ ...file })),
+                    timestamp: entry.timestamp
+                }));
+            }
+        }
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             visualCues: null, haptic: null, export: null,
@@ -1220,8 +1305,7 @@
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
             timestampAuthority: new TimestampAuthority(),
-            cachedFolderEntries: new Map(),
-            cachedStacksByFolder: new Map(),
+            folderCache: new FolderCache(),
             isReturningToFolders: false,
             navigationToken: null,
             activeRequests: new AbortController(),
@@ -2189,32 +2273,103 @@
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
             }
-            async getFolderCache(folderId) {
-                if (!this.db) return null;
+            resolveCacheKey(input) {
+                if (!input) return null;
+                if (typeof input === 'string') {
+                    if (input.includes('::')) return input;
+                    return this.resolveFolderKey({ folderId: input });
+                }
+                const folderKey = this.resolveFolderKey(input);
+                if (folderKey) return folderKey;
+                if (typeof input.folderId === 'string') {
+                    return input.folderId;
+                }
+                return null;
+            }
+            async loadFolderCache() {
+                if (!this.db || !this.db.objectStoreNames.contains('folderCache')) {
+                    return [];
+                }
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readonly');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.get(folderId);
-                    request.onsuccess = () => resolve(request.result ? request.result.files : null);
+                    const request = store.getAll();
+                    request.onsuccess = () => {
+                        const results = Array.isArray(request.result) ? request.result : [];
+                        resolve(results.map(record => ({ ...record })));
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
-            async saveFolderCache(folderId, files) {
-                if (!this.db) return;
+            async getFolderCache(context) {
+                if (!this.db || !this.db.objectStoreNames.contains('folderCache')) return null;
+                const attemptFetch = (key) => {
+                    return new Promise((resolve, reject) => {
+                        const transaction = this.db.transaction('folderCache', 'readonly');
+                        const store = transaction.objectStore('folderCache');
+                        const request = store.get(key);
+                        request.onsuccess = () => {
+                            const result = request.result || null;
+                            resolve(result ? { ...result } : null);
+                        };
+                        request.onerror = () => reject(request.error);
+                    });
+                };
+                const keys = [];
+                const primaryKey = this.resolveCacheKey(context);
+                if (primaryKey) keys.push(primaryKey);
+                const fallbackKey = typeof context === 'string' ? context : context?.folderId;
+                if (fallbackKey && fallbackKey !== primaryKey) {
+                    keys.push(fallbackKey);
+                }
+                for (const key of keys) {
+                    try {
+                        const record = await attemptFetch(key);
+                        if (record) {
+                            return record;
+                        }
+                    } catch (error) {
+                        if (keys.indexOf(key) === keys.length - 1) {
+                            throw error;
+                        }
+                    }
+                }
+                return null;
+            }
+            async saveFolderCache(context, entry = {}) {
+                if (!this.db || !this.db.objectStoreNames.contains('folderCache')) return null;
+                const folderKey = this.resolveCacheKey(context);
+                const originalFolderId = typeof context === 'string' ? context : context?.folderId;
+                const providerType = (typeof context === 'object' && context?.providerType) || 'unknown';
+                if (!folderKey && !originalFolderId) return null;
+                const files = Array.isArray(entry?.files) ? entry.files.map(file => ({ ...file })) : [];
+                const timestamp = Number.isFinite(entry?.timestamp) ? entry.timestamp : Date.now();
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.put({ folderId, files, timestamp: Date.now() });
-                    request.onsuccess = () => resolve();
+                    const payload = {
+                        folderId: folderKey || originalFolderId,
+                        folderKey: folderKey || null,
+                        originalFolderId: originalFolderId || null,
+                        providerType,
+                        files,
+                        timestamp
+                    };
+                    const request = store.put(payload);
+                    request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
                 });
             }
-            async deleteFolderCache(folderId) {
-                if (!this.db) return;
+            async deleteFolderCache(context) {
+                if (!this.db || !this.db.objectStoreNames.contains('folderCache')) return;
+                const folderKey = this.resolveCacheKey(context);
+                const fallbackKey = typeof context === 'string' ? context : context?.folderId;
+                const deleteKey = folderKey || fallbackKey;
+                if (!deleteKey) return;
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
-                    const request = store.delete(folderId);
+                    const request = store.delete(deleteKey);
                     request.onsuccess = () => resolve();
                     request.onerror = () => reject(request.error);
                 });
@@ -2444,7 +2599,7 @@
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
                 await Promise.all([
-                    this.deleteFolderCache(context.folderId || context),
+                    this.deleteFolderCache(context),
                     this.deleteFolderState(context),
                     this.deleteFolderManifest(context),
                     fileIds.length > 0 ? Promise.all(fileIds.map(id => this.deleteMetadata(id))) : this.deleteMetadataByFolder(context)
@@ -2970,7 +3125,11 @@
                 if (!file) return;
                 Object.assign(file, updates);
                 await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
+                const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
+                if (state.dbManager?.saveFolderCache) {
+                    await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                }
             }
 
             async deleteFile(fileId) {
@@ -3358,16 +3517,27 @@
             },
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
                 try {
+                    if (state.activeRequests) {
+                        state.activeRequests.abort();
+                    }
                     state.providerType = providerType;
                     state.provider = providerInstance;
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
-
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
-                    const loaded = await this.loadImages({ navigationToken });
-                    if (loaded) {
+                    const cacheEntry = state.folderCache.get(providerType, folderId);
+                    let cacheDisplayed = false;
+                    if (cacheEntry && Array.isArray(cacheEntry.files) && cacheEntry.files.length > 0) {
+                        state.imageFiles = cacheEntry.files.map(file => ({ ...file }));
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
+                        cacheDisplayed = true;
+                    }
+                    const loaded = await this.loadImages({ navigationToken, cacheEntry, cacheDisplayed });
+                    if (!cacheDisplayed && loaded) {
                         this.switchToCommonUI();
                     }
                 } catch (error) {
@@ -3388,15 +3558,41 @@
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
-
-                const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                if (!this.isNavigationActive(navigationToken)) {
-                    return false;
+                const providerType = state.providerType || 'unknown';
+                const folderContext = { providerType, folderId };
+                const sessionKey = state.dbManager?.resolveFolderKey(folderContext) || `${providerType}::${folderId}`;
+                let cacheEntry = options.cacheEntry;
+                if (!cacheEntry) {
+                    const persisted = await state.dbManager.getFolderCache(folderContext);
+                    if (!this.isNavigationActive(navigationToken)) {
+                        return false;
+                    }
+                    if (persisted) {
+                        state.folderCache.hydrate([persisted]);
+                        cacheEntry = state.folderCache.get(providerType, folderId);
+                    }
                 }
-
+                let hasDisplayedCache = Boolean(options.cacheDisplayed);
+                let cachedFiles = Array.isArray(cacheEntry?.files) ? cacheEntry.files : [];
+                if (!hasDisplayedCache && cachedFiles.length > 0 && !options.forceFullResync) {
+                    state.imageFiles = cachedFiles.map(file => ({ ...file }));
+                    if (!this.isNavigationActive(navigationToken)) {
+                        return false;
+                    }
+                    this.switchToCommonUI();
+                    Core.initializeStacks();
+                    Core.initializeImageDisplay();
+                    hasDisplayedCache = true;
+                }
                 try {
-                    const refreshed = await this.refreshFolderContents(cachedFiles, sessionKey, { navigationToken });
+                    const refreshed = await this.refreshFolderContents(cachedFiles, sessionKey, {
+                        navigationToken,
+                        cacheTimestamp: cacheEntry?.timestamp ?? null,
+                        hasDisplayedCache,
+                        folderContext,
+                        forceFullResync: Boolean(options.forceFullResync),
+                        signal: state.activeRequests?.signal || null
+                    });
                     return refreshed !== false;
                 } catch (error) {
                     if (error?.name !== 'AbortError') {
@@ -3513,13 +3709,18 @@
                 const folderId = state.currentFolder.id;
                 const hadCached = Array.isArray(cachedFiles) && cachedFiles.length > 0;
                 const navigationToken = options.navigationToken || state.navigationToken;
+                const cacheTimestamp = Number.isFinite(options.cacheTimestamp) ? Number(options.cacheTimestamp) : null;
+                const hasDisplayedCache = Boolean(options.hasDisplayedCache);
+                const folderContext = options.folderContext || { providerType: state.providerType, folderId };
+                const forceFullResync = Boolean(options.forceFullResync);
+                const signal = options.signal || null;
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
                 }
 
                 let manifestInfo = { manifest: null, incomingUpdatedAt: null, needsRefresh: true };
                 try {
-                    manifestInfo = await this.loadFolderManifest(folderId, { signal: options.signal });
+                    manifestInfo = await this.loadFolderManifest(folderId, { signal });
                 } catch (error) {
                     if (error?.name === 'AbortError') {
                         throw error;
@@ -3528,23 +3729,41 @@
                 }
 
                 const incomingUpdatedAt = manifestInfo?.incomingUpdatedAt ?? null;
-                const requiresRemoteFetch = !hadCached || manifestInfo?.needsRefresh !== false;
+                const requiresRemoteFetch = forceFullResync || !hadCached || manifestInfo?.needsRefresh !== false;
 
                 if (!requiresRemoteFetch && hadCached) {
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
-                    state.imageFiles = cachedFiles.slice();
-                    if (!this.isNavigationActive(navigationToken)) {
-                        return false;
+                    if (!hasDisplayedCache) {
+                        state.imageFiles = cachedFiles.map(file => ({ ...file }));
+                        if (!this.isNavigationActive(navigationToken)) {
+                            return false;
+                        }
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
+                    } else {
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
                     }
                     state.sessionVisitedFolders.add(key);
-                    this.switchToCommonUI();
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
+                    const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : cacheTimestamp ?? Date.now();
+                    state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
+                    if (state.dbManager?.saveTimestampSnapshot) {
+                        try {
+                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                        } catch (snapshotError) {
+                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
+                        }
+                    }
                     return true;
                 }
 
-                Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                if (!hasDisplayedCache) {
+                    Utils.showScreen('loading-screen');
+                    Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                } else {
+                    Utils.updateLoadingProgress(0, cachedFiles.length, 'Checking for updates...');
+                }
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
@@ -3554,12 +3773,15 @@
                     const cloudFiles = result.files || [];
                     const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
+                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
+                    const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : Date.now();
+
                     if (mergedFiles.length === 0) {
+                        const cachePayload = state.folderCache.set(state.providerType, folderId, { files: [], timestamp: recordStamp });
                         if (state.dbManager?.saveFolderCache) {
-                            await state.dbManager.saveFolderCache(folderId, []);
+                            await state.dbManager.saveFolderCache(folderContext, cachePayload);
                         }
                         state.imageFiles = [];
-                        const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                         if (!this.isNavigationActive(navigationToken)) {
                             return false;
                         }
@@ -3570,7 +3792,6 @@
                         Core.updateStackCounts();
 
                         Utils.showToast('No images found in this folder', 'info', true);
-                        const recordStamp = incomingUpdatedAt ?? Date.now();
                         state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
                         if (state.dbManager?.saveTimestampSnapshot) {
                             try {
@@ -3592,19 +3813,22 @@
                         await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
                     }
 
-                    state.imageFiles = mergedFiles;
+                    state.imageFiles = mergedFiles.map(file => ({ ...file }));
                     await this.processAllMetadata(state.imageFiles, !hadCached, { navigationToken });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
                     }
-                    if (hasChanges || !hadCached) {
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+
+                    const cachePayload = state.folderCache.set(state.providerType, folderId, { files: state.imageFiles, timestamp: recordStamp });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
                     }
 
-                    const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     if (this.isNavigationActive(navigationToken)) {
                         state.sessionVisitedFolders.add(key);
-                        this.switchToCommonUI();
+                        if (!hasDisplayedCache) {
+                            this.switchToCommonUI();
+                        }
                         Core.initializeStacks();
                         Core.initializeImageDisplay();
                     } else {
@@ -3620,7 +3844,6 @@
                         Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
                     }
 
-                    const recordStamp = incomingUpdatedAt ?? Date.now();
                     state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
                     if (state.dbManager?.saveTimestampSnapshot) {
                         try {
@@ -3629,18 +3852,31 @@
                             console.warn('Failed to persist timestamp snapshot:', snapshotError);
                         }
                     }
+                    return true;
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
                     this.returnToFolderSelection();
+                    return false;
                 }
             },
             async refreshFolderInBackground() {
                 try {
                     const navigationToken = state.navigationToken;
                     const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const folderContext = { providerType: state.providerType, folderId };
+                    let cachedFiles = [];
+                    try {
+                        const persisted = await state.dbManager.getFolderCache(folderContext);
+                        if (persisted) {
+                            state.folderCache.hydrate([persisted]);
+                            const hydrated = state.folderCache.get(state.providerType, folderId);
+                            cachedFiles = Array.isArray(hydrated?.files) ? hydrated.files : [];
+                        }
+                    } catch (cacheError) {
+                        console.warn('Background cache hydrate failed:', cacheError);
+                    }
                     const result = await state.provider.getFilesAndMetadata(folderId);
                     const cloudFiles = result.files || [];
                     const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
@@ -3663,14 +3899,17 @@
                     if (!this.isNavigationActive(navigationToken)) {
                         return;
                     }
-                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
-                    state.imageFiles = mergedFiles;
+                    state.imageFiles = mergedFiles.map(file => ({ ...file }));
+                    const recordStamp = Date.now();
+                    const cachePayload = state.folderCache.set(state.providerType, folderId, { files: state.imageFiles, timestamp: recordStamp });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                    }
                     Core.initializeStacks();
                     Core.updateStackCounts();
                     if (state.imageFiles.length > 0) Core.displayCurrentImage();
                     else Core.showEmptyState();
                     Utils.showToast('Folder updated in background', 'info');
-                    const recordStamp = Date.now();
                     state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
                     if (state.dbManager?.saveTimestampSnapshot) {
                         try {
@@ -3872,8 +4111,12 @@
                     if (!file) return;
                     const timestamp = Date.now();
                     Object.assign(file, updates, { localUpdatedAt: timestamp });
-                    await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
+                    await state.dbManager.saveMetadata(file.id, file, folderContext);
+                    const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                    }
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -3899,7 +4142,11 @@
                 const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
                 const fileName = name || file?.name || '';
                 const persistState = async () => {
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
+                    const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                    }
                 };
                 const restoreState = async (reason) => {
                     if (!file) { return false; }
@@ -3944,9 +4191,20 @@
                 }
                 const providerType = state.providerType;
                 try {
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
+                    const folderContext = { providerType, folderId };
+                    let cachedFiles = [];
+                    try {
+                        const persisted = await state.dbManager.getFolderCache(folderContext);
+                        if (persisted) {
+                            state.folderCache.hydrate([persisted]);
+                            cachedFiles = Array.isArray(persisted.files) ? persisted.files : [];
+                        }
+                    } catch (cacheError) {
+                        console.warn('Failed to load folder cache for reset:', cacheError);
+                    }
                     const fileIds = cachedFiles.map(file => file.id);
                     await state.dbManager.clearFolderData({ providerType, folderId }, fileIds);
+                    state.folderCache.delete(providerType, folderId);
                     state.sessionVisitedFolders.delete(`${providerType || 'unknown'}::${folderId}`);
                     Utils.showToast('Folder cache cleared. Resyncing...', 'info');
                     const navigationToken = Symbol('navigation');
@@ -4580,7 +4838,11 @@ this.updateImageCounters();
                 for(const file of newStack) {
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                 }
-                await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
+                const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
+                if (state.dbManager?.saveFolderCache) {
+                    await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                }
 
                 state.stacks[state.grid.stack] = newStack;
                 state.currentStackPosition = 0;
@@ -5779,7 +6041,11 @@ this.updateImageCounters();
                         Utils.updateLoadingProgress(i + 1, filesToMove.length);
                     }
                     Utils.showToast(`Moved ${filesToMove.length} images to ${folderName}`, 'success', true);
-                    await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
+                    const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
+                    const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
+                    if (state.dbManager?.saveFolderCache) {
+                        await state.dbManager.saveFolderCache(folderContext, cachePayload);
+                    }
                     state.folderMoveMode = { active: false, files: [] };
                     Core.initializeStacks(); Core.updateStackCounts(); App.returnToFolderSelection();
                 } catch (error) { Utils.showToast('Error moving files', 'error', true); App.returnToFolderSelection(); }
@@ -6297,6 +6563,16 @@ this.updateImageCounters();
                     }
                 } catch (error) {
                     console.warn('Failed to hydrate timestamp authority from cache:', error);
+                }
+            }
+            if (state.dbManager?.loadFolderCache) {
+                try {
+                    const cachedFolders = await state.dbManager.loadFolderCache();
+                    if (cachedFolders && cachedFolders.length > 0) {
+                        state.folderCache.hydrate(cachedFolders);
+                    }
+                } catch (error) {
+                    console.warn('Failed to hydrate folder cache from IndexedDB:', error);
                 }
             }
         }
