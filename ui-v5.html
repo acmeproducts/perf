@@ -1294,6 +1294,54 @@
             folderSearchDataset: [],
             folderSearchTerm: ''
         };
+        let pendingSnapshotFlush = null;
+        function flushTimestampSnapshot(reason = 'manual') {
+            if (!state?.dbManager) {
+                return Promise.resolve();
+            }
+            const runFlush = async () => {
+                const tasks = [];
+                if (state.timestampAuthority
+                    && typeof state.timestampAuthority.export === 'function'
+                    && state.dbManager?.saveTimestampSnapshot) {
+                    const timestampSnapshot = state.timestampAuthority.export();
+                    tasks.push(state.dbManager.saveTimestampSnapshot(timestampSnapshot));
+                }
+                if (state.folderCache
+                    && typeof state.folderCache.export === 'function'
+                    && state.dbManager?.saveFolderCacheSnapshot) {
+                    const folderSnapshot = state.folderCache.export();
+                    tasks.push(state.dbManager.saveFolderCacheSnapshot(folderSnapshot));
+                }
+                if (tasks.length === 0) {
+                    return;
+                }
+                await Promise.all(tasks);
+            };
+            const handleError = (error) => {
+                console.warn(`Failed to flush metadata snapshots${reason ? ` (${reason})` : ''}:`, error);
+                throw error;
+            };
+            if (pendingSnapshotFlush) {
+                const chained = pendingSnapshotFlush
+                    .catch(() => { })
+                    .then(runFlush)
+                    .catch(handleError);
+                pendingSnapshotFlush = chained.finally(() => {
+                    if (pendingSnapshotFlush === chained) {
+                        pendingSnapshotFlush = null;
+                    }
+                });
+                return pendingSnapshotFlush;
+            }
+            const run = runFlush().catch(handleError);
+            pendingSnapshotFlush = run.finally(() => {
+                if (pendingSnapshotFlush === run) {
+                    pendingSnapshotFlush = null;
+                }
+            });
+            return pendingSnapshotFlush;
+        }
         const DriveLinkHelper = {
             extractFileId(input) {
                 if (!input) return null;
@@ -2382,6 +2430,44 @@
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderCacheSnapshot(entries = []) {
+                if (!this.db || !this.db.objectStoreNames.contains('folderCache')) {
+                    return;
+                }
+                const normalizedEntries = Array.isArray(entries)
+                    ? entries.filter(entry => entry && (entry.folderKey || entry.folderId || entry.originalFolderId))
+                    : [];
+                return new Promise((resolve, reject) => {
+                    try {
+                        const transaction = this.db.transaction('folderCache', 'readwrite');
+                        const store = transaction.objectStore('folderCache');
+                        const clearRequest = store.clear();
+                        clearRequest.onerror = () => reject(clearRequest.error);
+                        clearRequest.onsuccess = () => {
+                            normalizedEntries.forEach(entry => {
+                                const folderKey = typeof entry.folderKey === 'string' && entry.folderKey ? entry.folderKey : null;
+                                const folderId = folderKey || entry.folderId || entry.originalFolderId;
+                                if (!folderId) {
+                                    return;
+                                }
+                                const payload = {
+                                    folderId,
+                                    folderKey,
+                                    originalFolderId: entry.originalFolderId || null,
+                                    providerType: entry.providerType || 'unknown',
+                                    files: Array.isArray(entry.files) ? entry.files.map(file => ({ ...file })) : [],
+                                    timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now()
+                                };
+                                store.put(payload);
+                            });
+                        };
+                        transaction.oncomplete = () => resolve();
+                        transaction.onerror = () => reject(transaction.error);
+                    } catch (error) {
+                        reject(error);
+                    }
                 });
             }
             async deleteFolderCache(context) {
@@ -4016,12 +4102,10 @@
                     if (state.timestampAuthority && typeof state.timestampAuthority.recordFolderUpdate === 'function') {
                         state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
                     }
-                    if (state.dbManager?.saveTimestampSnapshot && state.timestampAuthority) {
-                        try {
-                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                        } catch (snapshotError) {
-                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                        }
+                    try {
+                        await flushTimestampSnapshot('provider-delta:empty');
+                    } catch (snapshotError) {
+                        console.warn('Failed to flush snapshots after provider delta (empty merge):', snapshotError);
                     }
                     return true;
                 }
@@ -4088,12 +4172,10 @@
                 if (state.timestampAuthority && typeof state.timestampAuthority.recordFolderUpdate === 'function') {
                     state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
                 }
-                if (state.dbManager?.saveTimestampSnapshot && state.timestampAuthority) {
-                    try {
-                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                    } catch (snapshotError) {
-                        console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                    }
+                try {
+                    await flushTimestampSnapshot('provider-delta');
+                } catch (snapshotError) {
+                    console.warn('Failed to flush snapshots after provider delta:', snapshotError);
                 }
 
                 return true;
@@ -4141,12 +4223,10 @@
                     state.sessionVisitedFolders.add(key);
                     const recordStamp = Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : cacheTimestamp ?? Date.now();
                     state.timestampAuthority.recordFolderUpdate(folderId, recordStamp);
-                    if (state.dbManager?.saveTimestampSnapshot) {
-                        try {
-                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                        } catch (snapshotError) {
-                            console.warn('Failed to persist timestamp snapshot:', snapshotError);
-                        }
+                    try {
+                        await flushTimestampSnapshot('provider-delta:cached');
+                    } catch (snapshotError) {
+                        console.warn('Failed to flush snapshots after cached provider delta:', snapshotError);
                     }
                     return true;
                 }
@@ -4405,12 +4485,10 @@
                     }, { skipDebounce: true, operationType: 'stack:append' });
                 }
 
-                if (state.dbManager?.saveTimestampSnapshot) {
-                    try {
-                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                    } catch (snapshotError) {
-                        console.warn('Failed to persist timestamps after upload append:', snapshotError);
-                    }
+                try {
+                    await flushTimestampSnapshot('stack:append');
+                } catch (snapshotError) {
+                    console.warn('Failed to flush snapshots after upload append:', snapshotError);
                 }
 
                 if (typeof Grid !== 'undefined' && typeof Grid.syncWithStack === 'function') {
@@ -4641,12 +4719,10 @@
                     appProperties: file.appProperties
                 }, { skipDebounce: true, operationType: 'stack:move:trash', source });
 
-                if (state.dbManager?.saveTimestampSnapshot) {
-                    try {
-                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                    } catch (snapshotError) {
-                        console.warn('Failed to persist timestamps after recycle move:', snapshotError);
-                    }
+                try {
+                    await flushTimestampSnapshot('stack:move:recycle');
+                } catch (snapshotError) {
+                    console.warn('Failed to flush snapshots after recycle move:', snapshotError);
                 }
 
                 return true;
@@ -4962,12 +5038,10 @@
                         appProperties: item.appProperties
                     }, { skipDebounce: true, operationType: 'stack:resequence', source });
 
-                    if (state.dbManager?.saveTimestampSnapshot) {
-                        try {
-                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                        } catch (snapshotError) {
-                            console.warn('Failed to persist timestamps after resequence:', snapshotError);
-                        }
+                    try {
+                        await flushTimestampSnapshot('stack:resequence');
+                    } catch (snapshotError) {
+                        console.warn('Failed to flush snapshots after resequence:', snapshotError);
                     }
 
                     return { fileId, originStack, targetStack, sequenceEpoch, stackSequence: item.stackSequence };
@@ -5001,12 +5075,10 @@
                     appProperties: file.appProperties
                 }, { skipDebounce: true, operationType: targetStack === 'trash' ? 'stack:move:trash' : 'stack:move', source });
 
-                if (state.dbManager?.saveTimestampSnapshot) {
-                    try {
-                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                    } catch (snapshotError) {
-                        console.warn('Failed to persist timestamps after stack move:', snapshotError);
-                    }
+                try {
+                    await flushTimestampSnapshot(targetStack === 'trash' ? 'stack:move:trash' : 'stack:move');
+                } catch (snapshotError) {
+                    console.warn('Failed to flush snapshots after stack move:', snapshotError);
                 }
 
                 return { fileId, originStack, targetStack, sequenceEpoch, stackSequence: file.stackSequence };
@@ -5419,12 +5491,10 @@ this.updateImageCounters();
                     }, { skipDebounce: true, operationType: 'stack:grid-resequence' });
                 }
 
-                if (state.dbManager?.saveTimestampSnapshot) {
-                    try {
-                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
-                    } catch (snapshotError) {
-                        console.warn('Failed to persist timestamps after grid resequence:', snapshotError);
-                    }
+                try {
+                    await flushTimestampSnapshot('stack:grid-resequence');
+                } catch (snapshotError) {
+                    console.warn('Failed to flush snapshots after grid resequence:', snapshotError);
                 }
 
                 state.stacks[state.grid.stack] = newStack;
@@ -7175,6 +7245,25 @@ this.updateImageCounters();
                                   </div>`;
             }
         }
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden' || document.visibilityState === 'unloaded') {
+                flushTimestampSnapshot('visibilitychange').catch((error) => {
+                    console.warn('Failed to flush snapshots on visibility change:', error);
+                });
+            }
+        });
+        window.addEventListener('beforeunload', async (event) => {
+            if (!pendingSnapshotFlush) {
+                return;
+            }
+            event.preventDefault();
+            event.returnValue = '';
+            try {
+                await pendingSnapshotFlush;
+            } catch (error) {
+                console.warn('Failed to complete pending snapshot flush before unload:', error);
+            }
+        });
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 </body>
