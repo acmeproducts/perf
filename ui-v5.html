@@ -1146,10 +1146,24 @@
             folderSummaries: new Map(),
             pendingSequenceCanonicalizations: new Map()
         };
-        const SequenceHelpers = window.StackSequenceHelpers;
-        if (!SequenceHelpers) {
-            throw new Error('StackSequenceHelpers unavailable');
-        }
+        let SequenceHelpers = null;
+        const stackSequenceHelpersReady = (async () => {
+            if (window.StackSequenceHelpers) {
+                return window.StackSequenceHelpers;
+            }
+            try {
+                const module = await import('./stack-sequence-helpers.js');
+                const helpers = module?.StackSequenceHelpers ?? module?.default ?? window.StackSequenceHelpers;
+                if (helpers) {
+                    window.StackSequenceHelpers = helpers;
+                    return helpers;
+                }
+            } catch (error) {
+                console.error('Failed to import stack-sequence-helpers module', error);
+                throw error;
+            }
+            throw new Error('StackSequenceHelpers unavailable after module load');
+        })();
         const DriveLinkHelper = {
             extractFileId(input) {
                 if (!input) return null;
@@ -7499,6 +7513,7 @@ this.updateImageCounters();
         };
         async function initApp() {
             try {
+                SequenceHelpers = await stackSequenceHelpersReady;
                 Utils.init();
                 state.syncLog = new SyncActivityLogger();
                 state.syncLog.init();
