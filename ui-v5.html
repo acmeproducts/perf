@@ -1415,7 +1415,50 @@
                 return this.normalizeFavorite(input);
             },
 
-            
+            resequenceStackEntries(entries, options = {}) {
+                const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
+                if (list.length === 0) {
+                    return { sequenceEpoch: null, assignments: [] };
+                }
+
+                const epochCandidate = Number.isFinite(options.sequenceEpoch)
+                    ? Number(options.sequenceEpoch)
+                    : Date.now();
+                const baseCandidate = Number.isFinite(options.baseSequence)
+                    ? Number(options.baseSequence)
+                    : epochCandidate;
+                const step = Number.isFinite(options.step) ? Math.max(1, Math.floor(Math.abs(options.step))) : 1;
+                const direction = options.direction === 'asc' ? 1 : -1;
+
+                const assignments = [];
+                list.forEach((file, index) => {
+                    if (!file || typeof file !== 'object') {
+                        return;
+                    }
+                    const offset = index * step;
+                    const sequence = direction === 1
+                        ? baseCandidate + offset
+                        : baseCandidate - offset;
+
+                    if (!file.appProperties || typeof file.appProperties !== 'object') {
+                        file.appProperties = {};
+                    }
+
+                    file.stackSequence = sequence;
+                    file.sequenceEpoch = epochCandidate;
+                    file.appProperties.orbital8SequenceEpoch = String(epochCandidate);
+
+                    assignments.push({
+                        file,
+                        fileId: file.id || null,
+                        stackSequence: sequence
+                    });
+                });
+
+                return { sequenceEpoch: epochCandidate, assignments };
+            },
+
+
             init() {
                 this.elements = {
                     providerScreen: document.getElementById('provider-screen'),
@@ -3120,10 +3163,17 @@
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
                 return true;
             }
-            async updateUserMetadata(fileId, updates) {
+            async updateUserMetadata(fileId, updates, options = {}) {
                 const file = state.imageFiles.find(f => f.id === fileId);
                 if (!file) return;
-                Object.assign(file, updates);
+                const nextAppProperties = updates && typeof updates.appProperties === 'object'
+                    ? { ...(file.appProperties || {}), ...updates.appProperties }
+                    : file.appProperties;
+                const mergedUpdates = { ...updates };
+                if (nextAppProperties) {
+                    mergedUpdates.appProperties = nextAppProperties;
+                }
+                Object.assign(file, mergedUpdates);
                 await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                 const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
                 const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
@@ -4105,18 +4155,29 @@
                     detailsButton.style.display = 'none';
                 }
             },
-            async updateUserMetadata(fileId, updates) {
+            async updateUserMetadata(fileId, updates, options = {}) {
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
                     const timestamp = Date.now();
-                    Object.assign(file, updates, { localUpdatedAt: timestamp });
+                    const nextAppProperties = updates && typeof updates.appProperties === 'object'
+                        ? { ...(file.appProperties || {}), ...updates.appProperties }
+                        : file.appProperties;
+                    const mergedUpdates = { ...updates };
+                    if (nextAppProperties) {
+                        mergedUpdates.appProperties = nextAppProperties;
+                    }
+                    Object.assign(file, mergedUpdates, { localUpdatedAt: timestamp });
+                    if (nextAppProperties) {
+                        file.appProperties = nextAppProperties;
+                    }
                     const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
                     await state.dbManager.saveMetadata(file.id, file, folderContext);
                     const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
                     if (state.dbManager?.saveFolderCache) {
                         await state.dbManager.saveFolderCache(folderContext, cachePayload);
                     }
+                    state.timestampAuthority.recordItemUpdate(file.id, timestamp);
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -4422,11 +4483,128 @@
                     const pill = document.getElementById(`pill-${stack}`);
                     if (pill) pill.classList.remove('active');
                 });
-                
+
                 const currentPill = document.getElementById(`pill-${state.currentStack}`);
                 if (currentPill) currentPill.classList.add('active');
             },
-            
+
+            async commitDragResult(options = {}) {
+                const {
+                    fileId,
+                    targetStack,
+                    source = 'ui:drag',
+                    placement = 'auto'
+                } = options;
+
+                if (!fileId || !targetStack) {
+                    return null;
+                }
+
+                const file = state.imageFiles.find(f => f.id === fileId);
+                if (!file) {
+                    return null;
+                }
+
+                const originStack = file.stack || state.currentStack;
+                const originArray = state.stacks[originStack] || [];
+                const targetArray = state.stacks[targetStack] || [];
+
+                if (targetStack === originStack) {
+                    const currentIndex = originArray.findIndex(entry => entry.id === fileId);
+                    if (currentIndex === -1) {
+                        return null;
+                    }
+                    const [item] = originArray.splice(currentIndex, 1);
+                    const insertAtTop = placement === 'top';
+                    if (insertAtTop) {
+                        originArray.unshift(item);
+                    } else {
+                        originArray.push(item);
+                    }
+
+                    const otherEntries = originArray.filter(entry => entry.id !== fileId);
+                    const numericSequences = otherEntries
+                        .map(entry => Number(entry.stackSequence))
+                        .filter(seq => Number.isFinite(seq));
+                    let baseSequence;
+                    let direction;
+                    if (insertAtTop) {
+                        const maxSequence = numericSequences.length > 0
+                            ? Math.max(...numericSequences)
+                            : Date.now();
+                        baseSequence = maxSequence + 1;
+                        direction = 'asc';
+                    } else {
+                        const minSequence = numericSequences.length > 0
+                            ? Math.min(...numericSequences)
+                            : Date.now();
+                        baseSequence = minSequence - 1;
+                        direction = 'desc';
+                    }
+                    const epoch = Date.now();
+                    const { sequenceEpoch } = Utils.resequenceStackEntries([item], {
+                        baseSequence,
+                        direction,
+                        sequenceEpoch: epoch
+                    });
+                    state.stacks[originStack] = this.sortFiles(originArray);
+
+                    await App.updateUserMetadata(fileId, {
+                        stackSequence: item.stackSequence,
+                        sequenceEpoch,
+                        appProperties: item.appProperties
+                    }, { skipDebounce: true, operationType: 'stack:resequence', source });
+
+                    if (state.dbManager?.saveTimestampSnapshot) {
+                        try {
+                            await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                        } catch (snapshotError) {
+                            console.warn('Failed to persist timestamps after resequence:', snapshotError);
+                        }
+                    }
+
+                    return { fileId, originStack, targetStack, sequenceEpoch, stackSequence: item.stackSequence };
+                }
+
+                const originIndex = originArray.findIndex(entry => entry.id === fileId);
+                if (originIndex > -1) {
+                    originArray.splice(originIndex, 1);
+                }
+
+                file.stack = targetStack;
+                const existingSequences = targetArray
+                    .map(entry => Number(entry.stackSequence))
+                    .filter(seq => Number.isFinite(seq));
+                const maxSequence = existingSequences.length > 0
+                    ? Math.max(...existingSequences)
+                    : Date.now();
+                const epoch = Date.now();
+                const { sequenceEpoch } = Utils.resequenceStackEntries([file], {
+                    baseSequence: maxSequence + 1,
+                    direction: 'asc',
+                    sequenceEpoch: epoch
+                });
+                targetArray.unshift(file);
+                state.stacks[targetStack] = this.sortFiles(targetArray);
+
+                await App.updateUserMetadata(fileId, {
+                    stack: targetStack,
+                    stackSequence: file.stackSequence,
+                    sequenceEpoch,
+                    appProperties: file.appProperties
+                }, { skipDebounce: true, operationType: targetStack === 'trash' ? 'stack:move:trash' : 'stack:move', source });
+
+                if (state.dbManager?.saveTimestampSnapshot) {
+                    try {
+                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                    } catch (snapshotError) {
+                        console.warn('Failed to persist timestamps after stack move:', snapshotError);
+                    }
+                }
+
+                return { fileId, originStack, targetStack, sequenceEpoch, stackSequence: file.stackSequence };
+            },
+
             async moveToStack(targetStack, options = {}) {
                 const { source = 'ui:direct' } = options;
                 if (state.isImageTransitioning) return;
@@ -4440,25 +4618,14 @@
                     state.isImageTransitioning = true;
                     const originalStackName = state.currentStack;
                     const movedFileId = currentImage.id;
-                    const stackLabel = STACK_NAMES[targetStack] || targetStack;
-                    const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
-                    if (targetStack === originalStackName) {
-                        const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
-                        const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
-                        const newSequence = minSequence - 1;
-                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:resequence' });
-                        const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                        item.stackSequence = newSequence;
-                        currentStackArray.push(item);
-                    } else {
-                        const newSequence = Date.now();
-                        const isRecycleStackMove = targetStack === 'trash';
-                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
-                        const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                        item.stack = targetStack;
-                        item.stackSequence = newSequence;
-                        state.stacks[targetStack].unshift(item);
-                        state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                    const result = await this.commitDragResult({
+                        fileId: movedFileId,
+                        targetStack,
+                        source,
+                        placement: targetStack === originalStackName ? (options.placement || 'auto') : 'auto'
+                    });
+                    if (!result) {
+                        return;
                     }
 
                     this.updateStackCounts();
@@ -4829,19 +4996,27 @@ this.updateImageCounters();
                 } else { return; }
                 
                 const newStack = [...topItems, ...bottomItems];
-                const timestamp = Date.now();
-                
-                newStack.forEach((file, i) => {
-                    file.stackSequence = timestamp - i;
+                const epochBase = Date.now();
+                const { sequenceEpoch } = Utils.resequenceStackEntries(newStack, {
+                    baseSequence: epochBase,
+                    direction: 'desc',
+                    sequenceEpoch: epochBase
                 });
 
-                for(const file of newStack) {
-                    await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
+                for (const file of newStack) {
+                    await App.updateUserMetadata(file.id, {
+                        stackSequence: file.stackSequence,
+                        sequenceEpoch,
+                        appProperties: file.appProperties
+                    }, { skipDebounce: true, operationType: 'stack:grid-resequence' });
                 }
-                const folderContext = { providerType: state.providerType, folderId: state.currentFolder.id };
-                const cachePayload = state.folderCache.set(state.providerType, state.currentFolder.id, { files: state.imageFiles });
-                if (state.dbManager?.saveFolderCache) {
-                    await state.dbManager.saveFolderCache(folderContext, cachePayload);
+
+                if (state.dbManager?.saveTimestampSnapshot) {
+                    try {
+                        await state.dbManager.saveTimestampSnapshot(state.timestampAuthority.export());
+                    } catch (snapshotError) {
+                        console.warn('Failed to persist timestamps after grid resequence:', snapshotError);
+                    }
                 }
 
                 state.stacks[state.grid.stack] = newStack;
@@ -5234,19 +5409,11 @@ this.updateImageCounters();
                     action: async (fileId) => {
                         const file = state.imageFiles.find(f => f.id === fileId);
                         if (file) {
-                            const currentStack = file.stack;
-                            const newSequence = Date.now();
-                            const fromLabel = currentStack ? (STACK_NAMES[currentStack] || currentStack) : 'unknown';
-                            const toLabel = STACK_NAMES[targetStack] || targetStack;
-                            await App.updateUserMetadata(fileId, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
-                            const currentStackIndex = state.stacks[currentStack].findIndex(f => f.id === fileId);
-                            if (currentStackIndex !== -1) {
-                                state.stacks[currentStack].splice(currentStackIndex, 1);
-                            }
-                            file.stack = targetStack;
-                            file.stackSequence = newSequence;
-                            state.stacks[targetStack].unshift(file);
-                            state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
+                            await Core.commitDragResult({
+                                fileId,
+                                targetStack,
+                                source: 'grid:bulk-move'
+                            });
                         }
                     },
                     successMessage: `Moved {count} images to ${STACK_NAMES[targetStack]}`
