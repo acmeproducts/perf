@@ -3,8 +3,21 @@
 ## CRITICAL CONTEXT
 
 **BASE FILE**: refactor-module-a.html (1257 lines) - THIS WORKS, DO NOT TOUCH
+
 **SOURCE FILE**: ui-v10.html (7436 lines) - Extract functionality from here
+
 **REFERENCE**: 5_steps.txt - Architecture philosophy
+
+**Target File**: performance.html
+
+## begin #$
+insert module A into target
+build module B,C,D,E into target
+pay special attention to the smartdata, dumb report concept
+
+do not make assumptions. not sure? ask!!
+
+
 
 ## WHAT EXISTS (Module A - WORKING)
 - Lines 1-154: Complete CSS (DO NOT MODIFY)
