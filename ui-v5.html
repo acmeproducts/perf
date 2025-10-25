@@ -2264,7 +2264,11 @@
                 try {
                     const queue = await this.dbManager.readSyncQueue();
                     if (queue.length === 0) {
-                        this.hasPendingWork = this.pendingMutations.size > 0;
+                        const hasBufferedMutations = this.pendingMutations.size > 0;
+                        this.hasPendingWork = hasBufferedMutations;
+                        if (!hasBufferedMutations) {
+                            FolderSyncFlag.markClean('queue-empty');
+                        }
                         this.logger?.log({ event: 'sync:idle', level: 'info', details: `Queue empty (${reason}).` });
                         return 'empty';
                     }
@@ -2274,9 +2278,13 @@
                         await this.processEntry(entry);
                     }
                     const remaining = await this.dbManager.readSyncQueue();
-                    this.hasPendingWork = remaining.length > 0 || this.pendingMutations.size > 0;
+                    const hasBufferedMutations = this.pendingMutations.size > 0;
+                    this.hasPendingWork = remaining.length > 0 || hasBufferedMutations;
                     const result = remaining.length > 0 ? 'partial' : 'done';
                     if (result === 'done') {
+                        if (!hasBufferedMutations) {
+                            FolderSyncFlag.markClean('queue-flush');
+                        }
                         this.logger?.log({ event: 'sync:complete', level: 'success', details: `Sync loop complete (${reason}).` });
                     } else {
                         this.logger?.log({ event: 'sync:partial', level: 'warn', details: `Sync loop finished with ${remaining.length} entries remaining.` });
