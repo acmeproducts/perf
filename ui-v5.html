@@ -1186,6 +1186,123 @@
             dragElements: []
         });
         const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const FOLDER_USAGE_STORAGE_KEY = 'orbital8_folder_usage_v1';
+        const FolderUsageStore = (() => {
+            let cache = null;
+            let storageAvailable = true;
+
+            const ensureStore = () => {
+                if (cache !== null) {
+                    return cache;
+                }
+                cache = {};
+                if (!storageAvailable) {
+                    return cache;
+                }
+                try {
+                    const raw = localStorage.getItem(FOLDER_USAGE_STORAGE_KEY);
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && typeof parsed === 'object') {
+                            cache = parsed;
+                        }
+                    }
+                } catch (error) {
+                    console.warn('Failed to load folder usage from storage:', error);
+                    storageAvailable = false;
+                    cache = {};
+                }
+                return cache;
+            };
+
+            const persistStore = () => {
+                if (!storageAvailable || cache === null) {
+                    return;
+                }
+                try {
+                    localStorage.setItem(FOLDER_USAGE_STORAGE_KEY, JSON.stringify(cache));
+                } catch (error) {
+                    console.warn('Failed to persist folder usage to storage:', error);
+                    storageAvailable = false;
+                }
+            };
+
+            const makeKey = (providerType, folderId) => {
+                if (!folderId) { return null; }
+                return `${providerType || 'unknown'}::${folderId}`;
+            };
+
+            const updateRecord = (providerType, folderId, compute) => {
+                if (typeof compute !== 'function') { return null; }
+                const key = makeKey(providerType, folderId);
+                if (!key) { return null; }
+                const store = ensureStore();
+                const existing = store[key] && typeof store[key] === 'object' ? { ...store[key] } : {};
+                const next = compute(existing);
+                if (!next || typeof next !== 'object') {
+                    delete store[key];
+                    persistStore();
+                    return null;
+                }
+                const normalized = {
+                    ...existing,
+                    ...next,
+                    providerType: providerType || existing.providerType || 'unknown',
+                    folderId
+                };
+                store[key] = normalized;
+                persistStore();
+                return { ...normalized };
+            };
+
+            return {
+                get(providerType, folderId) {
+                    const key = makeKey(providerType, folderId);
+                    if (!key) { return null; }
+                    const store = ensureStore();
+                    const record = store[key];
+                    return record ? { ...record } : null;
+                },
+                getAllForProvider(providerType) {
+                    const store = ensureStore();
+                    const prefix = `${providerType || 'unknown'}::`;
+                    const result = new Map();
+                    Object.entries(store).forEach(([key, value]) => {
+                        if (!key.startsWith(prefix)) { return; }
+                        const folderId = key.slice(prefix.length);
+                        result.set(folderId, { ...value });
+                    });
+                    return result;
+                },
+                recordAccess(providerType, folderId, accessedAt = Date.now()) {
+                    if (!folderId) { return null; }
+                    const timestamp = Number.isFinite(accessedAt) ? accessedAt : Date.now();
+                    return updateRecord(providerType, folderId, (existing) => {
+                        const previous = Number(existing.lastAccessed) || 0;
+                        return {
+                            ...existing,
+                            lastAccessed: Math.max(previous, timestamp)
+                        };
+                    });
+                },
+                recordExit(providerType, folderId, imageCount, accessedAt = Date.now()) {
+                    if (!folderId) { return null; }
+                    const timestamp = Number.isFinite(accessedAt) ? accessedAt : Date.now();
+                    const numericCount = Number(imageCount);
+                    const normalizedCount = Number.isFinite(numericCount) && numericCount >= 0 ? numericCount : null;
+                    return updateRecord(providerType, folderId, (existing) => {
+                        const previous = Number(existing.lastAccessed) || 0;
+                        return {
+                            ...existing,
+                            lastAccessed: Math.max(previous, timestamp),
+                            lastExitedAt: timestamp,
+                            imageCount: normalizedCount,
+                            lastKnownImageCount: normalizedCount
+                        };
+                    });
+                }
+            };
+        })();
         const loadLastFolderFromStorage = () => {
             try {
                 const raw = localStorage.getItem(LAST_FOLDER_STORAGE_KEY);
@@ -3216,7 +3333,34 @@
                     hasChildren: false // Assume false to not show a non-functional 'Browse' button
                 }));
 
-                return await this.annotateFoldersWithImageCounts(normalized);
+                const usageRecords = (typeof FolderUsageStore?.getAllForProvider === 'function')
+                    ? FolderUsageStore.getAllForProvider(this.name || 'googledrive')
+                    : new Map();
+
+                const decorated = normalized.map(folder => {
+                    const usage = usageRecords instanceof Map ? usageRecords.get(folder.id) : null;
+                    const rawCount = usage?.imageCount ?? usage?.lastKnownImageCount;
+                    const numericCount = Number(rawCount);
+                    const hasValidCount = Number.isFinite(numericCount) && numericCount >= 0;
+                    const lastAccessed = Number(usage?.lastAccessed || usage?.lastExitedAt || 0) || 0;
+                    return {
+                        ...folder,
+                        imageCount: hasValidCount ? numericCount : null,
+                        itemCount: hasValidCount ? numericCount : null,
+                        lastAccessed
+                    };
+                });
+
+                return decorated
+                    .filter(folder => {
+                        if (folder.imageCount == null) { return true; }
+                        return folder.imageCount > 0;
+                    })
+                    .sort((a, b) => {
+                        const accessDiff = (Number(b.lastAccessed) || 0) - (Number(a.lastAccessed) || 0);
+                        if (accessDiff !== 0) { return accessDiff; }
+                        return (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base' });
+                    });
             }
             async annotateFoldersWithImageCounts(folders = []) {
                 if (!Array.isArray(folders) || folders.length === 0) {
@@ -3956,6 +4100,9 @@
                     state.provider = providerInstance;
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
+                    if (folderId) {
+                        FolderUsageStore.recordAccess(providerType, folderId);
+                    }
                     state.activeRequests = new AbortController();
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
@@ -4816,6 +4963,15 @@
                 if (state.isReturningToFolders) return;
 
                 state.isReturningToFolders = true;
+                const currentProviderType = state.providerType;
+                const currentFolderId = state.currentFolder?.id || null;
+                if (currentProviderType && currentFolderId) {
+                    const cacheKey = `${currentProviderType || 'unknown'}::${currentFolderId}`;
+                    if (state.sessionVisitedFolders?.has(cacheKey)) {
+                        const itemCount = Array.isArray(state.imageFiles) ? state.imageFiles.length : null;
+                        FolderUsageStore.recordExit(currentProviderType, currentFolderId, itemCount);
+                    }
+                }
                 state.navigationToken = Symbol('navigation');
                 const { backButton, backButtonSpinner, emptyState } = Utils.elements;
 
@@ -7434,6 +7590,12 @@ this.updateImageCounters();
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     const label = itemCount === 1 ? 'image' : 'images';
                     parts.push(`${itemCount} ${label}`);
+                }
+
+                const lastAccessedRaw = folder?.lastAccessed ?? folder?.lastExitedAt;
+                const lastAccessed = Number(lastAccessedRaw);
+                if (Number.isFinite(lastAccessed) && lastAccessed > 0) {
+                    parts.push(`Visited ${new Date(lastAccessed).toLocaleDateString()}`);
                 }
 
                 const timestamp = folder?.modifiedTime || folder?.createdTime || null;
