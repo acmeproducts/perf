@@ -5203,16 +5203,45 @@
                     localManifestRecord.manifestFileId = manifestFileId;
                 }
 
-                const pending = [];
+                let remoteUpdateFailed = false;
+
+                if (typeof provider?.updateFolderVersionMarker === 'function') {
+                    try {
+                        await provider.updateFolderVersionMarker(folderId, manifestVersion, { manifestFileId });
+                    } catch (error) {
+                        remoteUpdateFailed = true;
+                        console.warn('Failed to update remote folder version marker:', error);
+                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
+                    }
+                } else if (typeof provider?.saveFolderManifest === 'function') {
+                    try {
+                        await provider.saveFolderManifest(folderId, {
+                            entries: localManifestRecord.entries,
+                            cloudVersion: manifestVersion,
+                            requiresFullResync: false,
+                            manifestFileId
+                        });
+                    } catch (error) {
+                        remoteUpdateFailed = true;
+                        console.warn('Failed to write folder manifest to provider:', error);
+                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
+                    }
+                }
+
+                if (remoteUpdateFailed) {
+                    return;
+                }
+
+                const pendingLocalWrites = [];
 
                 if (state.dbManager?.saveFolderManifest) {
-                    pending.push(state.dbManager.saveFolderManifest(localManifestRecord).catch(error => {
+                    pendingLocalWrites.push(state.dbManager.saveFolderManifest(localManifestRecord).catch(error => {
                         console.warn('Failed to persist folder manifest locally:', error);
                     }));
                 }
 
                 if (state.dbManager?.saveFolderState) {
-                    pending.push(state.dbManager.saveFolderState({
+                    pendingLocalWrites.push(state.dbManager.saveFolderState({
                         ...context,
                         localVersion: manifestVersion,
                         cloudVersion: manifestVersion,
@@ -5223,26 +5252,9 @@
                     }));
                 }
 
-                if (typeof provider?.updateFolderVersionMarker === 'function') {
-                    pending.push(provider.updateFolderVersionMarker(folderId, manifestVersion, { manifestFileId }).catch(error => {
-                        console.warn('Failed to update remote folder version marker:', error);
-                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
-                    }));
-                } else if (typeof provider?.saveFolderManifest === 'function') {
-                    pending.push(provider.saveFolderManifest(folderId, {
-                        entries: localManifestRecord.entries,
-                        cloudVersion: manifestVersion,
-                        requiresFullResync: false,
-                        manifestFileId
-                    }).catch(error => {
-                        console.warn('Failed to write folder manifest to provider:', error);
-                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
-                    }));
-                }
-
-                if (pending.length > 0) {
+                if (pendingLocalWrites.length > 0) {
                     try {
-                        await Promise.all(pending);
+                        await Promise.all(pendingLocalWrites);
                     } catch (error) {
                         console.warn('Manifest version update encountered an unexpected error:', error);
                     }
