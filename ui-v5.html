@@ -2131,6 +2131,31 @@
                     level: 'info',
                     details: this.provider ? `Bound to provider ${this.providerType}` : 'Cleared provider context.'
                 });
+                const hasProvider = Boolean(this.provider && this.providerType);
+                if (!hasProvider || !this.isActive) {
+                    return;
+                }
+                if (this.hasPendingWork) {
+                    this.logger?.log({ event: 'provider:resume', level: 'info', details: 'Provider bound with pending work. Retrying sync queue.' });
+                    this.scheduleProcess('provider-context');
+                    return;
+                }
+                if (!this.dbManager) {
+                    return;
+                }
+                (async () => {
+                    try {
+                        const queue = await this.dbManager.readSyncQueue();
+                        if (queue.length === 0) {
+                            return;
+                        }
+                        this.hasPendingWork = true;
+                        this.logger?.log({ event: 'provider:resume', level: 'info', details: `Provider bound with ${queue.length} queued mutations. Retrying sync queue.` });
+                        this.scheduleProcess('provider-context');
+                    } catch (error) {
+                        this.logger?.log({ event: 'provider:resume:error', level: 'error', details: `Failed to inspect queue after provider bind: ${error.message}` });
+                    }
+                })();
             }
             start() {
                 if (this.isActive) return;
@@ -2264,7 +2289,11 @@
                 try {
                     const queue = await this.dbManager.readSyncQueue();
                     if (queue.length === 0) {
-                        this.hasPendingWork = this.pendingMutations.size > 0;
+                        const hasBufferedMutations = this.pendingMutations.size > 0;
+                        this.hasPendingWork = hasBufferedMutations;
+                        if (!hasBufferedMutations) {
+                            FolderSyncFlag.markClean('queue-empty');
+                        }
                         this.logger?.log({ event: 'sync:idle', level: 'info', details: `Queue empty (${reason}).` });
                         return 'empty';
                     }
@@ -2274,9 +2303,13 @@
                         await this.processEntry(entry);
                     }
                     const remaining = await this.dbManager.readSyncQueue();
-                    this.hasPendingWork = remaining.length > 0 || this.pendingMutations.size > 0;
+                    const hasBufferedMutations = this.pendingMutations.size > 0;
+                    this.hasPendingWork = remaining.length > 0 || hasBufferedMutations;
                     const result = remaining.length > 0 ? 'partial' : 'done';
                     if (result === 'done') {
+                        if (!hasBufferedMutations) {
+                            FolderSyncFlag.markClean('queue-flush');
+                        }
                         this.logger?.log({ event: 'sync:complete', level: 'success', details: `Sync loop complete (${reason}).` });
                     } else {
                         this.logger?.log({ event: 'sync:partial', level: 'warn', details: `Sync loop finished with ${remaining.length} entries remaining.` });
