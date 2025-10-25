@@ -5170,12 +5170,13 @@
                 }
 
                 const manifestVersionCandidate = Number(version);
-                const manifestVersion = Number.isFinite(manifestVersionCandidate)
+                let manifestVersion = Number.isFinite(manifestVersionCandidate)
                     ? manifestVersionCandidate
                     : Date.now();
 
                 const context = { providerType, folderId };
                 let existingManifest = null;
+                let existingFolderState = null;
                 let manifestFileId = options.manifestFileId ?? null;
 
                 if (state.dbManager?.getFolderManifest) {
@@ -5188,6 +5189,45 @@
                         console.warn('Failed to load cached manifest before update:', error);
                     }
                 }
+
+                if (state.dbManager?.getFolderState) {
+                    try {
+                        existingFolderState = await state.dbManager.getFolderState(context);
+                    } catch (error) {
+                        console.warn('Failed to load cached folder state before update:', error);
+                    }
+                }
+
+                const normalizeVersion = (value) => {
+                    const parsed = Number(value);
+                    return Number.isFinite(parsed) ? parsed : null;
+                };
+
+                const knownVersions = [];
+                const pushVersion = (value) => {
+                    const normalized = normalizeVersion(value);
+                    if (normalized != null) {
+                        knownVersions.push(normalized);
+                    }
+                };
+
+                pushVersion(existingManifest?.cloudVersion);
+                pushVersion(existingManifest?.localVersion);
+                pushVersion(existingFolderState?.cloudVersion);
+                pushVersion(existingFolderState?.localVersion);
+                pushVersion(existingFolderState?.lastLocalMutation);
+                pushVersion(existingFolderState?.lastCloudAck);
+                pushVersion(options?.previousVersion);
+                pushVersion(options?.remoteVersion);
+
+                if (knownVersions.length > 0) {
+                    const highestKnownVersion = Math.max(...knownVersions);
+                    if (!Number.isFinite(manifestVersion) || manifestVersion <= highestKnownVersion) {
+                        manifestVersion = Math.max(highestKnownVersion + 1, Date.now());
+                    }
+                }
+
+                manifestVersion = Number.isFinite(manifestVersion) ? manifestVersion : Date.now();
 
                 const localManifestRecord = {
                     ...context,
