@@ -2986,8 +2986,51 @@
                 target.appProperties.metadataUpdatedAt = String(stamp);
                 return target;
             },
+            mergeCloudAndCachedFiles(cloudFiles, cachedFiles) {
+                if (!Array.isArray(cachedFiles) || cachedFiles.length === 0) {
+                    return cloudFiles;
+                }
+                const cacheMap = new Map();
+                cachedFiles.forEach(record => {
+                    if (record && record.id) {
+                        cacheMap.set(record.id, record);
+                    }
+                });
+                if (cacheMap.size === 0) {
+                    return cloudFiles;
+                }
+                return cloudFiles.map(cloudFile => {
+                    const cached = cacheMap.get(cloudFile.id);
+                    if (!cached) {
+                        return cloudFile;
+                    }
+                    const cloudStamp = this.extractMetadataTimestamp(cloudFile) || 0;
+                    const cachedStamp = this.extractMetadataTimestamp(cached) || 0;
+                    const useCachedMetadata = cachedStamp > cloudStamp;
+                    const mergeAppProps = (primary, secondary) => ({ ...(secondary || {}), ...(primary || {}) });
+                    const mergedAppProps = useCachedMetadata
+                        ? mergeAppProps(cached.appProperties, cloudFile.appProperties)
+                        : mergeAppProps(cloudFile.appProperties, cached.appProperties);
+                    const mergedRecord = useCachedMetadata
+                        ? { ...cloudFile, ...cached, appProperties: mergedAppProps }
+                        : { ...cached, ...cloudFile, appProperties: mergedAppProps };
+                    const stampToApply = useCachedMetadata ? cachedStamp : (cloudStamp || cachedStamp);
+                    return this.applyMetadataStamp(mergedRecord, stampToApply);
+                });
+            },
             async syncFolderFromCloud({ sessionKey, showLoading = true, allowReturnOnEmpty = false, notifyOnUpdate = false } = {}) {
                 const folderId = state.currentFolder.id;
+                let cachedFiles = [];
+                if (state.dbManager) {
+                    try {
+                        const cached = await state.dbManager.getFolderCache(folderId);
+                        if (Array.isArray(cached)) {
+                            cachedFiles = cached;
+                        }
+                    } catch (cacheError) {
+                        console.warn('Failed to read cached folder entries:', cacheError);
+                    }
+                }
                 if (showLoading) {
                     Utils.showScreen('loading-screen');
                     Utils.updateLoadingProgress(0, 0, 'Fetching from cloud...');
@@ -2999,8 +3042,9 @@
                         const stamp = this.extractMetadataTimestamp(file);
                         return this.applyMetadataStamp({ ...file }, stamp);
                     });
+                    const mergedFiles = this.mergeCloudAndCachedFiles(cloudFiles, cachedFiles);
 
-                    if (cloudFiles.length === 0) {
+                    if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
@@ -3012,7 +3056,7 @@
                         return;
                     }
 
-                    state.imageFiles = cloudFiles;
+                    state.imageFiles = mergedFiles;
                     await this.processAllMetadata(state.imageFiles, showLoading);
                     await state.dbManager.saveFolderCache(folderId, state.imageFiles);
 
