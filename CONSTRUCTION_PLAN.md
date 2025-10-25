@@ -2,9 +2,9 @@
 
 ## CRITICAL CONTEXT
 
-**BASE FILE**: `/mnt/project/orbital8-refactored__1_.html` (1257 lines) - THIS WORKS, DO NOT TOUCH
-**SOURCE FILE**: `/mnt/project/ui-v10.html` (7436 lines) - Extract functionality from here
-**REFERENCE**: `/mnt/project/5_steps` - Architecture philosophy
+**BASE FILE**: refactor-module-a.html (1257 lines) - THIS WORKS, DO NOT TOUCH
+**SOURCE FILE**: ui-v10.html (7436 lines) - Extract functionality from here
+**REFERENCE**: 5_steps.txt - Architecture philosophy
 
 ## WHAT EXISTS (Module A - WORKING)
 - Lines 1-154: Complete CSS (DO NOT MODIFY)
