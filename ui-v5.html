@@ -1287,8 +1287,15 @@
                         ? record.files.map(file => ({ ...file }))
                         : [];
                     const timestamp = Number.isFinite(record.timestamp) ? record.timestamp : 0;
+                    const fallbackAccessed = Number.isFinite(timestamp) && timestamp !== 0 ? timestamp : Date.now();
+                    const imageCount = Number.isFinite(record.imageCount)
+                        ? record.imageCount
+                        : (Array.isArray(record.files) ? record.files.length : null);
+                    const lastAccessed = Number.isFinite(record.lastAccessed)
+                        ? record.lastAccessed
+                        : fallbackAccessed;
                     const key = FolderCache.makeKey(providerType, folderId);
-                    this.entries.set(key, { folderId, providerType, files, timestamp });
+                    this.entries.set(key, { folderId, providerType, files, timestamp, imageCount, lastAccessed });
                 });
             }
             get(providerType, folderId) {
@@ -1301,7 +1308,11 @@
                     folderId: entry.folderId,
                     providerType: entry.providerType,
                     files: entry.files.map(file => ({ ...file })),
-                    timestamp: entry.timestamp
+                    timestamp: entry.timestamp,
+                    imageCount: Number.isFinite(entry.imageCount)
+                        ? entry.imageCount
+                        : (Array.isArray(entry.files) ? entry.files.length : null),
+                    lastAccessed: Number.isFinite(entry.lastAccessed) ? entry.lastAccessed : null
                 };
             }
             set(providerType, folderId, data = {}) {
@@ -1318,7 +1329,26 @@
                     : Number.isFinite(existing.timestamp)
                         ? existing.timestamp
                         : Date.now();
-                const entry = { folderId, providerType: providerType || 'unknown', files, timestamp };
+                const imageCount = Number.isFinite(data.imageCount)
+                    ? data.imageCount
+                    : Array.isArray(data.files)
+                        ? data.files.length
+                        : Number.isFinite(existing.imageCount)
+                            ? existing.imageCount
+                            : (Array.isArray(existing.files) ? existing.files.length : null);
+                const lastAccessed = Number.isFinite(data.lastAccessed)
+                    ? data.lastAccessed
+                    : Number.isFinite(existing.lastAccessed)
+                        ? existing.lastAccessed
+                        : Date.now();
+                const entry = {
+                    folderId,
+                    providerType: providerType || 'unknown',
+                    files,
+                    timestamp,
+                    imageCount,
+                    lastAccessed
+                };
                 this.entries.set(key, entry);
                 return { ...entry, files: entry.files.map(file => ({ ...file })) };
             }
@@ -1333,7 +1363,11 @@
                     providerType: entry.providerType,
                     originalFolderId: entry.folderId,
                     files: entry.files.map(file => ({ ...file })),
-                    timestamp: entry.timestamp
+                    timestamp: entry.timestamp,
+                    imageCount: Number.isFinite(entry.imageCount)
+                        ? entry.imageCount
+                        : (Array.isArray(entry.files) ? entry.files.length : null),
+                    lastAccessed: Number.isFinite(entry.lastAccessed) ? entry.lastAccessed : null
                 }));
             }
         }
@@ -2678,6 +2712,12 @@
                 if (!folderKey && !originalFolderId) return null;
                 const files = Array.isArray(entry?.files) ? entry.files.map(file => ({ ...file })) : [];
                 const timestamp = Number.isFinite(entry?.timestamp) ? entry.timestamp : Date.now();
+                const imageCount = Number.isFinite(entry?.imageCount)
+                    ? entry.imageCount
+                    : files.length;
+                const lastAccessed = Number.isFinite(entry?.lastAccessed)
+                    ? entry.lastAccessed
+                    : Date.now();
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderCache', 'readwrite');
                     const store = transaction.objectStore('folderCache');
@@ -2687,7 +2727,9 @@
                         originalFolderId: originalFolderId || null,
                         providerType,
                         files,
-                        timestamp
+                        timestamp,
+                        imageCount,
+                        lastAccessed
                     };
                     const request = store.put(payload);
                     request.onsuccess = () => resolve(payload);
@@ -2720,7 +2762,13 @@
                                     originalFolderId: entry.originalFolderId || null,
                                     providerType: entry.providerType || 'unknown',
                                     files: Array.isArray(entry.files) ? entry.files.map(file => ({ ...file })) : [],
-                                    timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now()
+                                    timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
+                                    imageCount: Number.isFinite(entry.imageCount)
+                                        ? entry.imageCount
+                                        : (Array.isArray(entry.files) ? entry.files.length : 0),
+                                    lastAccessed: Number.isFinite(entry.lastAccessed)
+                                        ? entry.lastAccessed
+                                        : Date.now()
                                 };
                                 store.put(payload);
                             });
@@ -4957,6 +5005,12 @@
             },
             async returnToFolderSelection() {
                 if (state.isReturningToFolders) return;
+
+                try {
+                    await Folders.persistCurrentFolderSummary();
+                } catch (error) {
+                    console.warn('Failed to capture folder summary before returning to list:', error);
+                }
 
                 state.isReturningToFolders = true;
                 state.navigationToken = Symbol('navigation');
@@ -7433,18 +7487,59 @@ this.updateImageCounters();
                 }
             },
 
+            prepareFolderList(folders = []) {
+                if (!Array.isArray(folders)) {
+                    return [];
+                }
+
+                const providerType = state.providerType || 'unknown';
+                const prepared = [];
+                const seen = new Set();
+                folders.forEach(folder => {
+                    if (!folder || !folder.id || seen.has(folder.id)) {
+                        return;
+                    }
+                    seen.add(folder.id);
+                    const cacheEntry = state.folderCache?.get(providerType, folder.id) || null;
+                    const cachedImageCount = Number.isFinite(cacheEntry?.imageCount) ? cacheEntry.imageCount : null;
+                    const lastAccessed = Number.isFinite(cacheEntry?.lastAccessed) ? cacheEntry.lastAccessed : null;
+                    if (cachedImageCount === 0) {
+                        return;
+                    }
+                    prepared.push({
+                        ...folder,
+                        cachedImageCount,
+                        lastAccessed
+                    });
+                });
+
+                const normalizeAccess = (value) => Number.isFinite(value) ? value : -Infinity;
+                prepared.sort((a, b) => {
+                    const accessDiff = normalizeAccess(b.lastAccessed) - normalizeAccess(a.lastAccessed);
+                    if (accessDiff !== 0) {
+                        return accessDiff;
+                    }
+                    const nameA = a?.name || '';
+                    const nameB = b?.name || '';
+                    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+                });
+
+                return prepared;
+            },
+
             display(folders) {
                 const { folderList } = Utils.elements;
-                this.setSearchDataset(folders);
+                const preparedFolders = this.prepareFolderList(folders);
+                this.setSearchDataset(preparedFolders);
                 this.resetSearch({ keepInput: false });
                 folderList.innerHTML = '';
-                if (!folders || folders.length === 0) {
+                if (!preparedFolders || preparedFolders.length === 0) {
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
                     this.handleSearchInput('');
                     return;
                 }
 
-                folders.forEach(folder => {
+                preparedFolders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
 
@@ -7580,7 +7675,7 @@ this.updateImageCounters();
 
             formatFolderMeta(folder) {
                 const parts = [];
-                const itemCountRaw = folder?.imageCount ?? folder?.itemCount;
+                const itemCountRaw = folder?.cachedImageCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     const label = itemCount === 1 ? 'image' : 'images';
@@ -7672,6 +7767,41 @@ this.updateImageCounters();
                         }
                     }
                     lastFolderMeta.textContent = parts.join(' • ');
+                }
+            },
+
+            async persistCurrentFolderSummary() {
+                const providerType = state.providerType;
+                const folderId = state.currentFolder?.id;
+                if (!providerType || !folderId || !state.folderCache) {
+                    return;
+                }
+
+                const files = Array.isArray(state.imageFiles) ? state.imageFiles : [];
+                const accessStamp = Date.now();
+                let folderTimestamp = null;
+
+                if (typeof App?.computeFolderUpdatedAt === 'function') {
+                    try {
+                        folderTimestamp = App.computeFolderUpdatedAt.call(App, files);
+                    } catch (error) {
+                        console.warn('Failed to compute folder updated timestamp for cache summary:', error);
+                    }
+                }
+
+                const payload = state.folderCache.set(providerType, folderId, {
+                    files,
+                    timestamp: folderTimestamp ?? accessStamp,
+                    imageCount: files.length,
+                    lastAccessed: accessStamp
+                });
+
+                if (payload && state.dbManager?.saveFolderCache) {
+                    try {
+                        await state.dbManager.saveFolderCache({ providerType, folderId }, payload);
+                    } catch (error) {
+                        console.warn('Failed to persist folder cache summary:', error);
+                    }
                 }
             },
 
