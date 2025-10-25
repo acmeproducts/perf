@@ -3153,7 +3153,25 @@
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
                 const signal = options.signal;
                 const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)';
-                const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=${fields}&supportsAllDrives=true`, { signal }));
+                const resourceKeysById = options.resourceKeysById;
+                const resolveResourceKey = (id) => {
+                    if (!resourceKeysById) { return null; }
+                    if (resourceKeysById instanceof Map) {
+                        return resourceKeysById.get(id) || resourceKeysById.get(String(id)) || null;
+                    }
+                    if (typeof resourceKeysById === 'object') {
+                        return resourceKeysById[id] || resourceKeysById[String(id)] || null;
+                    }
+                    return null;
+                };
+                const requests = fileIds.map(id => {
+                    let url = `/files/${id}?fields=${fields}&supportsAllDrives=true`;
+                    const resourceKey = resolveResourceKey(id);
+                    if (resourceKey) {
+                        url += `&resourceKey=${encodeURIComponent(resourceKey)}`;
+                    }
+                    return this.makeApiCall(url, { signal });
+                });
                 const responses = await Promise.allSettled(requests);
                 return responses
                     .filter(result => result.status === 'fulfilled')
@@ -3374,8 +3392,17 @@
                             .map(file => file.shortcutDetails?.targetId)
                             .filter(Boolean))];
 
+                        const resourceKeysById = shortcutCandidates.reduce((map, file) => {
+                            const targetId = file?.shortcutDetails?.targetId;
+                            const resourceKey = file?.shortcutDetails?.targetResourceKey;
+                            if (targetId && resourceKey) {
+                                map.set(targetId, resourceKey);
+                            }
+                            return map;
+                        }, new Map());
+
                         if (targetIds.length > 0) {
-                            const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal });
+                            const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal, resourceKeysById });
                             const targetMap = new Map(targetFiles.map(target => [target.id, target]));
                             resolvedShortcuts = shortcutCandidates
                                 .map(shortcut => {
@@ -3511,7 +3538,7 @@
             }
             async fetchFilesByIds(folderId, fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
-                const rawFiles = await this.fetchRawFilesByIds(fileIds, { signal: options.signal });
+                const rawFiles = await this.fetchRawFilesByIds(fileIds, { signal: options.signal, resourceKeysById: options.resourceKeysById });
                 const directImages = [];
                 const shortcutCandidates = [];
 
@@ -3533,11 +3560,20 @@
                     .map(file => file.shortcutDetails?.targetId)
                     .filter(Boolean))];
 
+                const resourceKeysById = shortcutCandidates.reduce((map, file) => {
+                    const targetId = file?.shortcutDetails?.targetId;
+                    const resourceKey = file?.shortcutDetails?.targetResourceKey;
+                    if (targetId && resourceKey) {
+                        map.set(targetId, resourceKey);
+                    }
+                    return map;
+                }, new Map());
+
                 if (targetIds.length === 0) {
                     return normalized;
                 }
 
-                const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal: options.signal });
+                const targetFiles = await this.fetchRawFilesByIds(targetIds, { signal: options.signal, resourceKeysById });
                 const targetMap = new Map(targetFiles.map(target => [target.id, target]));
                 const resolvedShortcuts = shortcutCandidates
                     .map(shortcut => {
