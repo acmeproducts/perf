@@ -55,7 +55,7 @@ Each phase produces a new HTML snapshot (`orbital8-v10-phaseN.html`). Never over
 1. Copy Phase 1 → Phase 2 file.
 2. Inject Module B JS immediately after line 4756, keeping Module A untouched.
 3. Lift gesture/stack helpers from `ui-v10.html` wholesale—avoid pseudo-code placeholders.
-4. Update `Framework.start()` to initialize Module B and reveal the new UI.
+4. Update `initApp()` to initialize Module B and reveal the new UI.
 
 **Checks**
 - Load folder → first image renders.
@@ -89,7 +89,7 @@ Each phase produces a new HTML snapshot (`orbital8-v10-phaseN.html`). Never over
 1. Copy Phase 4 → Phase 5 final file.
 2. Add Focus module; register keyboard listeners cautiously to avoid duplicate bindings.
 3. Integrate mode switching (gesture hub double-tap, ESC to exit) and sync with Module B state.
-4. Finalize `Framework.start()` to initialize Modules B–E in order.
+4. Finalize `initApp()` to initialize Modules B–E in order.
 
 **Checks**
 - Double-tap enters focus mode; ESC or hub double-tap exits.
@@ -139,8 +139,8 @@ If work pauses mid-phase, include in the session log:
   - Original Module A untouched (lines ≤4756).
   - New CSS grouped at top, clearly commented.
   - App container HTML replacing the placeholder root div.
-  - Modules B–E defined after Module A and before `Framework.start()` finalization.
-  - `Framework.start()` initializes Modules B–E once Module A completes loading.
+  - Modules B–E defined after Module A and before the `initApp()` definition concludes.
+  - `initApp()` initializes Modules B–E once Module A completes loading.
   - Functionality parity with `ui-v10.html` (gestures, grid, detail, focus, metadata persistence).
   - Works with Google Drive and OneDrive providers.
 - Archive intermediate phase files for rollback.
