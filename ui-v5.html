@@ -5161,6 +5161,93 @@
                 }
                 return null;
             },
+            async persistFolderVersionMarker(version, options = {}) {
+                const provider = state.provider;
+                const providerType = state.providerType;
+                const folderId = state.currentFolder?.id;
+                if (!provider || !providerType || !folderId) {
+                    return;
+                }
+
+                const manifestVersionCandidate = Number(version);
+                const manifestVersion = Number.isFinite(manifestVersionCandidate)
+                    ? manifestVersionCandidate
+                    : Date.now();
+
+                const context = { providerType, folderId };
+                let existingManifest = null;
+                let manifestFileId = options.manifestFileId ?? null;
+
+                if (state.dbManager?.getFolderManifest) {
+                    try {
+                        existingManifest = await state.dbManager.getFolderManifest(context);
+                        if (!manifestFileId && existingManifest?.manifestFileId) {
+                            manifestFileId = existingManifest.manifestFileId;
+                        }
+                    } catch (error) {
+                        console.warn('Failed to load cached manifest before update:', error);
+                    }
+                }
+
+                const localManifestRecord = {
+                    ...context,
+                    entries: existingManifest?.entries || {},
+                    requiresFullResync: Boolean(existingManifest?.requiresFullResync),
+                    cloudVersion: manifestVersion,
+                    localVersion: manifestVersion,
+                    lastUpdated: Date.now(),
+                    lastRemoteUpdate: manifestVersion
+                };
+
+                if (manifestFileId) {
+                    localManifestRecord.manifestFileId = manifestFileId;
+                }
+
+                const pending = [];
+
+                if (state.dbManager?.saveFolderManifest) {
+                    pending.push(state.dbManager.saveFolderManifest(localManifestRecord).catch(error => {
+                        console.warn('Failed to persist folder manifest locally:', error);
+                    }));
+                }
+
+                if (state.dbManager?.saveFolderState) {
+                    pending.push(state.dbManager.saveFolderState({
+                        ...context,
+                        localVersion: manifestVersion,
+                        cloudVersion: manifestVersion,
+                        lastLocalMutation: manifestVersion,
+                        lastCloudAck: manifestVersion
+                    }).catch(error => {
+                        console.warn('Failed to persist folder state locally:', error);
+                    }));
+                }
+
+                if (typeof provider?.updateFolderVersionMarker === 'function') {
+                    pending.push(provider.updateFolderVersionMarker(folderId, manifestVersion, { manifestFileId }).catch(error => {
+                        console.warn('Failed to update remote folder version marker:', error);
+                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
+                    }));
+                } else if (typeof provider?.saveFolderManifest === 'function') {
+                    pending.push(provider.saveFolderManifest(folderId, {
+                        entries: localManifestRecord.entries,
+                        cloudVersion: manifestVersion,
+                        requiresFullResync: false,
+                        manifestFileId
+                    }).catch(error => {
+                        console.warn('Failed to write folder manifest to provider:', error);
+                        Utils.showToast('Saved locally, but cloud version marker could not be updated.', 'error', true);
+                    }));
+                }
+
+                if (pending.length > 0) {
+                    try {
+                        await Promise.all(pending);
+                    } catch (error) {
+                        console.warn('Manifest version update encountered an unexpected error:', error);
+                    }
+                }
+            },
             async updateUserMetadata(fileId, updates, options = {}) {
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
@@ -5211,12 +5298,23 @@
                             state.timestampAuthority.recordFolderUpdate(state.currentFolder.id, folderStamp);
                         }
                     }
+                    let remoteMutationApplied = !providerPayload;
                     if (providerPayload && state.provider && typeof state.provider.updateFileMetadata === 'function') {
                         try {
                             await state.provider.updateFileMetadata(fileId, providerPayload);
+                            remoteMutationApplied = true;
                         } catch (providerError) {
                             console.warn('Failed to persist metadata to provider:', providerError);
                             Utils.showToast('Saved locally, but cloud sync failed. Check your connection and try again.', 'error', true);
+                        }
+                    }
+
+                    const manifestVersion = folderUpdatedAt ?? authorityTimestamp ?? Date.now();
+                    if (remoteMutationApplied) {
+                        try {
+                            await this.persistFolderVersionMarker(manifestVersion);
+                        } catch (manifestError) {
+                            console.warn('Failed to persist folder version marker:', manifestError);
                         }
                     }
                 } catch (error) {
