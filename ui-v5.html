@@ -2131,6 +2131,31 @@
                     level: 'info',
                     details: this.provider ? `Bound to provider ${this.providerType}` : 'Cleared provider context.'
                 });
+                const hasProvider = Boolean(this.provider && this.providerType);
+                if (!hasProvider || !this.isActive) {
+                    return;
+                }
+                if (this.hasPendingWork) {
+                    this.logger?.log({ event: 'provider:resume', level: 'info', details: 'Provider bound with pending work. Retrying sync queue.' });
+                    this.scheduleProcess('provider-context');
+                    return;
+                }
+                if (!this.dbManager) {
+                    return;
+                }
+                (async () => {
+                    try {
+                        const queue = await this.dbManager.readSyncQueue();
+                        if (queue.length === 0) {
+                            return;
+                        }
+                        this.hasPendingWork = true;
+                        this.logger?.log({ event: 'provider:resume', level: 'info', details: `Provider bound with ${queue.length} queued mutations. Retrying sync queue.` });
+                        this.scheduleProcess('provider-context');
+                    } catch (error) {
+                        this.logger?.log({ event: 'provider:resume:error', level: 'error', details: `Failed to inspect queue after provider bind: ${error.message}` });
+                    }
+                })();
             }
             start() {
                 if (this.isActive) return;
