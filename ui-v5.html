@@ -1297,7 +1297,8 @@
                             lastAccessed: Math.max(previous, timestamp),
                             lastExitedAt: timestamp,
                             imageCount: normalizedCount,
-                            lastKnownImageCount: normalizedCount
+                            lastKnownImageCount: normalizedCount,
+                            imageCountUpdatedAt: timestamp
                         };
                     });
                 }
@@ -3337,23 +3338,41 @@
                     ? FolderUsageStore.getAllForProvider(this.name || 'googledrive')
                     : new Map();
 
+                const ZERO_COUNT_FILTER_STALE_AFTER_MS = 10 * 60 * 1000;
+                const now = Date.now();
+
                 const decorated = normalized.map(folder => {
                     const usage = usageRecords instanceof Map ? usageRecords.get(folder.id) : null;
                     const rawCount = usage?.imageCount ?? usage?.lastKnownImageCount;
                     const numericCount = Number(rawCount);
-                    const hasValidCount = Number.isFinite(numericCount) && numericCount >= 0;
+                    const hasPositiveCount = Number.isFinite(numericCount) && numericCount > 0;
+                    const isZeroCountKnown = Number.isFinite(numericCount) && numericCount === 0;
                     const lastAccessed = Number(usage?.lastAccessed || usage?.lastExitedAt || 0) || 0;
+                    const lastUpdated = Number(
+                        usage?.imageCountUpdatedAt
+                        || usage?.lastExitedAt
+                        || usage?.lastAccessed
+                        || 0
+                    ) || 0;
+                    const isZeroCountFresh = isZeroCountKnown
+                        && lastUpdated > 0
+                        && (now - lastUpdated) <= ZERO_COUNT_FILTER_STALE_AFTER_MS;
+                    const imageCount = hasPositiveCount
+                        ? numericCount
+                        : (isZeroCountFresh ? 0 : null);
                     return {
                         ...folder,
-                        imageCount: hasValidCount ? numericCount : null,
-                        itemCount: hasValidCount ? numericCount : null,
-                        lastAccessed
+                        imageCount,
+                        itemCount: imageCount,
+                        lastAccessed,
+                        isConfirmedEmpty: Boolean(isZeroCountFresh)
                     };
                 });
 
                 return decorated
                     .filter(folder => {
                         if (folder.imageCount == null) { return true; }
+                        if (folder.imageCount === 0) { return !folder.isConfirmedEmpty; }
                         return folder.imageCount > 0;
                     })
                     .sort((a, b) => {
