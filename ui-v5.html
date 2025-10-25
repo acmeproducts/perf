@@ -2934,19 +2934,7 @@
             async loadImages() {
                 const folderId = state.currentFolder.id;
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
-                const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                const isFirstSessionVisit = !state.sessionVisitedFolders.has(sessionKey);
-
-                if (isFirstSessionVisit || cachedFiles.length === 0) {
-                    await this.syncFolderFromCloud(cachedFiles, sessionKey);
-                    return;
-                }
-
-                state.imageFiles = cachedFiles;
-                await this.processAllMetadata(state.imageFiles);
-                Utils.showScreen('app-container');
-                Core.initializeStacks();
-                Core.initializeImageDisplay();
+                await this.syncFolderFromCloud({ sessionKey, showLoading: true, allowReturnOnEmpty: true });
             },
             extractMetadataTimestamp(record) {
                 if (!record) return 0;
@@ -2998,142 +2986,65 @@
                 target.appProperties.metadataUpdatedAt = String(stamp);
                 return target;
             },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
-                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
-                const merged = [];
-                const newIds = [];
-                const updatedIds = [];
-                const removedIds = [];
-
-                for (const cloudFile of cloudFiles) {
-                    const cached = cachedMap.get(cloudFile.id);
-                    if (!cached) {
-                        const cloudStamp = this.extractMetadataTimestamp(cloudFile);
-                        const mergedFile = this.applyMetadataStamp({ ...cloudFile }, cloudStamp);
-                        merged.push(mergedFile);
-                        newIds.push(cloudFile.id);
-                    } else {
-                        const cloudStamp = this.extractMetadataTimestamp(cloudFile);
-                        const cachedStamp = this.extractMetadataTimestamp(cached);
-                        let shouldUpdate = cloudStamp > cachedStamp;
-
-                        if (!shouldUpdate) {
-                            const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
-                            const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                            if (!Number.isNaN(cloudModified) && cloudModified > cachedModified) {
-                                shouldUpdate = true;
-                            }
-                        }
-
-                        if (shouldUpdate) {
-                            const mergedFile = this.applyMetadataStamp({ ...cached, ...cloudFile }, cloudStamp || cachedStamp);
-                            merged.push(mergedFile);
-                            updatedIds.push(cloudFile.id);
-                        } else {
-                            merged.push(this.applyMetadataStamp({ ...cached }, cachedStamp || cloudStamp));
-                        }
-                        cachedMap.delete(cloudFile.id);
-                    }
-                }
-
-                for (const removedId of cachedMap.keys()) {
-                    removedIds.push(removedId);
-                }
-
-                return {
-                    mergedFiles: merged,
-                    newIds,
-                    updatedIds,
-                    removedIds,
-                    hasChanges: newIds.length > 0 || updatedIds.length > 0 || removedIds.length > 0
-                };
-            },
-            async syncFolderFromCloud(cachedFiles, sessionKey) {
+            async syncFolderFromCloud({ sessionKey, showLoading = true, allowReturnOnEmpty = false, notifyOnUpdate = false } = {}) {
                 const folderId = state.currentFolder.id;
-                const hadCached = cachedFiles.length > 0;
-                Utils.showScreen('loading-screen');
-                Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                if (showLoading) {
+                    Utils.showScreen('loading-screen');
+                    Utils.updateLoadingProgress(0, 0, 'Fetching from cloud...');
+                }
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
-                    const cloudFiles = result.files || [];
-                    const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
+                    const cloudFiles = (result.files || []).map(file => {
+                        const stamp = this.extractMetadataTimestamp(file);
+                        return this.applyMetadataStamp({ ...file }, stamp);
+                    });
 
-                    if (mergedFiles.length === 0) {
+                    if (cloudFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
                         Utils.showToast('No images found in this folder', 'info', true);
-                        this.returnToFolderSelection();
+                        if (allowReturnOnEmpty) {
+                            this.returnToFolderSelection();
+                        } else {
+                            Core.showEmptyState();
+                        }
                         return;
                     }
 
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile);
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    state.imageFiles = mergedFiles;
-                    await this.processAllMetadata(state.imageFiles, !hadCached);
-                    if (hasChanges || !hadCached) {
-                        await state.dbManager.saveFolderCache(folderId, state.imageFiles);
-                    }
+                    state.imageFiles = cloudFiles;
+                    await this.processAllMetadata(state.imageFiles, showLoading);
+                    await state.dbManager.saveFolderCache(folderId, state.imageFiles);
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     state.sessionVisitedFolders.add(key);
-                    this.switchToCommonUI();
-                    Core.initializeStacks();
-                    Core.initializeImageDisplay();
 
-                    if (hadCached && hasChanges) {
-                        const diffSummary = [];
-                        if (newIds.length > 0) diffSummary.push(`${newIds.length} new`);
-                        if (updatedIds.length > 0) diffSummary.push(`${updatedIds.length} updated`);
-                        if (removedIds.length > 0) diffSummary.push(`${removedIds.length} removed`);
-                        const summaryText = diffSummary.length > 0 ? diffSummary.join(', ') : 'changes';
-                        Utils.showToast(`Folder updated with cloud changes (${summaryText})`, 'info');
+                    if (showLoading) {
+                        this.switchToCommonUI();
+                        Core.initializeStacks();
+                        Core.initializeImageDisplay();
+                    } else {
+                        Core.initializeStacks();
+                        Core.updateStackCounts();
+                        if (state.imageFiles.length > 0) Core.displayCurrentImage();
+                        else Core.showEmptyState();
+                    }
+
+                    if (notifyOnUpdate) {
+                        Utils.showToast('Folder updated from cloud', 'info');
                     }
                 } catch (error) {
                     if (error.name !== 'AbortError') {
                         Utils.showToast(`Error loading images: ${error.message}`, 'error', true);
                     }
-                    this.returnToFolderSelection();
+                    if (showLoading || allowReturnOnEmpty) {
+                        this.returnToFolderSelection();
+                    }
                 }
             },
             async refreshFolderInBackground() {
                 try {
-                    const folderId = state.currentFolder.id;
-                    const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
-                    const result = await state.provider.getFilesAndMetadata(folderId);
-                    const cloudFiles = result.files || [];
-                    const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
-
-                    if (!hasChanges) {
-                        return;
-                    }
-
-                    for (const updatedId of updatedIds) {
-                        const updatedFile = mergedFiles.find(file => file.id === updatedId);
-                        if (updatedFile) {
-                            await state.dbManager.saveMetadata(updatedId, updatedFile);
-                        }
-                    }
-                    if (removedIds.length > 0) {
-                        await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
-                    }
-
-                    await this.processAllMetadata(mergedFiles);
-                    await state.dbManager.saveFolderCache(folderId, mergedFiles);
-                    state.imageFiles = mergedFiles;
-                    Core.initializeStacks();
-                    Core.updateStackCounts();
-                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
-                    else Core.showEmptyState();
-                    Utils.showToast('Folder updated in background', 'info');
+                    await this.syncFolderFromCloud({ showLoading: false, notifyOnUpdate: true });
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
                 }
@@ -3143,12 +3054,19 @@
                  for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     try {
-                        const metadata = await state.dbManager.getMetadata(file.id);
-                        if (metadata) {
-                            Object.assign(file, metadata);
+                        const defaultMetadata = this.generateDefaultMetadata(file);
+                        Object.assign(file, defaultMetadata);
+
+                        const storedMetadata = await state.dbManager.getMetadata(file.id);
+                        if (storedMetadata) {
+                            const storedStamp = Number(storedMetadata.metadataUpdatedAt) || 0;
+                            const defaultStamp = Number(defaultMetadata.metadataUpdatedAt) || 0;
+                            if (storedStamp > defaultStamp) {
+                                Object.assign(file, storedMetadata);
+                            } else {
+                                await state.dbManager.saveMetadata(file.id, defaultMetadata);
+                            }
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file);
-                            Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata);
                         }
                     } catch (error) {
