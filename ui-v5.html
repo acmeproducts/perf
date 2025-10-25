@@ -1047,9 +1047,97 @@
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false
         };
+        const FolderSyncFlag = {
+            currentValue: null,
+            lastFolderId: null,
+            pendingValue: null,
+            isUpdating: false,
+            unsupportedProviders: new Set(),
+            reset() {
+                this.currentValue = null;
+                this.lastFolderId = null;
+                this.pendingValue = null;
+                this.isUpdating = false;
+            },
+            async set(value, { reason = 'auto' } = {}) {
+                const folderId = state.currentFolder?.id;
+                const providerType = state.providerType || 'unknown';
+                if (!folderId || !state.provider) {
+                    this.currentValue = value;
+                    this.lastFolderId = folderId || null;
+                    return false;
+                }
+                if (this.unsupportedProviders.has(providerType)) {
+                    this.currentValue = value;
+                    this.lastFolderId = folderId;
+                    return false;
+                }
+                if (typeof state.provider.setFolderSyncFlag !== 'function') {
+                    this.unsupportedProviders.add(providerType);
+                    state.syncLog?.log({
+                        event: 'folder-sync-flag:unsupported',
+                        level: 'warn',
+                        details: `Provider ${providerType} does not expose a folder sync flag setter.`
+                    });
+                    this.currentValue = value;
+                    this.lastFolderId = folderId;
+                    return false;
+                }
+                if (this.lastFolderId === folderId && this.currentValue === value && !this.pendingValue && !this.isUpdating) {
+                    return true;
+                }
+                this.pendingValue = value;
+                if (this.isUpdating) {
+                    return true;
+                }
+                this.isUpdating = true;
+                while (this.pendingValue !== null) {
+                    const nextValue = this.pendingValue;
+                    this.pendingValue = null;
+                    try {
+                        const result = await state.provider.setFolderSyncFlag(folderId, nextValue, { reason });
+                        if (result === false) {
+                            this.unsupportedProviders.add(providerType);
+                            state.syncLog?.log({
+                                event: 'folder-sync-flag:skipped',
+                                level: 'warn',
+                                details: `Provider ${providerType} skipped setting folder sync flag.`
+                            });
+                            break;
+                        }
+                        this.currentValue = nextValue;
+                        this.lastFolderId = folderId;
+                        state.syncLog?.log({
+                            event: 'folder-sync-flag:update',
+                            level: 'info',
+                            folderId,
+                            details: `Cloud sync flag set to ${nextValue ? 'TRUE' : 'FALSE'} (${reason}).`
+                        });
+                    } catch (error) {
+                        console.warn('Failed to update folder sync flag:', error);
+                        state.syncLog?.log({
+                            event: 'folder-sync-flag:error',
+                            level: 'error',
+                            folderId,
+                            details: `Failed to set cloud sync flag: ${error.message}`,
+                            data: { requestedValue: nextValue, reason }
+                        });
+                        break;
+                    }
+                }
+                this.isUpdating = false;
+                return true;
+            },
+            markDirty(reason = 'local-change') {
+                this.set(true, { reason });
+            },
+            markClean(reason = 'cloud-load') {
+                this.set(false, { reason });
+            }
+        };
         const Utils = {
             elements: {},
-            
+
             init() {
                 this.elements = {
                     providerScreen: document.getElementById('provider-screen'),
@@ -2150,6 +2238,7 @@
                 }
                 this.pendingMutations.set(fileId, buffer);
                 this.hasPendingWork = true;
+                FolderSyncFlag.markDirty('queued-change');
                 const updateKeys = Object.keys(change.updates || {});
                 const descriptorParts = [];
                 if (change.operationType) descriptorParts.push(change.operationType);
@@ -2546,6 +2635,7 @@
             async updateFileMetadata(fileId, metadata) { throw new Error("Method 'updateFileMetadata(fileId, metadata)' must be implemented."); }
             async moveFileToFolder(fileId, targetFolderId) { throw new Error("Method 'moveFileToFolder(fileId, targetFolderId)' must be implemented."); }
             async deleteFile(fileId) { throw new Error("Method 'deleteFile(fileId)' must be implemented."); }
+            async setFolderSyncFlag(folderId, value) { return false; }
         }
         class GoogleDriveProvider extends BaseProvider {
             constructor() {
@@ -2694,6 +2784,24 @@
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ trashed: true }) });
                 return true;
             }
+            async setFolderSyncFlag(folderId, value) {
+                try {
+                    const stamp = Date.now().toString();
+                    await this.makeApiCall(`/files/${folderId}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({
+                            appProperties: {
+                                orbital8SyncPending: value ? 'true' : 'false',
+                                orbital8SyncUpdatedAt: stamp
+                            }
+                        })
+                    });
+                    return true;
+                } catch (error) {
+                    console.warn('Google Drive sync flag update failed:', error);
+                    throw error;
+                }
+            }
             async disconnect() {
                 this.isAuthenticated = false; this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.clearStoredCredentials();
@@ -2832,6 +2940,37 @@
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'DELETE' });
                 return true;
             }
+            async setFolderSyncFlag(folderId, value) {
+                const extensionId = 'com.orbital8.syncState';
+                const payload = {
+                    '@odata.type': 'microsoft.graph.openTypeExtension',
+                    extensionName: extensionId,
+                    cloudSyncPending: !!value,
+                    updatedAt: new Date().toISOString()
+                };
+                try {
+                    await this.makeApiCall(`/me/drive/items/${folderId}/extensions/${extensionId}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify(payload)
+                    });
+                    return true;
+                } catch (error) {
+                    if (error.message && error.message.includes('404')) {
+                        try {
+                            await this.makeApiCall(`/me/drive/items/${folderId}/extensions`, {
+                                method: 'POST',
+                                body: JSON.stringify(payload)
+                            });
+                            return true;
+                        } catch (creationError) {
+                            console.warn('OneDrive sync flag create failed:', creationError);
+                            throw creationError;
+                        }
+                    }
+                    console.warn('OneDrive sync flag update failed:', error);
+                    throw error;
+                }
+            }
             async disconnect() {
                 this.isAuthenticated = false; this.activeAccount = null;
                 if (this.msalInstance) {
@@ -2968,7 +3107,8 @@
                     state.currentFolder.id = folderId;
                     state.currentFolder.name = folderName;
                     state.activeRequests = new AbortController();
-                    
+                    FolderSyncFlag.reset();
+
                     await this.loadImages();
                     this.switchToCommonUI();
                     if (state.syncManager) {
@@ -3096,6 +3236,7 @@
                     if (mergedFiles.length === 0) {
                         await state.dbManager.saveFolderCache(folderId, []);
                         state.imageFiles = [];
+                        FolderSyncFlag.markClean('cloud-load-empty');
                         Utils.showToast('No images found in this folder', 'info', true);
                         if (allowReturnOnEmpty) {
                             this.returnToFolderSelection();
@@ -3108,6 +3249,7 @@
                     state.imageFiles = mergedFiles;
                     await this.processAllMetadata(state.imageFiles, showLoading);
                     await state.dbManager.saveFolderCache(folderId, state.imageFiles);
+                    FolderSyncFlag.markClean('cloud-load');
 
                     const key = sessionKey || `${state.providerType || 'unknown'}::${folderId}`;
                     state.sessionVisitedFolders.add(key);
@@ -3220,6 +3362,7 @@
                 }
             },
             resetViewState() {
+                FolderSyncFlag.reset();
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
                 Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
@@ -3254,6 +3397,7 @@
                             }
                         }, { debounce: !skipDebounce });
                     }
+                    FolderSyncFlag.markDirty('metadata-update');
                 } catch (error) {
                     Utils.showToast(`Failed to update metadata: ${error.message}`, 'error', true);
                 }
@@ -3304,6 +3448,7 @@
                     return true;
                 };
                 await persistState();
+                FolderSyncFlag.markDirty('delete');
 
                 const provider = state.provider;
                 const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
@@ -5008,6 +5153,7 @@
                 const filesToMove = state.folderMoveMode.files;
                 Utils.showScreen('loading-screen'); Utils.updateLoadingProgress(0, filesToMove.length);
                 try {
+                    FolderSyncFlag.markDirty('folder-move');
                     for(let i = 0; i < filesToMove.length; i++) {
                         const fileId = filesToMove[i];
                         await state.provider.moveFileToFolder(fileId, folderId);
