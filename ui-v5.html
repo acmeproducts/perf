@@ -5169,14 +5169,25 @@
                     return;
                 }
 
-                const manifestVersionCandidate = Number(version);
-                const manifestVersion = Number.isFinite(manifestVersionCandidate)
-                    ? manifestVersionCandidate
-                    : Date.now();
+                const toFiniteNumber = (value) => {
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : null;
+                };
 
                 const context = { providerType, folderId };
                 let existingManifest = null;
                 let manifestFileId = options.manifestFileId ?? null;
+                let remoteVersionInfo = null;
+
+                const versionCandidates = [];
+                const floorCandidates = [];
+                const now = Date.now();
+                versionCandidates.push(now);
+
+                const incomingVersion = toFiniteNumber(version);
+                if (incomingVersion != null) {
+                    versionCandidates.push(incomingVersion);
+                }
 
                 if (state.dbManager?.getFolderManifest) {
                     try {
@@ -5184,9 +5195,49 @@
                         if (!manifestFileId && existingManifest?.manifestFileId) {
                             manifestFileId = existingManifest.manifestFileId;
                         }
+                        const existingCloudVersion = toFiniteNumber(existingManifest?.cloudVersion);
+                        if (existingCloudVersion != null) {
+                            versionCandidates.push(existingCloudVersion);
+                            floorCandidates.push(existingCloudVersion + 1);
+                        }
+                        const existingLocalVersion = toFiniteNumber(existingManifest?.localVersion);
+                        if (existingLocalVersion != null) {
+                            versionCandidates.push(existingLocalVersion);
+                            floorCandidates.push(existingLocalVersion + 1);
+                        }
+                        const previousRemote = toFiniteNumber(existingManifest?.lastRemoteUpdate);
+                        if (previousRemote != null) {
+                            versionCandidates.push(previousRemote);
+                            floorCandidates.push(previousRemote + 1);
+                        }
                     } catch (error) {
                         console.warn('Failed to load cached manifest before update:', error);
                     }
+                }
+
+                if (typeof provider?.getFolderVersion === 'function') {
+                    try {
+                        remoteVersionInfo = await provider.getFolderVersion(folderId, { signal: options.signal });
+                        if (!manifestFileId && remoteVersionInfo?.manifestFileId) {
+                            manifestFileId = remoteVersionInfo.manifestFileId;
+                        }
+                        const remoteVersion = toFiniteNumber(remoteVersionInfo?.cloudVersion);
+                        if (remoteVersion != null) {
+                            versionCandidates.push(remoteVersion);
+                            floorCandidates.push(remoteVersion + 1);
+                        }
+                    } catch (error) {
+                        console.warn('Failed to load remote folder version before update:', error);
+                    }
+                }
+
+                let manifestVersion = Math.max(...versionCandidates);
+                if (floorCandidates.length > 0) {
+                    manifestVersion = Math.max(manifestVersion, ...floorCandidates);
+                }
+
+                if (!Number.isFinite(manifestVersion)) {
+                    manifestVersion = now;
                 }
 
                 const localManifestRecord = {
@@ -5195,7 +5246,7 @@
                     requiresFullResync: Boolean(existingManifest?.requiresFullResync),
                     cloudVersion: manifestVersion,
                     localVersion: manifestVersion,
-                    lastUpdated: Date.now(),
+                    lastUpdated: now,
                     lastRemoteUpdate: manifestVersion
                 };
 
