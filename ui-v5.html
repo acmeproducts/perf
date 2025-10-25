@@ -2248,6 +2248,8 @@
             }
             serializeGoogleMetadata(payload) {
                 const tags = Array.isArray(payload.tags) ? payload.tags : [];
+                const stamp = Number(payload.metadataUpdatedAt ?? payload.localUpdatedAt ?? Date.now());
+                const normalizedStamp = Number.isFinite(stamp) ? stamp : Date.now();
                 return {
                     slideboxStack: payload.stack || 'in',
                     slideboxTags: tags.join(','),
@@ -2255,10 +2257,14 @@
                     contentRating: String(payload.contentRating ?? 0),
                     notes: payload.notes || '',
                     stackSequence: String(payload.stackSequence ?? 0),
-                    favorite: payload.favorite ? 'true' : 'false'
+                    favorite: payload.favorite ? 'true' : 'false',
+                    metadataUpdatedAt: String(normalizedStamp),
+                    localUpdatedAt: String(payload.localUpdatedAt ?? normalizedStamp)
                 };
             }
             serializeGenericMetadata(payload) {
+                const stamp = Number(payload.metadataUpdatedAt ?? payload.localUpdatedAt ?? Date.now());
+                const normalizedStamp = Number.isFinite(stamp) ? stamp : Date.now();
                 return {
                     stack: payload.stack || 'in',
                     tags: Array.isArray(payload.tags) ? payload.tags : [],
@@ -2267,7 +2273,8 @@
                     contentRating: payload.contentRating ?? 0,
                     stackSequence: payload.stackSequence ?? 0,
                     favorite: Boolean(payload.favorite),
-                    localUpdatedAt: payload.localUpdatedAt || Date.now()
+                    localUpdatedAt: payload.localUpdatedAt ?? normalizedStamp,
+                    metadataUpdatedAt: normalizedStamp
                 };
             }
             async upsertOneDriveMetadata(fileId, payload) {
@@ -2941,6 +2948,56 @@
                 Core.initializeStacks();
                 Core.initializeImageDisplay();
             },
+            extractMetadataTimestamp(record) {
+                if (!record) return 0;
+                const parseCandidate = (value) => {
+                    if (value == null) return NaN;
+                    if (typeof value === 'number') {
+                        return Number.isFinite(value) ? value : NaN;
+                    }
+                    if (typeof value === 'string') {
+                        const numeric = Number(value);
+                        if (!Number.isNaN(numeric) && Number.isFinite(numeric)) {
+                            return numeric;
+                        }
+                        const parsedDate = Date.parse(value);
+                        return Number.isNaN(parsedDate) ? NaN : parsedDate;
+                    }
+                    return NaN;
+                };
+                const props = record.appProperties || {};
+                const candidates = [
+                    record.metadataUpdatedAt,
+                    record.localUpdatedAt,
+                    props.metadataUpdatedAt,
+                    props.localUpdatedAt,
+                    record.modifiedTime,
+                    record.createdTime
+                ];
+                for (const candidate of candidates) {
+                    const parsed = parseCandidate(candidate);
+                    if (!Number.isNaN(parsed) && parsed > 0) {
+                        return parsed;
+                    }
+                }
+                return 0;
+            },
+            applyMetadataStamp(target, stamp) {
+                if (!target) return target;
+                if (!Number.isFinite(stamp) || stamp <= 0) {
+                    return target;
+                }
+                target.metadataUpdatedAt = stamp;
+                const existingLocal = Number(target.localUpdatedAt);
+                if (!Number.isFinite(existingLocal) || existingLocal < stamp) {
+                    target.localUpdatedAt = stamp;
+                }
+                if (!target.appProperties) {
+                    target.appProperties = {};
+                }
+                target.appProperties.metadataUpdatedAt = String(stamp);
+                return target;
+            },
             mergeCloudWithCache(cloudFiles, cachedFiles) {
                 const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
                 const merged = [];
@@ -2951,16 +3008,29 @@
                 for (const cloudFile of cloudFiles) {
                     const cached = cachedMap.get(cloudFile.id);
                     if (!cached) {
-                        merged.push({ ...cloudFile });
+                        const cloudStamp = this.extractMetadataTimestamp(cloudFile);
+                        const mergedFile = this.applyMetadataStamp({ ...cloudFile }, cloudStamp);
+                        merged.push(mergedFile);
                         newIds.push(cloudFile.id);
                     } else {
-                        const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
-                        const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
-                        if (!isNaN(cloudModified) && cloudModified > cachedModified) {
-                            merged.push({ ...cached, ...cloudFile });
+                        const cloudStamp = this.extractMetadataTimestamp(cloudFile);
+                        const cachedStamp = this.extractMetadataTimestamp(cached);
+                        let shouldUpdate = cloudStamp > cachedStamp;
+
+                        if (!shouldUpdate) {
+                            const cloudModified = Date.parse(cloudFile.modifiedTime || cloudFile.createdTime || 0);
+                            const cachedModified = Date.parse(cached.modifiedTime || cached.createdTime || 0);
+                            if (!Number.isNaN(cloudModified) && cloudModified > cachedModified) {
+                                shouldUpdate = true;
+                            }
+                        }
+
+                        if (shouldUpdate) {
+                            const mergedFile = this.applyMetadataStamp({ ...cached, ...cloudFile }, cloudStamp || cachedStamp);
+                            merged.push(mergedFile);
                             updatedIds.push(cloudFile.id);
                         } else {
-                            merged.push(cached);
+                            merged.push(this.applyMetadataStamp({ ...cached }, cachedStamp || cloudStamp));
                         }
                         cachedMap.delete(cloudFile.id);
                     }
@@ -3089,17 +3159,22 @@
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
             generateDefaultMetadata(file) {
-                 const baseMetadata = { 
-                    stack: 'in', 
-                    tags: [], 
-                    qualityRating: 0, 
-                    contentRating: 0, 
-                    notes: '', 
-                    stackSequence: 0, 
+                 const baseMetadata = {
+                    stack: 'in',
+                    tags: [],
+                    qualityRating: 0,
+                    contentRating: 0,
+                    notes: '',
+                    stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {}, 
-                    metadataStatus: 'pending' 
+                    extractedMetadata: {},
+                    metadataStatus: 'pending'
                 };
+                 const metadataStamp = this.extractMetadataTimestamp(file);
+                 if (metadataStamp > 0) {
+                    baseMetadata.localUpdatedAt = metadataStamp;
+                    baseMetadata.metadataUpdatedAt = metadataStamp;
+                 }
                  if (state.providerType === 'googledrive' && file.appProperties) {
                     baseMetadata.stack = file.appProperties.slideboxStack || 'in';
                     baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
@@ -3108,6 +3183,11 @@
                     baseMetadata.notes = file.appProperties.notes || '';
                     baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
                     baseMetadata.favorite = file.appProperties.favorite === 'true';
+                    const remoteStamp = Number(file.appProperties.metadataUpdatedAt);
+                    if (Number.isFinite(remoteStamp) && remoteStamp > 0) {
+                        baseMetadata.metadataUpdatedAt = remoteStamp;
+                        baseMetadata.localUpdatedAt = Math.max(baseMetadata.localUpdatedAt || 0, remoteStamp);
+                    }
                  }
                  return baseMetadata;
             },
@@ -3142,17 +3222,25 @@
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
                     const timestamp = Date.now();
-                    Object.assign(file, updates, { localUpdatedAt: timestamp });
+                    const updatesWithStamp = { ...updates, metadataUpdatedAt: timestamp };
+                    Object.assign(file, updatesWithStamp, { localUpdatedAt: timestamp });
+                    if (!file.appProperties) { file.appProperties = {}; }
+                    file.appProperties.metadataUpdatedAt = String(timestamp);
                     await state.dbManager.saveMetadata(file.id, file);
                     await state.dbManager.saveFolderCache(state.currentFolder.id, state.imageFiles);
                     if (state.syncManager) {
                         await state.syncManager.queueLocalChange({
                             fileId,
-                            updates,
+                            updates: updatesWithStamp,
                             operationType,
                             origin,
                             localUpdatedAt: timestamp,
-                            metadataSnapshot: { name: file.name, stack: file.stack, stackSequence: file.stackSequence }
+                            metadataSnapshot: {
+                                name: file.name,
+                                stack: file.stack,
+                                stackSequence: file.stackSequence,
+                                metadataUpdatedAt: timestamp
+                            }
                         }, { debounce: !skipDebounce });
                     }
                 } catch (error) {
