@@ -2227,8 +2227,38 @@
                     return;
                 }
                 const updates = entry.updates || {};
-                const metadataRecord = state.imageFiles.find(file => file.id === entry.fileId) || entry.metadataSnapshot || {};
+                const numericStamp = stamp => {
+                    const value = Number(stamp);
+                    return Number.isFinite(value) ? value : 0;
+                };
+                const resolveRecordStamp = record => {
+                    if (!record) return 0;
+                    const direct = numericStamp(record.metadataUpdatedAt);
+                    const appProperty = numericStamp(record.appProperties?.metadataUpdatedAt);
+                    return Math.max(direct, appProperty);
+                };
+                const stateRecord = state.imageFiles.find(file => file.id === entry.fileId);
+                const metadataRecord = stateRecord || entry.metadataSnapshot || {};
+                const queueStamp = numericStamp(updates.metadataUpdatedAt ?? entry.metadataSnapshot?.metadataUpdatedAt ?? entry.localUpdatedAt);
+                const recordStamp = resolveRecordStamp(stateRecord || metadataRecord);
+
+                if (queueStamp && recordStamp && queueStamp < recordStamp) {
+                    await this.dbManager.deleteFromSyncQueue(entry.queueIds);
+                    this.logger?.log({
+                        event: 'sync:skipped',
+                        level: 'warn',
+                        fileId: entry.fileId,
+                        details: `Skipped stale ${entry.operationType} (queue@${queueStamp} < remote@${recordStamp}).`,
+                        data: { queueStamp, recordStamp }
+                    });
+                    return;
+                }
+
                 const payload = { ...metadataRecord, ...updates, localUpdatedAt: entry.localUpdatedAt };
+                const resolvedStamp = queueStamp || recordStamp || numericStamp(payload.metadataUpdatedAt) || Date.now();
+                if (!payload.metadataUpdatedAt || numericStamp(payload.metadataUpdatedAt) !== resolvedStamp) {
+                    payload.metadataUpdatedAt = resolvedStamp;
+                }
                 const stackLabel = updates.stack ? (STACK_NAMES[updates.stack] || updates.stack) : null;
                 const stackFragment = stackLabel ? ` (${stackLabel})` : '';
                 try {
