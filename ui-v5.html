@@ -1157,6 +1157,27 @@
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const SHARE_URL_TEMPLATE = "https://drive.google.com/file/d/${fileId}/view?usp=sharing";
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
+        const STACK_NORMALIZATION = {
+            in: new Set(['in', 'inbox', 'incoming', 'unprocessed']),
+            out: new Set(['out', 'maybe', 'later', 'review']),
+            priority: new Set(['priority', 'keep', 'favorite', 'focus']),
+            trash: new Set(['trash', 'recycle', 'bin', 'archive', 'recycled'])
+        };
+        function normalizeStackId(raw) {
+            if (typeof raw === 'string') {
+                const trimmed = raw.trim();
+                if (STACKS.includes(trimmed)) {
+                    return trimmed;
+                }
+                const lowered = trimmed.toLowerCase();
+                for (const [canonical, aliases] of Object.entries(STACK_NORMALIZATION)) {
+                    if (aliases.has(lowered)) {
+                        return canonical;
+                    }
+                }
+            }
+            return 'in';
+        }
         const createDefaultGridDragSession = () => ({
             active: false,
             pointerId: null,
@@ -4132,6 +4153,13 @@
                     if (!cloudFile || !cloudFile.id) {
                         continue;
                     }
+                    const providerStack = cloudFile?.appProperties?.slideboxStack ?? cloudFile.stack;
+                    const normalizedCloudStack = normalizeStackId(providerStack);
+                    cloudFile.stack = normalizedCloudStack;
+                    if (!cloudFile.appProperties || typeof cloudFile.appProperties !== 'object') {
+                        cloudFile.appProperties = {};
+                    }
+                    cloudFile.appProperties.slideboxStack = normalizedCloudStack;
                     const incomingUpdatedAt = this.resolveFileUpdatedAt(cloudFile);
                     if (incomingUpdatedAt != null) {
                         cloudFile.updatedAt = incomingUpdatedAt;
@@ -4167,6 +4195,10 @@
 
                     if (!shouldRefresh) {
                         const preserved = { ...cached };
+                        preserved.stack = normalizeStackId(preserved.stack);
+                        if (preserved.appProperties && typeof preserved.appProperties === 'object') {
+                            preserved.appProperties.slideboxStack = preserved.stack;
+                        }
                         if (cachedStamp != null) {
                             preserved.updatedAt = cachedStamp;
                         }
@@ -4176,9 +4208,11 @@
                     }
 
                     const mergedFile = { ...cached, ...cloudFile };
+                    mergedFile.stack = normalizeStackId(mergedFile.stack);
                     if (!mergedFile.appProperties || typeof mergedFile.appProperties !== 'object') {
                         mergedFile.appProperties = {};
                     }
+                    mergedFile.appProperties.slideboxStack = mergedFile.stack;
                     if (incomingUpdatedAt != null) {
                         mergedFile.updatedAt = incomingUpdatedAt;
                         mergedFile.folderUpdatedAt = incomingUpdatedAt;
@@ -4522,12 +4556,29 @@
                     const file = files[i];
                     try {
                         const metadata = await state.dbManager.getMetadata(file.id);
+                        let shouldPersistNormalization = false;
                         if (metadata) {
                             Object.assign(file, metadata);
+                            const normalized = normalizeStackId(file.stack);
+                            if (normalized !== file.stack) {
+                                file.stack = normalized;
+                                shouldPersistNormalization = true;
+                            }
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                        }
+                        file.stack = normalizeStackId(file.stack);
+                        if (file.appProperties && typeof file.appProperties === 'object') {
+                            const normalizedStack = file.stack;
+                            if (file.appProperties.slideboxStack !== normalizedStack) {
+                                file.appProperties.slideboxStack = normalizedStack;
+                                shouldPersistNormalization = true;
+                            }
+                        }
+                        if (shouldPersistNormalization) {
+                            await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -4576,7 +4627,7 @@
                     folderUpdatedAt: null
                 };
                  if (state.providerType === 'googledrive' && file.appProperties) {
-                    baseMetadata.stack = file.appProperties.slideboxStack || 'in';
+                    baseMetadata.stack = normalizeStackId(file.appProperties.slideboxStack);
                     baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
                     baseMetadata.qualityRating = parseInt(file.appProperties.qualityRating) || 0;
                     baseMetadata.contentRating = parseInt(file.appProperties.contentRating) || 0;
@@ -4592,6 +4643,8 @@
                     ?? parseTimestamp(file.updatedAt)
                     ?? parseTimestamp(file.folderUpdatedAt)
                     ?? appPropsEpoch;
+
+                 baseMetadata.stack = normalizeStackId(baseMetadata.stack);
 
                  const numericSequence = Number(baseMetadata.stackSequence);
                  if (!Number.isFinite(numericSequence) || numericSequence === 0) {
@@ -5110,7 +5163,13 @@
             initializeStacks() {
                 STACKS.forEach(stack => { state.stacks[stack] = []; });
                 state.imageFiles.forEach(file => {
-                    const stack = file.stack || 'in';
+                    const stack = normalizeStackId(file.stack);
+                    if (file.stack !== stack) {
+                        file.stack = stack;
+                        if (file.appProperties && typeof file.appProperties === 'object') {
+                            file.appProperties.slideboxStack = stack;
+                        }
+                    }
                     if (STACKS.includes(stack)) {
                         state.stacks[stack].push(file);
                     } else {
