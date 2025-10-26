@@ -271,24 +271,42 @@
         // =====================================================================
         
         class BaseProvider {
-            getUserMetadata(fileId) {
+            getUserMetadata(fileOrId) {
                 if (this.name === 'googledrive') {
-                    const file = ModuleA.state.files.find(f => f.id === fileId);
-                    const providerData = file ? file.appProperties : {};
+                    const file = (fileOrId && typeof fileOrId === 'object') ? fileOrId : null;
+                    const providerData = file?.appProperties || {};
+                    const parseNumber = (value) => {
+                        const parsed = parseInt(value, 10);
+                        return Number.isFinite(parsed) ? parsed : 0;
+                    };
+                    const parseBoolean = (value) => {
+                        if (typeof value === 'boolean') return value;
+                        if (typeof value === 'number') return value !== 0;
+                        if (typeof value === 'string') {
+                            const normalized = value.trim().toLowerCase();
+                            return normalized === 'true' || normalized === '1';
+                        }
+                        return false;
+                    };
+                    const tags = typeof providerData.slideboxTags === 'string' && providerData.slideboxTags.trim().length > 0
+                        ? providerData.slideboxTags.split(',').map(t => t.trim()).filter(Boolean)
+                        : [];
                     return {
                         stack: providerData?.slideboxStack || 'in',
-                        tags: providerData?.slideboxTags ? providerData.slideboxTags.split(',').map(t => t.trim()) : [],
-                        qualityRating: parseInt(providerData?.qualityRating) || 0,
-                        contentRating: parseInt(providerData?.contentRating) || 0,
+                        tags,
+                        qualityRating: parseNumber(providerData?.qualityRating),
+                        contentRating: parseNumber(providerData?.contentRating),
                         notes: providerData?.notes || '',
-                        stackSequence: parseInt(providerData?.stackSequence) || 0
+                        stackSequence: parseNumber(providerData?.stackSequence),
+                        favorite: parseBoolean(providerData?.favorite)
                     };
                 } else {
-                    if (this.metadataCache.has(fileId)) {
+                    const fileId = typeof fileOrId === 'string' ? fileOrId : fileOrId?.id;
+                    if (fileId && this.metadataCache.has(fileId)) {
                         return this.metadataCache.get(fileId);
                     }
                     return {
-                        stack: 'in', tags: [], qualityRating: 0, contentRating: 0, notes: '', stackSequence: 0
+                        stack: 'in', tags: [], qualityRating: 0, contentRating: 0, notes: '', stackSequence: 0, favorite: false
                     };
                 }
             }
@@ -296,26 +314,52 @@
             updateUserMetadata(fileId, updates) {
                 if (this.name === 'googledrive') {
                     const file = ModuleA.state.files.find(f => f.id === fileId);
-                    if(file) Object.assign(file, updates);
+                    if (file) {
+                        Object.assign(file, updates);
+                    }
 
                     const properties = {};
-                    if (updates.stack) properties.slideboxStack = updates.stack;
-                    if (updates.tags) properties.slideboxTags = updates.tags.join(',');
-                    if (updates.qualityRating !== undefined) properties.qualityRating = updates.qualityRating.toString();
-                    if (updates.contentRating !== undefined) properties.contentRating = updates.contentRating.toString();
-                    if (updates.notes !== undefined) properties.notes = updates.notes;
-                    if (updates.stackSequence !== undefined) properties.stackSequence = updates.stackSequence.toString();
-                    
+                    const mergeProperty = (key, value) => {
+                        if (value === undefined) return;
+                        properties[key] = value;
+                        if (file) {
+                            file.appProperties = { ...(file.appProperties || {}), [key]: value };
+                        }
+                    };
+
+                    if ('stack' in updates) mergeProperty('slideboxStack', updates.stack || 'in');
+                    if ('tags' in updates) {
+                        let tagValue = '';
+                        if (Array.isArray(updates.tags)) {
+                            tagValue = updates.tags.join(',');
+                        } else if (typeof updates.tags === 'string') {
+                            tagValue = updates.tags;
+                        }
+                        mergeProperty('slideboxTags', tagValue);
+                    }
+                    if ('qualityRating' in updates) mergeProperty('qualityRating', String(updates.qualityRating ?? 0));
+                    if ('contentRating' in updates) mergeProperty('contentRating', String(updates.contentRating ?? 0));
+                    if ('notes' in updates) mergeProperty('notes', updates.notes || '');
+                    if ('stackSequence' in updates) mergeProperty('stackSequence', String(updates.stackSequence ?? 0));
+                    if ('favorite' in updates) mergeProperty('favorite', updates.favorite ? 'true' : 'false');
+
+                    if (Object.keys(properties).length === 0) {
+                        return Promise.resolve(true);
+                    }
+
                     return this.updateFileProperties(fileId, properties);
 
                 } else {
-                    const currentMetadata = this.getUserMetadata(fileId);
-                    const newMetadata = { ...currentMetadata, ...updates };
-                    this.metadataCache.set(fileId, newMetadata);
-                    this.dirtyFiles.add(fileId);
-                    
                     const file = ModuleA.state.files.find(f => f.id === fileId);
-                    if(file) Object.assign(file, updates);
+                    if (file) {
+                        Object.assign(file, updates);
+                    }
+
+                    const targetId = fileId;
+                    const currentMetadata = this.getUserMetadata(targetId);
+                    const newMetadata = { ...currentMetadata, ...updates };
+                    this.metadataCache.set(targetId, newMetadata);
+                    this.dirtyFiles.add(targetId);
                 }
             }
         }
@@ -1155,7 +1199,8 @@
                     this.updateLoadingProgress(0, files.length, 'Processing files...');
                     this.state.files = files.map((file, index) => {
                         this.updateLoadingProgress(index + 1, files.length, 'Processing files...');
-                        const userMetadata = this.state.provider.getUserMetadata(file.id);
+                        const userMetadata = this.state.provider.getUserMetadata(file);
+                        const appProperties = file.appProperties || {};
                         return {
                             id: file.id,
                             name: file.name,
@@ -1167,7 +1212,7 @@
                             modifiedTime: file.modifiedTime,
                             thumbnails: file.thumbnails,
                             downloadUrl: file.downloadUrl,
-                            appProperties: file.appProperties,
+                            appProperties: { ...appProperties },
                             extractedMetadata: {},
                             metadataStatus: 'pending',
                             ...userMetadata
@@ -1439,7 +1484,7 @@
                 document.getElementById('detail-filename').textContent = file.name;
                 document.getElementById('detail-stack').textContent = file.stack || 'in';
                 document.getElementById('detail-notes').value = file.notes || '';
-                this.renderStars('quality-rating', file.quality || 0);
+                this.renderStars('quality-rating', file.qualityRating || 0);
                 document.getElementById('metadata-table').innerHTML = '<tr><td class="key-cell">ID</td><td class="value-cell">' + file.id + '</td></tr><tr><td class="key-cell">Name</td><td class="value-cell">' + file.name + '</td></tr>';
             },
             setupStars() {
@@ -1461,8 +1506,8 @@
             },
             async setRating(value) {
                 const file = ModuleA.state.files.find(f => f.id === this.state.currentFileId);
-                file.quality = value;
-                await ModuleA.state.provider.updateUserMetadata(file.id, { quality: value });
+                file.qualityRating = value;
+                await ModuleA.state.provider.updateUserMetadata(file.id, { qualityRating: value });
                 this.renderStars('quality-rating', value);
                 Utils.showToast('Quality: ' + value + '/5');
             },
