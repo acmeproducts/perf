@@ -2214,18 +2214,29 @@
             }
             normalizeMetadata(metadata) {
                 if (!metadata || typeof metadata !== 'object') {
-                    return { lastUpdated: 0 };
+                    return { lastUpdated: 0, cloudVersion: 0, cloudFingerprint: null, localUpdatedAt: 0 };
                 }
                 const normalized = { ...metadata };
                 const numericTimestamp = Number(normalized.lastUpdated);
                 normalized.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                const numericCloudVersion = Number(normalized.cloudVersion);
+                normalized.cloudVersion = Number.isFinite(numericCloudVersion) && numericCloudVersion >= 0 ? numericCloudVersion : 0;
+                const numericLocalUpdated = Number(normalized.localUpdatedAt);
+                normalized.localUpdatedAt = Number.isFinite(numericLocalUpdated) && numericLocalUpdated >= 0 ? numericLocalUpdated : 0;
+                if (normalized.cloudFingerprint != null && typeof normalized.cloudFingerprint !== 'string') {
+                    normalized.cloudFingerprint = String(normalized.cloudFingerprint);
+                }
+                if (normalized.cloudFingerprint == null) {
+                    normalized.cloudFingerprint = null;
+                }
                 return normalized;
             }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 6);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 7);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
+                        const oldVersion = event.oldVersion || 0;
 
                         ['folderCache', 'syncQueue', 'folderState', 'folderManifests'].forEach(storeName => {
                             if (db.objectStoreNames.contains(storeName)) {
@@ -2242,6 +2253,42 @@
 
                         if (metadataStore && !metadataStore.indexNames.contains('folderKey')) {
                             metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
+                        }
+
+                        if (metadataStore && !metadataStore.indexNames.contains('cloudVersion')) {
+                            metadataStore.createIndex('cloudVersion', 'cloudVersion', { unique: false });
+                        }
+
+                        if (metadataStore && !metadataStore.indexNames.contains('cloudFingerprint')) {
+                            metadataStore.createIndex('cloudFingerprint', 'cloudFingerprint', { unique: false });
+                        }
+
+                        if (metadataStore && oldVersion < 7) {
+                            const cursorRequest = metadataStore.openCursor();
+                            cursorRequest.onsuccess = (cursorEvent) => {
+                                const cursor = cursorEvent.target.result;
+                                if (!cursor) return;
+                                const value = cursor.value || {};
+                                const recordMetadata = value.metadata && typeof value.metadata === 'object' ? { ...value.metadata } : {};
+                                const numericCloudVersion = Number(recordMetadata.cloudVersion ?? value.cloudVersion ?? 0);
+                                const normalizedCloudVersion = Number.isFinite(numericCloudVersion) && numericCloudVersion >= 0 ? numericCloudVersion : 0;
+                                const cloudFingerprint = recordMetadata.cloudFingerprint != null
+                                    ? String(recordMetadata.cloudFingerprint)
+                                    : (value.cloudFingerprint != null ? String(value.cloudFingerprint) : null);
+                                recordMetadata.cloudVersion = normalizedCloudVersion;
+                                recordMetadata.cloudFingerprint = cloudFingerprint ?? null;
+                                if (!Number.isFinite(Number(recordMetadata.lastUpdated))) {
+                                    recordMetadata.lastUpdated = 0;
+                                }
+                                const numericLocalUpdatedAt = Number(recordMetadata.localUpdatedAt ?? value.localUpdatedAt ?? 0);
+                                recordMetadata.localUpdatedAt = Number.isFinite(numericLocalUpdatedAt) && numericLocalUpdatedAt >= 0 ? numericLocalUpdatedAt : 0;
+                                value.metadata = recordMetadata;
+                                value.cloudVersion = normalizedCloudVersion;
+                                value.cloudFingerprint = recordMetadata.cloudFingerprint;
+                                value.localUpdatedAt = recordMetadata.localUpdatedAt;
+                                cursor.update(value);
+                                cursor.continue();
+                            };
                         }
 
                         let folderTimestampStore = null;
@@ -2315,7 +2362,12 @@
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata: this.normalizeMetadata(metadata) };
+                    const normalized = this.normalizeMetadata(metadata);
+                    const record = { id: fileId, metadata: normalized };
+                    record.cloudVersion = normalized.cloudVersion ?? 0;
+                    record.cloudFingerprint = normalized.cloudFingerprint ?? null;
+                    record.lastUpdated = normalized.lastUpdated ?? 0;
+                    record.localUpdatedAt = normalized.localUpdatedAt ?? 0;
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -3711,18 +3763,64 @@
                     const file = files[i];
                     try {
                         const metadata = cachedMetadata.get(file.id);
+                        const remoteInfo = state.providerType === 'googledrive' ? this.extractCloudVersionInfo(file) : { version: null, fingerprint: null };
+                        const remoteMetadata = state.providerType === 'googledrive' ? this.generateDefaultMetadata(file, { index: i, total: files.length }) : null;
+                        if (remoteMetadata) {
+                            if (remoteInfo.version != null && Number.isFinite(remoteInfo.version)) {
+                                remoteMetadata.cloudVersion = remoteInfo.version;
+                            }
+                            if (remoteInfo.fingerprint != null) {
+                                remoteMetadata.cloudFingerprint = remoteInfo.fingerprint;
+                            }
+                        }
+
                         if (metadata) {
-                            Object.assign(file, metadata);
+                            let finalMetadata = { ...metadata };
+                            let shouldPersist = false;
+                            let conflicts = [];
+                            if (remoteMetadata) {
+                                const needsMerge = this.shouldMergeRemoteMetadata(metadata, remoteMetadata, remoteInfo);
+                                if (needsMerge) {
+                                    const mergeResult = this.mergeRemoteMetadata(metadata, remoteMetadata, {
+                                        hasLocalChanges: this.hasLocalMetadataChanges(metadata)
+                                    });
+                                    finalMetadata = mergeResult.merged;
+                                    shouldPersist = mergeResult.changed;
+                                    conflicts = mergeResult.conflicts;
+                                } else {
+                                    const remoteCloudVersion = Number(remoteMetadata.cloudVersion ?? remoteInfo.version ?? 0);
+                                    if (Number.isFinite(remoteCloudVersion) && remoteCloudVersion >= 0 && remoteCloudVersion !== Number(finalMetadata.cloudVersion ?? 0)) {
+                                        finalMetadata.cloudVersion = remoteCloudVersion;
+                                        shouldPersist = true;
+                                    }
+                                    if (remoteMetadata.cloudFingerprint != null && remoteMetadata.cloudFingerprint !== finalMetadata.cloudFingerprint) {
+                                        finalMetadata.cloudFingerprint = remoteMetadata.cloudFingerprint;
+                                        shouldPersist = true;
+                                    }
+                                }
+                            }
+                            Object.assign(file, finalMetadata);
+                            const numericTimestamp = Number(file.lastUpdated);
+                            file.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                            if (shouldPersist) {
+                                await state.dbManager.saveMetadata(file.id, finalMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                                cachedMetadata.set(file.id, finalMetadata);
+                            }
+                            if (conflicts.length > 0) {
+                                this.notifyMetadataConflict(file, {
+                                    conflictFields: conflicts,
+                                    localMetadata: metadata,
+                                    remoteMetadata,
+                                    mergedMetadata: finalMetadata
+                                });
+                            }
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
+                            const defaultMetadata = remoteMetadata || this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
-                        }
-                        const numericTimestamp = Number(file.lastUpdated);
-                        if (!Number.isFinite(numericTimestamp)) {
-                            file.lastUpdated = 0;
-                        } else {
-                            file.lastUpdated = numericTimestamp;
+                            cachedMetadata.set(file.id, defaultMetadata);
+                            const numericTimestamp = Number(file.lastUpdated);
+                            file.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -3730,10 +3828,175 @@
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
                 if (!navigationToken || this.isNavigationActive(navigationToken)) {
                     this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
+                }
+            },
+            extractCloudVersionInfo(file) {
+                const appProperties = file?.appProperties || null;
+                if (!appProperties || typeof appProperties !== 'object') {
+                    return { version: null, fingerprint: null };
+                }
+                const numericKeys = [
+                    'orbital8CloudVersion',
+                    'orbital8FileUpdated',
+                    'orbital8LastUpdated',
+                    'slideboxLastUpdated',
+                    'slideboxUpdatedAt',
+                    'lastUpdated'
+                ];
+                for (const key of numericKeys) {
+                    if (!(key in appProperties)) continue;
+                    const value = appProperties[key];
+                    const numeric = Number(value);
+                    if (Number.isFinite(numeric) && numeric > 0) {
+                        return { version: numeric, fingerprint: null };
+                    }
+                    if (typeof value === 'string') {
+                        const parsed = Date.parse(value);
+                        if (!Number.isNaN(parsed)) {
+                            return { version: parsed, fingerprint: null };
+                        }
+                    }
+                }
+                const hashKeys = ['metadataHash', 'slideboxHash', 'orbital8Hash'];
+                for (const key of hashKeys) {
+                    if (typeof appProperties[key] === 'string' && appProperties[key]) {
+                        return { version: null, fingerprint: `${key}:${appProperties[key]}` };
+                    }
+                }
+                const fingerprintSource = {
+                    stack: appProperties.slideboxStack ?? null,
+                    tags: appProperties.slideboxTags ?? null,
+                    notes: appProperties.notes ?? null,
+                    qualityRating: appProperties.qualityRating ?? null,
+                    contentRating: appProperties.contentRating ?? null,
+                    favorite: appProperties.favorite ?? null,
+                    stackSequence: appProperties.stackSequence ?? null
+                };
+                try {
+                    return { version: null, fingerprint: JSON.stringify(fingerprintSource) };
+                } catch (error) {
+                    console.warn('Failed to build metadata fingerprint:', error);
+                    return { version: null, fingerprint: null };
+                }
+            },
+            hasLocalMetadataChanges(metadata = {}) {
+                const localUpdatedAt = Number(metadata.localUpdatedAt ?? 0);
+                const cloudVersion = Number(metadata.cloudVersion ?? 0);
+                return Number.isFinite(localUpdatedAt) && localUpdatedAt > cloudVersion;
+            },
+            shouldMergeRemoteMetadata(localMetadata = {}, remoteMetadata = {}, remoteInfo = {}) {
+                const localVersion = Number(localMetadata.cloudVersion ?? 0);
+                const remoteVersion = Number(remoteMetadata.cloudVersion ?? remoteInfo.version ?? 0);
+                const localFingerprint = localMetadata.cloudFingerprint ?? null;
+                const remoteFingerprint = remoteMetadata.cloudFingerprint ?? remoteInfo.fingerprint ?? null;
+                if (Number.isFinite(remoteVersion) && remoteVersion > 0) {
+                    if (!Number.isFinite(localVersion) || remoteVersion > localVersion) {
+                        return true;
+                    }
+                    if (remoteVersion < localVersion) {
+                        return false;
+                    }
+                }
+                if (remoteFingerprint != null && remoteFingerprint !== localFingerprint) {
+                    if (Number.isFinite(remoteVersion) && Number.isFinite(localVersion) && remoteVersion < localVersion) {
+                        return false;
+                    }
+                    return true;
+                }
+                return false;
+            },
+            areMetadataValuesEqual(a, b) {
+                if (a === b) return true;
+                if (a == null && b == null) return true;
+                const isObjectLike = (value) => value !== null && typeof value === 'object';
+                if (Array.isArray(a) || Array.isArray(b) || isObjectLike(a) || isObjectLike(b)) {
+                    try {
+                        return JSON.stringify(a) === JSON.stringify(b);
+                    } catch (error) {
+                        console.warn('Failed to compare metadata values:', error);
+                        return false;
+                    }
+                }
+                if (Number.isNaN(a) && Number.isNaN(b)) {
+                    return true;
+                }
+                return String(a ?? '') === String(b ?? '');
+            },
+            mergeRemoteMetadata(localMetadata = {}, remoteMetadata = {}, context = {}) {
+                const merged = { ...localMetadata };
+                const conflicts = [];
+                let changed = false;
+                const hasLocalChanges = Boolean(context.hasLocalChanges);
+                const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite', 'extractedMetadata', 'metadataStatus'];
+                for (const field of cloudFields) {
+                    if (!this.areMetadataValuesEqual(remoteMetadata[field], localMetadata[field])) {
+                        if (hasLocalChanges) {
+                            conflicts.push(field);
+                        }
+                        merged[field] = remoteMetadata[field];
+                        changed = true;
+                    }
+                }
+                const remoteLastUpdated = Number(remoteMetadata.lastUpdated ?? 0);
+                if (Number.isFinite(remoteLastUpdated) && remoteLastUpdated > Number(merged.lastUpdated ?? 0)) {
+                    merged.lastUpdated = remoteLastUpdated;
+                    changed = true;
+                }
+                const remoteCloudVersion = Number(remoteMetadata.cloudVersion ?? 0);
+                if (Number.isFinite(remoteCloudVersion) && remoteCloudVersion >= 0 && remoteCloudVersion !== Number(merged.cloudVersion ?? 0)) {
+                    merged.cloudVersion = remoteCloudVersion;
+                    changed = true;
+                }
+                if (remoteMetadata.cloudFingerprint != null && remoteMetadata.cloudFingerprint !== merged.cloudFingerprint) {
+                    merged.cloudFingerprint = remoteMetadata.cloudFingerprint;
+                    changed = true;
+                }
+                if (!Number.isFinite(Number(merged.localUpdatedAt))) {
+                    merged.localUpdatedAt = Number(localMetadata.localUpdatedAt ?? 0);
+                }
+                return { merged, changed, conflicts };
+            },
+            notifyMetadataConflict(file, details = {}) {
+                const conflictFields = Array.isArray(details.conflictFields) ? details.conflictFields.filter(Boolean) : [];
+                if (conflictFields.length === 0) {
+                    return;
+                }
+                const payload = {
+                    fileId: file?.id || null,
+                    fileName: file?.name || null,
+                    folderId: state.currentFolder?.id || null,
+                    providerType: state.providerType || null,
+                    conflictFields,
+                    localMetadata: details.localMetadata || null,
+                    remoteMetadata: details.remoteMetadata || null,
+                    mergedMetadata: details.mergedMetadata || null
+                };
+                if (state.syncManager && typeof state.syncManager.reportMetadataConflict === 'function') {
+                    try {
+                        state.syncManager.reportMetadataConflict(payload);
+                        return;
+                    } catch (error) {
+                        state.syncManager?.logger?.log({
+                            event: 'metadata:conflict:notify-error',
+                            level: 'error',
+                            fileId: payload.fileId,
+                            details: error?.message || String(error),
+                            data: payload
+                        });
+                    }
+                }
+                if (state.syncManager?.logger?.log) {
+                    state.syncManager.logger.log({
+                        event: 'metadata:conflict',
+                        level: 'warn',
+                        fileId: payload.fileId,
+                        details: `Detected metadata conflict for ${payload.fileName || payload.fileId}: ${conflictFields.join(', ')}`,
+                        data: payload
+                    });
                 }
             },
             generateDefaultMetadata(file, context = {}) {
@@ -3747,8 +4010,11 @@
                     favorite: false,
                     extractedMetadata: {},
                     metadataStatus: 'pending',
-                    lastUpdated: 0
-                };
+                    lastUpdated: 0,
+                    cloudVersion: 0,
+                    cloudFingerprint: null,
+                    localUpdatedAt: 0
+                 };
                  const directTimestamp = Number(file.lastUpdated);
                  if (Number.isFinite(directTimestamp)) {
                     baseMetadata.lastUpdated = directTimestamp;
@@ -3774,6 +4040,13 @@
                             baseMetadata.lastUpdated = numeric;
                             break;
                         }
+                    }
+                    const versionInfo = this.extractCloudVersionInfo(file);
+                    if (versionInfo.version != null && Number.isFinite(versionInfo.version)) {
+                        baseMetadata.cloudVersion = versionInfo.version;
+                    }
+                    if (versionInfo.fingerprint != null) {
+                        baseMetadata.cloudFingerprint = versionInfo.fingerprint;
                     }
                  }
                  const numericSequence = Number(baseMetadata.stackSequence);
