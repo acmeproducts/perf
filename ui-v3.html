@@ -127,6 +127,29 @@
         .status.success { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
         .status.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
         .status.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
+
+        /*
+         * Folder tooltip
+         *
+         * The base UI originally lacked a way to quickly preview the current
+         * folder name and storage provider from anywhere in the app.  This
+         * style definition adds a lightweight floating tooltip that appears
+         * when the user hovers over the "Folders" button (the back button).
+         * It matches the dark theme used throughout the app and uses a
+         * subtle drop‑shadow to ensure legibility on complex backgrounds.
+         */
+        .folder-tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            z-index: 1000;
+            pointer-events: none;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
         .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
         .last-folder-banner {
             display: flex;
@@ -7006,6 +7029,10 @@ this.updateImageCounters();
                 this.setupCopyButtons(); this.setupEmptyState(); this.setupPillCounters();
                 this.setupGridControls(); this.setupSearchFunctionality(); this.setupActionButtons();
                 this.setupKeyboardNavigation();
+                // Initialise folder tooltips after keyboard shortcuts. This helper
+                // attaches hover listeners to the back button so users can see
+                // which folder and provider are currently active at a glance.
+                this.setupFolderTooltips();
                 this.setupDraggables();
             },
             setupDraggables() {
@@ -7396,6 +7423,59 @@ this.updateImageCounters();
                         Utils.showToast(`Keyboard command failed: ${error.message}`, 'error', true);
                     }
                 });
+            },
+            /**
+             * Setup tooltips for folder metadata on the back button.
+             *
+             * Hovering over the back button (labelled “Folders”) reveals a small
+             * tooltip containing the currently connected storage provider,
+             * the name of the open folder and the number of images it contains.
+             * This feature, ported from a later prototype, helps users remain
+             * oriented without leaving the viewer. Tooltips vanish when the
+             * pointer leaves the button.
+             */
+            setupFolderTooltips() {
+                const backBtn = Utils.elements.backButton;
+                if (!backBtn) return;
+                backBtn.addEventListener('mouseenter', () => {
+                    const folderName = (state.currentFolder && state.currentFolder.name) || 'Unknown';
+                    const imageCount = Array.isArray(state.imageFiles) ? state.imageFiles.length : 0;
+                    const provider = state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive';
+                    this.showTooltip(backBtn, `${provider}: ${folderName} • ${imageCount} image${imageCount === 1 ? '' : 's'}`);
+                });
+                backBtn.addEventListener('mouseleave', () => {
+                    this.hideTooltip();
+                });
+            },
+            /**
+             * Render a tooltip near a target element. Existing tooltips are
+             * automatically removed before a new one is added to avoid
+             * duplication. Positioning logic ensures the tooltip stays
+             * within the viewport on narrow screens.
+             * @param {HTMLElement} element The element to anchor the tooltip to.
+             * @param {string} text The text content of the tooltip.
+             */
+            showTooltip(element, text) {
+                const existing = document.querySelector('.folder-tooltip');
+                if (existing) existing.remove();
+                const tooltip = document.createElement('div');
+                tooltip.className = 'folder-tooltip';
+                tooltip.textContent = text;
+                document.body.appendChild(tooltip);
+                const rect = element.getBoundingClientRect();
+                tooltip.style.left = `${rect.left}px`;
+                tooltip.style.top = `${rect.bottom + 8}px`;
+                const tRect = tooltip.getBoundingClientRect();
+                if (tRect.right > window.innerWidth) {
+                    tooltip.style.left = `${window.innerWidth - tRect.width - 10}px`;
+                }
+            },
+            /**
+             * Remove any active folder tooltip from the DOM.
+             */
+            hideTooltip() {
+                const tooltip = document.querySelector('.folder-tooltip');
+                if (tooltip) tooltip.remove();
             }
         };
         async function initApp() {
