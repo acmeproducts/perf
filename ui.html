@@ -2313,7 +2313,6 @@
                     return this.initPromise;
                 }
                 this.initPromise = new Promise((resolve, reject) => {
-                return new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 7);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
@@ -4125,7 +4124,6 @@
                 const conflicts = [];
                 let changed = false;
                 const hasLocalChanges = Boolean(context.hasLocalChanges);
-                const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite'];
                 const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite', 'extractedMetadata', 'metadataStatus'];
                 for (const field of cloudFields) {
                     if (!this.areMetadataValuesEqual(remoteMetadata[field], localMetadata[field])) {
@@ -5559,7 +5557,8 @@ this.updateImageCounters();
                     skipDebounce: true,
                     operationType: 'stack:reorder',
                     origin: 'grid:reorder',
-                    providerSilent: true
+                    providerSilent: true,
+                    skipProviderSync: true
                 };
 
                 const metadataPromises = updatesQueue.map(update => {
@@ -5570,7 +5569,8 @@ this.updateImageCounters();
                     }
                 });
 
-                Promise.allSettled(metadataPromises).then(results => {
+                try {
+                    const results = await Promise.allSettled(metadataPromises);
                     let hasErrors = false;
                     results.forEach((result, index) => {
                         if (result.status === 'rejected') {
@@ -5592,7 +5592,7 @@ this.updateImageCounters();
                     } else {
                         Utils.showToast('Stack order updated', 'success');
                     }
-                }).catch(error => {
+                } catch (error) {
                     Utils.showToast(`Error updating stack order: ${error.message}`, 'error', true);
                     state.syncLog?.log({
                         event: 'grid:reorder:error',
@@ -5600,20 +5600,7 @@ this.updateImageCounters();
                         details: `Unexpected error persisting reordered stack: ${error.message}`,
                         data: { stack: stackName }
                     });
-                });
-                    await App.updateUserMetadata(file.id, { stackSequence: newSequence }, {
-                        skipDebounce: true,
-                        operationType: 'stack:reorder',
-                        origin: 'grid:reorder',
-                        providerSilent: true,
-                        skipProviderSync: true
-                    });
                 }
-
-                state.stacks[state.grid.stack] = newStack;
-                state.currentStackPosition = 0;
-                state.grid.isDirty = false;
-                Utils.showToast('Stack order updated', 'success');
             }
         };
         const Details = {
