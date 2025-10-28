@@ -2211,21 +2211,112 @@
         class DBManager {
             constructor() {
                 this.db = null;
+                this.initPromise = null;
+            }
+            isConnectionClosingError(error) {
+                if (!error) return false;
+                if (error.name === 'InvalidStateError') {
+                    return true;
+                }
+                const message = typeof error.message === 'string' ? error.message : '';
+                return message.includes('The database connection is closing');
+            }
+            attachDatabase(db) {
+                if (this.db && this.db !== db) {
+                    try {
+                        this.db.close();
+                    } catch (closeError) {
+                        console.warn('Failed to close previous IndexedDB connection:', closeError);
+                    }
+                }
+                this.db = db;
+                if (!this.db) {
+                    return;
+                }
+                this.db.onclose = () => {
+                    this.db = null;
+                };
+                this.db.onversionchange = () => {
+                    if (this.db) {
+                        try {
+                            this.db.close();
+                        } catch (error) {
+                            console.warn('Failed to close IndexedDB on version change:', error);
+                        }
+                        this.db = null;
+                    }
+                };
+            }
+            async reopenConnection() {
+                if (this.db) {
+                    try {
+                        this.db.close();
+                    } catch (error) {
+                        console.warn('Failed to close IndexedDB connection during reopen:', error);
+                    }
+                    this.db = null;
+                }
+                await this.init();
+            }
+            async ensureConnection() {
+                if (this.db) {
+                    return this.db;
+                }
+                await this.init();
+                return this.db;
+            }
+            async withConnectionRetry(callback) {
+                let attempt = 0;
+                let lastError = null;
+                while (attempt < 2) {
+                    try {
+                        await this.ensureConnection();
+                        return await callback();
+                    } catch (error) {
+                        lastError = error;
+                        if (this.isConnectionClosingError(error) && attempt === 0) {
+                            await this.reopenConnection();
+                            attempt += 1;
+                            continue;
+                        }
+                        throw error;
+                    }
+                }
+                if (lastError) {
+                    throw lastError;
+                }
             }
             normalizeMetadata(metadata) {
                 if (!metadata || typeof metadata !== 'object') {
-                    return { lastUpdated: 0 };
+                    return { lastUpdated: 0, cloudVersion: 0, cloudFingerprint: null, localUpdatedAt: 0 };
                 }
                 const normalized = { ...metadata };
                 const numericTimestamp = Number(normalized.lastUpdated);
                 normalized.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                const numericCloudVersion = Number(normalized.cloudVersion);
+                normalized.cloudVersion = Number.isFinite(numericCloudVersion) && numericCloudVersion >= 0 ? numericCloudVersion : 0;
+                const numericLocalUpdated = Number(normalized.localUpdatedAt);
+                normalized.localUpdatedAt = Number.isFinite(numericLocalUpdated) && numericLocalUpdated >= 0 ? numericLocalUpdated : 0;
+                if (normalized.cloudFingerprint != null && typeof normalized.cloudFingerprint !== 'string') {
+                    normalized.cloudFingerprint = String(normalized.cloudFingerprint);
+                }
+                if (normalized.cloudFingerprint == null) {
+                    normalized.cloudFingerprint = null;
+                }
                 return normalized;
             }
             async init() {
-                return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 6);
+                if (this.db) {
+                    return;
+                }
+                if (this.initPromise) {
+                    return this.initPromise;
+                }
+                this.initPromise = new Promise((resolve, reject) => {
+                    const request = indexedDB.open('Orbital8-Goji-V1', 7);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
+                        const oldVersion = event.oldVersion || 0;
 
                         ['folderCache', 'syncQueue', 'folderState', 'folderManifests'].forEach(storeName => {
                             if (db.objectStoreNames.contains(storeName)) {
@@ -2244,6 +2335,42 @@
                             metadataStore.createIndex('folderKey', 'folderKey', { unique: false });
                         }
 
+                        if (metadataStore && !metadataStore.indexNames.contains('cloudVersion')) {
+                            metadataStore.createIndex('cloudVersion', 'cloudVersion', { unique: false });
+                        }
+
+                        if (metadataStore && !metadataStore.indexNames.contains('cloudFingerprint')) {
+                            metadataStore.createIndex('cloudFingerprint', 'cloudFingerprint', { unique: false });
+                        }
+
+                        if (metadataStore && oldVersion < 7) {
+                            const cursorRequest = metadataStore.openCursor();
+                            cursorRequest.onsuccess = (cursorEvent) => {
+                                const cursor = cursorEvent.target.result;
+                                if (!cursor) return;
+                                const value = cursor.value || {};
+                                const recordMetadata = value.metadata && typeof value.metadata === 'object' ? { ...value.metadata } : {};
+                                const numericCloudVersion = Number(recordMetadata.cloudVersion ?? value.cloudVersion ?? 0);
+                                const normalizedCloudVersion = Number.isFinite(numericCloudVersion) && numericCloudVersion >= 0 ? numericCloudVersion : 0;
+                                const cloudFingerprint = recordMetadata.cloudFingerprint != null
+                                    ? String(recordMetadata.cloudFingerprint)
+                                    : (value.cloudFingerprint != null ? String(value.cloudFingerprint) : null);
+                                recordMetadata.cloudVersion = normalizedCloudVersion;
+                                recordMetadata.cloudFingerprint = cloudFingerprint ?? null;
+                                if (!Number.isFinite(Number(recordMetadata.lastUpdated))) {
+                                    recordMetadata.lastUpdated = 0;
+                                }
+                                const numericLocalUpdatedAt = Number(recordMetadata.localUpdatedAt ?? value.localUpdatedAt ?? 0);
+                                recordMetadata.localUpdatedAt = Number.isFinite(numericLocalUpdatedAt) && numericLocalUpdatedAt >= 0 ? numericLocalUpdatedAt : 0;
+                                value.metadata = recordMetadata;
+                                value.cloudVersion = normalizedCloudVersion;
+                                value.cloudFingerprint = recordMetadata.cloudFingerprint;
+                                value.localUpdatedAt = recordMetadata.localUpdatedAt;
+                                cursor.update(value);
+                                cursor.continue();
+                            };
+                        }
+
                         let folderTimestampStore = null;
                         if (!db.objectStoreNames.contains('folderTimestamps')) {
                             folderTimestampStore = db.createObjectStore('folderTimestamps', { keyPath: 'key' });
@@ -2256,11 +2383,20 @@
                         }
                     };
                     request.onsuccess = (event) => {
-                        this.db = event.target.result;
+                        const db = event.target.result;
+                        this.attachDatabase(db);
                         resolve();
                     };
                     request.onerror = (event) => reject(event.target.error);
+                    request.onblocked = () => {
+                        console.warn('IndexedDB upgrade blocked by another open connection.');
+                    };
                 });
+                try {
+                    await this.initPromise;
+                } finally {
+                    this.initPromise = null;
+                }
             }
             resolveFolderKey(input) {
                 if (!input) return null;
@@ -2271,9 +2407,15 @@
                 return `${providerType || 'unknown'}::${folderId}`;
             }
             async getMetadata(fileId) {
-                if (!this.db) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readonly');
+                if (!fileId) return null;
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
                     request.onsuccess = () => {
@@ -2284,19 +2426,26 @@
                         }
                         resolve(this.normalizeMetadata(record.metadata));
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to read metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async getManyMetadata(fileIds = []) {
-                if (!this.db || !Array.isArray(fileIds) || fileIds.length === 0) {
+                if (!Array.isArray(fileIds) || fileIds.length === 0) {
                     return new Map();
                 }
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readonly');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const results = new Map();
                     transaction.oncomplete = () => resolve(results);
-                    transaction.onerror = (event) => reject(event.target.error);
+                    transaction.onerror = (event) => reject(event.target.error || new Error('Failed to fetch metadata records'));
                     fileIds.forEach(fileId => {
                         if (!fileId) return;
                         const request = store.get(fileId);
@@ -2306,16 +2455,32 @@
                                 results.set(fileId, this.normalizeMetadata(record.metadata));
                             }
                         };
+                        request.onerror = () => {
+                            transaction.abort();
+                            reject(request.error || new Error('Failed to fetch metadata record'));
+                        };
                     });
                 });
+                return this.withConnectionRetry(runner);
             }
             async saveMetadata(fileId, metadata, context = {}) {
-                if (!this.db) return;
+                if (!fileId) return;
                 const folderKey = this.resolveFolderKey(context);
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata: this.normalizeMetadata(metadata) };
+                    const normalized = this.normalizeMetadata(metadata);
+                    const record = { id: fileId, metadata: normalized };
+                    record.cloudVersion = normalized.cloudVersion ?? 0;
+                    record.cloudFingerprint = normalized.cloudFingerprint ?? null;
+                    record.lastUpdated = normalized.lastUpdated ?? 0;
+                    record.localUpdatedAt = normalized.localUpdatedAt ?? 0;
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -2323,42 +2488,62 @@
                     }
                     const request = store.put(record);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to persist metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteMetadata(fileId) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                if (!fileId) return;
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const request = store.delete(fileId);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to delete metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteMetadataByFolder(context) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const index = store.index('folderKey');
                     transaction.oncomplete = () => resolve();
+                    transaction.onerror = (event) => reject(event.target.error || new Error('Failed to delete folder metadata'));
                     const request = index.getAllKeys(IDBKeyRange.only(folderKey));
                     request.onsuccess = () => {
                         const keys = request.result || [];
                         keys.forEach(key => store.delete(key));
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to enumerate folder metadata keys'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async getFolderTimestamp(context = {}) {
-                if (!this.db) return null;
                 const key = this.resolveFolderKey(context);
                 if (!key) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readonly');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const request = store.get(key);
                     request.onsuccess = () => {
@@ -2375,17 +2560,23 @@
                             updatedAt: record.updatedAt || null
                         });
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to fetch folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async saveFolderTimestamp(context = {}, timestamp) {
-                if (!this.db) return null;
                 const key = this.resolveFolderKey(context);
                 if (!key || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
                     return null;
                 }
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const record = {
                         key,
@@ -2396,20 +2587,27 @@
                     };
                     const request = store.put(record);
                     request.onsuccess = () => resolve(record);
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to persist folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteFolderTimestamp(context = {}) {
-                if (!this.db) return;
                 const key = this.resolveFolderKey(context);
                 if (!key) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const request = store.delete(key);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to delete folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async clearFolderData(context, fileIds = []) {
                 const targets = [];
@@ -3711,18 +3909,69 @@
                     const file = files[i];
                     try {
                         const metadata = cachedMetadata.get(file.id);
+                        const remoteInfo = state.providerType === 'googledrive' ? this.extractCloudVersionInfo(file) : { version: null, fingerprint: null };
+                        const remoteMetadata = state.providerType === 'googledrive'
+                            ? this.generateDefaultMetadata(file, { index: i, total: files.length, includeLocalDefaults: false })
+                            : null;
+                        if (remoteMetadata) {
+                            if (remoteInfo.version != null && Number.isFinite(remoteInfo.version)) {
+                                remoteMetadata.cloudVersion = remoteInfo.version;
+                            }
+                            if (remoteInfo.fingerprint != null) {
+                                remoteMetadata.cloudFingerprint = remoteInfo.fingerprint;
+                            }
+                        }
+
                         if (metadata) {
-                            Object.assign(file, metadata);
+                            let finalMetadata = { ...metadata };
+                            let shouldPersist = false;
+                            let conflicts = [];
+                            if (remoteMetadata) {
+                                const needsMerge = this.shouldMergeRemoteMetadata(metadata, remoteMetadata, remoteInfo);
+                                if (needsMerge) {
+                                    const mergeResult = this.mergeRemoteMetadata(metadata, remoteMetadata, {
+                                        hasLocalChanges: this.hasLocalMetadataChanges(metadata)
+                                    });
+                                    finalMetadata = mergeResult.merged;
+                                    shouldPersist = mergeResult.changed;
+                                    conflicts = mergeResult.conflicts;
+                                } else {
+                                    const remoteCloudVersion = Number(remoteMetadata.cloudVersion ?? remoteInfo.version ?? 0);
+                                    if (Number.isFinite(remoteCloudVersion) && remoteCloudVersion >= 0 && remoteCloudVersion !== Number(finalMetadata.cloudVersion ?? 0)) {
+                                        finalMetadata.cloudVersion = remoteCloudVersion;
+                                        shouldPersist = true;
+                                    }
+                                    if (remoteMetadata.cloudFingerprint != null && remoteMetadata.cloudFingerprint !== finalMetadata.cloudFingerprint) {
+                                        finalMetadata.cloudFingerprint = remoteMetadata.cloudFingerprint;
+                                        shouldPersist = true;
+                                    }
+                                }
+                            }
+                            Object.assign(file, finalMetadata);
+                            const numericTimestamp = Number(file.lastUpdated);
+                            file.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                            if (shouldPersist) {
+                                await state.dbManager.saveMetadata(file.id, finalMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                                cachedMetadata.set(file.id, finalMetadata);
+                            }
+                            if (conflicts.length > 0) {
+                                this.notifyMetadataConflict(file, {
+                                    conflictFields: conflicts,
+                                    localMetadata: metadata,
+                                    remoteMetadata,
+                                    mergedMetadata: finalMetadata
+                                });
+                            }
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
+                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length, includeLocalDefaults: true });
+                            if (remoteMetadata) {
+                                Object.assign(defaultMetadata, remoteMetadata);
+                            }
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
-                        }
-                        const numericTimestamp = Number(file.lastUpdated);
-                        if (!Number.isFinite(numericTimestamp)) {
-                            file.lastUpdated = 0;
-                        } else {
-                            file.lastUpdated = numericTimestamp;
+                            cachedMetadata.set(file.id, defaultMetadata);
+                            const numericTimestamp = Number(file.lastUpdated);
+                            file.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
@@ -3730,13 +3979,179 @@
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
                 if (!navigationToken || this.isNavigationActive(navigationToken)) {
                     this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
                 }
             },
+            extractCloudVersionInfo(file) {
+                const appProperties = file?.appProperties || null;
+                if (!appProperties || typeof appProperties !== 'object') {
+                    return { version: null, fingerprint: null };
+                }
+                const numericKeys = [
+                    'orbital8CloudVersion',
+                    'orbital8FileUpdated',
+                    'orbital8LastUpdated',
+                    'slideboxLastUpdated',
+                    'slideboxUpdatedAt',
+                    'lastUpdated'
+                ];
+                for (const key of numericKeys) {
+                    if (!(key in appProperties)) continue;
+                    const value = appProperties[key];
+                    const numeric = Number(value);
+                    if (Number.isFinite(numeric) && numeric > 0) {
+                        return { version: numeric, fingerprint: null };
+                    }
+                    if (typeof value === 'string') {
+                        const parsed = Date.parse(value);
+                        if (!Number.isNaN(parsed)) {
+                            return { version: parsed, fingerprint: null };
+                        }
+                    }
+                }
+                const hashKeys = ['metadataHash', 'slideboxHash', 'orbital8Hash'];
+                for (const key of hashKeys) {
+                    if (typeof appProperties[key] === 'string' && appProperties[key]) {
+                        return { version: null, fingerprint: `${key}:${appProperties[key]}` };
+                    }
+                }
+                const fingerprintSource = {
+                    stack: appProperties.slideboxStack ?? null,
+                    tags: appProperties.slideboxTags ?? null,
+                    notes: appProperties.notes ?? null,
+                    qualityRating: appProperties.qualityRating ?? null,
+                    contentRating: appProperties.contentRating ?? null,
+                    favorite: appProperties.favorite ?? null,
+                    stackSequence: appProperties.stackSequence ?? null
+                };
+                try {
+                    return { version: null, fingerprint: JSON.stringify(fingerprintSource) };
+                } catch (error) {
+                    console.warn('Failed to build metadata fingerprint:', error);
+                    return { version: null, fingerprint: null };
+                }
+            },
+            hasLocalMetadataChanges(metadata = {}) {
+                const localUpdatedAt = Number(metadata.localUpdatedAt ?? 0);
+                const cloudVersion = Number(metadata.cloudVersion ?? 0);
+                return Number.isFinite(localUpdatedAt) && localUpdatedAt > cloudVersion;
+            },
+            shouldMergeRemoteMetadata(localMetadata = {}, remoteMetadata = {}, remoteInfo = {}) {
+                const localVersion = Number(localMetadata.cloudVersion ?? 0);
+                const remoteVersion = Number(remoteMetadata.cloudVersion ?? remoteInfo.version ?? 0);
+                const localFingerprint = localMetadata.cloudFingerprint ?? null;
+                const remoteFingerprint = remoteMetadata.cloudFingerprint ?? remoteInfo.fingerprint ?? null;
+                if (Number.isFinite(remoteVersion) && remoteVersion > 0) {
+                    if (!Number.isFinite(localVersion) || remoteVersion > localVersion) {
+                        return true;
+                    }
+                    if (remoteVersion < localVersion) {
+                        return false;
+                    }
+                }
+                if (remoteFingerprint != null && remoteFingerprint !== localFingerprint) {
+                    if (Number.isFinite(remoteVersion) && Number.isFinite(localVersion) && remoteVersion < localVersion) {
+                        return false;
+                    }
+                    return true;
+                }
+                return false;
+            },
+            areMetadataValuesEqual(a, b) {
+                if (a === b) return true;
+                if (a == null && b == null) return true;
+                const isObjectLike = (value) => value !== null && typeof value === 'object';
+                if (Array.isArray(a) || Array.isArray(b) || isObjectLike(a) || isObjectLike(b)) {
+                    try {
+                        return JSON.stringify(a) === JSON.stringify(b);
+                    } catch (error) {
+                        console.warn('Failed to compare metadata values:', error);
+                        return false;
+                    }
+                }
+                if (Number.isNaN(a) && Number.isNaN(b)) {
+                    return true;
+                }
+                return String(a ?? '') === String(b ?? '');
+            },
+            mergeRemoteMetadata(localMetadata = {}, remoteMetadata = {}, context = {}) {
+                const merged = { ...localMetadata };
+                const conflicts = [];
+                let changed = false;
+                const hasLocalChanges = Boolean(context.hasLocalChanges);
+                const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite'];
+                for (const field of cloudFields) {
+                    if (!this.areMetadataValuesEqual(remoteMetadata[field], localMetadata[field])) {
+                        if (hasLocalChanges) {
+                            conflicts.push(field);
+                        }
+                        merged[field] = remoteMetadata[field];
+                        changed = true;
+                    }
+                }
+                const remoteLastUpdated = Number(remoteMetadata.lastUpdated ?? 0);
+                if (Number.isFinite(remoteLastUpdated) && remoteLastUpdated > Number(merged.lastUpdated ?? 0)) {
+                    merged.lastUpdated = remoteLastUpdated;
+                    changed = true;
+                }
+                const remoteCloudVersion = Number(remoteMetadata.cloudVersion ?? 0);
+                if (Number.isFinite(remoteCloudVersion) && remoteCloudVersion >= 0 && remoteCloudVersion !== Number(merged.cloudVersion ?? 0)) {
+                    merged.cloudVersion = remoteCloudVersion;
+                    changed = true;
+                }
+                if (remoteMetadata.cloudFingerprint != null && remoteMetadata.cloudFingerprint !== merged.cloudFingerprint) {
+                    merged.cloudFingerprint = remoteMetadata.cloudFingerprint;
+                    changed = true;
+                }
+                if (!Number.isFinite(Number(merged.localUpdatedAt))) {
+                    merged.localUpdatedAt = Number(localMetadata.localUpdatedAt ?? 0);
+                }
+                return { merged, changed, conflicts };
+            },
+            notifyMetadataConflict(file, details = {}) {
+                const conflictFields = Array.isArray(details.conflictFields) ? details.conflictFields.filter(Boolean) : [];
+                if (conflictFields.length === 0) {
+                    return;
+                }
+                const payload = {
+                    fileId: file?.id || null,
+                    fileName: file?.name || null,
+                    folderId: state.currentFolder?.id || null,
+                    providerType: state.providerType || null,
+                    conflictFields,
+                    localMetadata: details.localMetadata || null,
+                    remoteMetadata: details.remoteMetadata || null,
+                    mergedMetadata: details.mergedMetadata || null
+                };
+                if (state.syncManager && typeof state.syncManager.reportMetadataConflict === 'function') {
+                    try {
+                        state.syncManager.reportMetadataConflict(payload);
+                        return;
+                    } catch (error) {
+                        state.syncManager?.logger?.log({
+                            event: 'metadata:conflict:notify-error',
+                            level: 'error',
+                            fileId: payload.fileId,
+                            details: error?.message || String(error),
+                            data: payload
+                        });
+                    }
+                }
+                if (state.syncManager?.logger?.log) {
+                    state.syncManager.logger.log({
+                        event: 'metadata:conflict',
+                        level: 'warn',
+                        fileId: payload.fileId,
+                        details: `Detected metadata conflict for ${payload.fileName || payload.fileId}: ${conflictFields.join(', ')}`,
+                        data: payload
+                    });
+                }
+            },
             generateDefaultMetadata(file, context = {}) {
+                 const { includeLocalDefaults = true } = context;
                  const baseMetadata = {
                     stack: 'in',
                     tags: [],
@@ -3745,10 +4160,15 @@
                     notes: '',
                     stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {},
-                    metadataStatus: 'pending',
-                    lastUpdated: 0
-                };
+                    lastUpdated: 0,
+                    cloudVersion: 0,
+                    cloudFingerprint: null
+                 };
+                 if (includeLocalDefaults) {
+                    baseMetadata.extractedMetadata = {};
+                    baseMetadata.metadataStatus = 'pending';
+                    baseMetadata.localUpdatedAt = 0;
+                 }
                  const directTimestamp = Number(file.lastUpdated);
                  if (Number.isFinite(directTimestamp)) {
                     baseMetadata.lastUpdated = directTimestamp;
@@ -3774,6 +4194,13 @@
                             baseMetadata.lastUpdated = numeric;
                             break;
                         }
+                    }
+                    const versionInfo = this.extractCloudVersionInfo(file);
+                    if (versionInfo.version != null && Number.isFinite(versionInfo.version)) {
+                        baseMetadata.cloudVersion = versionInfo.version;
+                    }
+                    if (versionInfo.fingerprint != null) {
+                        baseMetadata.cloudFingerprint = versionInfo.fingerprint;
                     }
                  }
                  const numericSequence = Number(baseMetadata.stackSequence);
@@ -3878,7 +4305,13 @@
                 }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
-                const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui', providerSilent = true } = options;
+                const {
+                    skipDebounce = false,
+                    operationType = 'metadata:update',
+                    origin = 'ui',
+                    providerSilent = true,
+                    skipProviderSync = false
+                } = options;
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
@@ -3886,7 +4319,17 @@
                     const updatesWithTimestamp = { ...updates, lastUpdated: timestamp };
                     Object.assign(file, updatesWithTimestamp, { localUpdatedAt: timestamp });
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                    await this.persistFileMetadata(file, { reason: operationType, silent: providerSilent });
+                    if (!skipProviderSync) {
+                        await this.persistFileMetadata(file, { reason: operationType, silent: providerSilent });
+                    } else {
+                        state.syncLog?.log({
+                            event: 'provider:metadata:deferred',
+                            level: 'info',
+                            fileId,
+                            details: `Deferred immediate provider sync for ${operationType}.`,
+                            data: { origin }
+                        });
+                    }
                     if (state.syncManager) {
                         const change = {
                             fileId,
@@ -4776,7 +5219,9 @@ this.updateImageCounters();
                             await App.updateUserMetadata(update.fileId, { stackSequence: update.newSequence }, {
                                 skipDebounce: true,
                                 operationType: 'stack:reorder',
-                                origin: 'grid:drag'
+                                origin: 'grid:drag',
+                                providerSilent: true,
+                                skipProviderSync: true
                             });
                         } catch (error) {
                             errors.push({ fileId: update.fileId, error });
@@ -5032,12 +5477,14 @@ this.updateImageCounters();
                         skipDebounce: true,
                         operationType: 'stack:reorder',
                         origin: 'grid:reorder',
-                        providerSilent: true
+                        providerSilent: true,
+                        skipProviderSync: true
                     });
                 }
 
                 state.stacks[state.grid.stack] = newStack;
                 state.currentStackPosition = 0;
+                state.grid.isDirty = false;
                 Utils.showToast('Stack order updated', 'success');
             }
         };
