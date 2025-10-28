@@ -3463,9 +3463,51 @@
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'PATCH', body: JSON.stringify({ parentReference: { id: targetFolderId } }) });
                 return true;
             }
-            async updateFileMetadata(fileId, metadata) {
-                // Placeholder for Phase 2: Sync metadata to OneDrive
-                return Promise.resolve(true);
+            async updateFileMetadata(fileId, metadata = {}, options = {}) {
+                if (!fileId || !metadata || typeof metadata !== 'object') {
+                    return false;
+                }
+
+                const { reason = 'metadata:update' } = options;
+                const endpoint = `/me/drive/special/approot:/metadata/${fileId}.json:/content`;
+
+                const basePayload = metadata?.metadata && typeof metadata.metadata === 'object'
+                    ? metadata.metadata
+                    : metadata;
+
+                const sanitized = {};
+                Object.entries(basePayload).forEach(([key, value]) => {
+                    if (value === undefined) { return; }
+                    sanitized[key] = typeof value === 'string' ? value : String(value ?? '');
+                });
+
+                let existing = {};
+                try {
+                    const response = await this.makeApiCall(endpoint);
+                    existing = await response.json();
+                } catch (error) {
+                    const message = String(error?.message || '');
+                    if (message === 'TOKEN_EXPIRED') { throw error; }
+                    if (!/\b404\b/.test(message)) {
+                        throw new Error(`Microsoft Graph metadata lookup failed (${reason}): ${message}`);
+                    }
+                }
+
+                const existingRecord = existing && typeof existing === 'object' && !Array.isArray(existing)
+                    ? existing
+                    : {};
+                const merged = { ...existingRecord, ...sanitized };
+
+                try {
+                    await this.makeApiCall(endpoint, {
+                        method: 'PUT',
+                        body: JSON.stringify(merged)
+                    });
+                    return true;
+                } catch (error) {
+                    const message = error?.message || String(error);
+                    throw new Error(`Microsoft Graph metadata write failed (${reason}): ${message}`);
+                }
             }
             async deleteFile(fileId) {
                 await this.makeApiCall(`/me/drive/items/${fileId}`, { method: 'DELETE' });
@@ -3951,19 +3993,31 @@
                     return;
                 }
                 const { reason = 'metadata:update', silent = true } = options;
+                const effectiveSilent = state.providerType === 'onedrive' ? false : silent;
                 const payload = this.buildProviderMetadataSnapshot(file);
                 try {
-                    await state.provider.updateFileMetadata(file.id, payload, { reason });
+                    await state.provider.updateFileMetadata(file.id, payload, { reason, silent: effectiveSilent });
+                    const hadPending = file.localUpdatedAt != null;
+                    if (hadPending) {
+                        delete file.localUpdatedAt;
+                        const folderId = state.currentFolder?.id || file.folderId || null;
+                        if (state.dbManager && folderId) {
+                            await state.dbManager.saveMetadata(file.id, file, {
+                                folderId,
+                                providerType: state.providerType
+                            });
+                        }
+                    }
                 } catch (error) {
                     const message = error?.message || String(error);
                     state.syncLog?.log({
                         event: 'provider:metadata:update-error',
-                        level: 'warn',
+                        level: 'error',
                         fileId: file.id,
                         details: `Failed to sync metadata to provider (${reason}): ${message}`,
                         data: { providerType: state.providerType }
                     });
-                    if (!silent) {
+                    if (!effectiveSilent) {
                         Utils.showToast(`Failed to sync metadata to provider: ${message}`, 'error', true);
                     }
                 }
