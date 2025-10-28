@@ -2306,6 +2306,13 @@
                 return normalized;
             }
             async init() {
+                if (this.db) {
+                    return;
+                }
+                if (this.initPromise) {
+                    return this.initPromise;
+                }
+                this.initPromise = new Promise((resolve, reject) => {
                 return new Promise((resolve, reject) => {
                     const request = indexedDB.open('Orbital8-Goji-V1', 7);
                     request.onupgradeneeded = (event) => {
@@ -3946,7 +3953,9 @@
                     try {
                         const metadata = cachedMetadata.get(file.id);
                         const remoteInfo = state.providerType === 'googledrive' ? this.extractCloudVersionInfo(file) : { version: null, fingerprint: null };
-                        const remoteMetadata = state.providerType === 'googledrive' ? this.generateDefaultMetadata(file, { index: i, total: files.length }) : null;
+                        const remoteMetadata = state.providerType === 'googledrive'
+                            ? this.generateDefaultMetadata(file, { index: i, total: files.length, includeLocalDefaults: false })
+                            : null;
                         if (remoteMetadata) {
                             if (remoteInfo.version != null && Number.isFinite(remoteInfo.version)) {
                                 remoteMetadata.cloudVersion = remoteInfo.version;
@@ -3997,7 +4006,10 @@
                                 });
                             }
                         } else {
-                            const defaultMetadata = remoteMetadata || this.generateDefaultMetadata(file, { index: i, total: files.length });
+                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length, includeLocalDefaults: true });
+                            if (remoteMetadata) {
+                                Object.assign(defaultMetadata, remoteMetadata);
+                            }
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
                             cachedMetadata.set(file.id, defaultMetadata);
@@ -4113,6 +4125,7 @@
                 const conflicts = [];
                 let changed = false;
                 const hasLocalChanges = Boolean(context.hasLocalChanges);
+                const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite'];
                 const cloudFields = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes', 'stackSequence', 'favorite', 'extractedMetadata', 'metadataStatus'];
                 for (const field of cloudFields) {
                     if (!this.areMetadataValuesEqual(remoteMetadata[field], localMetadata[field])) {
@@ -4191,13 +4204,15 @@
                     notes: '',
                     stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {},
-                    metadataStatus: 'pending',
                     lastUpdated: 0,
                     cloudVersion: 0,
-                    cloudFingerprint: null,
-                    localUpdatedAt: 0
+                    cloudFingerprint: null
                  };
+                 if (includeLocalDefaults) {
+                    baseMetadata.extractedMetadata = {};
+                    baseMetadata.metadataStatus = 'pending';
+                    baseMetadata.localUpdatedAt = 0;
+                 }
                  const directTimestamp = Number(file.lastUpdated);
                  if (Number.isFinite(directTimestamp)) {
                     baseMetadata.lastUpdated = directTimestamp;
@@ -4334,7 +4349,13 @@
                 }
             },
             async updateUserMetadata(fileId, updates, options = {}) {
-                const { skipDebounce = false, operationType = 'metadata:update', origin = 'ui', providerSilent = true } = options;
+                const {
+                    skipDebounce = false,
+                    operationType = 'metadata:update',
+                    origin = 'ui',
+                    providerSilent = true,
+                    skipProviderSync = false
+                } = options;
                 try {
                     const file = state.imageFiles.find(f => f.id === fileId);
                     if (!file) return;
@@ -4342,7 +4363,17 @@
                     const updatesWithTimestamp = { ...updates, lastUpdated: timestamp };
                     Object.assign(file, updatesWithTimestamp, { localUpdatedAt: timestamp });
                     await state.dbManager.saveMetadata(file.id, file, { folderId: state.currentFolder.id, providerType: state.providerType });
-                    await this.persistFileMetadata(file, { reason: operationType, silent: providerSilent });
+                    if (!skipProviderSync) {
+                        await this.persistFileMetadata(file, { reason: operationType, silent: providerSilent });
+                    } else {
+                        state.syncLog?.log({
+                            event: 'provider:metadata:deferred',
+                            level: 'info',
+                            fileId,
+                            details: `Deferred immediate provider sync for ${operationType}.`,
+                            data: { origin }
+                        });
+                    }
                     if (state.syncManager) {
                         const change = {
                             fileId,
@@ -5245,7 +5276,9 @@ this.updateImageCounters();
                             await App.updateUserMetadata(update.fileId, { stackSequence: update.newSequence }, {
                                 skipDebounce: true,
                                 operationType: 'stack:reorder',
-                                origin: 'grid:drag'
+                                origin: 'grid:drag',
+                                providerSilent: true,
+                                skipProviderSync: true
                             });
                         } catch (error) {
                             errors.push({ fileId: update.fileId, error });
@@ -5568,6 +5601,19 @@ this.updateImageCounters();
                         data: { stack: stackName }
                     });
                 });
+                    await App.updateUserMetadata(file.id, { stackSequence: newSequence }, {
+                        skipDebounce: true,
+                        operationType: 'stack:reorder',
+                        origin: 'grid:reorder',
+                        providerSilent: true,
+                        skipProviderSync: true
+                    });
+                }
+
+                state.stacks[state.grid.stack] = newStack;
+                state.currentStackPosition = 0;
+                state.grid.isDirty = false;
+                Utils.showToast('Stack order updated', 'success');
             }
         };
         const Details = {
