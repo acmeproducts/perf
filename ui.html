@@ -4985,9 +4985,10 @@ this.updateImageCounters();
                     if (state.grid.isDirty) {
                         await this.reorderStackOnClose();
                     }
+                    const selectedBeforeReset = [...state.grid.selected];
                     Utils.hideModal('grid-modal');
                     this.resetSearch(); this.destroyLazyLoad();
-                    const selectedImages = state.grid.selected;
+                    const selectedImages = selectedBeforeReset;
                     if (selectedImages.length === 1) {
                         const selectedFileId = selectedImages[0];
                         const stackArray = state.stacks[state.currentStack];
@@ -5524,11 +5525,82 @@ this.updateImageCounters();
                 } else { return; }
                 
                 const newStack = [...topItems, ...bottomItems];
+                const stackName = state.grid.stack;
+                const selectedIds = [...state.grid.selected];
                 const timestamp = Date.now();
+                const updatesQueue = [];
 
                 for (let index = 0; index < newStack.length; index++) {
                     const file = newStack[index];
                     const newSequence = timestamp - index;
+                    if (file.stackSequence !== newSequence) {
+                        updatesQueue.push({ fileId: file.id, newSequence });
+                    }
+                    file.stackSequence = newSequence;
+                }
+
+                state.stacks[stackName] = newStack;
+
+                if (selectedIds.length > 0) {
+                    const firstSelectedIndex = newStack.findIndex(file => file.id === selectedIds[0]);
+                    state.currentStackPosition = firstSelectedIndex !== -1 ? firstSelectedIndex : 0;
+                } else {
+                    state.currentStackPosition = 0;
+                }
+
+                state.grid.isDirty = false;
+
+                if (updatesQueue.length === 0) {
+                    Utils.showToast('Stack order updated', 'success');
+                    return;
+                }
+
+                const metadataOptions = {
+                    skipDebounce: true,
+                    operationType: 'stack:reorder',
+                    origin: 'grid:reorder',
+                    providerSilent: true
+                };
+
+                const metadataPromises = updatesQueue.map(update => {
+                    try {
+                        return App.updateUserMetadata(update.fileId, { stackSequence: update.newSequence }, metadataOptions);
+                    } catch (error) {
+                        return Promise.reject(error);
+                    }
+                });
+
+                Promise.allSettled(metadataPromises).then(results => {
+                    let hasErrors = false;
+                    results.forEach((result, index) => {
+                        if (result.status === 'rejected') {
+                            hasErrors = true;
+                            const failedUpdate = updatesQueue[index];
+                            const error = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+                            state.syncLog?.log({
+                                event: 'grid:reorder:error',
+                                level: 'error',
+                                fileId: failedUpdate.fileId,
+                                details: `Failed to persist reordered item: ${error.message}`,
+                                data: { stack: stackName }
+                            });
+                        }
+                    });
+
+                    if (hasErrors) {
+                        Utils.showToast('Some items could not be fully reordered. Please retry.', 'error', true);
+                    } else {
+                        Utils.showToast('Stack order updated', 'success');
+                    }
+                }).catch(error => {
+                    Utils.showToast(`Error updating stack order: ${error.message}`, 'error', true);
+                    state.syncLog?.log({
+                        event: 'grid:reorder:error',
+                        level: 'error',
+                        details: `Unexpected error persisting reordered stack: ${error.message}`,
+                        data: { stack: stackName }
+                    });
+                });
                     await App.updateUserMetadata(file.id, { stackSequence: newSequence }, {
                         skipDebounce: true,
                         operationType: 'stack:reorder',
