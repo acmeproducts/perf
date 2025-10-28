@@ -2211,6 +2211,80 @@
         class DBManager {
             constructor() {
                 this.db = null;
+                this.initPromise = null;
+            }
+            isConnectionClosingError(error) {
+                if (!error) return false;
+                if (error.name === 'InvalidStateError') {
+                    return true;
+                }
+                const message = typeof error.message === 'string' ? error.message : '';
+                return message.includes('The database connection is closing');
+            }
+            attachDatabase(db) {
+                if (this.db && this.db !== db) {
+                    try {
+                        this.db.close();
+                    } catch (closeError) {
+                        console.warn('Failed to close previous IndexedDB connection:', closeError);
+                    }
+                }
+                this.db = db;
+                if (!this.db) {
+                    return;
+                }
+                this.db.onclose = () => {
+                    this.db = null;
+                };
+                this.db.onversionchange = () => {
+                    if (this.db) {
+                        try {
+                            this.db.close();
+                        } catch (error) {
+                            console.warn('Failed to close IndexedDB on version change:', error);
+                        }
+                        this.db = null;
+                    }
+                };
+            }
+            async reopenConnection() {
+                if (this.db) {
+                    try {
+                        this.db.close();
+                    } catch (error) {
+                        console.warn('Failed to close IndexedDB connection during reopen:', error);
+                    }
+                    this.db = null;
+                }
+                await this.init();
+            }
+            async ensureConnection() {
+                if (this.db) {
+                    return this.db;
+                }
+                await this.init();
+                return this.db;
+            }
+            async withConnectionRetry(callback) {
+                let attempt = 0;
+                let lastError = null;
+                while (attempt < 2) {
+                    try {
+                        await this.ensureConnection();
+                        return await callback();
+                    } catch (error) {
+                        lastError = error;
+                        if (this.isConnectionClosingError(error) && attempt === 0) {
+                            await this.reopenConnection();
+                            attempt += 1;
+                            continue;
+                        }
+                        throw error;
+                    }
+                }
+                if (lastError) {
+                    throw lastError;
+                }
             }
             normalizeMetadata(metadata) {
                 if (!metadata || typeof metadata !== 'object') {
@@ -2303,11 +2377,20 @@
                         }
                     };
                     request.onsuccess = (event) => {
-                        this.db = event.target.result;
+                        const db = event.target.result;
+                        this.attachDatabase(db);
                         resolve();
                     };
                     request.onerror = (event) => reject(event.target.error);
+                    request.onblocked = () => {
+                        console.warn('IndexedDB upgrade blocked by another open connection.');
+                    };
                 });
+                try {
+                    await this.initPromise;
+                } finally {
+                    this.initPromise = null;
+                }
             }
             resolveFolderKey(input) {
                 if (!input) return null;
@@ -2318,9 +2401,15 @@
                 return `${providerType || 'unknown'}::${folderId}`;
             }
             async getMetadata(fileId) {
-                if (!this.db) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readonly');
+                if (!fileId) return null;
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
                     request.onsuccess = () => {
@@ -2331,19 +2420,26 @@
                         }
                         resolve(this.normalizeMetadata(record.metadata));
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to read metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async getManyMetadata(fileIds = []) {
-                if (!this.db || !Array.isArray(fileIds) || fileIds.length === 0) {
+                if (!Array.isArray(fileIds) || fileIds.length === 0) {
                     return new Map();
                 }
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readonly');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const results = new Map();
                     transaction.oncomplete = () => resolve(results);
-                    transaction.onerror = (event) => reject(event.target.error);
+                    transaction.onerror = (event) => reject(event.target.error || new Error('Failed to fetch metadata records'));
                     fileIds.forEach(fileId => {
                         if (!fileId) return;
                         const request = store.get(fileId);
@@ -2353,14 +2449,25 @@
                                 results.set(fileId, this.normalizeMetadata(record.metadata));
                             }
                         };
+                        request.onerror = () => {
+                            transaction.abort();
+                            reject(request.error || new Error('Failed to fetch metadata record'));
+                        };
                     });
                 });
+                return this.withConnectionRetry(runner);
             }
             async saveMetadata(fileId, metadata, context = {}) {
-                if (!this.db) return;
+                if (!fileId) return;
                 const folderKey = this.resolveFolderKey(context);
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const normalized = this.normalizeMetadata(metadata);
                     const record = { id: fileId, metadata: normalized };
@@ -2375,42 +2482,62 @@
                     }
                     const request = store.put(record);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to persist metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteMetadata(fileId) {
-                if (!this.db) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                if (!fileId) return;
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const request = store.delete(fileId);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to delete metadata record'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteMetadataByFolder(context) {
-                if (!this.db) return;
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('metadata', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('metadata', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('metadata');
                     const index = store.index('folderKey');
                     transaction.oncomplete = () => resolve();
+                    transaction.onerror = (event) => reject(event.target.error || new Error('Failed to delete folder metadata'));
                     const request = index.getAllKeys(IDBKeyRange.only(folderKey));
                     request.onsuccess = () => {
                         const keys = request.result || [];
                         keys.forEach(key => store.delete(key));
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to enumerate folder metadata keys'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async getFolderTimestamp(context = {}) {
-                if (!this.db) return null;
                 const key = this.resolveFolderKey(context);
                 if (!key) return null;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readonly');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readonly');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const request = store.get(key);
                     request.onsuccess = () => {
@@ -2427,17 +2554,23 @@
                             updatedAt: record.updatedAt || null
                         });
                     };
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to fetch folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async saveFolderTimestamp(context = {}, timestamp) {
-                if (!this.db) return null;
                 const key = this.resolveFolderKey(context);
                 if (!key || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
                     return null;
                 }
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const record = {
                         key,
@@ -2448,20 +2581,27 @@
                     };
                     const request = store.put(record);
                     request.onsuccess = () => resolve(record);
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to persist folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async deleteFolderTimestamp(context = {}) {
-                if (!this.db) return;
                 const key = this.resolveFolderKey(context);
                 if (!key) return;
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                const runner = () => new Promise((resolve, reject) => {
+                    let transaction;
+                    try {
+                        transaction = this.db.transaction('folderTimestamps', 'readwrite');
+                    } catch (error) {
+                        reject(error);
+                        return;
+                    }
                     const store = transaction.objectStore('folderTimestamps');
                     const request = store.delete(key);
                     request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
+                    request.onerror = () => reject(request.error || new Error('Failed to delete folder timestamp'));
                 });
+                return this.withConnectionRetry(runner);
             }
             async clearFolderData(context, fileIds = []) {
                 const targets = [];
