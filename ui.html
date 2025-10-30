@@ -290,8 +290,7 @@
         .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; }
         .center-image {
             max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; user-select: none; pointer-events: none;
-            transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.2s ease; transform-origin: center center; cursor: grab;
-            will-change: transform, opacity;
+            transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); transform-origin: center center; cursor: grab;
         }
         .center-image.dragging { filter: brightness(0.9); cursor: grabbing; }
         .center-image.zoomable { pointer-events: auto; }
@@ -491,10 +490,8 @@
         .grid-item::before { content: ""; display: block; padding-top: 100%; }
         .grid-image {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;
-            opacity: 0; transition: opacity 0.3s ease;
+            opacity: 1;
         }
-        .grid-image[data-src] { opacity: 0; }
-        .grid-image.loaded { opacity: 1; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
 
         .grid-drag-handle {
@@ -1632,80 +1629,8 @@
                         return;
                     }
 
-                    const originalTransition = img.style.transition;
-                    const originalOpacity = img.style.opacity;
-                    const globalWindow = typeof window !== 'undefined' ? window : null;
-
-                    const restoreStyles = () => {
-                        if (originalTransition) {
-                            img.style.transition = originalTransition;
-                        } else {
-                            img.style.removeProperty('transition');
-                        }
-                        if (originalOpacity) {
-                            img.style.opacity = originalOpacity;
-                        } else {
-                            img.style.removeProperty('opacity');
-                        }
-                    };
-
-                    const animateOpacity = (targetOpacity) => new Promise(animationResolve => {
-                        if (state.currentImageLoadId !== loadId) {
-                            animationResolve();
-                            return;
-                        }
-
-                        const currentOpacity = globalWindow ? globalWindow.getComputedStyle(img).opacity : img.style.opacity;
-                        if (currentOpacity === targetOpacity) {
-                            img.style.opacity = targetOpacity;
-                            animationResolve();
-                            return;
-                        }
-
-                        let timeoutId = null;
-                        const finalize = () => {
-                            img.removeEventListener('transitionend', finalize);
-                            if (timeoutId !== null) {
-                                if (globalWindow) {
-                                    globalWindow.clearTimeout(timeoutId);
-                                } else {
-                                    clearTimeout(timeoutId);
-                                }
-                            }
-                            animationResolve();
-                        };
-
-                        img.addEventListener('transitionend', finalize, { once: true });
-
-                        const raf = globalWindow?.requestAnimationFrame?.bind(globalWindow) || ((cb) => setTimeout(cb, 16));
-                        raf(() => {
-                            img.style.transition = 'opacity 140ms ease';
-                            img.style.opacity = targetOpacity;
-                        });
-
-                        if (globalWindow) {
-                            timeoutId = globalWindow.setTimeout(finalize, 180);
-                        } else {
-                            timeoutId = setTimeout(finalize, 180);
-                        }
-                    });
-
-                    const hasExistingImage = img.complete && img.naturalWidth > 0 && img.src && img.src !== url;
-
-                    if (hasExistingImage) {
-                        await animateOpacity('0');
-                        if (state.currentImageLoadId !== loadId) {
-                            restoreStyles();
-                            return;
-                        }
-                    } else {
-                        img.style.opacity = '0';
-                    }
-
+                    img.style.removeProperty('opacity');
                     img.src = url;
-
-                    await animateOpacity('1');
-                    restoreStyles();
                 };
 
                 let objectUrlUsed = null;
@@ -5344,6 +5269,7 @@
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
+                        Grid.refreshFilteredOrder(originalStackName);
                     } else {
                         const newSequence = Date.now();
                         const isRecycleStackMove = targetStack === 'trash';
@@ -5362,6 +5288,8 @@
                         item.stackSequence = newSequence;
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                        Grid.refreshFilteredOrder(originalStackName);
+                        Grid.refreshFilteredOrder(targetStack);
                     }
 
                     this.updateStackCounts();
@@ -5462,6 +5390,27 @@ this.updateImageCounters();
             }
         };
         const Grid = {
+            refreshFilteredOrder(stackName) {
+                if (!stackName) { return; }
+                if (state.grid.stack !== stackName) { return; }
+                if (state.grid.filtered.length === 0) { return; }
+
+                const stackArray = state.stacks[stackName] || [];
+                if (stackArray.length === 0) {
+                    state.grid.filtered = [];
+                    if (state.grid.lazyLoadState) {
+                        state.grid.lazyLoadState.allFiles = state.grid.filtered;
+                    }
+                    return;
+                }
+
+                const filteredIds = new Set(state.grid.filtered.map(file => file.id));
+                const reordered = stackArray.filter(file => filteredIds.has(file.id));
+                state.grid.filtered = reordered;
+                if (state.grid.lazyLoadState) {
+                    state.grid.lazyLoadState.allFiles = state.grid.filtered;
+                }
+            },
             open(stack) {
                 Utils.showModal('grid-modal');
                 this.resetDragSession();
@@ -5552,10 +5501,8 @@ this.updateImageCounters();
                     img.className = 'grid-image'; img.alt = file.name || 'Image';
                     const preferredUrl = file?.permanentThumbnailUrl || Utils.getPreferredImageUrl(file);
                     img.dataset.src = preferredUrl;
-                    img.onload = () => img.classList.add('loaded');
                     img.onerror = () => {
                         img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
-                        img.classList.add('loaded');
                     };
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     div.appendChild(img);
@@ -5931,6 +5878,8 @@ this.updateImageCounters();
                 if (state.grid.stack !== stackName) {
                     return;
                 }
+
+                this.refreshFilteredOrder(stackName);
 
                 const activeFiles = state.grid.filtered.length > 0
                     ? state.grid.filtered
