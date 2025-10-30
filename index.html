@@ -1962,9 +1962,62 @@
             constructor() {
                 this.db = null;
             }
+            normalizeCloudVersion(input) {
+                if (!input) return null;
+                if (typeof input === 'number') {
+                    const numeric = Number(input);
+                    return Number.isFinite(numeric) ? { type: 'timestamp', value: numeric } : null;
+                }
+                if (typeof input === 'string') {
+                    return input.length > 0 ? { type: 'hash', value: input } : null;
+                }
+                if (typeof input !== 'object') {
+                    return null;
+                }
+                const source = input || {};
+                let type = typeof source.type === 'string' ? source.type : null;
+                let value = source.value;
+                if (!type) {
+                    type = typeof value === 'number' ? 'timestamp' : 'hash';
+                }
+                if (type === 'timestamp') {
+                    const numeric = Number(value);
+                    if (!Number.isFinite(numeric)) {
+                        return null;
+                    }
+                    return { type: 'timestamp', value: numeric, source: source.source || null, fingerprint: source.fingerprint || null };
+                }
+                if (value == null) {
+                    return null;
+                }
+                return {
+                    type,
+                    value: String(value),
+                    source: source.source || null,
+                    fingerprint: source.fingerprint || null
+                };
+            }
+            normalizeMetadata(metadata, record = {}) {
+                if (!metadata || typeof metadata !== 'object') {
+                    return { lastUpdated: 0 };
+                }
+                const normalized = { ...metadata };
+                const numericTimestamp = Number(normalized.lastUpdated);
+                normalized.lastUpdated = Number.isFinite(numericTimestamp) ? numericTimestamp : 0;
+                if (Array.isArray(normalized.tags)) {
+                    normalized.tags = normalized.tags.slice();
+                }
+                const cloudVersion = this.normalizeCloudVersion(normalized.cloudVersion || record.cloudVersion || null);
+                if (cloudVersion) {
+                    normalized.cloudVersion = cloudVersion;
+                } else {
+                    delete normalized.cloudVersion;
+                }
+                return normalized;
+            }
             async init() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    const request = indexedDB.open('Orbital8-Goji-V1', 5);
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -1998,6 +2051,12 @@
                             const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
+                        if (oldVersion < 5 && db.objectStoreNames.contains('syncQueue')) {
+                            const syncQueueStore = request.transaction.objectStore('syncQueue');
+                            if (syncQueueStore && !syncQueueStore.indexNames.contains('fileId')) {
+                                syncQueueStore.createIndex('fileId', 'fileId', { unique: false });
+                            }
                         }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
@@ -2057,7 +2116,14 @@
                     const transaction = this.db.transaction('metadata', 'readonly');
                     const store = transaction.objectStore('metadata');
                     const request = store.get(fileId);
-                    request.onsuccess = () => resolve(request.result ? request.result.metadata : null);
+                    request.onsuccess = () => {
+                        const record = request.result;
+                        if (!record || !record.metadata) {
+                            resolve(null);
+                            return;
+                        }
+                        resolve(this.normalizeMetadata(record.metadata, record));
+                    };
                     request.onerror = () => reject(request.error);
                 });
             }
@@ -2067,7 +2133,9 @@
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
+                    const normalized = this.normalizeMetadata(metadata);
+                    const record = { id: fileId, metadata: normalized };
+                    record.cloudVersion = normalized.cloudVersion || null;
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -2118,7 +2186,8 @@
                     retryCount: operation.retryCount || 0,
                     folderId: operation.folderId || null,
                     providerType: operation.providerType || null,
-                    folderKey: operation.folderKey || null
+                    folderKey: operation.folderKey || null,
+                    hasConflict: Boolean(operation.hasConflict)
                 };
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('syncQueue', 'readwrite');
@@ -2174,6 +2243,31 @@
                 if (!this.db) return;
                 const targetIds = Array.isArray(ids) ? ids : [ids];
                 await Promise.all(targetIds.map(id => this.updateSyncQueueEntry(id, { pendingFlush: pending })));
+            }
+            async markSyncQueueEntriesConflict(ids, hasConflict = true) {
+                if (!this.db) return;
+                const targetIds = Array.isArray(ids) ? ids : [ids];
+                await Promise.all(targetIds.map(id => this.updateSyncQueueEntry(id, { hasConflict: Boolean(hasConflict) })));
+            }
+            async findSyncQueueEntriesByFileId(fileId) {
+                if (!this.db || !fileId) return [];
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('syncQueue', 'readonly');
+                    const store = transaction.objectStore('syncQueue');
+                    const hasIndex = store.indexNames && typeof store.indexNames.contains === 'function' && store.indexNames.contains('fileId');
+                    let request;
+                    if (hasIndex) {
+                        const index = store.index('fileId');
+                        request = index.getAll(IDBKeyRange.only(fileId));
+                    } else {
+                        request = store.getAll();
+                    }
+                    request.onsuccess = () => {
+                        const results = request.result || [];
+                        resolve(hasIndex ? results : results.filter(entry => entry.fileId === fileId));
+                    };
+                    request.onerror = () => reject(request.error);
+                });
             }
             async getFolderState(context) {
                 if (!this.db) return null;
@@ -2670,6 +2764,7 @@
                 this.provider = null;
                 this.providerType = null;
                 this.pendingManifestUpdates = new Map();
+                this.metadataConflicts = new Map();
                 this.lifecycleHandlers = {
                     visibility: () => this.handleVisibilityChange(),
                     pagehide: (event) => this.handlePageHide(event),
@@ -2687,6 +2782,85 @@
                     details: this.provider ? `Bound to provider ${this.providerType}` : 'Cleared provider context.'
                 });
             }
+            getMetadataConflicts() {
+                return Array.from(this.metadataConflicts.values());
+            }
+            clearMetadataConflict(fileId) {
+                if (!fileId) return;
+                this.metadataConflicts.delete(fileId);
+            }
+            async handleRemoteMetadataMerge(payload = {}) {
+                const fileId = payload.fileId;
+                if (!fileId) {
+                    return { conflict: false, queueEntries: [] };
+                }
+                const changedKeys = Array.isArray(payload.changedKeys) ? payload.changedKeys : [];
+                const conflictKeys = Array.isArray(payload.conflictKeys) ? payload.conflictKeys : [];
+                let queueEntries = [];
+                if (this.dbManager && typeof this.dbManager.findSyncQueueEntriesByFileId === 'function') {
+                    try {
+                        queueEntries = await this.dbManager.findSyncQueueEntriesByFileId(fileId);
+                    } catch (error) {
+                        this.logger?.log({
+                            event: 'metadata:conflict:inspect-error',
+                            level: 'warn',
+                            fileId,
+                            details: `Failed inspecting sync queue for conflicts: ${error.message}`
+                        });
+                    }
+                }
+                const queueIds = queueEntries.map(entry => entry.id).filter(Boolean);
+                const hasPendingBuffer = this.pendingMutations.has(fileId);
+                const hasQueuedMutations = queueEntries.some(entry => !entry.pendingFlush);
+                const conflictDetected = conflictKeys.length > 0 || hasPendingBuffer || hasQueuedMutations;
+                if (conflictDetected) {
+                    const record = {
+                        fileId,
+                        timestamp: Date.now(),
+                        changedKeys,
+                        conflictKeys,
+                        queueIds,
+                        cloudVersion: payload.cloudVersion || null,
+                        previousCloudVersion: payload.previousCloudVersion || null
+                    };
+                    this.metadataConflicts.set(fileId, record);
+                    this.logger?.log({
+                        event: 'metadata:conflict',
+                        level: 'warn',
+                        fileId,
+                        details: `Remote metadata override detected (${changedKeys.length} field${changedKeys.length === 1 ? '' : 's'}).`,
+                        data: record
+                    });
+                    if (this.dbManager && queueIds.length > 0 && typeof this.dbManager.markSyncQueueEntriesConflict === 'function') {
+                        try {
+                            await this.dbManager.markSyncQueueEntriesConflict(queueIds, true);
+                        } catch (error) {
+                            this.logger?.log({ event: 'metadata:conflict:flag-error', level: 'error', fileId, details: `Failed to flag sync queue conflict: ${error.message}` });
+                        }
+                    }
+                } else {
+                    if (this.metadataConflicts.has(fileId)) {
+                        this.metadataConflicts.delete(fileId);
+                    }
+                    if (this.dbManager && queueIds.length > 0 && typeof this.dbManager.markSyncQueueEntriesConflict === 'function') {
+                        try {
+                            await this.dbManager.markSyncQueueEntriesConflict(queueIds, false);
+                        } catch (error) {
+                            this.logger?.log({ event: 'metadata:conflict:clear-error', level: 'warn', fileId, details: `Failed to clear sync queue conflict flag: ${error.message}` });
+                        }
+                    }
+                    if (changedKeys.length > 0) {
+                        this.logger?.log({
+                            event: 'metadata:remote',
+                            level: 'info',
+                            fileId,
+                            details: `Merged remote metadata fields: ${changedKeys.join(', ')}.`,
+                            data: { cloudVersion: payload.cloudVersion || null }
+                        });
+                    }
+                }
+                return { conflict: conflictDetected, queueEntries };
+            }
             start() {
                 if (this.isActive) return;
                 document.addEventListener('visibilitychange', this.lifecycleHandlers.visibility);
@@ -2701,6 +2875,7 @@
                     this.provider = null;
                     this.providerType = null;
                     this.pendingManifestUpdates.clear();
+                    this.metadataConflicts.clear();
                     return flushResult;
                 }
                 document.removeEventListener('visibilitychange', this.lifecycleHandlers.visibility);
@@ -2710,6 +2885,7 @@
                 this.provider = null;
                 this.providerType = null;
                 this.pendingManifestUpdates.clear();
+                this.metadataConflicts.clear();
                 return flushResult;
             }
             async resumePendingQueue() {
@@ -4348,47 +4524,243 @@
                 }
             },
             async processAllMetadata(files, isFirstLoad = false) {
-                 if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
-                 for (let i = 0; i < files.length; i++) {
+                if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+                for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     try {
-                        const metadata = await state.dbManager.getMetadata(file.id);
-                        if (metadata) {
-                            Object.assign(file, metadata);
+                        const cachedMetadata = await state.dbManager.getMetadata(file.id);
+                        const cloudInsights = this.deriveCloudMetadata(file);
+                        const cloudMetadata = cloudInsights.metadata;
+                        const cloudVersion = cloudInsights.version;
+                        if (cachedMetadata) {
+                            const appliedMetadata = { ...cachedMetadata };
+                            const previousCloudVersion = cachedMetadata.cloudVersion || null;
+                            let metadataChanged = false;
+                            let mergeChangedKeys = [];
+                            let mergeConflictKeys = [];
+                            const shouldMergeCloud = this.isCloudVersionNewer(cloudVersion, previousCloudVersion);
+                            if (shouldMergeCloud && cloudMetadata && Object.keys(cloudMetadata).length > 0) {
+                                const mergeResult = this.mergeMetadataFromCloud(appliedMetadata, cloudMetadata);
+                                Object.assign(appliedMetadata, mergeResult.metadata);
+                                mergeChangedKeys = mergeResult.changedKeys;
+                                mergeConflictKeys = mergeResult.conflictKeys;
+                                metadataChanged = mergeResult.updated || metadataChanged;
+                                if (cloudVersion) {
+                                    appliedMetadata.cloudVersion = cloudVersion;
+                                    if (cloudVersion.type === 'timestamp' && Number.isFinite(cloudVersion.value)) {
+                                        appliedMetadata.lastUpdated = Math.max(appliedMetadata.lastUpdated || 0, Number(cloudVersion.value));
+                                    }
+                                    metadataChanged = true;
+                                }
+                            } else if (cloudVersion && !appliedMetadata.cloudVersion) {
+                                appliedMetadata.cloudVersion = cloudVersion;
+                                metadataChanged = true;
+                            }
+                            const normalizedTimestamp = Number(appliedMetadata.lastUpdated);
+                            appliedMetadata.lastUpdated = Number.isFinite(normalizedTimestamp) ? normalizedTimestamp : 0;
+                            Object.assign(file, appliedMetadata);
+                            if (cloudVersion) {
+                                file.cloudVersion = cloudVersion;
+                            }
+                            if (metadataChanged) {
+                                await state.dbManager.saveMetadata(file.id, appliedMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
+                            }
+                            if (mergeChangedKeys.length > 0 && state.syncManager && typeof state.syncManager.handleRemoteMetadataMerge === 'function') {
+                                try {
+                                    await state.syncManager.handleRemoteMetadataMerge({
+                                        fileId: file.id,
+                                        cloudVersion,
+                                        changedKeys: mergeChangedKeys,
+                                        conflictKeys: mergeConflictKeys,
+                                        remoteMetadata: cloudMetadata,
+                                        mergedMetadata: appliedMetadata,
+                                        previousMetadata: cachedMetadata,
+                                        previousCloudVersion
+                                    });
+                                } catch (error) {
+                                    console.warn(`Failed to report metadata merge for ${file.id}:`, error);
+                                }
+                            }
                         } else {
-                            const defaultMetadata = this.generateDefaultMetadata(file);
+                            const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length, cloudMetadata, cloudVersion });
                             Object.assign(file, defaultMetadata);
                             await state.dbManager.saveMetadata(file.id, defaultMetadata, { folderId: state.currentFolder.id, providerType: state.providerType });
                         }
                     } catch (error) {
                         console.error(`Failed to process metadata for ${file.name}:`, error);
                     }
-                    if(isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+                    if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
                 }
                 this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
             },
-            generateDefaultMetadata(file) {
-                 const baseMetadata = { 
-                    stack: 'in', 
-                    tags: [], 
-                    qualityRating: 0, 
-                    contentRating: 0, 
-                    notes: '', 
-                    stackSequence: 0, 
+            generateDefaultMetadata(file, context = {}) {
+                const baseMetadata = {
+                    stack: 'in',
+                    tags: [],
+                    qualityRating: 0,
+                    contentRating: 0,
+                    notes: '',
+                    stackSequence: 0,
                     favorite: false,
-                    extractedMetadata: {}, 
-                    metadataStatus: 'pending' 
+                    extractedMetadata: {},
+                    metadataStatus: 'pending',
+                    lastUpdated: 0
                 };
-                 if (state.providerType === 'googledrive' && file.appProperties) {
-                    baseMetadata.stack = file.appProperties.slideboxStack || 'in';
-                    baseMetadata.tags = file.appProperties.slideboxTags ? file.appProperties.slideboxTags.split(',').map(t => t.trim()) : [];
-                    baseMetadata.qualityRating = parseInt(file.appProperties.qualityRating) || 0;
-                    baseMetadata.contentRating = parseInt(file.appProperties.contentRating) || 0;
-                    baseMetadata.notes = file.appProperties.notes || '';
-                    baseMetadata.stackSequence = parseInt(file.appProperties.stackSequence) || 0;
-                    baseMetadata.favorite = file.appProperties.favorite === 'true';
-                 }
-                 return baseMetadata;
+                const directTimestamp = Number(file?.lastUpdated);
+                if (Number.isFinite(directTimestamp)) {
+                    baseMetadata.lastUpdated = directTimestamp;
+                }
+                let cloudMetadata = context.cloudMetadata;
+                let cloudVersion = context.cloudVersion;
+                if (!cloudMetadata) {
+                    const insights = this.deriveCloudMetadata(file);
+                    cloudMetadata = insights.metadata;
+                    cloudVersion = insights.version;
+                }
+                if (cloudMetadata && Object.keys(cloudMetadata).length > 0) {
+                    Object.entries(cloudMetadata).forEach(([key, value]) => {
+                        if (value === undefined) return;
+                        baseMetadata[key] = Array.isArray(value) ? value.slice() : value;
+                    });
+                }
+                if (cloudVersion) {
+                    baseMetadata.cloudVersion = cloudVersion;
+                    if (cloudVersion.type === 'timestamp' && Number.isFinite(cloudVersion.value)) {
+                        baseMetadata.lastUpdated = Math.max(baseMetadata.lastUpdated || 0, Number(cloudVersion.value));
+                    }
+                }
+                return baseMetadata;
+            },
+            deriveCloudMetadata(file) {
+                const result = { metadata: {}, version: null };
+                if (state.providerType === 'googledrive' && file?.appProperties) {
+                    const props = file.appProperties || {};
+                    const metadata = {};
+                    if (props.slideboxStack) metadata.stack = props.slideboxStack;
+                    if (props.slideboxTags) {
+                        metadata.tags = props.slideboxTags.split(',').map(tag => tag.trim()).filter(Boolean);
+                    }
+                    if (props.qualityRating != null) metadata.qualityRating = parseInt(props.qualityRating, 10) || 0;
+                    if (props.contentRating != null) metadata.contentRating = parseInt(props.contentRating, 10) || 0;
+                    if (props.notes != null) metadata.notes = props.notes;
+                    if (props.stackSequence != null) metadata.stackSequence = parseInt(props.stackSequence, 10) || 0;
+                    if (props.favorite != null) metadata.favorite = props.favorite === 'true' || props.favorite === true;
+                    const timestampCandidates = [
+                        { key: 'orbital8FileUpdated', value: props.orbital8FileUpdated },
+                        { key: 'orbital8LastUpdated', value: props.orbital8LastUpdated },
+                        { key: 'slideboxLastUpdated', value: props.slideboxLastUpdated },
+                        { key: 'slideboxUpdatedAt', value: props.slideboxUpdatedAt },
+                        { key: 'lastUpdated', value: props.lastUpdated }
+                    ];
+                    let bestTimestamp = null;
+                    let bestKey = null;
+                    for (const candidate of timestampCandidates) {
+                        const numeric = Number(candidate.value);
+                        if (Number.isFinite(numeric) && (bestTimestamp == null || numeric > bestTimestamp)) {
+                            bestTimestamp = numeric;
+                            bestKey = candidate.key;
+                        }
+                    }
+                    if (bestTimestamp != null) {
+                        metadata.lastUpdated = bestTimestamp;
+                    }
+                    const fingerprintSource = {
+                        stack: metadata.stack ?? null,
+                        tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+                        qualityRating: metadata.qualityRating ?? 0,
+                        contentRating: metadata.contentRating ?? 0,
+                        notes: metadata.notes ?? '',
+                        stackSequence: metadata.stackSequence ?? 0,
+                        favorite: metadata.favorite ?? false,
+                        lastUpdated: metadata.lastUpdated ?? null
+                    };
+                    const fingerprint = this.computeMetadataFingerprint(fingerprintSource);
+                    result.metadata = metadata;
+                    if (bestTimestamp != null) {
+                        result.version = { type: 'timestamp', value: bestTimestamp, source: bestKey, fingerprint };
+                    } else {
+                        result.version = { type: 'hash', value: fingerprint, source: 'appProperties', fingerprint };
+                    }
+                }
+                return result;
+            },
+            computeMetadataFingerprint(payload) {
+                if (!payload || typeof payload !== 'object') {
+                    return 'v0';
+                }
+                const entries = Object.keys(payload).sort().map(key => {
+                    const value = payload[key];
+                    return `${key}:${JSON.stringify(value)}`;
+                });
+                const seed = entries.join('|');
+                let hash = 0;
+                for (let i = 0; i < seed.length; i++) {
+                    hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+                    hash |= 0;
+                }
+                return `v${Math.abs(hash)}`;
+            },
+            isCloudVersionNewer(candidate, baseline) {
+                if (!candidate) return false;
+                if (!baseline) return true;
+                const candidateType = candidate.type || (typeof candidate.value === 'number' ? 'timestamp' : 'hash');
+                const baselineType = baseline.type || (typeof baseline.value === 'number' ? 'timestamp' : 'hash');
+                if (candidateType === 'timestamp' && baselineType === 'timestamp') {
+                    const candidateValue = Number(candidate.value);
+                    const baselineValue = Number(baseline.value);
+                    if (!Number.isFinite(candidateValue)) return false;
+                    if (!Number.isFinite(baselineValue)) return true;
+                    return candidateValue > baselineValue;
+                }
+                if (candidateType === baselineType) {
+                    return candidate.value !== baseline.value;
+                }
+                return true;
+            },
+            mergeMetadataFromCloud(localMetadata, remoteMetadata) {
+                const metadata = { ...localMetadata };
+                const changedKeys = [];
+                const conflictKeys = [];
+                let updated = false;
+                if (!remoteMetadata || typeof remoteMetadata !== 'object') {
+                    return { metadata, changedKeys, conflictKeys, updated };
+                }
+                const conflictSafeKeys = new Set(['lastUpdated']);
+                Object.entries(remoteMetadata).forEach(([key, remoteValue]) => {
+                    if (remoteValue === undefined) return;
+                    const localValue = metadata[key];
+                    if (this.areMetadataValuesEqual(localValue, remoteValue)) {
+                        return;
+                    }
+                    metadata[key] = Array.isArray(remoteValue) ? remoteValue.slice() : remoteValue;
+                    changedKeys.push(key);
+                    updated = true;
+                    if (this.hasMeaningfulLocalValue(localValue) && !conflictSafeKeys.has(key)) {
+                        conflictKeys.push(key);
+                    }
+                });
+                return { metadata, changedKeys, conflictKeys, updated };
+            },
+            areMetadataValuesEqual(a, b) {
+                if (Array.isArray(a) || Array.isArray(b)) {
+                    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+                    if (a.length !== b.length) return false;
+                    for (let i = 0; i < a.length; i++) {
+                        if (a[i] !== b[i]) return false;
+                    }
+                    return true;
+                }
+                if (a instanceof Date || b instanceof Date) {
+                    return Number(a) === Number(b);
+                }
+                return a === b;
+            },
+            hasMeaningfulLocalValue(value) {
+                if (value == null) return false;
+                if (Array.isArray(value)) return value.length > 0;
+                if (typeof value === 'string') return value.trim().length > 0;
+                if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+                return true;
             },
             switchToCommonUI() {
                 Utils.showScreen('app-container');
