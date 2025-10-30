@@ -1141,6 +1141,7 @@
             isImageTransitioning: false,
             showDebugToasts: true,
             folderSearchDataset: [],
+            folderSearchResults: [],
             folderSearchTerm: '',
             folderTimestamps: new Map(),
             imageUrlCache: new Map()
@@ -3280,7 +3281,9 @@
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
-                this.folderImageCountCache = new Map();
+                this.currentParentId = 'root';
+                this.currentParentPath = '';
+                this.breadcrumb = [];
                 this.loadStoredCredentials();
             }
             normalizeDriveFileMetadata(file, options = {}) {
@@ -3444,94 +3447,139 @@
                 return response;
             }
             async getFolders() {
-                const allFolders = [];
-                let nextPageToken = null;
+                const startFolderId = state?.currentFolder?.id || 'root';
+                const startFolderName = state?.currentFolder?.name || 'My Drive';
 
-                do {
-                    let url = '/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime,appProperties),nextPageToken&pageSize=100&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true';
-                    if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
+                try {
+                    await this.initializeBreadcrumb(startFolderId, startFolderName);
+                } catch (error) {
+                    console.warn('Failed to initialize Google Drive breadcrumb, falling back to root.', error);
+                    this.breadcrumb = [{ id: 'root', name: 'My Drive' }];
+                    this.currentParentId = 'root';
+                }
 
-                    const response = await this.makeApiCall(url);
-                    const folders = Array.isArray(response.files) ? response.files : [];
-                    allFolders.push(...folders);
-                    nextPageToken = response.nextPageToken;
-                } while (nextPageToken);
+                this.updateCurrentPath();
+                return await this.loadFoldersInParent(this.currentParentId || 'root');
+            }
+            updateCurrentPath() {
+                if (!Array.isArray(this.breadcrumb) || this.breadcrumb.length === 0) {
+                    this.currentParentPath = '';
+                    return;
+                }
+                this.currentParentPath = this.breadcrumb.map(item => item?.name || 'Untitled').join(' / ');
+            }
+            async initializeBreadcrumb(startFolderId, startFolderName) {
+                if (!startFolderId || startFolderId === 'root') {
+                    this.breadcrumb = [{ id: 'root', name: 'My Drive' }];
+                    this.currentParentId = 'root';
+                    return;
+                }
 
-                const normalized = allFolders.map(folder => ({
+                const seen = new Set();
+                const chain = [];
+                let currentId = startFolderId;
+                let iterations = 0;
+
+                while (currentId && iterations < 10) {
+                    if (seen.has(currentId)) { break; }
+                    seen.add(currentId);
+                    iterations += 1;
+
+                    try {
+                        const response = await this.makeApiCall(`/files/${currentId}?fields=id,name,parents&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+                        if (!response) { break; }
+                        chain.unshift({ id: response.id, name: response.name || startFolderName || 'Folder' });
+
+                        const parents = Array.isArray(response.parents) ? response.parents : [];
+                        const nextParent = parents[0];
+                        if (!nextParent) { break; }
+                        if (nextParent === 'root') {
+                            chain.unshift({ id: 'root', name: 'My Drive' });
+                            break;
+                        }
+                        currentId = nextParent;
+                    } catch (error) {
+                        console.warn('Failed to load Google Drive folder metadata', error);
+                        break;
+                    }
+                }
+
+                if (chain.length === 0) {
+                    chain.push({ id: startFolderId, name: startFolderName || 'Folder' });
+                }
+
+                this.breadcrumb = chain;
+                this.currentParentId = startFolderId;
+            }
+            normalizeFolderList(folders = []) {
+                const normalized = Array.isArray(folders) ? folders.map(folder => ({
                     id: folder.id,
                     name: folder.name,
                     type: 'folder',
                     createdTime: folder.createdTime,
                     modifiedTime: folder.modifiedTime,
-                    itemCount: 0, // Google Drive API doesn't provide this in the list call
-                    hasChildren: false, // Assume false to not show a non-functional 'Browse' button
-                    appProperties: folder.appProperties || {}
-                }));
-
-                return await this.annotateFoldersWithImageCounts(normalized);
+                    appProperties: folder.appProperties || {},
+                    hasChildren: true
+                })) : [];
+                return normalized.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
             }
-            async annotateFoldersWithImageCounts(folders = []) {
-                if (!Array.isArray(folders) || folders.length === 0) {
-                    return Array.isArray(folders) ? folders.slice() : [];
-                }
+            async loadFoldersInParent(parentId) {
+                if (!parentId) { parentId = 'root'; }
+                this.currentParentId = parentId;
 
-                const results = folders.map(folder => ({ ...folder }));
-                let index = 0;
-                const maxConcurrency = Math.min(4, folders.length);
-                const workers = Array.from({ length: maxConcurrency }, () => (async () => {
-                    while (index < folders.length) {
-                        const currentIndex = index++;
-                        const sourceFolder = folders[currentIndex];
-                        const targetFolder = results[currentIndex];
-                        if (!sourceFolder || !sourceFolder.id) {
-                            continue;
-                        }
-
-                        try {
-                            const imageCount = await this.getImageCountForFolder(sourceFolder.id);
-                            targetFolder.imageCount = imageCount;
-                            targetFolder.itemCount = imageCount;
-                        } catch (error) {
-                            console.warn(`Failed to load image count for folder ${sourceFolder.id}:`, error);
-                        }
-                    }
-                })());
-
-                await Promise.all(workers);
-                return results;
-            }
-            async getImageCountForFolder(folderId) {
-                if (!folderId) { return 0; }
-                if (this.folderImageCountCache.has(folderId)) {
-                    return this.folderImageCountCache.get(folderId);
-                }
-
-                let count = 0;
+                const query = `mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
+                const fields = 'files(id,name,createdTime,modifiedTime,appProperties),nextPageToken';
+                const results = [];
                 let nextPageToken = null;
-                const baseQuery = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
 
                 do {
-                    let url = `/files?q=${encodeURIComponent(baseQuery)}&fields=files(mimeType,shortcutDetails(targetMimeType,targetResourceKey)),nextPageToken&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-                    if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                    if (nextPageToken) {
+                        url += `&pageToken=${nextPageToken}`;
+                    }
 
                     const response = await this.makeApiCall(url);
-                    const files = Array.isArray(response.files) ? response.files : [];
-
-                    files.forEach(file => {
-                        if (file?.mimeType?.startsWith('image/')) {
-                            count += 1;
-                            return;
-                        }
-                        if (file?.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails?.targetMimeType?.startsWith('image/')) {
-                            count += 1;
-                        }
-                    });
-
-                    nextPageToken = response.nextPageToken || null;
+                    const folders = Array.isArray(response?.files) ? response.files : [];
+                    results.push(...folders);
+                    nextPageToken = response?.nextPageToken || null;
                 } while (nextPageToken);
 
-                this.folderImageCountCache.set(folderId, count);
-                return count;
+                return this.normalizeFolderList(results);
+            }
+            async drillIntoFolder(folder) {
+                if (!folder || !folder.id) { return []; }
+                this.breadcrumb.push({ id: folder.id, name: folder.name || 'Untitled folder' });
+                this.updateCurrentPath();
+                return await this.loadFoldersInParent(folder.id);
+            }
+            async navigateToParent() {
+                if (!Array.isArray(this.breadcrumb) || this.breadcrumb.length <= 1) {
+                    this.breadcrumb = this.breadcrumb && this.breadcrumb.length > 0 ? this.breadcrumb : [{ id: 'root', name: 'My Drive' }];
+                    this.updateCurrentPath();
+                    return await this.loadFoldersInParent(this.breadcrumb[0]?.id || 'root');
+                }
+
+                this.breadcrumb.pop();
+                const parent = this.breadcrumb[this.breadcrumb.length - 1];
+                this.currentParentId = parent?.id || 'root';
+                this.updateCurrentPath();
+                return await this.loadFoldersInParent(this.currentParentId);
+            }
+            getCurrentPath() {
+                return this.currentParentPath || '';
+            }
+            canGoUp() {
+                return Array.isArray(this.breadcrumb) && this.breadcrumb.length > 1;
+            }
+            async searchFolders(term) {
+                if (!term) { return []; }
+                const sanitizedTerm = term.replace(/'/g, "\\'");
+                const query = `mimeType='application/vnd.google-apps.folder' and trashed=false and name contains '${sanitizedTerm}'`;
+                const fields = 'files(id,name,createdTime,modifiedTime,appProperties),nextPageToken';
+                const url = `/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=name&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                const response = await this.makeApiCall(url);
+                const folders = Array.isArray(response?.files) ? response.files : [];
+                return this.normalizeFolderList(folders);
             }
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = [];
@@ -6853,6 +6901,8 @@ this.updateImageCounters();
             }
         };
         const Folders = {
+            searchDebounceTimer: null,
+            searchRequestId: 0,
             async load() {
                 const { folderList, folderTitle } = Utils.elements;
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
@@ -6873,18 +6923,25 @@ this.updateImageCounters();
                 }
             },
 
+            sortFolders(folders = []) {
+                if (!Array.isArray(folders)) { return []; }
+                return folders
+                    .slice()
+                    .sort((a, b) => (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base' }));
+            },
             display(folders) {
                 const { folderList } = Utils.elements;
-                this.setSearchDataset(folders);
+                const sortedFolders = this.sortFolders(folders);
+                this.setSearchDataset(sortedFolders);
                 this.resetSearch({ keepInput: false });
                 folderList.innerHTML = '';
-                if (!folders || folders.length === 0) {
+                if (!sortedFolders || sortedFolders.length === 0) {
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
                     this.handleSearchInput('');
                     return;
                 }
 
-                folders.forEach(folder => {
+                sortedFolders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
 
@@ -6975,16 +7032,26 @@ this.updateImageCounters();
                 const { folderSearchContainer } = Utils.elements;
                 if (!folderSearchContainer) return;
                 const hasFolders = Array.isArray(state.folderSearchDataset) && state.folderSearchDataset.length > 0;
-                folderSearchContainer.classList.toggle('hidden', !hasFolders);
+                const supportsSearch = typeof state.provider?.searchFolders === 'function';
+                folderSearchContainer.classList.toggle('hidden', !(hasFolders || supportsSearch));
             },
 
+            cancelPendingSearch() {
+                this.searchRequestId += 1;
+                if (this.searchDebounceTimer) {
+                    clearTimeout(this.searchDebounceTimer);
+                    this.searchDebounceTimer = null;
+                }
+            },
             resetSearch(options = {}) {
                 const { keepInput = false } = options;
+                this.cancelPendingSearch();
                 const { folderSearchInput, folderSearchResults } = Utils.elements;
                 if (!keepInput && folderSearchInput) {
                     folderSearchInput.value = '';
                 }
                 state.folderSearchTerm = keepInput && folderSearchInput ? folderSearchInput.value : '';
+                state.folderSearchResults = [];
                 if (folderSearchResults) {
                     folderSearchResults.innerHTML = '';
                     folderSearchResults.classList.add('hidden');
@@ -6995,19 +7062,49 @@ this.updateImageCounters();
                 const { folderSearchResults } = Utils.elements;
                 if (!folderSearchResults) return;
                 state.folderSearchTerm = term;
-                const query = term.trim().toLowerCase();
-                if (!query) {
+                const trimmedTerm = term.trim();
+                const normalizedQuery = trimmedTerm.toLowerCase();
+                if (!normalizedQuery) {
+                    this.cancelPendingSearch();
+                    state.folderSearchResults = [];
                     folderSearchResults.innerHTML = '';
                     folderSearchResults.classList.add('hidden');
                     return;
                 }
 
-                const matches = (state.folderSearchDataset || []).filter(folder => {
-                    if (!folder || !folder.name) return false;
-                    return folder.name.toLowerCase().includes(query);
-                });
+                if (typeof state.provider?.searchFolders === 'function') {
+                    this.queueRemoteSearch(trimmedTerm);
+                } else {
+                    const matches = (state.folderSearchDataset || [])
+                        .filter(folder => folder?.name && folder.name.toLowerCase().includes(normalizedQuery));
+                    const sortedMatches = this.sortFolders(matches);
+                    state.folderSearchResults = sortedMatches;
+                    this.renderSearchResults(sortedMatches.slice(0, OMNI_SEARCH_RESULT_LIMIT));
+                }
+            },
 
-                this.renderSearchResults(matches.slice(0, OMNI_SEARCH_RESULT_LIMIT));
+            queueRemoteSearch(query) {
+                const term = query.trim();
+                this.cancelPendingSearch();
+                const requestId = ++this.searchRequestId;
+                this.searchDebounceTimer = setTimeout(() => {
+                    this.executeRemoteSearch(term, requestId);
+                }, 250);
+            },
+
+            async executeRemoteSearch(term, requestId) {
+                try {
+                    const results = await state.provider.searchFolders(term);
+                    if (this.searchRequestId !== requestId) { return; }
+                    const sorted = this.sortFolders(results || []);
+                    state.folderSearchResults = sorted;
+                    this.renderSearchResults(sorted.slice(0, OMNI_SEARCH_RESULT_LIMIT));
+                } catch (error) {
+                    if (this.searchRequestId !== requestId) { return; }
+                    console.warn('Folder search failed', error);
+                    state.folderSearchResults = [];
+                    this.renderSearchResults([]);
+                }
             },
 
             renderSearchResults(folders = []) {
@@ -7051,13 +7148,6 @@ this.updateImageCounters();
 
             formatFolderMeta(folder) {
                 const parts = [];
-                const itemCountRaw = folder?.imageCount ?? folder?.itemCount;
-                const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
-                if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
-                    const label = itemCount === 1 ? 'image' : 'images';
-                    parts.push(`${itemCount} ${label}`);
-                }
-
                 let timestampValue = null;
                 if (typeof folder?.lastUpdated === 'number' && Number.isFinite(folder.lastUpdated)) {
                     timestampValue = folder.lastUpdated;
@@ -7087,7 +7177,7 @@ this.updateImageCounters();
                     parts.push('Contains subfolders');
                 }
 
-                return parts.length > 0 ? parts.join(' • ') : 'No recent activity';
+                return parts.length > 0 ? parts.join(' • ') : 'Folder';
             },
 
             handleSearchSelection(folder) {
