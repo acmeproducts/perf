@@ -128,6 +128,29 @@
         .status.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
         .status.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
         .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
+        .last-folder-banner {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            margin-bottom: 16px;
+        }
+        .last-folder-banner.hidden { display: none; }
+        .last-folder-link {
+            color: var(--accent);
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .last-folder-link:hover { text-decoration: underline; }
+        .last-folder-meta {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+        }
         .folder-card {
             max-height: 80vh;
             display: flex;
@@ -142,6 +165,21 @@
         .folder-card .subtitle {
             margin-bottom: 0;
             color: rgba(255, 255, 255, 0.65);
+        }
+        .folder-card .last-folder-banner {
+            align-items: flex-start;
+            text-align: left;
+            gap: 6px;
+        }
+        .folder-card .last-folder-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            width: 100%;
+        }
+        .folder-card .last-folder-meta {
+            margin-top: 0;
         }
         .folder-card .omni-search-container {
             margin-bottom: 12px;
@@ -841,6 +879,13 @@
                 <input type="text" class="input omni-search-input" id="folder-search-input" placeholder="Search folders..." autocomplete="off">
                 <div class="omni-search-results hidden" id="folder-search-results" role="listbox"></div>
             </div>
+            <div class="last-folder-banner hidden" id="last-folder-banner">
+                <div class="last-folder-row">
+                    <span class="last-folder-label">Last folder:</span>
+                    <a class="last-folder-link" id="last-folder-link" href="#"></a>
+                </div>
+                <span class="last-folder-meta" id="last-folder-meta"></span>
+            </div>
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-controls">
                 <button class="folder-button" id="folder-refresh-button">Refresh</button>
@@ -1113,6 +1158,23 @@
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const SHARE_URL_TEMPLATE = "https://drive.google.com/file/d/${fileId}/view?usp=sharing";
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
+        const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const loadLastFolderFromStorage = () => {
+            if (typeof localStorage === 'undefined') {
+                return null;
+            }
+            try {
+                const raw = localStorage.getItem(LAST_FOLDER_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.folderId && parsed.providerType) {
+                    return parsed;
+                }
+            } catch (error) {
+                console.warn('Failed to load last folder from storage:', error);
+            }
+            return null;
+        };
         const createDefaultGridDragSession = () => ({
             active: false,
             pointerId: null,
@@ -1144,7 +1206,8 @@
             folderSearchResults: [],
             folderSearchTerm: '',
             folderTimestamps: new Map(),
-            imageUrlCache: new Map()
+            imageUrlCache: new Map(),
+            lastPickedFolder: loadLastFolderFromStorage()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -1318,6 +1381,9 @@
                     folderSearchContainer: document.getElementById('folder-search-container'),
                     folderSearchInput: document.getElementById('folder-search-input'),
                     folderSearchResults: document.getElementById('folder-search-results'),
+                    lastFolderBanner: document.getElementById('last-folder-banner'),
+                    lastFolderLink: document.getElementById('last-folder-link'),
+                    lastFolderMeta: document.getElementById('last-folder-meta'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
@@ -4591,6 +4657,73 @@
             },
             switchToCommonUI() {
                 Utils.showScreen('app-container');
+                this.persistLastPickedFolder();
+            },
+            persistLastPickedFolder() {
+                if (!state.currentFolder?.id || !state.providerType) {
+                    return;
+                }
+
+                const files = Array.isArray(state.imageFiles) ? state.imageFiles : [];
+                const fileCount = files.length;
+                let latestTimestamp = null;
+
+                for (const file of files) {
+                    const candidate = file?.modifiedTime || file?.createdTime || file?.lastUpdated || null;
+                    if (candidate == null) {
+                        continue;
+                    }
+
+                    let parsed = null;
+                    if (typeof candidate === 'number') {
+                        parsed = Number(candidate);
+                    } else if (typeof candidate === 'string') {
+                        const numeric = Number(candidate);
+                        if (Number.isFinite(numeric)) {
+                            parsed = numeric;
+                        } else {
+                            const dateValue = Date.parse(candidate);
+                            if (!Number.isNaN(dateValue)) {
+                                parsed = dateValue;
+                            }
+                        }
+                    }
+
+                    if (parsed == null || Number.isNaN(parsed)) {
+                        const fallback = Date.parse(String(candidate));
+                        parsed = Number.isNaN(fallback) ? null : fallback;
+                    }
+
+                    if (parsed != null && Number.isFinite(parsed)) {
+                        if (latestTimestamp == null || parsed > latestTimestamp) {
+                            latestTimestamp = parsed;
+                        }
+                    }
+                }
+
+                if (latestTimestamp == null) {
+                    latestTimestamp = Date.now();
+                }
+
+                const payload = {
+                    providerType: state.providerType,
+                    folderId: state.currentFolder.id,
+                    folderName: state.currentFolder.name || '',
+                    fileCount,
+                    lastUpdated: new Date(latestTimestamp).toISOString()
+                };
+
+                state.lastPickedFolder = payload;
+
+                if (typeof localStorage !== 'undefined') {
+                    try {
+                        localStorage.setItem(LAST_FOLDER_STORAGE_KEY, JSON.stringify(payload));
+                    } catch (error) {
+                        console.warn('Failed to persist last folder:', error);
+                    }
+                }
+
+                Folders.updateLastFolderBanner();
             },
             isNavigationActive(token = null) {
                 if (state.isReturningToFolders) {
@@ -6913,6 +7046,7 @@ this.updateImageCounters();
                     const folders = await state.provider.getFolders();
                     this.display(folders);
                     this.updateNavigation();
+                    this.updateLastFolderBanner();
                 } catch (error) {
                     Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">
@@ -7194,6 +7328,65 @@ this.updateImageCounters();
                 App.initializeWithProvider(state.providerType, folder.id, folder.name || '', state.provider);
             },
 
+            handleLastFolderClick() {
+                const lastFolder = state.lastPickedFolder;
+                if (!lastFolder || !lastFolder.folderId) {
+                    return;
+                }
+                if (lastFolder.providerType && lastFolder.providerType !== state.providerType) {
+                    Utils.showToast('Switch to the saved provider to reopen this folder.', 'info');
+                    return;
+                }
+                if (!state.provider) {
+                    Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
+                    return;
+                }
+                if (state.folderMoveMode.active) {
+                    this.handleFolderMoveSelection(lastFolder.folderId, lastFolder.folderName || '');
+                    return;
+                }
+                App.initializeWithProvider(state.providerType, lastFolder.folderId, lastFolder.folderName || '', state.provider);
+            },
+
+            updateLastFolderBanner() {
+                const { lastFolderBanner, lastFolderLink, lastFolderMeta } = Utils.elements;
+                if (!lastFolderBanner || !lastFolderLink) return;
+
+                const data = state.lastPickedFolder;
+                if (!data || !data.folderId || (data.providerType && data.providerType !== state.providerType)) {
+                    lastFolderBanner.classList.add('hidden');
+                    lastFolderLink.textContent = '';
+                    lastFolderLink.removeAttribute('data-folder-id');
+                    lastFolderLink.removeAttribute('data-provider-type');
+                    if (lastFolderMeta) {
+                        lastFolderMeta.textContent = '';
+                    }
+                    return;
+                }
+
+                lastFolderBanner.classList.remove('hidden');
+                lastFolderLink.textContent = data.folderName || 'Untitled folder';
+                lastFolderLink.setAttribute('data-folder-id', data.folderId);
+                lastFolderLink.setAttribute('data-provider-type', data.providerType || '');
+
+                if (lastFolderMeta) {
+                    const parts = [];
+                    const countRaw = data.fileCount;
+                    const count = typeof countRaw === 'number' ? countRaw : parseInt(countRaw, 10);
+                    if (!Number.isNaN(count) && Number.isFinite(count)) {
+                        const label = count === 1 ? 'image' : 'images';
+                        parts.push(`${count} ${label}`);
+                    }
+                    if (data.lastUpdated) {
+                        const parsed = Date.parse(data.lastUpdated);
+                        if (!Number.isNaN(parsed)) {
+                            parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
+                        }
+                    }
+                    lastFolderMeta.textContent = parts.join(' • ');
+                }
+            },
+
             updateNavigation() {
                 const { folderSubtitle, folderRefreshButton } = Utils.elements;
                 const provider = state.provider;
@@ -7463,6 +7656,7 @@ this.updateImageCounters();
                             const folders = await provider.navigateToParent();
                             Folders.display(folders);
                             Folders.updateNavigation();
+                            Folders.updateLastFolderBanner();
                         } else {
                             await Folders.load();
                         }
@@ -7470,6 +7664,14 @@ this.updateImageCounters();
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
                 });
+
+                const { lastFolderLink } = Utils.elements;
+                if (lastFolderLink) {
+                    lastFolderLink.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        Folders.handleLastFolderClick();
+                    });
+                }
 
             },
             setupFolderSearch() {
