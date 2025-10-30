@@ -5392,23 +5392,46 @@ this.updateImageCounters();
         const Grid = {
             refreshFilteredOrder(stackName) {
                 if (!stackName) { return; }
-                if (state.grid.stack !== stackName) { return; }
-                if (state.grid.filtered.length === 0) { return; }
 
+                const isActiveStack = state.grid.stack === stackName;
                 const stackArray = state.stacks[stackName] || [];
+
                 if (stackArray.length === 0) {
-                    state.grid.filtered = [];
+                    if (state.grid.filtered.length > 0) {
+                        state.grid.filtered = [];
+                    }
+                    if (isActiveStack && state.grid.lazyLoadState) {
+                        state.grid.lazyLoadState.allFiles = [];
+                        if (Utils.elements.gridContainer) {
+                            Utils.elements.gridContainer.innerHTML = '';
+                        }
+                    }
+                    return;
+                }
+
+                if (state.grid.filtered.length > 0) {
+                    const filteredIds = new Set(state.grid.filtered.map(file => file.id));
+                    const reordered = stackArray.filter(file => filteredIds.has(file.id));
+                    state.grid.filtered = reordered;
                     if (state.grid.lazyLoadState) {
                         state.grid.lazyLoadState.allFiles = state.grid.filtered;
                     }
                     return;
                 }
 
-                const filteredIds = new Set(state.grid.filtered.map(file => file.id));
-                const reordered = stackArray.filter(file => filteredIds.has(file.id));
-                state.grid.filtered = reordered;
+                if (!isActiveStack) { return; }
+
                 if (state.grid.lazyLoadState) {
-                    state.grid.lazyLoadState.allFiles = state.grid.filtered;
+                    state.grid.lazyLoadState.allFiles = stackArray;
+                }
+
+                const gridModal = Utils.elements.gridModal;
+                const gridContainer = Utils.elements.gridContainer;
+                const isModalHidden = !gridModal || gridModal.classList.contains('hidden');
+
+                if (gridContainer && !isModalHidden) {
+                    gridContainer.innerHTML = '';
+                    this.initializeLazyLoad(stackName, stackArray);
                 }
             },
             open(stack) {
