@@ -1130,7 +1130,7 @@
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
-                dragSession: createDefaultGridDragSession(),
+                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
@@ -5067,6 +5067,7 @@ this.updateImageCounters();
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
                 state.grid.stack = stack;
                 state.grid.isDirty = false;
+                state.grid.skipReorderOnClose = false;
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
                 state.grid.selected = []; state.grid.filtered = [];
@@ -5079,8 +5080,11 @@ this.updateImageCounters();
             async close() {
                 this.clearDragState();
                 try {
-                    if (state.grid.isDirty) {
+                    const shouldReorder = state.grid.isDirty && !state.grid.skipReorderOnClose;
+                    if (shouldReorder) {
                         await this.reorderStackOnClose();
+                    } else {
+                        state.grid.isDirty = false;
                     }
                     const selectedBeforeReset = [...state.grid.selected];
                     Utils.hideModal('grid-modal');
@@ -5094,8 +5098,10 @@ this.updateImageCounters();
                     }
                     await Core.displayCurrentImage();
                     state.grid.stack = null; state.grid.selected = [];
+                    state.grid.skipReorderOnClose = false;
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
+                    state.grid.skipReorderOnClose = false;
                 }
             },
 
@@ -5445,6 +5451,7 @@ this.updateImageCounters();
                 if (index === -1) { state.grid.selected.push(fileId); gridItem.classList.add('selected');
                 } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
                 state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = false;
                 this.updateSelectionUI();
             },
             
@@ -5463,12 +5470,14 @@ this.updateImageCounters();
                     item.classList.add('selected');
                 });
                 state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = false;
                 this.updateSelectionUI();
             },
-            
+
             deselectAll() {
                 document.querySelectorAll('#grid-container .grid-item.selected').forEach(item => item.classList.remove('selected') );
                 state.grid.selected = [];
+                state.grid.skipReorderOnClose = false;
                 this.updateSelectionUI();
             },
             
@@ -5494,6 +5503,7 @@ this.updateImageCounters();
                 this.initializeLazyLoad(state.grid.stack, results);
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = false;
             },
 
             resetSearch() {
@@ -5505,6 +5515,7 @@ this.updateImageCounters();
                 this.initializeLazyLoad(state.grid.stack);
                 Core.updateStackCounts();
                 this.deselectAll();
+                state.grid.skipReorderOnClose = false;
             },
 
             syncWithStack(stackName, options = {}) {
@@ -5536,6 +5547,34 @@ this.updateImageCounters();
                 this.initializeLazyLoad(stackName, activeFiles);
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = false;
+            },
+
+            syncSelectionWithFocus() {
+                const gridModal = Utils.elements.gridModal;
+                if (!state.grid.stack || state.grid.stack !== state.currentStack) { return; }
+                if (!gridModal || gridModal.classList.contains('hidden')) { return; }
+                if (state.grid.filtered.length > 0) { return; }
+                if (state.grid.selected.length > 1) { return; }
+
+                const stackArray = state.stacks[state.currentStack];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
+
+                const currentFile = stackArray[state.currentStackPosition];
+                if (!currentFile) { return; }
+
+                state.grid.selected = [currentFile.id];
+                state.grid.skipReorderOnClose = true;
+                state.grid.isDirty = false;
+
+                const container = Utils.elements.gridContainer;
+                if (container) {
+                    container.querySelectorAll('.grid-item').forEach(item => {
+                        item.classList.toggle('selected', item.dataset.fileId === currentFile.id);
+                    });
+                }
+
+                this.updateSelectionUI();
             },
 
             searchImages(query) {
@@ -6585,6 +6624,7 @@ this.updateImageCounters();
                         state.currentStackPosition = 0;
                     }
                     Core.displayCurrentImage();
+                    Grid.syncSelectionWithFocus();
                 }
 
                 Core.updateImageCounters();
@@ -6595,12 +6635,14 @@ this.updateImageCounters();
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
                 await Core.displayCurrentImage();
+                Grid.syncSelectionWithFocus();
             },
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
                 await Core.displayCurrentImage();
+                Grid.syncSelectionWithFocus();
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
