@@ -1121,6 +1121,7 @@
             dragElements: []
         });
         const OMNI_SEARCH_RESULT_LIMIT = 8;
+        const IMAGE_CACHE_LIMIT = 40;
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null,
@@ -1141,7 +1142,8 @@
             showDebugToasts: true,
             folderSearchDataset: [],
             folderSearchTerm: '',
-            folderTimestamps: new Map()
+            folderTimestamps: new Map(),
+            imageUrlCache: new Map()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -1501,9 +1503,79 @@
             },
 
             async setImageSrc(img, file) {
-                const loadId = file.id + '_' + Date.now();
+                if (!img || !file) {
+                    return;
+                }
+
+                const cacheKey = this.getImageCacheKey(file);
+                const loadId = `${cacheKey || (file.id || 'image')}_${Date.now()}`;
                 state.currentImageLoadId = loadId;
-                const imageUrl = this.getPreferredImageUrl(file);
+                img.alt = file.name || 'Image';
+                const preferredImageUrl = this.getPreferredImageUrl(file);
+
+                const setSrc = (url) => new Promise((resolve, reject) => {
+                    img.onload = () => {
+                        if (state.currentImageLoadId !== loadId) return;
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        if (state.currentImageLoadId !== loadId) return;
+                        reject(new Error('Image failed to load'));
+                    };
+                    img.src = url;
+                });
+
+                let objectUrlUsed = null;
+                let loaded = false;
+
+                try {
+                    if (cacheKey) {
+                        const cachedUrl = this.getCachedImageUrl(cacheKey);
+                        if (cachedUrl) {
+                            objectUrlUsed = cachedUrl;
+                            await setSrc(cachedUrl);
+                            loaded = true;
+                        }
+                    }
+
+                    if (!loaded) {
+                        objectUrlUsed = await this.fetchAndCacheImageUrl(file, cacheKey, preferredImageUrl);
+                        if (objectUrlUsed) {
+                            await setSrc(objectUrlUsed);
+                            loaded = true;
+                        } else {
+                            throw new Error('No image URL available');
+                        }
+                    }
+                } catch (error) {
+                    if (cacheKey && objectUrlUsed) {
+                        this.evictImageUrlFromCache(cacheKey, objectUrlUsed);
+                    }
+                    if (state.showDebugToasts) {
+                        console.error('Image load failed', error);
+                    }
+                    if (!loaded && preferredImageUrl) {
+                        try {
+                            await setSrc(preferredImageUrl);
+                            loaded = true;
+                        } catch (directError) {
+                            if (state.showDebugToasts) {
+                                console.debug('Direct image load fallback failed', directError);
+                            }
+                        }
+                    }
+                }
+
+                if (loaded) {
+                    return;
+                }
+
+                const fallbackUrl = this.getFallbackImageUrl(file);
+                if (!fallbackUrl) {
+                    img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
+                    return;
+                }
+
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -1511,19 +1583,129 @@
                     };
                     img.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
-                        const fallbackUrl = this.getFallbackImageUrl(file);
-
-                        img.onerror = () => {
-                            if (state.currentImageLoadId !== loadId) return;
-                            img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
-                            resolve();
-                        };
-                        img.src = fallbackUrl;
+                        img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
+                        resolve();
                     };
-                    img.src = imageUrl;
-                    img.alt = file.name || 'Image';
+                    img.src = fallbackUrl;
                 });
             },
+
+            getImageCacheKey(file) {
+                if (!file || typeof file !== 'object') {
+                    return null;
+                }
+                return file.targetFileId || file.id || null;
+            },
+
+            getCachedImageUrl(cacheKey) {
+                if (!cacheKey) {
+                    return null;
+                }
+                const cache = state.imageUrlCache;
+                if (!cache || !cache.has(cacheKey)) {
+                    return null;
+                }
+                const cachedUrl = cache.get(cacheKey);
+                cache.delete(cacheKey);
+                cache.set(cacheKey, cachedUrl);
+                return cachedUrl;
+            },
+
+            addImageUrlToCache(cacheKey, objectUrl) {
+                if (!cacheKey || !objectUrl) {
+                    return;
+                }
+                const cache = state.imageUrlCache;
+                if (!cache) {
+                    return;
+                }
+                const existing = cache.get(cacheKey);
+                if (existing) {
+                    URL.revokeObjectURL(existing);
+                    cache.delete(cacheKey);
+                }
+                cache.set(cacheKey, objectUrl);
+                this.enforceImageCacheLimit();
+            },
+
+            enforceImageCacheLimit() {
+                const cache = state.imageUrlCache;
+                if (!cache) {
+                    return;
+                }
+                while (cache.size > IMAGE_CACHE_LIMIT) {
+                    const oldestKey = cache.keys().next().value;
+                    if (oldestKey === undefined) {
+                        break;
+                    }
+                    const oldestUrl = cache.get(oldestKey);
+                    cache.delete(oldestKey);
+                    if (oldestUrl) {
+                        URL.revokeObjectURL(oldestUrl);
+                    }
+                }
+            },
+
+            evictImageUrlFromCache(cacheKey, expectedUrl = null) {
+                if (!cacheKey) {
+                    return;
+                }
+                const cache = state.imageUrlCache;
+                if (!cache || !cache.has(cacheKey)) {
+                    return;
+                }
+                const existing = cache.get(cacheKey);
+                if (expectedUrl && existing !== expectedUrl) {
+                    return;
+                }
+                cache.delete(cacheKey);
+                if (existing) {
+                    URL.revokeObjectURL(existing);
+                }
+            },
+
+            async fetchAndCacheImageUrl(file, cacheKey, preferredUrl = null) {
+                const imageUrl = preferredUrl || this.getPreferredImageUrl(file);
+                if (!imageUrl) {
+                    return null;
+                }
+                const response = await fetch(imageUrl);
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch image (${response.status})`);
+                }
+                const blob = await response.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                if (cacheKey) {
+                    this.addImageUrlToCache(cacheKey, objectUrl);
+                }
+                return objectUrl;
+            },
+
+            async ensureImageCached(file) {
+                const cacheKey = this.getImageCacheKey(file);
+                if (!cacheKey) {
+                    return null;
+                }
+                const cache = state.imageUrlCache;
+                if (cache?.has(cacheKey)) {
+                    const cachedUrl = cache.get(cacheKey);
+                    cache.delete(cacheKey);
+                    cache.set(cacheKey, cachedUrl);
+                    return cachedUrl;
+                }
+                return this.fetchAndCacheImageUrl(file, cacheKey);
+            },
+
+            async prefetchImage(file) {
+                try {
+                    await this.ensureImageCached(file);
+                } catch (error) {
+                    if (state.showDebugToasts) {
+                        console.debug('Image prefetch failed', error);
+                    }
+                }
+            },
+
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
@@ -4812,7 +4994,8 @@
             },
             
             async displayCurrentImage() {
-                const currentStackArray = state.stacks[state.currentStack];
+                const currentStackName = state.currentStack;
+                const currentStackArray = state.stacks[currentStackName];
                 if (!currentStackArray || currentStackArray.length === 0) {
                     this.showEmptyState();
                     return;
@@ -4835,7 +5018,10 @@
                 try {
                     Utils.elements.detailsButton.style.display = 'flex';
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
-                    
+
+                    Utils.defer(() => {
+                        Core.prefetchAdjacentImages(currentStackName, previousPosition);
+                    }, { priority: 'background', timeout: 120 });
 
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
@@ -4858,6 +5044,24 @@
                 } catch (error) {
                      Utils.showToast(`Error loading image: ${error.message}`, 'error', true);
                 }
+            },
+
+            prefetchAdjacentImages(stackName, position) {
+                const stack = state.stacks[stackName];
+                if (!Array.isArray(stack) || stack.length === 0) {
+                    return;
+                }
+                const candidates = [position + 1, position - 1];
+                candidates.forEach(index => {
+                    if (index < 0 || index >= stack.length) {
+                        return;
+                    }
+                    const file = stack[index];
+                    if (!file) {
+                        return;
+                    }
+                    Utils.prefetchImage(file);
+                });
             },
 
             updateImageCounters() {
