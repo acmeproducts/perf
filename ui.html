@@ -7754,17 +7754,31 @@ this.updateImageCounters();
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: false, source: 'button:center-trash' }));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'button:focus-trash' }));
-                Utils.elements.focusFavoriteBtn.addEventListener('click', async () => {
+                const favoriteBtn = Utils.elements.focusFavoriteBtn;
+                if (!favoriteBtn) { return; }
+                favoriteBtn.addEventListener('click', async () => {
+                    if (favoriteBtn.dataset.loading === 'true') { return; }
+                    const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
+                    if (!currentFile) { return; }
+
+                    const previousFavorite = Utils.isFavorite(currentFile);
+                    const nextFavorite = !previousFavorite;
+
+                    favoriteBtn.dataset.loading = 'true';
+                    favoriteBtn.setAttribute('aria-busy', 'true');
+
+                    currentFile.favorite = nextFavorite;
+                    Core.updateFavoriteButton();
+
                     try {
-                        const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
-                        if (!currentFile) return;
-                        const currentlyFavorite = Utils.isFavorite(currentFile);
-                        const nextFavorite = !currentlyFavorite;
                         await App.updateUserMetadata(currentFile.id, { favorite: nextFavorite });
-                        currentFile.favorite = nextFavorite;
-                        Core.updateFavoriteButton();
                     } catch (error) {
-                         Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
+                        currentFile.favorite = previousFavorite;
+                        Core.updateFavoriteButton();
+                        Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
+                    } finally {
+                        delete favoriteBtn.dataset.loading;
+                        favoriteBtn.removeAttribute('aria-busy');
                     }
                 });
             },
