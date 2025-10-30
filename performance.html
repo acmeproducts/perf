@@ -300,9 +300,31 @@
         .metadata-table { width: 100%; color: white; }
         .metadata-table td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
         .metadata-table td:first-child { font-weight: 600; opacity: 0.7; width: 30%; }
+        .grid-toolbar {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+            color: rgba(255, 255, 255, 0.75);
+        }
+        .grid-toolbar-group {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        }
+        .grid-selection-text { font-weight: 600; }
+        .grid-select-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white; padding: 8px 14px; border-radius: 10px;
+            cursor: pointer; transition: background 0.2s ease, transform 0.2s ease;
+        }
+        .grid-select-btn:hover { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
+        .grid-size-value { font-variant-numeric: tabular-nums; font-weight: 600; }
         .grid-container {
             display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             gap: 16px; padding: 20px;
+        }
+        .grid-item.selected {
+            outline: 3px solid var(--accent);
+            transform: scale(1.03);
+            box-shadow: 0 6px 30px rgba(245, 158, 11, 0.45);
         }
         .grid-item {
             aspect-ratio: 1; background: #222; border-radius: 12px; overflow: hidden;
@@ -310,6 +332,12 @@
         }
         .grid-item:hover { transform: scale(1.05); box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4); }
         .grid-item img { width: 100%; height: 100%; object-fit: cover; }
+        .grid-empty-state {
+            text-align: center; padding: 40px 20px; border: 1px dashed rgba(255, 255, 255, 0.2);
+            border-radius: 16px; color: rgba(255, 255, 255, 0.65);
+            margin: 0 20px; font-size: 16px;
+        }
+        .grid-empty-state.hidden { display: none; }
         .modal-actions {
             display: flex; gap: 12px; margin-top: 20px; justify-content: flex-end;
         }
@@ -495,10 +523,11 @@
                 <button id="clear-search" class="btn-icon">&times;</button>
                 <button id="deselect-all" class="btn-icon">Deselect</button>
                 <select id="grid-size" class="grid-size-select">
-                    <option value="small">Small</option>
-                    <option value="medium" selected>Medium</option>
-                    <option value="large">Large</option>
+                    <option value="4">Small</option>
+                    <option value="6" selected>Medium</option>
+                    <option value="8">Large</option>
                 </select>
+                <span id="grid-size-value" class="grid-size-value">6</span>
             </div>
         </div>
         
@@ -515,12 +544,25 @@
         <div class="modal hidden" id="grid-modal">
             <div class="modal-content">
                 <div class="modal-header modal-header-main">
-                    <h2>Grid View</h2>
-                    <button class="modal-close" onclick="Grid.close()">&times;</button>
+                    <h2 id="grid-title">Grid View</h2>
+                    <button id="close-grid" class="modal-close">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <div class="grid-toolbar">
+                        <div class="grid-toolbar-group">
+                            <span id="selection-text" class="grid-selection-text">0 selected</span>
+                            <button type="button" id="select-all" class="grid-select-btn" data-base-label="Select All">Select All</button>
+                        </div>
+                        <div class="grid-toolbar-group">
+                            <span>Columns: <span id="grid-columns-display" class="grid-size-value">6</span></span>
+                        </div>
+                    </div>
                     <div class="grid-container" id="grid-container"></div>
                     <div id="grid-sentinel" style="height: 20px;"></div>
+                    <div class="grid-empty-state hidden" id="grid-empty-state">
+                        <h3>No images match your filters</h3>
+                        <p>Try adjusting your search or modifiers to see more results.</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -998,6 +1040,15 @@
                     // Grid & Modal elements
                     gridModal: get('grid-modal'),
                     gridModalHeaderMain: query('#grid-modal .modal-header-main'),
+                    gridTitle: get('grid-title'),
+                    gridContainer: get('grid-container'),
+                    gridContent: query('#grid-modal .modal-body'),
+                    gridEmptyState: get('grid-empty-state'),
+                    selectAllBtn: get('select-all'),
+                    selectionText: get('selection-text'),
+                    gridColumnsDisplay: get('grid-columns-display'),
+                    gridSizeValue: get('grid-size-value'),
+                    closeGrid: get('close-grid'),
                     detailsModal: get('details-modal'),
                     detailsModalHeader: query('#details-modal .modal-header'),
                     actionModal: get('action-modal'),
@@ -5040,20 +5091,97 @@ this.updateImageCounters();
             }
         };
         const Grid = {
+            _initialized: false,
+
+            init() {
+                if (this._initialized) return;
+
+                if (!state.grid.lazyLoadState) {
+                    state.grid.lazyLoadState = {
+                        observer: null,
+                        allFiles: [],
+                        renderedCount: 0,
+                        batchSize: 60
+                    };
+                } else {
+                    state.grid.lazyLoadState.observer = null;
+                    state.grid.lazyLoadState.allFiles = state.grid.lazyLoadState.allFiles || [];
+                    state.grid.lazyLoadState.renderedCount = state.grid.lazyLoadState.renderedCount || 0;
+                    state.grid.lazyLoadState.batchSize = state.grid.lazyLoadState.batchSize || 60;
+                }
+
+                const gridButton = document.getElementById('grid-selected');
+                if (gridButton) {
+                    gridButton.addEventListener('click', () => {
+                        if (!state.currentStack) return;
+                        this.open(state.currentStack);
+                    });
+                }
+
+                const { selectAllBtn, gridSize, gridSizeValue, gridColumnsDisplay, gridContainer } = Utils.elements;
+
+                if (selectAllBtn) {
+                    if (!selectAllBtn.dataset.baseLabel) {
+                        const baseLabel = selectAllBtn.getAttribute('data-base-label') || selectAllBtn.textContent.trim() || 'Select All';
+                        selectAllBtn.dataset.baseLabel = baseLabel;
+                    }
+                    this.updateSelectAllLabel(0);
+                }
+
+                if (gridSize) {
+                    const rawValue = parseInt(gridSize.value, 10);
+                    const columns = Number.isFinite(rawValue) ? rawValue : 6;
+                    gridSize.value = String(columns);
+                    if (gridSizeValue) { gridSizeValue.textContent = String(columns); }
+                    if (gridColumnsDisplay) { gridColumnsDisplay.textContent = String(columns); }
+                    if (gridContainer) {
+                        gridContainer.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+                    }
+                }
+
+                const gridModal = Utils.elements.gridModal;
+                if (gridModal) {
+                    gridModal.addEventListener('click', (event) => {
+                        if (event.target === gridModal) {
+                            this.close();
+                        }
+                    });
+                }
+
+                this._initialized = true;
+            },
+
             open(stack) {
                 Utils.showModal('grid-modal');
-                Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
+                const { gridTitle, gridSize, gridContainer, gridColumnsDisplay, gridEmptyState } = Utils.elements;
+                if (gridTitle) {
+                    gridTitle.textContent = STACK_NAMES[stack] || stack;
+                }
                 state.grid.stack = stack;
                 state.grid.isDirty = false;
-                const value = Utils.elements.gridSize.value;
-                Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
+                const columns = gridSize ? (parseInt(gridSize.value, 10) || 6) : 6;
+                if (gridSize) { gridSize.value = String(columns); }
+                if (gridColumnsDisplay) { gridColumnsDisplay.textContent = String(columns); }
+                if (gridContainer) {
+                    gridContainer.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+                }
+                if (gridEmptyState) { gridEmptyState.classList.add('hidden'); }
                 state.grid.selected = []; state.grid.filtered = [];
-                Utils.elements.gridContainer.innerHTML = '';
+                if (gridContainer) { gridContainer.innerHTML = ''; }
                 this.initializeLazyLoad(stack);
                 this.updateSelectionUI();
                 Core.updateStackCounts();
             },
-            
+
+            updateSelectAllLabel(count) {
+                const button = Utils.elements.selectAllBtn;
+                if (!button) return;
+                const baseLabel = button.dataset.baseLabel || button.getAttribute('data-base-label') || button.textContent.trim() || 'Select All';
+                button.dataset.baseLabel = baseLabel;
+                const total = Number.isFinite(Number(count)) ? Number(count) : 0;
+                button.textContent = `${baseLabel} (${total})`;
+            },
+
             async close() {
                 try {
                     if (state.grid.isDirty) {
@@ -5081,24 +5209,31 @@ this.updateImageCounters();
 
             initializeLazyLoad(stack, filesOverride = null) {
                 const lazyState = state.grid.lazyLoadState;
+                if (!lazyState) return;
                 const stackFiles = state.stacks[stack] || [];
                 const sourceFiles = Array.isArray(filesOverride)
                     ? filesOverride
                     : (state.grid.filtered.length > 0 ? state.grid.filtered : stackFiles);
                 lazyState.allFiles = sourceFiles;
                 lazyState.renderedCount = 0;
-                Utils.elements.selectAllBtn.textContent = sourceFiles.length;
+                this.updateSelectAllLabel(sourceFiles.length);
                 this.renderBatch();
                 if (lazyState.observer) lazyState.observer.disconnect();
-                lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), {
-                    root: Utils.elements.gridContent, rootMargin: "400px"
-                });
+                if (typeof IntersectionObserver !== 'undefined') {
+                    lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), {
+                        root: Utils.elements.gridContent,
+                        rootMargin: "400px"
+                    });
+                } else {
+                    lazyState.observer = null;
+                }
                 const sentinel = document.getElementById('grid-sentinel');
-                if (sentinel) { lazyState.observer.observe(sentinel); }
+                if (sentinel && lazyState.observer) { lazyState.observer.observe(sentinel); }
             },
 
             destroyLazyLoad() {
                 const lazyState = state.grid.lazyLoadState;
+                if (!lazyState) return;
                 if (lazyState.observer) { lazyState.observer.disconnect(); lazyState.observer = null; }
                 lazyState.allFiles = []; lazyState.renderedCount = 0;
             },
@@ -5106,6 +5241,7 @@ this.updateImageCounters();
             renderBatch() {
                 const lazyState = state.grid.lazyLoadState;
                 const container = Utils.elements.gridContainer;
+                if (!lazyState || !container) return;
                 const filesToRender = lazyState.allFiles.slice(lazyState.renderedCount, lazyState.renderedCount + lazyState.batchSize);
 
                 const oldSentinel = document.getElementById('grid-sentinel');
@@ -5153,7 +5289,10 @@ this.updateImageCounters();
                 const count = state.grid.selected.length;
                 const buttons = [Utils.elements.tagSelected, Utils.elements.notesSelected, Utils.elements.moveSelected,
                                Utils.elements.deleteSelected, Utils.elements.exportSelected, Utils.elements.folderSelected];
-                Utils.elements.selectionText.textContent = `${count} selected`;
+                const selectionText = Utils.elements.selectionText;
+                if (selectionText) {
+                    selectionText.textContent = `${count} selected`;
+                }
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
             
@@ -5175,23 +5314,26 @@ this.updateImageCounters();
             
             performSearch() {
                 const query = Utils.elements.omniSearch.value.trim();
-                Utils.elements.clearSearchBtn.style.display = query ? 'block' : 'none';
+                const { clearSearchBtn, gridEmptyState, gridContainer } = Utils.elements;
+                if (clearSearchBtn) {
+                    clearSearchBtn.style.display = query ? 'block' : 'none';
+                }
                 if (!query) { this.resetSearch(); return; }
 
                 const results = this.searchImages(query);
                 state.grid.filtered = results;
                 const resultCount = results.length;
-                Utils.elements.selectAllBtn.textContent = String(resultCount);
+                this.updateSelectAllLabel(resultCount);
 
                 if (resultCount === 0) {
                     state.grid.selected = [];
-                    Utils.elements.gridEmptyState.classList.remove('hidden');
+                    if (gridEmptyState) { gridEmptyState.classList.remove('hidden'); }
                 } else {
                     state.grid.selected = results.map(file => file.id);
-                    Utils.elements.gridEmptyState.classList.add('hidden');
+                    if (gridEmptyState) { gridEmptyState.classList.add('hidden'); }
                 }
 
-                Utils.elements.gridContainer.innerHTML = '';
+                if (gridContainer) { gridContainer.innerHTML = ''; }
                 this.initializeLazyLoad(state.grid.stack, results);
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
@@ -5199,10 +5341,11 @@ this.updateImageCounters();
 
             resetSearch() {
                 Utils.elements.omniSearch.value = '';
-                Utils.elements.clearSearchBtn.style.display = 'none';
-                Utils.elements.gridEmptyState.classList.add('hidden');
+                const { clearSearchBtn, gridEmptyState, gridContainer } = Utils.elements;
+                if (clearSearchBtn) { clearSearchBtn.style.display = 'none'; }
+                if (gridEmptyState) { gridEmptyState.classList.add('hidden'); }
                 state.grid.filtered = [];
-                Utils.elements.gridContainer.innerHTML = '';
+                if (gridContainer) { gridContainer.innerHTML = ''; }
                 this.initializeLazyLoad(state.grid.stack);
                 Core.updateStackCounts();
                 this.deselectAll();
@@ -5233,7 +5376,8 @@ this.updateImageCounters();
                     }
                 }
 
-                Utils.elements.gridContainer.innerHTML = '';
+                const { gridContainer } = Utils.elements;
+                if (gridContainer) { gridContainer.innerHTML = ''; }
                 this.initializeLazyLoad(stackName, activeFiles);
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
@@ -6955,13 +7099,37 @@ this.updateImageCounters();
                 });
             },
             setupGridControls() {
-                Utils.elements.closeGrid.addEventListener('click', () => Grid.close());
-                Utils.elements.selectAllBtn.addEventListener('click', () => Grid.selectAll());
-                Utils.elements.gridSize.addEventListener('input', () => {
-                    const value = Utils.elements.gridSize.value;
-                    Utils.elements.gridSizeValue.textContent = value;
-                    Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
-                });
+                const {
+                    closeGrid,
+                    selectAllBtn,
+                    gridSize,
+                    gridSizeValue,
+                    gridColumnsDisplay,
+                    gridContainer
+                } = Utils.elements;
+
+                if (closeGrid) {
+                    closeGrid.addEventListener('click', () => Grid.close());
+                }
+
+                if (selectAllBtn) {
+                    selectAllBtn.addEventListener('click', () => Grid.selectAll());
+                }
+
+                if (gridSize) {
+                    const updateGridColumns = () => {
+                        const rawValue = parseInt(gridSize.value, 10);
+                        const columns = Number.isFinite(rawValue) ? rawValue : 6;
+                        if (gridSizeValue) { gridSizeValue.textContent = String(columns); }
+                        if (gridColumnsDisplay) { gridColumnsDisplay.textContent = String(columns); }
+                        if (gridContainer) {
+                            gridContainer.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+                        }
+                    };
+
+                    updateGridColumns();
+                    gridSize.addEventListener('input', updateGridColumns);
+                }
             },
             setupSearchFunctionality() {
                 const searchInput = Utils.elements.omniSearch;
@@ -7142,7 +7310,18 @@ this.updateImageCounters();
             currentStackPosition: 0,
             isFocusMode: false,
             stacks: { in: [], out: [], priority: [], trash: [] },
-            grid: { stack: null, selected: [], filtered: [] },
+            grid: {
+                stack: null,
+                selected: [],
+                filtered: [],
+                isDirty: false,
+                lazyLoadState: {
+                    observer: null,
+                    allFiles: [],
+                    renderedCount: 0,
+                    batchSize: 60
+                }
+            },
             showDebugToasts: CONFIG.DEBUG_TOASTS,
             activeRequests: null
         };
