@@ -1162,17 +1162,63 @@
                 }
                 return null;
             },
-            buildShareUrl(fileId) {
+            buildShareUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                try {
+                    const url = new URL(SHARE_URL_TEMPLATE.replace('${fileId}', fileId));
+                    if (resourceKey) {
+                        url.searchParams.set('resourcekey', resourceKey);
+                    }
+                    return url.toString();
+                } catch (error) {
+                    if (resourceKey) {
+                        const separator = SHARE_URL_TEMPLATE.includes('?') ? '&' : '?';
+                        return `${SHARE_URL_TEMPLATE.replace('${fileId}', fileId)}${separator}resourcekey=${encodeURIComponent(resourceKey)}`;
+                    }
+                    return SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                }
             },
-            buildUcDownloadUrl(fileId) {
+            buildUcDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return `https://drive.google.com/uc?id=${fileId}&export=view`;
+                try {
+                    const url = new URL('https://drive.google.com/uc');
+                    url.searchParams.set('id', fileId);
+                    url.searchParams.set('export', 'view');
+                    if (resourceKey) {
+                        url.searchParams.set('resourcekey', resourceKey);
+                    }
+                    return url.toString();
+                } catch (error) {
+                    const base = `https://drive.google.com/uc?id=${fileId}&export=view`;
+                    if (resourceKey) {
+                        return `${base}&resourcekey=${encodeURIComponent(resourceKey)}`;
+                    }
+                    return base;
+                }
             },
             buildApiDownloadUrl(fileId) {
                 if (!fileId) return null;
                 return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+            },
+            buildThumbnailUrl(fileId, width = 1000, resourceKey = null) {
+                if (!fileId) return null;
+                try {
+                    const url = new URL('https://drive.google.com/thumbnail');
+                    url.searchParams.set('id', fileId);
+                    const effectiveWidth = Number(width) || 1000;
+                    url.searchParams.set('sz', `w${effectiveWidth}`);
+                    if (resourceKey) {
+                        url.searchParams.set('resourcekey', resourceKey);
+                    }
+                    return url.toString();
+                } catch (error) {
+                    const effectiveWidth = Number(width) || 1000;
+                    const base = `https://drive.google.com/thumbnail?id=${fileId}&sz=w${effectiveWidth}`;
+                    if (resourceKey) {
+                        return `${base}&resourcekey=${encodeURIComponent(resourceKey)}`;
+                    }
+                    return base;
+                }
             },
             normalizeToAssetUrl(rawUrl, fallbackId = null) {
                 if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -1424,7 +1470,36 @@
                     toast.textContent = '';
                 }
             },
-            
+
+            resolveDriveResourceKey(file) {
+                if (!file || typeof file !== 'object') {
+                    return null;
+                }
+                return file.targetResourceKey
+                    || file.shortcutResourceKey
+                    || file.resourceKey
+                    || (file.shortcutDetails && file.shortcutDetails.targetResourceKey)
+                    || null;
+            },
+
+            adjustDriveThumbnailUrl(url, width, resourceKey) {
+                if (!url) {
+                    return url;
+                }
+                let adjusted = url;
+                if (typeof width === 'number' && Number.isFinite(width)) {
+                    const widthValue = Math.max(1, Math.floor(width));
+                    adjusted = adjusted.replace(/=s\d+/g, `=s${widthValue}`);
+                    adjusted = adjusted.replace(/=w\d+/g, `=w${widthValue}`);
+                    adjusted = adjusted.replace(/sz=w\d+/g, `sz=w${widthValue}`);
+                }
+                if (resourceKey && adjusted.includes('drive.google.com') && !/[?&]resourcekey=/.test(adjusted)) {
+                    const separator = adjusted.includes('?') ? '&' : '?';
+                    adjusted += `${separator}resourcekey=${encodeURIComponent(resourceKey)}`;
+                }
+                return adjusted;
+            },
+
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
@@ -1452,10 +1527,14 @@
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
+                    const resourceKey = this.resolveDriveResourceKey(file);
                     if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
+                        return this.adjustDriveThumbnailUrl(file.thumbnailLink, 1000, resourceKey);
                     }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w1000`;
+                    if (file.thumbnail && file.thumbnail.url) {
+                        return this.adjustDriveThumbnailUrl(file.thumbnail.url, 1000, resourceKey);
+                    }
+                    return DriveLinkHelper.buildThumbnailUrl(effectiveId, 1000, resourceKey);
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1467,13 +1546,14 @@
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
+                    const resourceKey = this.resolveDriveResourceKey(file);
                     if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s800');
+                        return this.adjustDriveThumbnailUrl(file.thumbnailLink, 800, resourceKey);
                     }
                     if (file.thumbnail && file.thumbnail.url) {
-                        return file.thumbnail.url.replace('=s220', '=s800');
+                        return this.adjustDriveThumbnailUrl(file.thumbnail.url, 800, resourceKey);
                     }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w800`;
+                    return DriveLinkHelper.buildThumbnailUrl(effectiveId, 800, resourceKey);
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3020,9 +3100,11 @@
                 const targetId = target?.id || null;
                 const fallbackId = targetId || file?.id || null;
                 const effectiveId = options.useShortcutId ? file.id : fallbackId;
-                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId) || '';
+                const targetResourceKey = target?.resourceKey || file?.shortcutDetails?.targetResourceKey || null;
+                const resourceKey = targetResourceKey ?? file?.resourceKey ?? null;
+                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId, resourceKey) || '';
                 const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
-                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId) : null) || apiDownloadUrl;
+                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId, resourceKey) : null) || apiDownloadUrl;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
 
                 const normalized = {
@@ -3037,6 +3119,8 @@
                     downloadUrl,
                     viewUrl,
                     driveApiDownloadUrl: apiDownloadUrl,
+                    resourceKey,
+                    targetResourceKey: targetResourceKey ?? (targetId ? resourceKey : null),
                     appProperties: target?.appProperties || file?.appProperties || {},
                     parents: file?.parents || target?.parents || [],
                     targetFileId: targetId || fallbackId || null
@@ -3046,6 +3130,7 @@
                     normalized.shortcutId = file.id;
                     normalized.isShortcut = true;
                     normalized.shortcutDetails = file.shortcutDetails || null;
+                    normalized.shortcutResourceKey = file.shortcutDetails?.targetResourceKey || null;
                 }
 
                 const appProps = normalized.appProperties || {};
@@ -3071,7 +3156,7 @@
             async fetchRawFilesByIds(fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
                 const signal = options.signal;
-                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,shortcutDetails(targetId,targetMimeType)';
+                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)';
                 const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=${fields}&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal }));
                 const responses = await Promise.allSettled(requests);
                 return responses
@@ -3233,7 +3318,7 @@
                 const baseQuery = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
 
                 do {
-                    let url = `/files?q=${encodeURIComponent(baseQuery)}&fields=files(mimeType,shortcutDetails(targetMimeType)),nextPageToken&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                    let url = `/files?q=${encodeURIComponent(baseQuery)}&fields=files(mimeType,shortcutDetails(targetMimeType,targetResourceKey)),nextPageToken&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
                     const response = await this.makeApiCall(url);
@@ -3262,7 +3347,7 @@
 
                 do {
                     const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
-                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,shortcutDetails(targetId,targetMimeType)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
                     const response = await this.makeApiCall(url, { signal });
@@ -3541,6 +3626,7 @@
                                 modifiedTime: item.lastModifiedDateTime,
                                 thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
                                 downloadUrl: item['@microsoft.graph.downloadUrl'],
+                                viewUrl: item.webUrl || null,
                                 lastUpdated: Number.isFinite(parsedUpdated) ? parsedUpdated : 0
                             };
                         });
@@ -3612,7 +3698,8 @@
                     createdTime: item.createdDateTime,
                     modifiedTime: item.lastModifiedDateTime,
                     thumbnails: item.thumbnails && item.thumbnails.length > 0 ? { large: item.thumbnails[0].large } : null,
-                    downloadUrl: item['@microsoft.graph.downloadUrl']
+                    downloadUrl: item['@microsoft.graph.downloadUrl'],
+                    viewUrl: item.webUrl || null
                 }));
             }
             async getDownloadsFolder() {
@@ -3749,9 +3836,10 @@
             getDirectImageURL(image) {
                 if (state.providerType === 'googledrive') {
                     const fileId = image?.targetFileId || image?.id;
-                    return DriveLinkHelper.buildShareUrl(fileId) || '';
+                    const resourceKey = Utils.resolveDriveResourceKey(image);
+                    return image.viewUrl || DriveLinkHelper.buildShareUrl(fileId, resourceKey) || '';
                 } else if (state.providerType === 'onedrive') {
-                    return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
+                    return image.viewUrl || image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
                 }
                 return '';
             }
@@ -5632,8 +5720,12 @@ this.updateImageCounters();
             populateInfoTab(file) {
                 const filename = file.name || 'Unknown';
                 Utils.elements.detailFilename.textContent = filename;
-                if (state.providerType === 'googledrive') { Utils.elements.detailFilenameLink.href = `https://drive.google.com/file/d/${file.id}/view`;
-                } else { Utils.elements.detailFilenameLink.href = file.downloadUrl || '#'; }
+                const detailLink = file.viewUrl
+                    || (state.providerType === 'googledrive'
+                        ? DriveLinkHelper.buildShareUrl(file.targetFileId || file.id, Utils.resolveDriveResourceKey(file))
+                        : file.downloadUrl)
+                    || '#';
+                Utils.elements.detailFilenameLink.href = detailLink;
                 Utils.elements.detailFilenameLink.style.display = 'inline';
                 const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown';
                 Utils.elements.detailDate.textContent = date;
