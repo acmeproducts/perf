@@ -1208,6 +1208,7 @@
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null,
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
+            focusTraversalIndex: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
@@ -4724,6 +4725,7 @@
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
                 state.currentStack = 'in';
                 state.currentStackPosition = 0;
+                state.focusTraversalIndex = 0;
                 Core.updateStackCounts();
 
                 const { centerImage, emptyState, detailsButton } = Utils.elements;
@@ -5073,7 +5075,7 @@
             },
 
             async promoteFocusImage(targetFile, options = {}) {
-                const { direction = null } = options;
+                const { direction = null, prePromotionIndex = null } = options;
                 if (!state.isFocusMode || !targetFile) { return; }
 
                 const stackName = state.currentStack;
@@ -5082,6 +5084,9 @@
 
                 const targetIndex = stackArray.findIndex(file => file.id === targetFile.id);
                 if (targetIndex === -1) { return; }
+
+                const traversalBeforePromotion =
+                    Number.isInteger(prePromotionIndex) ? prePromotionIndex : targetIndex;
 
                 const topSequence = stackArray[0]?.stackSequence || 0;
                 const newSequence = Math.max(Date.now(), topSequence + 1);
@@ -5106,7 +5111,21 @@
                 state.stacks[stackName] = this.sortFiles(stackArray);
                 const updatedStack = state.stacks[stackName];
                 const newIndex = updatedStack.findIndex(file => file.id === targetFile.id);
-                state.currentStackPosition = newIndex !== -1 ? newIndex : 0;
+                const displayIndex = newIndex !== -1 ? newIndex : 0;
+                state.currentStackPosition = displayIndex;
+
+                const totalItems = updatedStack.length;
+                if (totalItems === 0) {
+                    state.focusTraversalIndex = 0;
+                } else {
+                    const maxIndex = totalItems - 1;
+                    let nextTraversal = Number.isInteger(traversalBeforePromotion)
+                        ? traversalBeforePromotion
+                        : displayIndex;
+                    if (nextTraversal < 0) { nextTraversal = 0; }
+                    if (nextTraversal > maxIndex) { nextTraversal = maxIndex; }
+                    state.focusTraversalIndex = nextTraversal;
+                }
 
                 await this.displayCurrentImage();
                 this.updateImageCounters();
@@ -5131,6 +5150,7 @@
                     return;
                 }
                 state.currentStackPosition = 0;
+                state.focusTraversalIndex = 0;
                 state.currentStack = 'in';
                 
                 this.displayTopImageFromStack('in');
@@ -5149,7 +5169,8 @@
                     Utils.elements.emptyState.classList.add('hidden');
                     state.currentStack = stackName;
                     state.currentStackPosition = 0;
-                    
+                    state.focusTraversalIndex = 0;
+
                     await this.displayCurrentImage();
                     this.updateActiveProxTab();
                 } catch (error) {
@@ -5165,11 +5186,18 @@
                     return;
                 }
                 
+                const maxIndex = currentStackArray.length - 1;
                 if (state.currentStackPosition >= currentStackArray.length) {
-                    state.currentStackPosition = currentStackArray.length - 1;
+                    state.currentStackPosition = maxIndex;
                 }
                 if (state.currentStackPosition < 0) {
                     state.currentStackPosition = 0;
+                }
+
+                if (!Number.isInteger(state.focusTraversalIndex)
+                    || state.focusTraversalIndex < 0
+                    || state.focusTraversalIndex > maxIndex) {
+                    state.focusTraversalIndex = state.currentStackPosition;
                 }
 
                 const previousPosition = state.currentStackPosition;
@@ -5229,9 +5257,27 @@
             },
 
             updateImageCounters() {
-                const stack = state.stacks[state.currentStack];
-                const total = stack ? stack.length : 0;
-                const current = total > 0 ? state.currentStackPosition + 1 : 0;
+                const stack = state.stacks[state.currentStack] || [];
+                const total = stack.length;
+                let traversalIndex = Number.isInteger(state.focusTraversalIndex)
+                    ? state.focusTraversalIndex
+                    : state.currentStackPosition;
+
+                if (!Number.isInteger(traversalIndex)) {
+                    traversalIndex = 0;
+                }
+
+                if (total === 0) {
+                    traversalIndex = 0;
+                } else {
+                    const maxIndex = total - 1;
+                    if (traversalIndex < 0) { traversalIndex = 0; }
+                    if (traversalIndex > maxIndex) { traversalIndex = maxIndex; }
+                }
+
+                state.focusTraversalIndex = traversalIndex;
+
+                const current = total > 0 ? traversalIndex + 1 : 0;
                 const counterText = total > 0 ? `Item ${current} / ${total}` : 'No items';
                 if (Utils.elements.normalImageCount) {
                     Utils.elements.normalImageCount.textContent = counterText;
@@ -5388,6 +5434,7 @@
                     const updatedStack = state.stacks[currentStackName] || [];
                     if (updatedStack.length === 0) {
                         state.currentStackPosition = 0;
+                        state.focusTraversalIndex = 0;
                         if (state.isFocusMode && exitFocusIfEmpty) {
                             Gestures.toggleFocusMode();
                         }
@@ -5401,6 +5448,7 @@
                             nextIndex = 0;
                         }
                         state.currentStackPosition = nextIndex;
+                        state.focusTraversalIndex = nextIndex;
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
@@ -5416,7 +5464,8 @@
                 state.currentImageLoadId = null;
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
-this.updateImageCounters();
+                state.focusTraversalIndex = 0;
+                this.updateImageCounters();
                 const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
                     Utils.elements.centerImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
@@ -5509,7 +5558,10 @@ this.updateImageCounters();
                         const selectedFileId = selectedImages[0];
                         const stackArray = state.stacks[state.currentStack];
                         const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
-                        if (selectedIndex !== -1) { state.currentStackPosition = selectedIndex; }
+                        if (selectedIndex !== -1) {
+                            state.currentStackPosition = selectedIndex;
+                            state.focusTraversalIndex = selectedIndex;
+                        }
                     }
                     await Core.displayCurrentImage();
                     state.grid.stack = null; state.grid.selected = [];
@@ -6099,9 +6151,12 @@ this.updateImageCounters();
 
                 if (selectedIds.length > 0) {
                     const firstSelectedIndex = newStack.findIndex(file => file.id === selectedIds[0]);
-                    state.currentStackPosition = firstSelectedIndex !== -1 ? firstSelectedIndex : 0;
+                    const nextPosition = firstSelectedIndex !== -1 ? firstSelectedIndex : 0;
+                    state.currentStackPosition = nextPosition;
+                    state.focusTraversalIndex = nextPosition;
                 } else {
                     state.currentStackPosition = 0;
+                    state.focusTraversalIndex = 0;
                 }
 
                 state.grid.isDirty = false;
@@ -7042,6 +7097,7 @@ this.updateImageCounters();
                     } else {
                         state.currentStackPosition = 0;
                     }
+                    state.focusTraversalIndex = state.currentStackPosition;
                     Core.displayCurrentImage();
                     Grid.syncSelectionWithFocus();
                 }
@@ -7053,21 +7109,33 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const nextIndex = (state.currentStackPosition + 1) % stack.length;
+                const baseIndex = Number.isInteger(state.focusTraversalIndex)
+                    ? state.focusTraversalIndex
+                    : state.currentStackPosition;
+                const nextIndex = (baseIndex + 1) % stack.length;
                 const targetFile = stack[nextIndex];
                 if (!targetFile) { return; }
 
-                await Core.promoteFocusImage(targetFile, { direction: 'next' });
+                await Core.promoteFocusImage(targetFile, {
+                    direction: 'next',
+                    prePromotionIndex: nextIndex
+                });
             },
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const prevIndex = (state.currentStackPosition - 1 + stack.length) % stack.length;
+                const baseIndex = Number.isInteger(state.focusTraversalIndex)
+                    ? state.focusTraversalIndex
+                    : state.currentStackPosition;
+                const prevIndex = (baseIndex - 1 + stack.length) % stack.length;
                 const targetFile = stack[prevIndex];
                 if (!targetFile) { return; }
 
-                await Core.promoteFocusImage(targetFile, { direction: 'prev' });
+                await Core.promoteFocusImage(targetFile, {
+                    direction: 'prev',
+                    prePromotionIndex: prevIndex
+                });
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
