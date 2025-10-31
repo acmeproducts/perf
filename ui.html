@@ -5071,7 +5071,49 @@
                     return (a.name || '').localeCompare(b.name || '');
                 });
             },
-            
+
+            async promoteFocusImage(targetFile, options = {}) {
+                const { direction = null } = options;
+                if (!state.isFocusMode || !targetFile) { return; }
+
+                const stackName = state.currentStack;
+                const stackArray = state.stacks[stackName];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
+
+                const targetIndex = stackArray.findIndex(file => file.id === targetFile.id);
+                if (targetIndex === -1) { return; }
+
+                const topSequence = stackArray[0]?.stackSequence || 0;
+                const newSequence = Math.max(Date.now(), topSequence + 1);
+                const previousSequence = targetFile.stackSequence;
+
+                targetFile.stackSequence = newSequence;
+
+                try {
+                    const metadataOptions = { skipDebounce: true, operationType: 'focus:advance' };
+                    if (direction) { metadataOptions.direction = direction; }
+                    await App.updateUserMetadata(
+                        targetFile.id,
+                        { stackSequence: newSequence },
+                        metadataOptions
+                    );
+                } catch (error) {
+                    targetFile.stackSequence = previousSequence;
+                    Utils.showToast(`Failed to advance focus: ${error.message}`, 'error', true);
+                    return;
+                }
+
+                state.stacks[stackName] = this.sortFiles(stackArray);
+                const updatedStack = state.stacks[stackName];
+                const newIndex = updatedStack.findIndex(file => file.id === targetFile.id);
+                state.currentStackPosition = newIndex !== -1 ? newIndex : 0;
+
+                await this.displayCurrentImage();
+                this.updateImageCounters();
+                Grid.refreshFilteredOrder(stackName);
+                Grid.syncSelectionWithFocus();
+            },
+
             updateStackCounts() {
                 STACKS.forEach(stack => {
                     const count = state.stacks[stack] ? state.stacks[stack].length : 0;
@@ -7009,17 +7051,23 @@ this.updateImageCounters();
             },
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
-                if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                await Core.displayCurrentImage();
-                Grid.syncSelectionWithFocus();
+                if (!Array.isArray(stack) || stack.length === 0) { return; }
+
+                const nextIndex = (state.currentStackPosition + 1) % stack.length;
+                const targetFile = stack[nextIndex];
+                if (!targetFile) { return; }
+
+                await Core.promoteFocusImage(targetFile, { direction: 'next' });
             },
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
-                if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                await Core.displayCurrentImage();
-                Grid.syncSelectionWithFocus();
+                if (!Array.isArray(stack) || stack.length === 0) { return; }
+
+                const prevIndex = (state.currentStackPosition - 1 + stack.length) % stack.length;
+                const targetFile = stack[prevIndex];
+                if (!targetFile) { return; }
+
+                await Core.promoteFocusImage(targetFile, { direction: 'prev' });
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
