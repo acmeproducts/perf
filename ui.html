@@ -1209,6 +1209,7 @@
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             focusTraversalIndex: 0,
+            focusTraversalOrder: { in: [], out: [], priority: [], trash: [] },
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
@@ -4726,6 +4727,7 @@
                 state.currentStack = 'in';
                 state.currentStackPosition = 0;
                 state.focusTraversalIndex = 0;
+                state.focusTraversalOrder = { in: [], out: [], priority: [], trash: [] };
                 Core.updateStackCounts();
 
                 const { centerImage, emptyState, detailsButton } = Utils.elements;
@@ -5059,10 +5061,10 @@
                 });
                 STACKS.forEach(stack => {
                     state.stacks[stack] = this.sortFiles(state.stacks[stack]);
+                    state.focusTraversalOrder[stack] = state.stacks[stack].map(file => file.id);
                 });
                 this.updateStackCounts();
             },
-            
             sortFiles(files) {
                 return [...files].sort((a, b) => {
                     const seqA = a.stackSequence || 0;
@@ -5074,6 +5076,41 @@
                 });
             },
 
+            ensureFocusTraversalOrder(stackName) {
+                if (!stackName) { return []; }
+                const stackArray = state.stacks[stackName] || [];
+                const validIds = new Set(stackArray.map(file => file.id));
+                let order = Array.isArray(state.focusTraversalOrder[stackName])
+                    ? state.focusTraversalOrder[stackName].filter(id => validIds.has(id))
+                    : [];
+                const seen = new Set(order);
+                stackArray.forEach(file => {
+                    if (!seen.has(file.id)) {
+                        order.push(file.id);
+                        seen.add(file.id);
+                    }
+                });
+                state.focusTraversalOrder[stackName] = order;
+                return order;
+            },
+
+            getFocusTraversalIndex(stackName, fileId) {
+                if (!fileId) { return -1; }
+                const order = this.ensureFocusTraversalOrder(stackName);
+                return order.indexOf(fileId);
+            },
+
+            getFocusTraversalFile(stackName, traversalIndex) {
+                const stackArray = state.stacks[stackName] || [];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) { return null; }
+                const order = this.ensureFocusTraversalOrder(stackName);
+                if (order.length === 0) { return null; }
+                const normalizedIndex = ((traversalIndex % order.length) + order.length) % order.length;
+                const targetId = order[normalizedIndex];
+                if (!targetId) { return null; }
+                return stackArray.find(file => file.id === targetId) || null;
+            },
+
             async promoteFocusImage(targetFile, options = {}) {
                 const { direction = null, prePromotionIndex = null } = options;
                 if (!state.isFocusMode || !targetFile) { return; }
@@ -5081,6 +5118,8 @@
                 const stackName = state.currentStack;
                 const stackArray = state.stacks[stackName];
                 if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
+
+                this.ensureFocusTraversalOrder(stackName);
 
                 const targetIndex = stackArray.findIndex(file => file.id === targetFile.id);
                 if (targetIndex === -1) { return; }
@@ -5185,8 +5224,11 @@
                     this.showEmptyState();
                     return;
                 }
-                
-                const maxIndex = currentStackArray.length - 1;
+
+                const traversalOrder = this.ensureFocusTraversalOrder(currentStackName);
+                const maxIndex = traversalOrder.length > 0
+                    ? traversalOrder.length - 1
+                    : currentStackArray.length - 1;
                 if (state.currentStackPosition >= currentStackArray.length) {
                     state.currentStackPosition = maxIndex;
                 }
@@ -5197,7 +5239,15 @@
                 if (!Number.isInteger(state.focusTraversalIndex)
                     || state.focusTraversalIndex < 0
                     || state.focusTraversalIndex > maxIndex) {
-                    state.focusTraversalIndex = state.currentStackPosition;
+                    const currentFileId = currentStackArray[state.currentStackPosition]?.id || null;
+                    const traversalIndex = currentFileId
+                        ? this.getFocusTraversalIndex(currentStackName, currentFileId)
+                        : -1;
+                    if (traversalIndex >= 0) {
+                        state.focusTraversalIndex = traversalIndex;
+                    } else {
+                        state.focusTraversalIndex = state.currentStackPosition;
+                    }
                 }
 
                 const previousPosition = state.currentStackPosition;
@@ -5258,10 +5308,21 @@
 
             updateImageCounters() {
                 const stack = state.stacks[state.currentStack] || [];
-                const total = stack.length;
+                const traversalOrder = this.ensureFocusTraversalOrder(state.currentStack);
+                const total = traversalOrder.length;
                 let traversalIndex = Number.isInteger(state.focusTraversalIndex)
                     ? state.focusTraversalIndex
-                    : state.currentStackPosition;
+                    : -1;
+
+                if (!Number.isInteger(traversalIndex) || traversalIndex < 0) {
+                    const currentFileId = stack[state.currentStackPosition]?.id || null;
+                    if (currentFileId) {
+                        const orderIndex = this.getFocusTraversalIndex(state.currentStack, currentFileId);
+                        traversalIndex = orderIndex >= 0 ? orderIndex : state.currentStackPosition;
+                    } else {
+                        traversalIndex = state.currentStackPosition;
+                    }
+                }
 
                 if (!Number.isInteger(traversalIndex)) {
                     traversalIndex = 0;
@@ -5435,6 +5496,7 @@
                     if (updatedStack.length === 0) {
                         state.currentStackPosition = 0;
                         state.focusTraversalIndex = 0;
+                        state.focusTraversalOrder[currentStackName] = [];
                         if (state.isFocusMode && exitFocusIfEmpty) {
                             Gestures.toggleFocusMode();
                         }
@@ -5448,7 +5510,14 @@
                             nextIndex = 0;
                         }
                         state.currentStackPosition = nextIndex;
-                        state.focusTraversalIndex = nextIndex;
+                        this.ensureFocusTraversalOrder(currentStackName);
+                        const nextFileId = updatedStack[nextIndex]?.id || null;
+                        if (nextFileId) {
+                            const traversalIndex = this.getFocusTraversalIndex(currentStackName, nextFileId);
+                            state.focusTraversalIndex = traversalIndex >= 0 ? traversalIndex : nextIndex;
+                        } else {
+                            state.focusTraversalIndex = nextIndex;
+                        }
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
@@ -5465,6 +5534,9 @@
                 Utils.elements.centerImage.style.opacity = '0';
                 Utils.elements.detailsButton.style.display = 'none';
                 state.focusTraversalIndex = 0;
+                if (state.currentStack) {
+                    state.focusTraversalOrder[state.currentStack] = [];
+                }
                 this.updateImageCounters();
                 const skipEmptyState = state.isReturningToFolders;
                 setTimeout(() => {
@@ -5560,7 +5632,9 @@
                         const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
                         if (selectedIndex !== -1) {
                             state.currentStackPosition = selectedIndex;
-                            state.focusTraversalIndex = selectedIndex;
+                            Core.ensureFocusTraversalOrder(state.currentStack);
+                            const traversalIndex = Core.getFocusTraversalIndex(state.currentStack, selectedFileId);
+                            state.focusTraversalIndex = traversalIndex >= 0 ? traversalIndex : selectedIndex;
                         }
                     }
                     await Core.displayCurrentImage();
@@ -6148,12 +6222,14 @@
                 }
 
                 state.stacks[stackName] = newStack;
+                state.focusTraversalOrder[stackName] = newStack.map(file => file.id);
 
                 if (selectedIds.length > 0) {
                     const firstSelectedIndex = newStack.findIndex(file => file.id === selectedIds[0]);
                     const nextPosition = firstSelectedIndex !== -1 ? firstSelectedIndex : 0;
                     state.currentStackPosition = nextPosition;
-                    state.focusTraversalIndex = nextPosition;
+                    const traversalIndex = this.getFocusTraversalIndex(stackName, newStack[nextPosition]?.id);
+                    state.focusTraversalIndex = traversalIndex >= 0 ? traversalIndex : nextPosition;
                 } else {
                     state.currentStackPosition = 0;
                     state.focusTraversalIndex = 0;
@@ -7100,20 +7176,45 @@
                     state.focusTraversalIndex = state.currentStackPosition;
                     Core.displayCurrentImage();
                     Grid.syncSelectionWithFocus();
+                } else {
+                    const stackName = state.currentStack;
+                    const currentStackArray = state.stacks[stackName] || [];
+                    Core.ensureFocusTraversalOrder(stackName);
+                    const currentFileId = currentStackArray[state.currentStackPosition]?.id || null;
+                    if (currentFileId) {
+                        const traversalIndex = Core.getFocusTraversalIndex(stackName, currentFileId);
+                        state.focusTraversalIndex = traversalIndex >= 0
+                            ? traversalIndex
+                            : state.currentStackPosition;
+                    } else {
+                        state.focusTraversalIndex = 0;
+                    }
                 }
 
                 Core.updateImageCounters();
                 this.lastHubTap = { time: 0, x: 0, y: 0 };
             },
             async nextImage() {
-                const stack = state.stacks[state.currentStack];
+                const stackName = state.currentStack;
+                const stack = state.stacks[stackName];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const baseIndex = Number.isInteger(state.focusTraversalIndex)
+                const traversalOrder = Core.ensureFocusTraversalOrder(stackName);
+                if (traversalOrder.length === 0) { return; }
+
+                let baseIndex = Number.isInteger(state.focusTraversalIndex)
                     ? state.focusTraversalIndex
-                    : state.currentStackPosition;
-                const nextIndex = (baseIndex + 1) % stack.length;
-                const targetFile = stack[nextIndex];
+                    : -1;
+                if (!Number.isInteger(baseIndex) || baseIndex < 0) {
+                    const currentFileId = stack[state.currentStackPosition]?.id || null;
+                    const fallbackIndex = currentFileId
+                        ? Core.getFocusTraversalIndex(stackName, currentFileId)
+                        : -1;
+                    baseIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+                }
+
+                const nextIndex = (baseIndex + 1) % traversalOrder.length;
+                const targetFile = Core.getFocusTraversalFile(stackName, nextIndex);
                 if (!targetFile) { return; }
 
                 await Core.promoteFocusImage(targetFile, {
@@ -7122,14 +7223,26 @@
                 });
             },
             async prevImage() {
-                const stack = state.stacks[state.currentStack];
+                const stackName = state.currentStack;
+                const stack = state.stacks[stackName];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const baseIndex = Number.isInteger(state.focusTraversalIndex)
+                const traversalOrder = Core.ensureFocusTraversalOrder(stackName);
+                if (traversalOrder.length === 0) { return; }
+
+                let baseIndex = Number.isInteger(state.focusTraversalIndex)
                     ? state.focusTraversalIndex
-                    : state.currentStackPosition;
-                const prevIndex = (baseIndex - 1 + stack.length) % stack.length;
-                const targetFile = stack[prevIndex];
+                    : -1;
+                if (!Number.isInteger(baseIndex) || baseIndex < 0) {
+                    const currentFileId = stack[state.currentStackPosition]?.id || null;
+                    const fallbackIndex = currentFileId
+                        ? Core.getFocusTraversalIndex(stackName, currentFileId)
+                        : -1;
+                    baseIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+                }
+
+                const prevIndex = (baseIndex - 1 + traversalOrder.length) % traversalOrder.length;
+                const targetFile = Core.getFocusTraversalFile(stackName, prevIndex);
                 if (!targetFile) { return; }
 
                 await Core.promoteFocusImage(targetFile, {
