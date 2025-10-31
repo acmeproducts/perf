@@ -6017,35 +6017,67 @@
                 state.grid.skipReorderOnClose = false;
             },
 
-            syncSelectionWithFocus() {
-                const gridModal = Utils.elements.gridModal;
-                if (!state.grid.stack || state.grid.stack !== state.currentStack) { return; }
-                if (!gridModal || gridModal.classList.contains('hidden')) { return; }
-                if (state.grid.filtered.length > 0) { return; }
-                if (state.grid.selected.length > 1) { return; }
+            syncSelectionWithFocus(options = {}) {
+                const { selectionDrivesFocus = false } = options;
 
                 const stackArray = state.stacks[state.currentStack];
-                if (!Array.isArray(stackArray) || stackArray.length === 0) { return; }
+                if (!Array.isArray(stackArray) || stackArray.length === 0) { return false; }
 
-                const currentFile = stackArray[state.currentStackPosition];
-                if (!currentFile) { return; }
+                let targetIndex = state.currentStackPosition;
+                let targetFile = stackArray[targetIndex];
 
-                const alreadySelected = state.grid.selected.length === 1 && state.grid.selected[0] === currentFile.id;
+                if (selectionDrivesFocus) {
+                    const selectedId = state.grid.selected.length === 1 ? state.grid.selected[0] : null;
+                    if (!selectedId) { return false; }
 
-                if (!alreadySelected) {
-                    state.grid.selected = [currentFile.id];
+                    const selectionIndex = stackArray.findIndex(file => file.id === selectedId);
+                    if (selectionIndex === -1) { return false; }
+
+                    targetIndex = selectionIndex;
+                    targetFile = stackArray[targetIndex];
+                    if (!targetFile) { return false; }
+
+                    if (state.currentStackPosition !== targetIndex) {
+                        state.currentStackPosition = targetIndex;
+                    }
+                    state.focusTraversalIndex = targetIndex;
+                    state.grid.selected = [targetFile.id];
                     state.grid.skipReorderOnClose = true;
                     state.grid.isDirty = false;
+                } else {
+                    const gridModal = Utils.elements.gridModal;
+                    if (!state.grid.stack || state.grid.stack !== state.currentStack) { return false; }
+                    if (!gridModal || gridModal.classList.contains('hidden')) { return false; }
+                    if (state.grid.filtered.length > 0) { return false; }
+                    if (state.grid.selected.length > 1) { return false; }
+
+                    if (!targetFile) { return false; }
+
+                    const alreadySelected = state.grid.selected.length === 1 && state.grid.selected[0] === targetFile.id;
+                    if (!alreadySelected) {
+                        state.grid.selected = [targetFile.id];
+                        state.grid.skipReorderOnClose = true;
+                        state.grid.isDirty = false;
+                    }
                 }
 
                 const container = Utils.elements.gridContainer;
                 if (container) {
                     container.querySelectorAll('.grid-item').forEach(item => {
-                        item.classList.toggle('selected', item.dataset.fileId === currentFile.id);
+                        item.classList.toggle('selected', item.dataset.fileId === (targetFile ? targetFile.id : null));
                     });
                 }
 
                 this.updateSelectionUI();
+                return true;
+            },
+
+            async focusSelectedImage() {
+                const updated = this.syncSelectionWithFocus({ selectionDrivesFocus: true });
+                if (!updated) { return false; }
+                await Core.displayCurrentImage();
+                Core.updateImageCounters();
+                return true;
             },
 
             searchImages(query) {
