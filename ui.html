@@ -1208,6 +1208,7 @@
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null,
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
+            focusTraversalCursor: 0,
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
@@ -5073,7 +5074,7 @@
             },
 
             async promoteFocusImage(targetFile, options = {}) {
-                const { direction = null } = options;
+                const { direction = null, traversalCursor = null } = options;
                 if (!state.isFocusMode || !targetFile) { return; }
 
                 const stackName = state.currentStack;
@@ -5112,6 +5113,12 @@
                 this.updateImageCounters();
                 Grid.refreshFilteredOrder(stackName);
                 Grid.syncSelectionWithFocus();
+
+                if (typeof traversalCursor === 'number' && Number.isFinite(traversalCursor)) {
+                    state.focusTraversalCursor = traversalCursor;
+                } else {
+                    state.focusTraversalCursor = state.currentStackPosition;
+                }
             },
 
             updateStackCounts() {
@@ -5178,6 +5185,8 @@
                     this.showEmptyState();
                     return;
                 }
+
+                state.focusTraversalCursor = previousPosition;
 
                 try {
                     Utils.elements.detailsButton.style.display = 'flex';
@@ -7053,21 +7062,27 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const nextIndex = (state.currentStackPosition + 1) % stack.length;
+                const traversalCursor = typeof state.focusTraversalCursor === 'number'
+                    ? state.focusTraversalCursor
+                    : state.currentStackPosition;
+                const nextIndex = (traversalCursor + 1) % stack.length;
                 const targetFile = stack[nextIndex];
                 if (!targetFile) { return; }
 
-                await Core.promoteFocusImage(targetFile, { direction: 'next' });
+                await Core.promoteFocusImage(targetFile, { direction: 'next', traversalCursor: nextIndex });
             },
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
-                const prevIndex = (state.currentStackPosition - 1 + stack.length) % stack.length;
+                const traversalCursor = typeof state.focusTraversalCursor === 'number'
+                    ? state.focusTraversalCursor
+                    : state.currentStackPosition;
+                const prevIndex = (traversalCursor - 1 + stack.length) % stack.length;
                 const targetFile = stack[prevIndex];
                 if (!targetFile) { return; }
 
-                await Core.promoteFocusImage(targetFile, { direction: 'prev' });
+                await Core.promoteFocusImage(targetFile, { direction: 'prev', traversalCursor: prevIndex });
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
