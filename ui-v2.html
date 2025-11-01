@@ -812,22 +812,7 @@
     </style>
 </head>
 <body>
-
-<!-- UX Selection Screen (non-invasive, appears before provider selection) -->
-<div id="ux-select-screen" class="screen">
-  <div style="max-width:720px;margin:6vh auto;padding:24px;font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;">
-    <h1 style="margin:0 0 12px;font-weight:600;">Choose Experience</h1>
-    <p style="margin:0 0 24px;opacity:.8">Engine unchanged. Layout only. You can switch later.</p>
-    <div style="display:flex;flex-wrap:wrap;gap:12px">
-      <button id="ux-choice-baseline" class="btn">Baseline</button>
-      <button id="ux-choice-taskflow" class="btn">Taskflow</button>
-      <button id="ux-choice-tabdock" class="btn">TabDock</button>
-      <button id="ux-choice-split" class="btn">Split</button>
-      <button id="ux-choice-mobile" class="btn">Mobile</button>
-    </div>
-  </div>
-</div>
-
+<!-- UX Selection Screen --><div id=\"ux-select-screen\" class=\"screen\"><div style=\"max-width:720px;margin:6vh auto;padding:24px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial\"><h1 style=\"margin:0 0 12px;font-weight:600;\">Choose Experience</h1><p style=\"margin:0 0 24px;opacity:.8\">Engine unchanged. Layout only. Choose a frame below.</p><div style=\"display:flex;flex-wrap:wrap;gap:12px\"><button id=\"ux-choice-baseline\" class=\"btn\">Baseline</button><button id=\"ux-choice-taskflow\" class=\"btn\">Taskflow</button><button id=\"ux-choice-tabdock\" class=\"btn\">TabDock</button><button id=\"ux-choice-split\" class=\"btn\">Split</button><button id=\"ux-choice-mobile\" class=\"btn\">Mobile</button></div></div></div>
     <!-- Provider Selection Screen -->
     <div class="screen" id="provider-screen">
         <div class="card">
@@ -8155,12 +8140,21 @@ this.updateImageCounters();
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 
+<!-- Frames + Router + Layout applicator -->
+<style id="frame-style">
+  body[data-frame="taskflow"] #folder-screen { display:block !important; position:fixed; left:0; top:0; bottom:0; width:280px; overflow:auto; border-right:1px solid rgba(0,0,0,.1); background:var(--frame-bg, #111); z-index:10; }
+  body[data-frame="taskflow"] #app-container { margin-left:280px !important; }
+  body[data-frame="tabdock"] .frame-dock { position:sticky; top:0; display:flex; gap:8px; padding:8px; background:rgba(0,0,0,.4); backdrop-filter:saturate(120%) blur(6px); z-index:5; }
+  body[data-frame="split"] .frame-split { display:flex; gap:0; height:100%; }
+  body[data-frame="split"] .frame-split .frame-left { width:38%; min-width:320px; border-right:1px solid rgba(0,0,0,.1); overflow:auto; }
+  body[data-frame="split"] .frame-split .frame-right { flex:1; overflow:auto; }
+  body[data-frame="mobile"] #app-container { padding-bottom:56px; }
+</style>
 <script>
 (function(){
   'use strict';
-  if (window.__frameInjected) return; window.__frameInjected = true;
+  if (window.__framesInjected) return; window.__framesInjected = true;
 
-  // Config & Frame registry (non-invasive; defaults preserve current visuals)
   window.FRAMES = window.FRAMES || {};
   const FR = window.FRAMES;
 
@@ -8222,11 +8216,8 @@ this.updateImageCounters();
     meta: { prefersBottomControls:true }
   };
 
-  // Default to baseline parity
   window.ACTIVE_FRAME = window.ACTIVE_FRAME || FR.baseline;
 
-  // Safe router wrapper (non-invasive). Existing engine continues to render;
-  // we only ensure target containers exist.
   function routeTo(panelId){
     try{
       const frame = window.ACTIVE_FRAME || FR.baseline;
@@ -8236,7 +8227,6 @@ this.updateImageCounters();
       if(!sel) return;
       const el = document.querySelector(sel);
       if(!el) console.warn('Slot not found for', panelId, sel);
-      // no-op rendering; your existing code controls UI. This is a contract hook.
       (window.EventBus && window.EventBus.emit && window.EventBus.emit('panel:activated', panelId));
     }catch(err){
       console.error('routeTo error', err);
@@ -8245,40 +8235,84 @@ this.updateImageCounters();
   }
   window.routeTo = window.routeTo || routeTo;
 
-  // When folder images are loaded and app switches to common UI, mount active frame.
-  // Hook after Core.initializeImageDisplay is called. We patch minimally by listening to a custom mark.
+  function applyFrameLayout(){
+    try{
+      const frameName = Object.entries(window.FRAMES||{}).find(([k,v]) => (window.ACTIVE_FRAME===v))?.[0] || 'baseline';
+      document.body.setAttribute('data-frame', frameName);
+      if (frameName === 'baseline') return;
+
+      if (frameName === 'taskflow') {
+        const folder = document.querySelector('#folder-screen');
+        const app = document.querySelector('#app-container');
+        if (!folder || !app) { (window.__showToast||alert)('Taskflow: slots missing'); return; }
+        folder.style.display = 'block';
+        app.style.display = 'block';
+      }
+
+      if (frameName === 'tabdock') {
+        const app = document.querySelector('#app-container');
+        if (!app) { (window.__showToast||alert)('TabDock: app container missing'); return; }
+        if (!document.querySelector('.frame-dock')) {
+          const dock = document.createElement('div');
+          dock.className = 'frame-dock';
+          dock.innerHTML = '<button data-panel="sort">Sort</button><button data-panel="focus">Focus</button><button data-panel="grid">Grid</button><button data-panel="detail">Detail</button>';
+          app.parentNode.insertBefore(dock, app);
+          dock.addEventListener('click', (e)=>{
+            const btn = e.target.closest('button[data-panel]');
+            if(!btn) return;
+            const p = btn.getAttribute('data-panel');
+            try { if (window.routeTo) window.routeTo(p); } catch (err){ console.error(err); (window.__showToast||alert)('TabDock navigation failed: ' + (err.message||err)); }
+          });
+        }
+      }
+
+      if (frameName === 'split') {
+        const appRoot = document.querySelector('#app-container');
+        if (!appRoot) { (window.__showToast||alert)('Split: app container missing'); return; }
+        if (!document.querySelector('.frame-split')) {
+          const wrap = document.createElement('div');
+          wrap.className = 'frame-split';
+          const left = document.createElement('div'); left.className = 'frame-left';
+          const right = document.createElement('div'); right.className = 'frame-right';
+          appRoot.parentNode.insertBefore(wrap, appRoot);
+          right.appendChild(appRoot);
+          wrap.appendChild(left); wrap.appendChild(right);
+          const grid = document.querySelector('#grid-modal');
+          if (grid) {
+            const clone = grid.cloneNode(true);
+            clone.id = 'grid-inline-clone';
+            clone.style.display = 'block';
+            left.appendChild(clone);
+          } else {
+            const info = document.createElement('div');
+            info.style.padding = '12px';
+            info.textContent = 'Grid will appear here when opened.';
+            left.appendChild(info);
+          }
+        }
+      }
+
+    }catch(err){
+      console.error('applyFrameLayout error', err);
+      (window.__showToast||alert)('Frame layout error: ' + (err.message||err));
+    }
+  }
+  window.applyFrameLayout = applyFrameLayout;
+
   const _coreInit = (window.Core && Core.initializeImageDisplay) ? Core.initializeImageDisplay.bind(Core) : null;
   if (_coreInit){
     Core.initializeImageDisplay = function(){
       const r = _coreInit();
-      try {
-        // After the baseline UI is ready, sanity-check selected frame slots exist.
-        const frame = window.ACTIVE_FRAME || FR.baseline;
-        frame.panels.forEach(p => {
-          const sel = frame.slots[p.slot];
-          if (!sel || !document.querySelector(sel)) throw new Error('Missing slot: ' + p.slot + ' (' + (sel||'?') + ')');
-        });
-      } catch (e){
-        console.error(e);
-        (window.__showToast||alert)('Frame mount warning: ' + (e.message||e));
-      }
+      try { applyFrameLayout(); } catch (e) { console.error(e); }
       return r;
     }
+  } else {
+    document.addEventListener('DOMContentLoaded', ()=> setTimeout(()=>applyFrameLayout(), 0));
   }
 
-  // UX selection screen → set frame then continue to provider selection
-  function bindUxSelection(){
-    const go = (frame)=>{
-      try{
-        window.ACTIVE_FRAME = frame;
-        if (window.Utils && Utils.showScreen) Utils.showScreen('provider-screen');
-        else document.getElementById('provider-screen')?.classList.remove('hidden');
-      }catch(e){
-        console.error(e);
-        (window.__showToast||alert)('Unable to start: ' + (e.message||e));
-      }
-    };
-    const $ = id => document.getElementById(id);
+  function bindUx(){
+    const sel = id => document.getElementById(id);
+    const FR = window.FRAMES;
     const map = {
       'ux-choice-baseline': FR.baseline,
       'ux-choice-taskflow': FR.taskflow,
@@ -8286,16 +8320,17 @@ this.updateImageCounters();
       'ux-choice-split'   : FR.split,
       'ux-choice-mobile'  : FR.mobile,
     };
-    Object.keys(map).forEach(id => {
-      const btn = $(id);
-      if (btn) btn.addEventListener('click', () => go(map[id]));
+    Object.entries(map).forEach(([id,frame])=>{
+      const b = sel(id); if (!b) return;
+      b.addEventListener('click', ()=>{
+        window.ACTIVE_FRAME = frame;
+        if (window.Utils && Utils.showScreen) Utils.showScreen('provider-screen');
+        else document.getElementById('provider-screen')?.classList.remove('hidden');
+      });
     });
   }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindUxSelection, { once:true });
-  } else {
-    bindUxSelection();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindUx, {once:true}); else bindUx();
+
 })();
 </script>
 
