@@ -585,23 +585,37 @@
         .gesture-layer .tri.right { clip-path: polygon(100% 0%, 100% 100%, 50% 50%); background: transparent; }
         .gesture-layer .tri.down { clip-path: polygon(0% 100%, 100% 100%, 50% 50%); background: transparent; }
         .gesture-layer .tri.left { clip-path: polygon(0% 0%, 0% 100%, 50% 50%); background: transparent; }
-        .gesture-layer .half.left {
-            position: absolute;
-            top: 12px;
-            bottom: 12px;
-            left: 12px;
-            right: calc(50% + 6px);
-            border-radius: 16px;
-            background: transparent;
-        }
+        .gesture-layer .half.left,
+        .gesture-layer .half.center,
         .gesture-layer .half.right {
             position: absolute;
             top: 12px;
             bottom: 12px;
-            left: calc(50% + 6px);
-            right: 12px;
             border-radius: 16px;
             background: transparent;
+        }
+        .gesture-layer .half.left { left: 12px; right: calc(60% + 12px); }
+        .gesture-layer .half.center {
+            left: calc(40% + 6px);
+            right: calc(40% + 6px);
+        }
+        .gesture-layer .half.right { left: calc(60% + 12px); right: 12px; }
+        .gesture-layer .half::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            opacity: 0;
+            transition: opacity 0.22s ease;
+        }
+        .gesture-layer .half.left::after {
+            background: linear-gradient(90deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.28) 80%);
+        }
+        .gesture-layer .half.right::after {
+            background: linear-gradient(270deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.28) 80%);
+        }
+        .gesture-layer .half.center::after {
+            background: linear-gradient(180deg, rgba(148, 163, 184, 0.28) 0%, rgba(148, 163, 184, 0.16) 100%);
         }
         .gesture-layer .hub {
             position: absolute;
@@ -616,11 +630,10 @@
             pointer-events: none;
             z-index: 40;
         }
-        .gesture-layer .glow {
-            opacity: 0 !important;
-            box-shadow: none;
-        }
-        .gesture-layer .deglow { opacity: 0; }
+        .gesture-layer .glow { pointer-events: none; }
+        .gesture-layer .half.glow::after { opacity: 0.9; }
+        .gesture-layer .half.deglow::after { opacity: 0; }
+        .gesture-layer .deglow { pointer-events: none; }
         .gesture-layer[hidden] { display: none; }
 
         .gesture-layer .comet-trail {
@@ -763,8 +776,9 @@
                 <div class="hub" id="gesture-hub-a"></div>
             </div>
             <div id="gesture-screen-b" class="stage" role="application"
-                 aria-label="Focus mode. Left/right review halves. Double-tap center hub to return to sort mode." hidden>
+                 aria-label="Focus mode. Left/right review halves with a center exit strip. Double-tap hub to return to sort mode." hidden>
                 <div id="gesture-half-left" class="half left"></div>
+                <div id="gesture-half-center" class="half center"></div>
                 <div id="gesture-half-right" class="half right"></div>
                 <div class="hub" id="gesture-hub-b"></div>
             </div>
@@ -1067,6 +1081,7 @@
                     gestureTriDown: document.getElementById('gesture-tri-down'),
                     gestureTriLeft: document.getElementById('gesture-tri-left'),
                     gestureHalfLeft: document.getElementById('gesture-half-left'),
+                    gestureHalfCenter: document.getElementById('gesture-half-center'),
                     gestureHalfRight: document.getElementById('gesture-half-right'),
                     
                     pillPriority: document.getElementById('pill-priority'),
@@ -3107,7 +3122,7 @@
             }
             triggerFeedback(type) {
                 if (!this.isEnabled || !this.isSupported) return;
-                const patterns = { swipe: [20, 40], pillTap: [35], buttonPress: [25], error: [100, 50, 100] };
+                const patterns = { swipe: [20, 40], pillTap: [35], buttonPress: [25], focusExit: [18, 45], error: [100, 50, 100] };
                 const pattern = patterns[type];
                 if (pattern && navigator.vibrate) { navigator.vibrate(pattern); }
             }
@@ -5569,6 +5584,11 @@
             TRAIL_INTERVAL_MS: 12,
             TRAIL_LIFETIME_MS: 1050,
             trailThrottle: null,
+            focusTapCandidate: false,
+            FOCUS_CENTER_MIN: 0.4,
+            FOCUS_CENTER_MAX: 0.6,
+            FOCUS_EXIT_TAP_DISTANCE_THRESHOLD: 18,
+            FOCUS_EXIT_DRAG_CANCEL_DISTANCE: 22,
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
                 this.setupEventListeners();
@@ -5603,6 +5623,7 @@
                     },
                     half: {
                         left: Utils.elements.gestureHalfLeft,
+                        center: Utils.elements.gestureHalfCenter,
                         right: Utils.elements.gestureHalfRight
                     }
                 };
@@ -5665,6 +5686,17 @@
                     this.overlay.screenB.setAttribute('aria-hidden', focus ? 'false' : 'true');
                 }
             },
+            getFocusZone(clientX) {
+                const viewport = Utils.elements.imageViewport;
+                if (!viewport) return null;
+                const rect = viewport.getBoundingClientRect();
+                if (!rect.width) return null;
+                const fx = (clientX - rect.left) / rect.width;
+                if (fx < 0 || fx > 1) return null;
+                if (fx < this.FOCUS_CENTER_MIN) return 'left';
+                if (fx > this.FOCUS_CENTER_MAX) return 'right';
+                return 'center';
+            },
             isInHub(clientX, clientY) {
                 const viewport = Utils.elements.imageViewport;
                 if (!viewport) return false;
@@ -5718,15 +5750,21 @@
             },
             handleTap(clientX, clientY) {
                 if (state.isFocusMode) {
-                    const viewport = Utils.elements.imageViewport;
-                    if (!viewport) return;
-                    const rect = viewport.getBoundingClientRect();
-                    if (!rect.width) return;
-                    const fx = (clientX - rect.left) / rect.width;
-                    const direction = fx < 0.5 ? 'left' : 'right';
-                    this.highlightFocusDirection(direction);
-                    if (direction === 'left') { this.prevImage(); }
-                    else { this.nextImage(); }
+                    const zone = this.getFocusZone(clientX);
+                    if (!zone) return;
+                    this.highlightFocusDirection(zone);
+                    if (zone === 'left') {
+                        this.prevImage();
+                    } else if (zone === 'right') {
+                        this.nextImage();
+                    } else {
+                        const wasFocusMode = state.isFocusMode;
+                        this.toggleFocusMode();
+                        if (wasFocusMode && !state.isFocusMode) {
+                            if (state.haptic) { state.haptic.triggerFeedback('focusExit'); }
+                            Utils.showToast('Exited focus mode', 'info', true);
+                        }
+                    }
                     return;
                 }
                 const dir = this.hitTriangle(clientX, clientY);
@@ -5763,11 +5801,15 @@
             },
             handleStart(e) {
                 this.tapHandled = false;
+                this.focusTapCandidate = false;
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
                 if (state.currentScale > 1.1) return;
                 const point = e.touches ? e.touches[0] : e;
                 const hubInteraction = this.isInHub(point.clientX, point.clientY);
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
+                if (state.isFocusMode && !hubInteraction) {
+                    this.focusTapCandidate = this.getFocusZone(point.clientX) === 'center';
+                }
                 this.startPos = { x: point.clientX, y: point.clientY };
                 this.currentPos = { x: point.clientX, y: point.clientY };
                 this.startTimestamp = performance.now();
@@ -5795,6 +5837,9 @@
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
                 const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                if (this.focusTapCandidate && distance > this.FOCUS_EXIT_DRAG_CANCEL_DISTANCE) {
+                    this.focusTapCandidate = false;
+                }
                 if (distance > 30) {
                     this.gestureStarted = true;
                     if(!state.isFocusMode) {
@@ -5817,7 +5862,10 @@
                 const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
                 const now = performance.now();
                 const duration = now - this.startTimestamp;
-                const isTap = distance < this.TAP_DISTANCE_THRESHOLD && duration < this.TAP_DURATION_THRESHOLD;
+                const tapThreshold = (state.isFocusMode && this.focusTapCandidate)
+                    ? this.FOCUS_EXIT_TAP_DISTANCE_THRESHOLD
+                    : this.TAP_DISTANCE_THRESHOLD;
+                const isTap = distance < tapThreshold && duration < this.TAP_DURATION_THRESHOLD;
 
                 if (this.hubPressActive) {
                     if (isTap) {
@@ -5840,6 +5888,7 @@
                     this.hideAllEdgeGlows();
                     this.hubPressActive = false;
                     this.gestureStarted = false;
+                    this.focusTapCandidate = false;
                     return;
                 }
 
@@ -5868,6 +5917,7 @@
                 this.hideAllEdgeGlows();
                 this.hubPressActive = false;
                 this.gestureStarted = false;
+                this.focusTapCandidate = false;
             },
             getDistance(touch1, touch2) { const dx = touch1.clientX - touch2.clientX; const dy = touch1.clientY - touch2.clientY; return Math.sqrt(dx * dx + dy * dy); },
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
