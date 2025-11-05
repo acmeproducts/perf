@@ -6306,18 +6306,35 @@
 
             async reorderStackOnClose() {
                 const stackArray = state.stacks[state.grid.stack];
-                let topItems = []; let bottomItems = [];
+                if (!stackArray) { return; }
+
+                const fileMap = new Map(stackArray.map(file => [file.id, file]));
+                let topItems = [];
+                let bottomItems = [];
+                let latestSelectedId = null;
 
                 if (state.grid.filtered.length > 0) {
-                    const filteredIds = new Set(state.grid.filtered.map(f => f.id));
-                    topItems = state.grid.filtered.sort((a, b) => a.name.localeCompare(b.name));
-                    bottomItems = stackArray.filter(f => !filteredIds.has(f.id));
+                    const filteredIds = state.grid.filtered.map(f => f.id);
+                    const filteredSet = new Set(filteredIds);
+                    topItems = filteredIds
+                        .map(id => fileMap.get(id))
+                        .filter(Boolean);
+                    bottomItems = stackArray.filter(file => !filteredSet.has(file.id));
                 } else if (state.grid.selected.length > 0) {
-                    const selectedIds = new Set(state.grid.selected);
-                    topItems = stackArray.filter(f => selectedIds.has(f.id)).sort((a,b) => a.name.localeCompare(b.name));
-                    bottomItems = stackArray.filter(f => !selectedIds.has(f.id));
-                } else { return; }
-                
+                    const orderedSelection = state.grid.selected.filter(id => fileMap.has(id));
+                    if (orderedSelection.length === 0) { return; }
+
+                    latestSelectedId = orderedSelection[orderedSelection.length - 1];
+                    const orderedSelectedIds = [...orderedSelection].reverse();
+                    const selectedSet = new Set(orderedSelectedIds);
+                    topItems = orderedSelectedIds
+                        .map(id => fileMap.get(id))
+                        .filter(Boolean);
+                    bottomItems = stackArray.filter(file => !selectedSet.has(file.id));
+                } else {
+                    return;
+                }
+
                 const newStack = [...topItems, ...bottomItems];
                 const stackName = state.grid.stack;
                 const selectedIds = [...state.grid.selected];
@@ -6336,8 +6353,8 @@
                 state.stacks[stackName] = newStack;
 
                 if (selectedIds.length > 0) {
-                    const firstSelectedIndex = newStack.findIndex(file => file.id === selectedIds[0]);
-                    const nextPosition = firstSelectedIndex !== -1 ? firstSelectedIndex : 0;
+                    const targetId = latestSelectedId || selectedIds[selectedIds.length - 1] || selectedIds[0];
+                    const nextPosition = Math.max(0, newStack.findIndex(file => file.id === targetId));
                     state.currentStackPosition = nextPosition;
                     state.focusTraversalIndex = nextPosition;
                 } else {
