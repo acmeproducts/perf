@@ -1209,6 +1209,7 @@
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             focusTraversalIndex: 0,
+            focusTraversalOrder: [],
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
@@ -5117,25 +5118,13 @@
                 const totalItems = updatedStack.length;
                 if (totalItems === 0) {
                     state.focusTraversalIndex = 0;
+                    state.focusTraversalOrder = [];
                 } else {
-                    const maxIndex = totalItems - 1;
-                    let nextTraversal;
-                    if (direction === 'next') {
-                        nextTraversal = Number.isInteger(traversalBeforePromotion)
-                            ? traversalBeforePromotion
-                            : displayIndex;
-                    } else if (direction === 'prev') {
-                        nextTraversal = displayIndex;
-                    } else {
-                        nextTraversal = Number.isInteger(traversalBeforePromotion)
-                            ? traversalBeforePromotion
-                            : displayIndex;
-                    }
-
-                    if (!Number.isInteger(nextTraversal)) { nextTraversal = displayIndex; }
-                    if (nextTraversal < 0) { nextTraversal = 0; }
-                    if (nextTraversal > maxIndex) { nextTraversal = maxIndex; }
-                    state.focusTraversalIndex = nextTraversal;
+                    this.syncFocusIndicesToFile(targetFile.id, {
+                        stackName,
+                        fallbackTraversalIndex: traversalBeforePromotion,
+                        rebuildOrder: false
+                    });
                 }
 
                 await this.displayCurrentImage();
@@ -5196,7 +5185,9 @@
                     this.showEmptyState();
                     return;
                 }
-                
+
+                this.normalizeFocusTraversal(currentStackName);
+
                 const maxIndex = currentStackArray.length - 1;
                 if (state.currentStackPosition >= currentStackArray.length) {
                     state.currentStackPosition = maxIndex;
@@ -5270,24 +5261,6 @@
             updateImageCounters() {
                 const stack = state.stacks[state.currentStack] || [];
                 const total = stack.length;
-                let traversalIndex = Number.isInteger(state.focusTraversalIndex)
-                    ? state.focusTraversalIndex
-                    : state.currentStackPosition;
-
-                if (!Number.isInteger(traversalIndex)) {
-                    traversalIndex = 0;
-                }
-
-                if (total === 0) {
-                    traversalIndex = 0;
-                } else {
-                    const maxIndex = total - 1;
-                    if (traversalIndex < 0) { traversalIndex = 0; }
-                    if (traversalIndex > maxIndex) { traversalIndex = maxIndex; }
-                }
-
-                state.focusTraversalIndex = traversalIndex;
-
                 let displayIndex = total > 0 ? state.currentStackPosition : 0;
                 if (!Number.isInteger(displayIndex)) { displayIndex = 0; }
                 if (total > 0) {
@@ -5300,15 +5273,31 @@
                     displayIndex = 0;
                 }
 
-                const current = total > 0 ? displayIndex + 1 : 0;
-                const counterText = total > 0 ? `Item ${current} / ${total}` : 'No items';
+                const traversalOrder = Array.isArray(state.focusTraversalOrder)
+                    ? state.focusTraversalOrder
+                    : [];
+                let traversalIndex = Number.isInteger(state.focusTraversalIndex)
+                    ? state.focusTraversalIndex
+                    : displayIndex;
+                if (traversalOrder.length > 0) {
+                    const maxTraversal = traversalOrder.length - 1;
+                    if (traversalIndex < 0) { traversalIndex = 0; }
+                    if (traversalIndex > maxTraversal) { traversalIndex = maxTraversal; }
+                } else {
+                    traversalIndex = 0;
+                }
+                state.focusTraversalIndex = traversalIndex;
+
+                const normalText = total > 0 ? `Item ${displayIndex + 1} / ${total}` : 'No items';
+                const focusText = total > 0 ? `Item ${traversalIndex + 1} / ${total}` : 'No items';
+
                 if (Utils.elements.normalImageCount) {
-                    Utils.elements.normalImageCount.textContent = counterText;
-                    Utils.elements.normalImageCount.setAttribute('aria-label', counterText);
+                    Utils.elements.normalImageCount.textContent = normalText;
+                    Utils.elements.normalImageCount.setAttribute('aria-label', normalText);
                 }
                 if (Utils.elements.focusImageCount) {
-                    Utils.elements.focusImageCount.textContent = counterText;
-                    Utils.elements.focusImageCount.setAttribute('aria-label', counterText);
+                    Utils.elements.focusImageCount.textContent = focusText;
+                    Utils.elements.focusImageCount.setAttribute('aria-label', focusText);
                 }
                 if (Utils.elements.focusStackName) {
                     const stackLabel = STACK_NAMES[state.currentStack] || state.currentStack;
@@ -5317,22 +5306,75 @@
                 }
             },
 
+            normalizeFocusTraversal(stackName = state.currentStack, options = {}) {
+                const { rebuild = false } = options;
+                if (stackName !== state.currentStack) { return []; }
+
+                const stackArray = state.stacks[stackName] || [];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) {
+                    state.focusTraversalOrder = [];
+                    return state.focusTraversalOrder;
+                }
+
+                const validIds = stackArray.map(file => file.id);
+                const validSet = new Set(validIds);
+
+                let order = Array.isArray(state.focusTraversalOrder)
+                    ? state.focusTraversalOrder
+                    : [];
+
+                if (rebuild || order.length === 0) {
+                    order = [...validIds];
+                } else {
+                    order = order.filter(id => validSet.has(id));
+                    validIds.forEach(id => {
+                        if (!order.includes(id)) { order.push(id); }
+                    });
+                }
+
+                // Ensure uniqueness while preserving order
+                const seen = new Set();
+                const uniqueOrder = [];
+                order.forEach(id => {
+                    if (!seen.has(id) && validSet.has(id)) {
+                        seen.add(id);
+                        uniqueOrder.push(id);
+                    }
+                });
+
+                state.focusTraversalOrder = uniqueOrder;
+                return state.focusTraversalOrder;
+            },
+
             syncFocusIndicesToFile(fileId, options = {}) {
-                const { stackName = state.currentStack } = options;
+                const {
+                    stackName = state.currentStack,
+                    rebuildOrder = false,
+                    fallbackTraversalIndex = null
+                } = options;
                 const stackArray = state.stacks[stackName] || [];
 
                 if (!Array.isArray(stackArray) || stackArray.length === 0) {
                     if (stackName === state.currentStack) {
                         state.currentStackPosition = 0;
                         state.focusTraversalIndex = 0;
+                        state.focusTraversalOrder = [];
                     }
                     return { index: 0, found: false };
                 }
 
-                const resolvedId = fileId
+                let resolvedId = fileId
                     || (stackName === state.currentStack
                         ? stackArray[state.currentStackPosition]?.id
                         : null);
+
+                if (stackName === state.currentStack) {
+                    const order = this.normalizeFocusTraversal(stackName, { rebuild: rebuildOrder });
+                    if (resolvedId && !order.includes(resolvedId)) {
+                        order.push(resolvedId);
+                        state.focusTraversalOrder = order;
+                    }
+                }
 
                 let targetIndex = resolvedId
                     ? stackArray.findIndex(file => file.id === resolvedId)
@@ -5344,11 +5386,36 @@
                         stackArray.length - 1
                     );
                     targetIndex = fallbackIndex;
+                    resolvedId = stackArray[targetIndex]?.id || null;
                 }
 
                 if (stackName === state.currentStack) {
                     state.currentStackPosition = targetIndex;
-                    state.focusTraversalIndex = targetIndex;
+                    const traversalOrder = Array.isArray(state.focusTraversalOrder)
+                        ? state.focusTraversalOrder
+                        : [];
+
+                    let traversalIndex = resolvedId
+                        ? traversalOrder.indexOf(resolvedId)
+                        : -1;
+
+                    if (!Number.isInteger(traversalIndex) || traversalIndex < 0) {
+                        if (Number.isInteger(fallbackTraversalIndex)) {
+                            traversalIndex = fallbackTraversalIndex;
+                        } else {
+                            traversalIndex = targetIndex;
+                        }
+                    }
+
+                    if (traversalOrder.length > 0) {
+                        const maxTraversal = traversalOrder.length - 1;
+                        if (traversalIndex < 0) { traversalIndex = 0; }
+                        if (traversalIndex > maxTraversal) { traversalIndex = maxTraversal; }
+                    } else {
+                        traversalIndex = 0;
+                    }
+
+                    state.focusTraversalIndex = traversalIndex;
                 }
 
                 return { index: targetIndex, found: Boolean(resolvedId) };
@@ -5417,7 +5484,7 @@
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
-                        this.syncFocusIndicesToFile(currentImage.id, { stackName: originalStackName });
+                        this.syncFocusIndicesToFile(currentImage.id, { stackName: originalStackName, rebuildOrder: true });
                         Grid.refreshFilteredOrder(originalStackName);
                     } else {
                         const newSequence = Date.now();
@@ -5437,6 +5504,7 @@
                         item.stackSequence = newSequence;
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                        this.normalizeFocusTraversal(originalStackName);
                         Grid.refreshFilteredOrder(originalStackName);
                         Grid.refreshFilteredOrder(targetStack);
                     }
@@ -5905,7 +5973,7 @@
                 Core.updateStackCounts();
 
                 if (isActiveStack) {
-                    Core.syncFocusIndicesToFile(activeFocusId, { stackName });
+                    Core.syncFocusIndicesToFile(activeFocusId, { stackName, rebuildOrder: true });
                     Core.updateImageCounters();
                     this.syncSelectionWithFocus();
                 }
@@ -7204,6 +7272,13 @@
                     state.focusTraversalIndex = state.currentStackPosition;
                     Core.displayCurrentImage();
                     Grid.syncSelectionWithFocus();
+                } else {
+                    Core.normalizeFocusTraversal(state.currentStack, { rebuild: state.focusTraversalOrder.length === 0 });
+                    Core.syncFocusIndicesToFile(null, {
+                        stackName: state.currentStack,
+                        rebuildOrder: false,
+                        fallbackTraversalIndex: state.currentStackPosition
+                    });
                 }
 
                 Core.updateImageCounters();
@@ -7213,11 +7288,24 @@
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
+                const order = Core.normalizeFocusTraversal(state.currentStack) || [];
+                if (order.length === 0) { return; }
+
                 const baseIndex = Number.isInteger(state.focusTraversalIndex)
                     ? state.focusTraversalIndex
-                    : state.currentStackPosition;
-                const nextIndex = (baseIndex + 1) % stack.length;
-                const targetFile = stack[nextIndex];
+                    : 0;
+                const nextIndex = (baseIndex + 1) % order.length;
+                const targetId = order[nextIndex];
+                let targetFile = targetId ? stack.find(file => file.id === targetId) : null;
+
+                if (!targetFile) {
+                    Core.syncFocusIndicesToFile(null, { stackName: state.currentStack, rebuildOrder: true });
+                    const refreshedOrder = Core.normalizeFocusTraversal(state.currentStack) || [];
+                    if (refreshedOrder.length === 0) { return; }
+                    const fallbackId = refreshedOrder[Math.min(nextIndex, refreshedOrder.length - 1)];
+                    targetFile = fallbackId ? stack.find(file => file.id === fallbackId) : null;
+                }
+
                 if (!targetFile) { return; }
 
                 await Core.promoteFocusImage(targetFile, {
@@ -7229,11 +7317,24 @@
                 const stack = state.stacks[state.currentStack];
                 if (!Array.isArray(stack) || stack.length === 0) { return; }
 
+                const order = Core.normalizeFocusTraversal(state.currentStack) || [];
+                if (order.length === 0) { return; }
+
                 const baseIndex = Number.isInteger(state.focusTraversalIndex)
                     ? state.focusTraversalIndex
-                    : state.currentStackPosition;
-                const prevIndex = (baseIndex - 1 + stack.length) % stack.length;
-                const targetFile = stack[prevIndex];
+                    : 0;
+                const prevIndex = (baseIndex - 1 + order.length) % order.length;
+                const targetId = order[prevIndex];
+                let targetFile = targetId ? stack.find(file => file.id === targetId) : null;
+
+                if (!targetFile) {
+                    Core.syncFocusIndicesToFile(null, { stackName: state.currentStack, rebuildOrder: true });
+                    const refreshedOrder = Core.normalizeFocusTraversal(state.currentStack) || [];
+                    if (refreshedOrder.length === 0) { return; }
+                    const fallbackId = refreshedOrder[Math.min(prevIndex, refreshedOrder.length - 1)];
+                    targetFile = fallbackId ? stack.find(file => file.id === fallbackId) : null;
+                }
+
                 if (!targetFile) { return; }
 
                 await Core.promoteFocusImage(targetFile, {
