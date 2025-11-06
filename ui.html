@@ -5177,6 +5177,10 @@
                     newSequence = candidate;
                 }
                 const previousSequence = targetFile.stackSequence;
+                const previousStackPosition = state.currentStackPosition;
+                const previousTraversalIndex = state.focusTraversalIndex;
+                const previousAnchorIndex = state.stackAnchors?.[stackName];
+                const previouslyFocusedId = stackArray?.[previousStackPosition]?.id;
 
                 targetFile.stackSequence = newSequence;
 
@@ -5240,7 +5244,7 @@
                 Grid.syncSelectionWithFocus();
 
                 if (metadataPromise && typeof metadataPromise.catch === 'function') {
-                    metadataPromise.catch(error => {
+                    metadataPromise.catch(async error => {
                         state.syncLog?.log({
                             event: 'ui:focus-metadata-error',
                             level: 'error',
@@ -5248,9 +5252,52 @@
                             details: `Failed to persist focus advance for ${targetFile.name || targetFile.id}: ${error.message}`,
                             data: { stack: stackName, direction, error: error.message }
                         });
-                        if (state.showDebugToasts) {
-                            Utils.showToast(`Failed to persist focus advance: ${error.message}`, 'error', true);
+                        if (targetFile.stackSequence === newSequence) {
+                            targetFile.stackSequence = previousSequence;
+                            state.stacks[stackName] = this.sortFiles(state.stacks[stackName]);
+                            const revertedStack = state.stacks[stackName];
+
+                            const shouldRestoreFocus =
+                                state.currentStack === stackName &&
+                                state.currentStackPosition === displayIndex &&
+                                revertedStack?.[state.currentStackPosition]?.id === targetFile.id;
+
+                            if (shouldRestoreFocus) {
+                                const maxIndex = Math.max(revertedStack.length - 1, 0);
+                                const fallbackPosition = Number.isInteger(previousStackPosition)
+                                    ? Math.max(0, Math.min(previousStackPosition, maxIndex))
+                                    : Math.max(0, Math.min(state.currentStackPosition, maxIndex));
+                                const restoreIndex = previouslyFocusedId
+                                    ? revertedStack.findIndex(file => file.id === previouslyFocusedId)
+                                    : -1;
+                                const finalPosition = restoreIndex !== -1 ? restoreIndex : fallbackPosition;
+
+                                state.currentStackPosition = finalPosition;
+
+                                if (Number.isInteger(previousTraversalIndex)) {
+                                    state.focusTraversalIndex = Math.max(
+                                        0,
+                                        Math.min(previousTraversalIndex, maxIndex)
+                                    );
+                                } else {
+                                    state.focusTraversalIndex = finalPosition;
+                                }
+
+                                const anchorIndex = Number.isInteger(previousAnchorIndex)
+                                    ? Math.max(0, Math.min(previousAnchorIndex, maxIndex))
+                                    : finalPosition;
+                                this.updateStackAnchor(stackName, anchorIndex);
+
+                                await this.displayCurrentImage();
+                                this.updateImageCounters();
+                                Grid.refreshFilteredOrder(stackName);
+                                Grid.syncSelectionWithFocus();
+                            } else {
+                                this.updateStackAnchor(stackName);
+                            }
                         }
+
+                        Utils.showToast(`Failed to persist focus advance: ${error.message}`, 'error', true);
                     });
                 }
             },
