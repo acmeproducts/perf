@@ -5569,10 +5569,16 @@
                     const movedFileId = currentImage.id;
                     const stackLabel = STACK_NAMES[targetStack] || targetStack;
                     const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
+                    let metadataPromise = Promise.resolve();
+
                     if (targetStack === originalStackName) {
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
-                        const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
-                        const newSequence = minSequence - 1;
+                        const otherSequences = otherImages
+                            .map(img => Number.isFinite(Number(img.stackSequence)) ? Number(img.stackSequence) : null)
+                            .filter(seq => seq !== null);
+                        const fallbackSequence = otherSequences.length > 0 ? Math.max(...otherSequences) + 1 : Date.now();
+                        const newSequence = fallbackSequence;
+
                         state.syncLog?.log({
                             event: 'ui:stack-resequence',
                             level: 'info',
@@ -5580,15 +5586,22 @@
                             details: `Re-sequencing ${currentImage.name || movedFileId} within ${originalStackLabel} (${source}).`,
                             data: { stack: originalStackName, stackSequence: newSequence, source }
                         });
-                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:resequence' });
+
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
+
+                        metadataPromise = App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, {
+                            skipDebounce: true,
+                            operationType: 'stack:resequence'
+                        });
+
                         this.syncFocusIndicesToFile(currentImage.id, { stackName: originalStackName });
                         Grid.refreshFilteredOrder(originalStackName);
                     } else {
                         const newSequence = Date.now();
                         const isRecycleStackMove = targetStack === 'trash';
+
                         state.syncLog?.log({
                             event: isRecycleStackMove ? 'ui:stack-recycle' : 'ui:stack-move',
                             level: 'info',
@@ -5598,12 +5611,18 @@
                                 : `Moving ${currentImage.name || movedFileId} from ${originalStackLabel} to ${stackLabel} (${source}).`,
                             data: { from: originalStackName, to: targetStack, stackSequence: newSequence, source, scope: isRecycleStackMove ? 'metadata-only' : 'stack-move' }
                         });
-                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
+
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
                         item.stack = targetStack;
                         item.stackSequence = newSequence;
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+
+                        metadataPromise = App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, {
+                            skipDebounce: true,
+                            operationType: 'stack:move'
+                        });
+
                         Grid.refreshFilteredOrder(originalStackName);
                         Grid.refreshFilteredOrder(targetStack);
                     }
@@ -5611,12 +5630,15 @@
                     this.updateStackCounts();
                     this.updateActiveProxTab();
                     await this.displayCurrentImage();
+
                     if (targetStack === originalStackName) {
                         Grid.syncWithStack(originalStackName, { preselectFirst: true });
                     } else {
                         Grid.syncWithStack(originalStackName, { removedIds: [movedFileId], preselectFirst: true });
                         Grid.syncWithStack(targetStack, { preselectFirst: false });
                     }
+
+                    await metadataPromise;
                 } catch (error) {
                     Utils.showToast(`Error moving image: ${error.message}`, 'error', true);
                 } finally {
