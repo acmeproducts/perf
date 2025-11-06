@@ -5089,8 +5089,62 @@
                 const traversalBeforePromotion =
                     Number.isInteger(prePromotionIndex) ? prePromotionIndex : targetIndex;
 
-                const topSequence = stackArray[0]?.stackSequence || 0;
-                const newSequence = Math.max(Date.now(), topSequence + 1);
+                const normalizeSequence = (value, fallback = 0) => {
+                    if (typeof value === 'number' && Number.isFinite(value)) { return value; }
+                    const parsed = Number(value);
+                    return Number.isFinite(parsed) ? parsed : fallback;
+                };
+
+                const now = Date.now();
+                const topSequence = normalizeSequence(stackArray[0]?.stackSequence, 0);
+                const bottomSequence = normalizeSequence(stackArray[stackArray.length - 1]?.stackSequence, 0);
+                const existingSequences = new Set(
+                    stackArray
+                        .filter(file => file && file.id !== targetFile.id)
+                        .map(file => normalizeSequence(file.stackSequence, 0))
+                );
+                const maxAdjustments = stackArray.length + 10;
+
+                let newSequence;
+                if (direction === 'prev') {
+                    let candidate = Math.min(
+                        normalizeSequence(targetFile.stackSequence, bottomSequence),
+                        bottomSequence
+                    ) - 1;
+
+                    if (!Number.isFinite(candidate)) { candidate = bottomSequence - 1; }
+                    if (!Number.isFinite(candidate)) { candidate = now - 1; }
+
+                    if (!Number.isFinite(candidate)) { candidate = -1; }
+
+                    let attempts = 0;
+                    while (candidate >= bottomSequence || existingSequences.has(candidate)) {
+                        const step = Math.max(1, attempts + 1);
+                        candidate -= step;
+                        attempts += 1;
+                        if (attempts > maxAdjustments) {
+                            candidate = bottomSequence - attempts - 1;
+                            attempts = 0;
+                        }
+                    }
+
+                    newSequence = candidate;
+                } else {
+                    let candidate = topSequence + 1;
+                    if (!Number.isFinite(candidate)) { candidate = now; }
+                    candidate = Math.max(now, candidate);
+                    let attempts = 0;
+                    while (existingSequences.has(candidate)) {
+                        const step = Math.max(1, attempts + 1);
+                        candidate += step;
+                        attempts += 1;
+                        if (attempts > maxAdjustments) {
+                            candidate = Math.max(candidate, now) + attempts;
+                            attempts = 0;
+                        }
+                    }
+                    newSequence = candidate;
+                }
                 const previousSequence = targetFile.stackSequence;
 
                 targetFile.stackSequence = newSequence;
@@ -5132,7 +5186,9 @@
                             ? traversalBeforePromotion
                             : displayIndex;
                     } else if (direction === 'prev') {
-                        nextTraversal = displayIndex;
+                        nextTraversal = Number.isInteger(traversalBeforePromotion)
+                            ? traversalBeforePromotion
+                            : displayIndex;
                     } else {
                         nextTraversal = Number.isInteger(traversalBeforePromotion)
                             ? traversalBeforePromotion
