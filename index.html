@@ -4840,6 +4840,7 @@
                     state.isImageTransitioning = true;
                     const originalStackName = state.currentStack;
                     const movedFileId = currentImage.id;
+                    const previousPosition = state.currentStackPosition;
                     const stackLabel = STACK_NAMES[targetStack] || targetStack;
                     const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
                     if (targetStack === originalStackName) {
@@ -4854,7 +4855,7 @@
                             data: { stack: originalStackName, stackSequence: newSequence, source }
                         });
                         await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:resequence' });
-                        const [item] = currentStackArray.splice(state.currentStackPosition, 1);
+                        const [item] = currentStackArray.splice(previousPosition, 1);
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
                         const resortedStack = this.sortFiles(currentStackArray);
@@ -4868,8 +4869,14 @@
                             }
                         }
 
-                        const newIndex = resortedStack.findIndex(file => file.id === movedFileId);
-                        state.currentStackPosition = newIndex === -1 ? 0 : newIndex;
+                        let nextIndex = previousPosition;
+                        if (nextIndex >= resortedStack.length) {
+                            nextIndex = resortedStack.length - 1;
+                        }
+                        if (nextIndex < 0) {
+                            nextIndex = 0;
+                        }
+                        state.currentStackPosition = nextIndex;
                     } else {
                         const newSequence = Date.now();
                         const isRecycleStackMove = targetStack === 'trash';
@@ -4894,7 +4901,11 @@
                     this.updateActiveProxTab();
                     await this.displayCurrentImage();
                     if (targetStack === originalStackName) {
-                        Grid.syncWithStack(originalStackName, { preselectFirst: true });
+                        const nextFile = state.stacks[originalStackName]?.[state.currentStackPosition];
+                        Grid.syncWithStack(originalStackName, {
+                            selectedId: nextFile?.id,
+                            preselectFirst: false
+                        });
                     } else {
                         Grid.syncWithStack(originalStackName, { removedIds: [movedFileId], preselectFirst: true });
                         Grid.syncWithStack(targetStack, { preselectFirst: false });
@@ -5160,7 +5171,11 @@
 
             syncWithStack(stackName, options = {}) {
                 if (!stackName) return;
-                const { removedIds = [], preselectFirst = true } = options;
+                const {
+                    removedIds = [],
+                    preselectFirst = true,
+                    selectedId = null
+                } = options;
 
                 if (removedIds.length > 0) {
                     state.grid.selected = state.grid.selected.filter(id => !removedIds.includes(id));
@@ -5175,12 +5190,18 @@
                     ? state.grid.filtered
                     : (state.stacks[stackName] || []);
 
-                if (preselectFirst) {
+                if (selectedId) {
+                    const match = activeFiles.find(file => file.id === selectedId);
+                    state.grid.selected = match ? [selectedId] : [];
+                } else if (preselectFirst) {
                     if (activeFiles.length > 0) {
                         state.grid.selected = [activeFiles[0].id];
                     } else {
                         state.grid.selected = [];
                     }
+                } else {
+                    const activeIds = new Set(activeFiles.map(file => file.id));
+                    state.grid.selected = state.grid.selected.filter(id => activeIds.has(id));
                 }
 
                 Utils.elements.gridContainer.innerHTML = '';
