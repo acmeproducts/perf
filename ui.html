@@ -1212,6 +1212,7 @@
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
             focusTraversalIndex: 0, focusTraversalOrder: [],
             isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
+            stackAnchors: STACKS.reduce((acc, stack) => { acc[stack] = 0; return acc; }, {}),
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
@@ -5179,10 +5180,11 @@
 
                 targetFile.stackSequence = newSequence;
 
+                let metadataPromise = null;
                 try {
                     const metadataOptions = { skipDebounce: true, operationType: 'focus:advance' };
                     if (direction) { metadataOptions.direction = direction; }
-                    await App.updateUserMetadata(
+                    metadataPromise = App.updateUserMetadata(
                         targetFile.id,
                         { stackSequence: newSequence },
                         metadataOptions
@@ -5198,6 +5200,7 @@
                 const newIndex = updatedStack.findIndex(file => file.id === targetFile.id);
                 const displayIndex = newIndex !== -1 ? newIndex : 0;
                 state.currentStackPosition = displayIndex;
+                this.updateStackAnchor(stackName, displayIndex);
 
                 const totalItems = updatedStack.length;
                 if (totalItems === 0) {
@@ -5235,6 +5238,21 @@
                 this.updateImageCounters();
                 Grid.refreshFilteredOrder(stackName);
                 Grid.syncSelectionWithFocus();
+
+                if (metadataPromise && typeof metadataPromise.catch === 'function') {
+                    metadataPromise.catch(error => {
+                        state.syncLog?.log({
+                            event: 'ui:focus-metadata-error',
+                            level: 'error',
+                            fileId: targetFile.id,
+                            details: `Failed to persist focus advance for ${targetFile.name || targetFile.id}: ${error.message}`,
+                            data: { stack: stackName, direction, error: error.message }
+                        });
+                        if (state.showDebugToasts) {
+                            Utils.showToast(`Failed to persist focus advance: ${error.message}`, 'error', true);
+                        }
+                    });
+                }
             },
 
             updateStackCounts() {
@@ -5316,6 +5334,8 @@
                     Utils.elements.detailsButton.style.display = 'flex';
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
 
+                    this.updateStackAnchor(currentStackName, state.currentStackPosition);
+
                     Utils.defer(() => {
                         Core.prefetchAdjacentImages(currentStackName, previousPosition);
                     }, { priority: 'background', timeout: 120 });
@@ -5344,20 +5364,23 @@
             },
 
             prefetchAdjacentImages(stackName, position) {
-                const stack = state.stacks[stackName];
-                if (!Array.isArray(stack) || stack.length === 0) {
-                    return;
-                }
-                const candidates = [position + 1, position - 1];
-                candidates.forEach(index => {
-                    if (index < 0 || index >= stack.length) {
+                this.updateStackAnchor(stackName, position);
+
+                const radius = 5;
+                this.prefetchStackWindow(stackName, position, radius);
+
+                STACKS.forEach(otherStack => {
+                    if (otherStack === stackName) {
                         return;
                     }
-                    const file = stack[index];
-                    if (!file) {
-                        return;
+                    const anchor = state.stackAnchors?.[otherStack];
+                    if (!Number.isInteger(anchor)) {
+                        if ((state.stacks[otherStack] || []).length === 0) {
+                            return;
+                        }
                     }
-                    Utils.prefetchImage(file);
+                    const center = Number.isInteger(anchor) ? anchor : 0;
+                    this.prefetchStackWindow(otherStack, center, radius);
                 });
             },
 
@@ -5478,7 +5501,7 @@
             },
 
             syncFocusIndicesToFile(fileId, options = {}) {
-                const { stackName = state.currentStack } = options;
+                const { stackName = state.currentStack, overrideIndex = null } = options;
                 const stackArray = state.stacks[stackName] || [];
 
                 if (!Array.isArray(stackArray) || stackArray.length === 0) {
@@ -5489,14 +5512,21 @@
                     return { index: 0, found: false };
                 }
 
-                const resolvedId = fileId
-                    || (stackName === state.currentStack
-                        ? stackArray[state.currentStackPosition]?.id
-                        : null);
-
-                let targetIndex = resolvedId
-                    ? stackArray.findIndex(file => file.id === resolvedId)
+                let resolvedId = null;
+                let targetIndex = Number.isInteger(overrideIndex)
+                    ? overrideIndex
                     : -1;
+
+                if (targetIndex === -1) {
+                    resolvedId = fileId
+                        || (stackName === state.currentStack
+                            ? stackArray[state.currentStackPosition]?.id
+                            : null);
+
+                    targetIndex = resolvedId
+                        ? stackArray.findIndex(file => file.id === resolvedId)
+                        : -1;
+                }
 
                 if (!Number.isInteger(targetIndex) || targetIndex < 0) {
                     const fallbackIndex = Math.min(
@@ -5549,11 +5579,41 @@
                     const pill = document.getElementById(`pill-${stack}`);
                     if (pill) pill.classList.remove('active');
                 });
-                
+
                 const currentPill = document.getElementById(`pill-${state.currentStack}`);
                 if (currentPill) currentPill.classList.add('active');
             },
-            
+
+            updateStackAnchor(stackName, index = null) {
+                if (!state.stackAnchors || !STACKS.includes(stackName)) {
+                    return;
+                }
+                const stackArray = state.stacks[stackName] || [];
+                if (stackArray.length === 0) {
+                    state.stackAnchors[stackName] = 0;
+                    return;
+                }
+                const resolvedIndex = Number.isInteger(index)
+                    ? Math.max(0, Math.min(index, stackArray.length - 1))
+                    : Math.max(0, Math.min(state.currentStackPosition, stackArray.length - 1));
+                state.stackAnchors[stackName] = resolvedIndex;
+            },
+
+            prefetchStackWindow(stackName, centerIndex, radius = 5) {
+                const stack = state.stacks[stackName];
+                if (!Array.isArray(stack) || stack.length === 0) {
+                    return;
+                }
+                const maxIndex = stack.length - 1;
+                const start = Math.max(0, centerIndex - radius);
+                const end = Math.min(maxIndex, centerIndex + radius);
+                for (let i = start; i <= end; i++) {
+                    const file = stack[i];
+                    if (!file) continue;
+                    Utils.prefetchImage(file);
+                }
+            },
+
             async moveToStack(targetStack, options = {}) {
                 const { source = 'ui:direct' } = options;
                 if (state.isImageTransitioning) return;
@@ -5569,7 +5629,15 @@
                     const movedFileId = currentImage.id;
                     const stackLabel = STACK_NAMES[targetStack] || targetStack;
                     const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
-                    let metadataPromise = Promise.resolve();
+                    const previousPosition = state.currentStackPosition;
+                    let metadataPromise = null;
+                    const metadataContext = {
+                        from: originalStackLabel,
+                        to: stackLabel,
+                        fileId: movedFileId,
+                        fileName: currentImage.name || movedFileId,
+                        source
+                    };
 
                     if (targetStack === originalStackName) {
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
@@ -5591,12 +5659,21 @@
                         item.stackSequence = newSequence;
                         currentStackArray.push(item);
 
+                        const resequenceAnchor = Math.min(
+                            Math.max(previousPosition, 0),
+                            currentStackArray.length - 1
+                        );
+
                         metadataPromise = App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, {
                             skipDebounce: true,
                             operationType: 'stack:resequence'
                         });
 
-                        this.syncFocusIndicesToFile(currentImage.id, { stackName: originalStackName });
+                        this.syncFocusIndicesToFile(null, {
+                            stackName: originalStackName,
+                            overrideIndex: resequenceAnchor
+                        });
+                        this.updateStackAnchor(originalStackName, resequenceAnchor);
                         Grid.refreshFilteredOrder(originalStackName);
                     } else {
                         const newSequence = Date.now();
@@ -5617,6 +5694,10 @@
                         item.stackSequence = newSequence;
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                        const targetAnchor = Number.isInteger(state.stackAnchors?.[targetStack])
+                            ? state.stackAnchors[targetStack]
+                            : 0;
+                        this.updateStackAnchor(targetStack, targetAnchor);
 
                         metadataPromise = App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, {
                             skipDebounce: true,
@@ -5638,7 +5719,20 @@
                         Grid.syncWithStack(targetStack, { preselectFirst: false });
                     }
 
-                    await metadataPromise;
+                    if (metadataPromise && typeof metadataPromise.catch === 'function') {
+                        metadataPromise.catch(error => {
+                            state.syncLog?.log({
+                                event: 'ui:stack-metadata-error',
+                                level: 'error',
+                                fileId: movedFileId,
+                                details: `Failed to persist stack update for ${metadataContext.fileName}: ${error.message}`,
+                                data: { ...metadataContext, error: error.message }
+                            });
+                            if (state.showDebugToasts) {
+                                Utils.showToast(`Failed to persist stack update: ${error.message}`, 'error', true);
+                            }
+                        });
+                    }
                 } catch (error) {
                     Utils.showToast(`Error moving image: ${error.message}`, 'error', true);
                 } finally {
