@@ -1227,6 +1227,7 @@
             folderSearchTerm: '',
             folderTimestamps: new Map(),
             imageUrlCache: new Map(),
+            imageFetchPromises: new Map(),
             lastPickedFolder: loadLastFolderFromStorage()
         };
         const DriveLinkHelper = {
@@ -1760,7 +1761,9 @@
                     return;
                 }
                 const cache = state.imageUrlCache;
+                const promises = state.imageFetchPromises;
                 if (!cache || !cache.has(cacheKey)) {
+                    promises?.delete(cacheKey);
                     return;
                 }
                 const existing = cache.get(cacheKey);
@@ -1768,26 +1771,47 @@
                     return;
                 }
                 cache.delete(cacheKey);
+                promises?.delete(cacheKey);
                 if (existing) {
                     URL.revokeObjectURL(existing);
                 }
             },
 
             async fetchAndCacheImageUrl(file, cacheKey, preferredUrl = null) {
+                const promises = state.imageFetchPromises;
+                if (cacheKey && promises?.has(cacheKey)) {
+                    return promises.get(cacheKey);
+                }
+
                 const imageUrl = preferredUrl || this.getPreferredImageUrl(file);
                 if (!imageUrl) {
                     return null;
                 }
-                const response = await fetch(imageUrl);
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch image (${response.status})`);
+
+                const fetchPromise = (async () => {
+                    try {
+                        const response = await fetch(imageUrl);
+                        if (!response.ok) {
+                            throw new Error(`Failed to fetch image (${response.status})`);
+                        }
+                        const blob = await response.blob();
+                        const objectUrl = URL.createObjectURL(blob);
+                        if (cacheKey) {
+                            this.addImageUrlToCache(cacheKey, objectUrl);
+                        }
+                        return objectUrl;
+                    } finally {
+                        if (cacheKey) {
+                            promises?.delete(cacheKey);
+                        }
+                    }
+                })();
+
+                if (cacheKey && promises) {
+                    promises.set(cacheKey, fetchPromise);
                 }
-                const blob = await response.blob();
-                const objectUrl = URL.createObjectURL(blob);
-                if (cacheKey) {
-                    this.addImageUrlToCache(cacheKey, objectUrl);
-                }
-                return objectUrl;
+
+                return fetchPromise;
             },
 
             async ensureImageCached(file) {
@@ -1801,6 +1825,10 @@
                     cache.delete(cacheKey);
                     cache.set(cacheKey, cachedUrl);
                     return cachedUrl;
+                }
+                const promises = state.imageFetchPromises;
+                if (promises?.has(cacheKey)) {
+                    return promises.get(cacheKey);
                 }
                 return this.fetchAndCacheImageUrl(file, cacheKey);
             },
