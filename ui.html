@@ -5604,6 +5604,15 @@
                 const currentFile = currentStackArray[previousPosition];
                 if (!currentFile) return;
 
+                const focusStateBeforeDelete = {
+                    index: Number.isInteger(state.focusTraversalIndex)
+                        ? state.focusTraversalIndex
+                        : 0,
+                    order: Array.isArray(state.focusTraversalOrder)
+                        ? [...state.focusTraversalOrder]
+                        : []
+                };
+
                 state.isImageTransitioning = true;
                 const fileId = currentFile.id;
                 const originalStack = currentFile.stack || currentStackName;
@@ -5638,15 +5647,70 @@
                         }
                         this.showEmptyState();
                     } else {
-                        let nextIndex = previousPosition;
-                        if (nextIndex >= updatedStack.length) {
-                            nextIndex = updatedStack.length - 1;
+                        let traversalOrder = focusStateBeforeDelete.order.filter(id => id !== fileId);
+                        state.focusTraversalOrder = traversalOrder;
+
+                        let nextTraversalIndex = focusStateBeforeDelete.index;
+                        if (!Number.isInteger(nextTraversalIndex)) {
+                            nextTraversalIndex = 0;
                         }
-                        if (nextIndex < 0) {
-                            nextIndex = 0;
+
+                        if (traversalOrder.length === 0) {
+                            nextTraversalIndex = 0;
+                        } else {
+                            if (nextTraversalIndex < 0) { nextTraversalIndex = 0; }
+                            if (nextTraversalIndex >= traversalOrder.length) {
+                                nextTraversalIndex = traversalOrder.length - 1;
+                            }
                         }
-                        state.currentStackPosition = nextIndex;
-                        state.focusTraversalIndex = nextIndex;
+
+                        let nextStackIndex = -1;
+                        if (traversalOrder.length > 0) {
+                            const targetId = traversalOrder[nextTraversalIndex];
+                            if (targetId) {
+                                nextStackIndex = updatedStack.findIndex(file => file && file.id === targetId);
+                            }
+                            if (nextStackIndex === -1) {
+                                for (let i = 0; i < traversalOrder.length; i++) {
+                                    const candidateId = traversalOrder[i];
+                                    const matchIndex = updatedStack.findIndex(file => file && file.id === candidateId);
+                                    if (matchIndex !== -1) {
+                                        nextStackIndex = matchIndex;
+                                        nextTraversalIndex = i;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (nextStackIndex === -1) {
+                            nextStackIndex = 0;
+                            nextTraversalIndex = 0;
+                            const fallbackFile = updatedStack[0];
+                            if (fallbackFile && fallbackFile.id !== undefined) {
+                                const dedupedOrder = traversalOrder.filter(id => id !== fallbackFile.id);
+                                traversalOrder = [fallbackFile.id, ...dedupedOrder];
+                                state.focusTraversalOrder = traversalOrder;
+                            }
+                        }
+
+                        if (nextStackIndex < 0) { nextStackIndex = 0; }
+                        if (nextStackIndex >= updatedStack.length) {
+                            nextStackIndex = updatedStack.length - 1;
+                        }
+
+                        const finalOrderLength = state.focusTraversalOrder.length;
+                        if (finalOrderLength === 0) {
+                            nextTraversalIndex = 0;
+                        } else {
+                            if (nextTraversalIndex < 0) { nextTraversalIndex = 0; }
+                            if (nextTraversalIndex >= finalOrderLength) {
+                                nextTraversalIndex = finalOrderLength - 1;
+                            }
+                        }
+
+                        state.currentStackPosition = nextStackIndex;
+                        state.focusTraversalIndex = nextTraversalIndex;
                         await this.displayCurrentImage();
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
