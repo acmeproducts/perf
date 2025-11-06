@@ -4687,6 +4687,28 @@
                     return (a.name || '').localeCompare(b.name || '');
                 });
             },
+
+            monitorMetadataUpdate(promise, context = {}) {
+                if (!promise || typeof promise.then !== 'function') return;
+                const { action = 'stack:update', fileId, source, stack, payload } = context;
+                void promise.catch(error => {
+                    const message = `Deferred metadata update failed (${action}) for ${fileId || 'unknown'}: ${error.message}`;
+                    state.syncLog?.log({
+                        event: 'ui:metadata-update-failed',
+                        level: 'error',
+                        fileId,
+                        details: message,
+                        data: {
+                            action,
+                            source,
+                            stack,
+                            payload,
+                            error: error.stack || error.message
+                        }
+                    });
+                    console.error(message, error);
+                });
+            },
             
             updateStackCounts() {
                 STACKS.forEach(stack => {
@@ -4843,10 +4865,17 @@
                     const previousPosition = state.currentStackPosition;
                     const stackLabel = STACK_NAMES[targetStack] || targetStack;
                     const originalStackLabel = STACK_NAMES[originalStackName] || originalStackName;
+
+                    let metadataPayload = null;
+                    let metadataOptions = null;
+                    let metadataAction = null;
+                    let gridSyncPlan = null;
+
                     if (targetStack === originalStackName) {
                         const otherImages = currentStackArray.filter(img => img.id !== currentImage.id);
                         const minSequence = otherImages.length > 0 ? Math.min(...otherImages.map(img => img.stackSequence || 0)) : Date.now();
                         const newSequence = minSequence - 1;
+
                         state.syncLog?.log({
                             event: 'ui:stack-resequence',
                             level: 'info',
@@ -4854,10 +4883,13 @@
                             details: `Re-sequencing ${currentImage.name || movedFileId} within ${originalStackLabel} (${source}).`,
                             data: { stack: originalStackName, stackSequence: newSequence, source }
                         });
-                        await App.updateUserMetadata(currentImage.id, { stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:resequence' });
+
                         const [item] = currentStackArray.splice(previousPosition, 1);
-                        item.stackSequence = newSequence;
-                        currentStackArray.push(item);
+                        if (item) {
+                            item.stackSequence = newSequence;
+                            currentStackArray.push(item);
+                        }
+
                         const resortedStack = this.sortFiles(currentStackArray);
                         state.stacks[originalStackName] = resortedStack;
 
@@ -4877,6 +4909,17 @@
                             nextIndex = 0;
                         }
                         state.currentStackPosition = nextIndex;
+
+                        const nextFile = state.stacks[originalStackName]?.[state.currentStackPosition];
+                        gridSyncPlan = {
+                            type: 'resequence',
+                            stack: originalStackName,
+                            selectedId: nextFile?.id
+                        };
+
+                        metadataPayload = { stackSequence: newSequence };
+                        metadataOptions = { skipDebounce: true, operationType: 'stack:resequence' };
+                        metadataAction = 'stack:resequence';
                     } else {
                         const newSequence = Date.now();
                         const isRecycleStackMove = targetStack === 'trash';
@@ -4889,26 +4932,58 @@
                                 : `Moving ${currentImage.name || movedFileId} from ${originalStackLabel} to ${stackLabel} (${source}).`,
                             data: { from: originalStackName, to: targetStack, stackSequence: newSequence, source, scope: isRecycleStackMove ? 'metadata-only' : 'stack-move' }
                         });
-                        await App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move' });
+
                         const [item] = currentStackArray.splice(state.currentStackPosition, 1);
-                        item.stack = targetStack;
-                        item.stackSequence = newSequence;
-                        state.stacks[targetStack].unshift(item);
-                        state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                        if (item) {
+                            item.stack = targetStack;
+                            item.stackSequence = newSequence;
+                            if (!Array.isArray(state.stacks[targetStack])) {
+                                state.stacks[targetStack] = [];
+                            }
+                            state.stacks[targetStack].unshift(item);
+                            state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
+                        }
+
+                        metadataPayload = { stack: targetStack, stackSequence: newSequence };
+                        metadataOptions = { skipDebounce: true, operationType: 'stack:move' };
+                        metadataAction = isRecycleStackMove ? 'stack:recycle' : 'stack:move';
+                        gridSyncPlan = {
+                            type: 'move',
+                            from: originalStackName,
+                            to: targetStack,
+                            removedIds: [movedFileId]
+                        };
                     }
-                    
+
                     this.updateStackCounts();
                     this.updateActiveProxTab();
                     await this.displayCurrentImage();
-                    if (targetStack === originalStackName) {
-                        const nextFile = state.stacks[originalStackName]?.[state.currentStackPosition];
-                        Grid.syncWithStack(originalStackName, {
-                            selectedId: nextFile?.id,
-                            preselectFirst: false
+
+                    if (gridSyncPlan) {
+                        if (gridSyncPlan.type === 'resequence') {
+                            Grid.syncWithStack(gridSyncPlan.stack, {
+                                selectedId: gridSyncPlan.selectedId,
+                                preselectFirst: false
+                            });
+                        } else if (gridSyncPlan.type === 'move') {
+                            Grid.syncWithStack(gridSyncPlan.from, { removedIds: gridSyncPlan.removedIds, preselectFirst: true });
+                            Grid.syncWithStack(gridSyncPlan.to, { preselectFirst: false });
+                        }
+                    }
+
+                    if (metadataPayload) {
+                        const metadataPromise = App.updateUserMetadata(
+                            currentImage.id,
+                            metadataPayload,
+                            metadataOptions
+                        );
+                        Core.monitorMetadataUpdate(metadataPromise, {
+                            action: metadataAction,
+                            fileId: movedFileId,
+                            source,
+                            stack: targetStack === originalStackName ? originalStackName : targetStack,
+                            payload: metadataPayload
                         });
-                    } else {
-                        Grid.syncWithStack(originalStackName, { removedIds: [movedFileId], preselectFirst: true });
-                        Grid.syncWithStack(targetStack, { preselectFirst: false });
                     }
                 } catch (error) {
                     Utils.showToast(`Error moving image: ${error.message}`, 'error', true);
