@@ -1175,7 +1175,8 @@
             showDebugToasts: true,
             lastPickedFolder: loadLastFolderFromStorage(),
             folderSearchDataset: [],
-            folderSearchTerm: ''
+            folderSearchTerm: '',
+            storageStatus: { available: true, reason: null }
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -2248,10 +2249,30 @@
         class DBManager {
             constructor() {
                 this.db = null;
+                this.available = false;
+                this.unavailableReason = null;
             }
             async init() {
-                return new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 4);
+                if (!('indexedDB' in window)) {
+                    this.db = null;
+                    this.available = false;
+                    this.unavailableReason = 'IndexedDB is not supported in this environment.';
+                    console.warn('[DBManager] IndexedDB unavailable:', this.unavailableReason);
+                    return { available: false, reason: this.unavailableReason };
+                }
+                return new Promise((resolve) => {
+                    let resolved = false;
+                    let request;
+                    try {
+                        request = indexedDB.open('Orbital8-Goji-V1', 4);
+                    } catch (error) {
+                        this.db = null;
+                        this.available = false;
+                        this.unavailableReason = error && error.message ? error.message : 'Failed to open IndexedDB.';
+                        console.error('[DBManager] IndexedDB.open threw synchronously:', error);
+                        resolve({ available: false, reason: this.unavailableReason });
+                        return;
+                    }
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2295,9 +2316,39 @@
                     };
                     request.onsuccess = (event) => {
                         this.db = event.target.result;
-                        resolve();
+                        this.available = true;
+                        this.unavailableReason = null;
+                        this.db.onerror = (event) => {
+                            const error = event.target.error;
+                            console.error('[DBManager] Database connection error:', error?.message || error);
+                        };
+                        this.db.onversionchange = () => {
+                            console.warn('[DBManager] Database version change detected. Closing connection.');
+                            this.db.close();
+                            this.db = null;
+                            this.available = false;
+                            this.unavailableReason = 'Database version changed. Please reload the app.';
+                        };
+                        if (!resolved) {
+                            resolved = true;
+                            resolve({ available: true });
+                        }
                     };
-                    request.onerror = (event) => reject(event.target.error);
+                    const handleFailure = (error) => {
+                        const reason = (error && error.message) || 'Failed to open IndexedDB.';
+                        this.db = null;
+                        this.available = false;
+                        this.unavailableReason = reason;
+                        console.error('[DBManager] IndexedDB initialization failed:', reason);
+                        if (!resolved) {
+                            resolved = true;
+                            resolve({ available: false, reason });
+                        }
+                    };
+                    request.onerror = (event) => handleFailure(event.target.error);
+                    request.onblocked = () => {
+                        handleFailure(new Error('Another session is blocking IndexedDB initialization.'));
+                    };
                 });
             }
             resolveFolderKey(input) {
@@ -7407,7 +7458,16 @@ this.updateImageCounters();
                 state.haptic = new HapticFeedbackManager();
                 state.export = new ExportSystem();
                 state.dbManager = new DBManager();
-                await state.dbManager.init();
+                const dbStatus = await state.dbManager.init();
+                if (dbStatus && dbStatus.available === false) {
+                    state.storageStatus = { available: false, reason: dbStatus.reason };
+                    const reasonText = dbStatus.reason || 'IndexedDB is unavailable.';
+                    Utils.showToast(`Offline storage disabled: ${reasonText}`, 'error', true);
+                    state.syncLog?.log({ event: 'storage:indexeddb_unavailable', level: 'warn', details: reasonText });
+                } else {
+                    state.storageStatus = { available: true, reason: null };
+                    state.syncLog?.log({ event: 'storage:indexeddb_ready', level: 'info', details: 'IndexedDB initialized successfully.' });
+                }
                 state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
                 window.__orbitalAppState = state;
