@@ -1217,6 +1217,7 @@
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
                 dragSession: createDefaultGridDragSession(), skipReorderOnClose: false,
+                isClosing: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
@@ -3321,7 +3322,64 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor(options = {}) {
+                this.abortController = null;
+                this.cache = new Map();
+                this.cacheSize = Number.isFinite(options.cacheSize) && options.cacheSize > 0 ? options.cacheSize : 50;
+            }
+            _getFileVersion(file) {
+                if (!file || typeof file !== 'object') return '';
+                const candidates = [
+                    file.version,
+                    file.fileVersion,
+                    file.eTag,
+                    file.etag,
+                    file.sha1Hash,
+                    file.checksum,
+                    file.modifiedTime,
+                    file.lastModifiedDateTime,
+                    file.updatedTime,
+                    file.updateTime,
+                    file.lastUpdated,
+                    file.localUpdatedAt,
+                    file.localUpdateTime,
+                ];
+                return candidates.find(value => value != null && value !== '') || '';
+            }
+            _getCacheKey(file) {
+                if (!file) return null;
+                const identifier = file.id || file.name || file.webContentLink || file.downloadUrl || null;
+                if (!identifier) return null;
+                const version = this._getFileVersion(file);
+                return `${identifier}::${version}`;
+            }
+            _cloneMetadata(metadata) {
+                if (!metadata || typeof metadata !== 'object') { return metadata; }
+                if (typeof structuredClone === 'function') {
+                    try { return structuredClone(metadata); } catch (error) { /* fall through */ }
+                }
+                try { return JSON.parse(JSON.stringify(metadata)); } catch (error) { return metadata; }
+            }
+            _getFromCache(key) {
+                if (!key || !this.cache.has(key)) return null;
+                const value = this.cache.get(key);
+                this.cache.delete(key);
+                this.cache.set(key, value);
+                return this._cloneMetadata(value);
+            }
+            _saveToCache(key, metadata) {
+                if (!key) return;
+                const value = this._cloneMetadata(metadata);
+                if (this.cache.has(key)) {
+                    this.cache.delete(key);
+                }
+                this.cache.set(key, value);
+                while (this.cache.size > this.cacheSize) {
+                    const oldestKey = this.cache.keys().next().value;
+                    if (oldestKey == null) break;
+                    this.cache.delete(oldestKey);
+                }
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -3368,6 +3426,12 @@
                     if (!isForExport) file.metadataStatus = 'loaded';
                     return { error: 'Not a PNG file' };
                 }
+                const cacheKey = this._getCacheKey(file);
+                const cached = this._getFromCache(cacheKey);
+                if (cached) {
+                    if (!isForExport) file.metadataStatus = 'loaded';
+                    return cached;
+                }
                 try {
                     this.abortController = new AbortController();
                     let response;
@@ -3382,7 +3446,11 @@
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
-                    return await this.extract(buffer);
+                    const metadata = await this.extract(buffer);
+                    if (!metadata.error) {
+                        this._saveToCache(cacheKey, metadata);
+                    }
+                    return metadata;
                 } catch (error) {
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
@@ -5951,33 +6019,62 @@
             },
 
             async close() {
+                if (state.grid.isClosing) { return; }
+                state.grid.isClosing = true;
                 this.clearDragState();
                 try {
+                    const stackName = state.grid.stack;
+                    const selectedSnapshot = [...state.grid.selected];
+                    const filteredSnapshot = state.grid.filtered.length > 0
+                        ? state.grid.filtered.map(file => file.id)
+                        : [];
                     const shouldReorder = state.grid.isDirty && !state.grid.skipReorderOnClose;
-                    if (shouldReorder) {
-                        await this.reorderStackOnClose();
-                    } else {
+
+                    const reorderPromise = shouldReorder
+                        ? new Promise((resolve, reject) => {
+                            setTimeout(() => {
+                                this.reorderStackOnClose({
+                                    stackName,
+                                    selectedIds: selectedSnapshot,
+                                    filteredIds: filteredSnapshot
+                                }).then(resolve).catch(reject);
+                            }, 0);
+                        })
+                        : Promise.resolve();
+
+                    if (!shouldReorder) {
                         state.grid.isDirty = false;
                     }
-                    const selectedBeforeReset = [...state.grid.selected];
+
                     Utils.hideModal('grid-modal');
-                    this.resetSearch(); this.destroyLazyLoad();
-                    const selectedImages = selectedBeforeReset;
-                    if (selectedImages.length === 1) {
-                        const selectedFileId = selectedImages[0];
+                    this.resetSearch({ skipLazyInit: true });
+                    this.destroyLazyLoad();
+
+                    if (selectedSnapshot.length === 1) {
+                        const selectedFileId = selectedSnapshot[0];
                         const stackArray = state.stacks[state.currentStack];
-                        const selectedIndex = stackArray.findIndex(f => f.id === selectedFileId);
+                        const selectedIndex = Array.isArray(stackArray)
+                            ? stackArray.findIndex(f => f.id === selectedFileId)
+                            : -1;
                         if (selectedIndex !== -1) {
                             state.currentStackPosition = selectedIndex;
                             state.focusTraversalIndex = selectedIndex;
                         }
                     }
+
                     await Core.displayCurrentImage();
-                    state.grid.stack = null; state.grid.selected = [];
+
+                    state.grid.stack = null;
+                    state.grid.selected = [];
                     state.grid.skipReorderOnClose = false;
+
+                    await reorderPromise;
+                    Core.updateStackCounts();
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
                     state.grid.skipReorderOnClose = false;
+                } finally {
+                    state.grid.isClosing = false;
                 }
             },
 
@@ -6023,6 +6120,9 @@
                 filesToRender.forEach(file => {
                     const div = document.createElement('div');
                     div.className = 'grid-item'; div.dataset.fileId = file.id;
+                    div.tabIndex = 0;
+                    div.setAttribute('role', 'button');
+                    div.setAttribute('aria-label', `Select ${file.name || 'image'}`);
                     if (state.grid.selected.includes(file.id)) { div.classList.add('selected'); }
                     const img = document.createElement('img');
                     img.className = 'grid-image'; img.alt = file.name || 'Image';
@@ -6033,7 +6133,21 @@
                     img.onerror = () => {
                         img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
                     };
-                    div.addEventListener('click', e => this.toggleSelection(e, file.id));
+                    div.addEventListener('click', e => {
+                        if (e.detail > 1) { return; }
+                        this.toggleSelection(e, file.id);
+                    });
+                    div.addEventListener('dblclick', e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        this.activateTile(file.id);
+                    });
+                    div.addEventListener('keydown', e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            this.activateTile(file.id);
+                        }
+                    });
                     div.appendChild(img);
                     div.appendChild(this.createDragHandle(div, file.id));
                     container.appendChild(div);
@@ -6395,14 +6509,21 @@
                 state.grid.skipReorderOnClose = false;
             },
 
-            resetSearch() {
+            resetSearch(options = {}) {
+                const { skipLazyInit = false } = options;
                 Utils.elements.omniSearch.value = '';
                 Utils.elements.clearSearchBtn.style.display = 'none';
                 Utils.elements.gridEmptyState.classList.add('hidden');
                 state.grid.filtered = [];
-                Utils.elements.gridContainer.innerHTML = '';
-                this.initializeLazyLoad(state.grid.stack);
-                Core.updateStackCounts();
+                if (Utils.elements.gridContainer) {
+                    Utils.elements.gridContainer.innerHTML = '';
+                }
+                if (!skipLazyInit && state.grid.stack) {
+                    this.initializeLazyLoad(state.grid.stack);
+                }
+                if (!skipLazyInit) {
+                    Core.updateStackCounts();
+                }
                 this.deselectAll();
                 state.grid.skipReorderOnClose = false;
             },
@@ -6504,7 +6625,127 @@
                 return true;
             },
 
+            buildSearchIndex(file) {
+                if (!file || typeof file !== 'object') { return ''; }
+
+                const versionParts = [
+                    file.name || '',
+                    file.id || '',
+                    file.notes || '',
+                    file.description || '',
+                    file.stack || '',
+                    file.stackSequence ?? '',
+                    file.qualityRating ?? '',
+                    file.contentRating ?? '',
+                    Utils.isFavorite(file),
+                    file.createdTime || '',
+                    file.modifiedTime || '',
+                    JSON.stringify(file.tags || []),
+                    JSON.stringify(file.extractedMetadata || {}),
+                    JSON.stringify(file.metadata || {}),
+                    JSON.stringify(file.appProperties || {}),
+                    JSON.stringify(file.additionalMetadata || {}),
+                    JSON.stringify(file.userMetadata || {}),
+                    JSON.stringify(file.properties || {}),
+                    JSON.stringify(file.keywords || []),
+                    JSON.stringify(file.labels || []),
+                    JSON.stringify(file.detectedObjects || [])
+                ].join('|');
+
+                if (file._gridSearchVersion === versionParts && typeof file._gridSearchIndex === 'string') {
+                    return file._gridSearchIndex;
+                }
+
+                const segments = [];
+                const seen = new Set();
+                const addValue = (value) => {
+                    if (value == null) { return; }
+                    if (Array.isArray(value)) {
+                        value.forEach(addValue);
+                        return;
+                    }
+                    if (typeof value === 'object') {
+                        Object.entries(value).forEach(([key, val]) => {
+                            addValue(key);
+                            addValue(val);
+                        });
+                        return;
+                    }
+                    const text = String(value).trim();
+                    if (!text) { return; }
+                    const lower = text.toLowerCase();
+                    if (!lower) { return; }
+                    const tokens = [lower, ...lower.split(/[^a-z0-9#@]+/g).filter(Boolean)];
+                    tokens.forEach(token => {
+                        if (!token || seen.has(token)) { return; }
+                        seen.add(token);
+                        segments.push(token);
+                    });
+                };
+
+                const appendDateValues = (value) => {
+                    if (!value) { return; }
+                    const date = new Date(value);
+                    if (Number.isNaN(date.getTime())) {
+                        addValue(value);
+                        return;
+                    }
+                    addValue(date.toISOString());
+                    addValue(date.toLocaleDateString());
+                    addValue(date.toLocaleString());
+                };
+
+                addValue(file.name);
+                addValue(file.id);
+                addValue(file.notes);
+                addValue(file.description);
+                addValue(file.stack);
+                addValue(file.stackSequence);
+                addValue(file.qualityRating);
+                addValue(file.contentRating);
+                if (Utils.isFavorite(file)) { addValue('favorite'); }
+
+                const normalizedTags = TagService.normalizeTagList(file.tags || []);
+                addValue(normalizedTags);
+
+                appendDateValues(file.createdTime);
+                appendDateValues(file.modifiedTime);
+                appendDateValues(file.lastModifiedDateTime);
+
+                addValue(file.mimeType);
+                addValue(file.fileExtension);
+                addValue(file.cameraModel);
+                addValue(file.cameraMake);
+                addValue(file.location);
+                addValue(file.folderPath);
+
+                [
+                    file.appProperties,
+                    file.imageMediaMetadata,
+                    file.mediaMetadata,
+                    file.photo,
+                    file.exif,
+                    file.properties,
+                    file.extractedMetadata,
+                    file.metadata,
+                    file.additionalMetadata,
+                    file.userMetadata,
+                    file.analysis,
+                    file.aiMetadata,
+                    file.aiLabels,
+                    file.detectedObjects,
+                    file.keywords,
+                    file.labels
+                ].forEach(source => addValue(source));
+
+                file._gridSearchIndex = segments.join(' ');
+                file._gridSearchVersion = versionParts;
+                return file._gridSearchIndex;
+            },
+
             searchImages(query) {
+                const stackName = state.grid.stack;
+                if (!stackName || !Array.isArray(state.stacks[stackName])) { return []; }
                 const lowerCaseQuery = query.toLowerCase();
                 const terms = lowerCaseQuery.split(/\s+/).filter(t => t);
 
@@ -6512,7 +6753,7 @@
                 const exclusions = terms.filter(t => t.startsWith('-')).map(t => t.substring(1));
                 const inclusions = terms.filter(t => !t.startsWith('#') && !t.startsWith('-'));
 
-                let results = [...state.stacks[state.grid.stack]];
+                let results = [...state.stacks[stackName]];
 
                 // 1. Pass: Modifiers
                 const tagFilters = [];
@@ -6546,13 +6787,7 @@
                 // 2. Pass: Inclusions
                 inclusions.forEach(term => {
                     results = results.filter(file => {
-                        const searchableText = [
-                            file.name || '',
-                            file.tags?.join(' ') || '',
-                            file.notes || '',
-                            file.createdTime ? new Date(file.createdTime).toISOString().split('T')[0] : '',
-                            JSON.stringify(file.extractedMetadata || {})
-                        ].join(' ').toLowerCase();
+                        const searchableText = this.buildSearchIndex(file);
                         return searchableText.includes(term);
                     });
                 });
@@ -6560,13 +6795,7 @@
                 // 3. Pass: Exclusions
                 exclusions.forEach(term => {
                     results = results.filter(file => {
-                        const searchableText = [
-                            file.name || '',
-                            file.tags?.join(' ') || '',
-                            file.notes || '',
-                            file.createdTime ? new Date(file.createdTime).toISOString().split('T')[0] : '',
-                            JSON.stringify(file.extractedMetadata || {})
-                        ].join(' ').toLowerCase();
+                        const searchableText = this.buildSearchIndex(file);
                         return !searchableText.includes(term);
                     });
                 });
@@ -6574,24 +6803,47 @@
                 return results;
             },
 
-            async reorderStackOnClose() {
-                const stackArray = state.stacks[state.grid.stack];
-                if (!stackArray) { return; }
+            async activateTile(fileId) {
+                if (!fileId || state.grid.isClosing) { return; }
+                const stackName = state.grid.stack;
+                if (!stackName) { return; }
+                state.grid.selected = [fileId];
+                state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = false;
+                this.updateSelectionUI();
+                try {
+                    await this.close();
+                } catch (error) {
+                    Utils.showToast(`Error opening selection: ${error.message}`, 'error', true);
+                }
+            },
+
+            async reorderStackOnClose(context = {}) {
+                const stackName = context.stackName ?? state.grid.stack;
+                if (!stackName) { state.grid.isDirty = false; return; }
+                const stackArray = state.stacks[stackName];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) { state.grid.isDirty = false; return; }
 
                 const fileMap = new Map(stackArray.map(file => [file.id, file]));
                 let topItems = [];
                 let bottomItems = [];
                 let latestSelectedId = null;
 
-                if (state.grid.filtered.length > 0) {
-                    const filteredIds = state.grid.filtered.map(f => f.id);
+                const filteredIds = Array.isArray(context.filteredIds) && context.filteredIds.length > 0
+                    ? context.filteredIds.filter(Boolean)
+                    : (state.grid.filtered.length > 0 ? state.grid.filtered.map(f => f.id) : []);
+                const selectedIds = Array.isArray(context.selectedIds)
+                    ? context.selectedIds.filter(Boolean)
+                    : [...state.grid.selected];
+
+                if (filteredIds.length > 0) {
                     const filteredSet = new Set(filteredIds);
                     topItems = filteredIds
                         .map(id => fileMap.get(id))
                         .filter(Boolean);
                     bottomItems = stackArray.filter(file => !filteredSet.has(file.id));
-                } else if (state.grid.selected.length > 0) {
-                    const orderedSelection = state.grid.selected.filter(id => fileMap.has(id));
+                } else if (selectedIds.length > 0) {
+                    const orderedSelection = selectedIds.filter(id => fileMap.has(id));
                     if (orderedSelection.length === 0) { return; }
 
                     latestSelectedId = orderedSelection[orderedSelection.length - 1];
@@ -6606,8 +6858,6 @@
                 }
 
                 const newStack = [...topItems, ...bottomItems];
-                const stackName = state.grid.stack;
-                const selectedIds = [...state.grid.selected];
                 const timestamp = Date.now();
                 const updatesQueue = [];
 
