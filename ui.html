@@ -1203,6 +1203,33 @@
             selectedIds: [],
             dragElements: []
         });
+        const safeStringify = (value) => {
+            const seen = new WeakSet();
+            const replacer = (key, val) => {
+                if (typeof val === 'bigint') {
+                    return val.toString();
+                }
+                if (typeof val === 'object' && val !== null) {
+                    if (seen.has(val)) {
+                        return '[Circular]';
+                    }
+                    seen.add(val);
+                }
+                if (typeof val === 'function') {
+                    return `[Function:${val.name || 'anonymous'}]`;
+                }
+                return val;
+            };
+            try {
+                return JSON.stringify(value, replacer);
+            } catch (error) {
+                try {
+                    return String(value);
+                } catch (stringifyError) {
+                    return '[Unserializable]';
+                }
+            }
+        };
         const OMNI_SEARCH_RESULT_LIMIT = 8;
         const IMAGE_CACHE_LIMIT = 40;
         const state = {
@@ -6628,7 +6655,7 @@
             buildSearchIndex(file) {
                 if (!file || typeof file !== 'object') { return ''; }
 
-                const versionParts = [
+                const versionParts = safeStringify([
                     file.name || '',
                     file.id || '',
                     file.notes || '',
@@ -6640,17 +6667,27 @@
                     Utils.isFavorite(file),
                     file.createdTime || '',
                     file.modifiedTime || '',
-                    JSON.stringify(file.tags || []),
-                    JSON.stringify(file.extractedMetadata || {}),
-                    JSON.stringify(file.metadata || {}),
-                    JSON.stringify(file.appProperties || {}),
-                    JSON.stringify(file.additionalMetadata || {}),
-                    JSON.stringify(file.userMetadata || {}),
-                    JSON.stringify(file.properties || {}),
-                    JSON.stringify(file.keywords || []),
-                    JSON.stringify(file.labels || []),
-                    JSON.stringify(file.detectedObjects || [])
-                ].join('|');
+                    file.lastModifiedDateTime || '',
+                    file.mimeType || '',
+                    file.fileExtension || '',
+                    file.cameraModel || '',
+                    file.cameraMake || '',
+                    file.location || '',
+                    file.folderPath || '',
+                    file.tags || [],
+                    file.extractedMetadata || {},
+                    file.metadata || {},
+                    file.appProperties || {},
+                    file.additionalMetadata || {},
+                    file.userMetadata || {},
+                    file.properties || {},
+                    file.keywords || [],
+                    file.labels || [],
+                    file.detectedObjects || [],
+                    file.analysis || {},
+                    file.aiMetadata || {},
+                    file.aiLabels || {}
+                ]);
 
                 if (file._gridSearchVersion === versionParts && typeof file._gridSearchIndex === 'string') {
                     return file._gridSearchIndex;
@@ -6658,17 +6695,31 @@
 
                 const segments = [];
                 const seen = new Set();
+                const visitedObjects = new WeakSet();
                 const addValue = (value) => {
                     if (value == null) { return; }
-                    if (Array.isArray(value)) {
-                        value.forEach(addValue);
-                        return;
-                    }
                     if (typeof value === 'object') {
+                        if (visitedObjects.has(value)) { return; }
+                        visitedObjects.add(value);
+                        if (Array.isArray(value)) {
+                            value.forEach(addValue);
+                            return;
+                        }
+                        if (value instanceof Date) {
+                            addValue(value.toISOString());
+                            return;
+                        }
                         Object.entries(value).forEach(([key, val]) => {
                             addValue(key);
                             addValue(val);
                         });
+                        return;
+                    }
+                    if (typeof value === 'bigint') {
+                        addValue(value.toString());
+                        return;
+                    }
+                    if (typeof value === 'number' && !Number.isFinite(value)) {
                         return;
                     }
                     const text = String(value).trim();
