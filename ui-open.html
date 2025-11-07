@@ -1398,6 +1398,175 @@
                 return null;
             }
         };
+        const Config = (() => {
+            const safeWindow = typeof window !== 'undefined' ? window : null;
+            const safeDocument = typeof document !== 'undefined' ? document : null;
+            const fallbackOrigin = safeWindow ? safeWindow.location.origin : '';
+            const fallbackRedirect = safeWindow ? `${fallbackOrigin}${safeWindow.location.pathname}` : '';
+            const LOCAL_STORAGE_KEY = 'orbital8_google_redirect_uri_override';
+
+            const toTrimmedString = (value) => {
+                if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (trimmed && trimmed !== 'null' && trimmed !== 'undefined') {
+                        return trimmed;
+                    }
+                }
+                return null;
+            };
+
+            const candidateValues = [];
+
+            if (safeWindow) {
+                try {
+                    const params = new URLSearchParams(safeWindow.location.search || '');
+                    candidateValues.push(params.get('googleRedirectUri'));
+                    candidateValues.push(params.get('google_redirect_uri'));
+                } catch (error) {
+                    console.warn('Failed to parse query parameters for redirect override', error);
+                }
+
+                const globals = [
+                    safeWindow.ORBITAL_CONFIG,
+                    safeWindow.__ORBITAL_CONFIG,
+                    safeWindow.__APP_CONFIG
+                ];
+                const directGlobals = [
+                    safeWindow.ORBITAL_GOOGLE_REDIRECT_URI,
+                    safeWindow.GOOGLE_REDIRECT_URI,
+                    safeWindow.__GOOGLE_REDIRECT_URI
+                ];
+
+                for (const globalValue of directGlobals) {
+                    candidateValues.push(globalValue);
+                }
+
+                for (const globalConfig of globals) {
+                    if (!globalConfig || typeof globalConfig !== 'object') {
+                        continue;
+                    }
+                    candidateValues.push(globalConfig.googleRedirectUri);
+                    if (globalConfig.google && typeof globalConfig.google === 'object') {
+                        candidateValues.push(globalConfig.google.redirectUri);
+                    }
+                }
+
+                try {
+                    const stored = safeWindow.localStorage?.getItem(LOCAL_STORAGE_KEY);
+                    candidateValues.push(stored);
+                } catch (storageError) {
+                    console.warn('Unable to read Google redirect override from localStorage', storageError);
+                }
+            }
+
+            if (safeDocument) {
+                const bodyDatasetValue = safeDocument.body?.dataset?.googleRedirectUri;
+                const scriptDatasetValue = safeDocument.currentScript?.dataset?.googleRedirectUri;
+                const metaTagValue = safeDocument.querySelector('meta[name="google-redirect-uri"]')?.getAttribute('content');
+                candidateValues.push(bodyDatasetValue, scriptDatasetValue, metaTagValue);
+            }
+
+            const overrideCandidate = candidateValues.map(toTrimmedString).find(Boolean) || null;
+
+            const resolveToAbsolute = (candidate, fallback) => {
+                const fallbackValue = typeof fallback === 'string' && fallback ? fallback : fallbackRedirect;
+                if (!candidate) {
+                    return fallbackValue;
+                }
+                if (!safeWindow) {
+                    return fallbackValue;
+                }
+                const normalizedCandidate = candidate.trim();
+                try {
+                    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(normalizedCandidate)) {
+                        return new URL(normalizedCandidate).toString();
+                    }
+                    if (normalizedCandidate.startsWith('//')) {
+                        return new URL(`${safeWindow.location.protocol}${normalizedCandidate}`).toString();
+                    }
+                    const base = fallbackValue
+                        || (fallbackOrigin ? `${fallbackOrigin}/` : (safeWindow.location?.href || undefined));
+                    return new URL(normalizedCandidate, base).toString();
+                } catch (error) {
+                    console.warn('Invalid Google redirect URI override provided:', normalizedCandidate, error);
+                    return fallbackValue;
+                }
+            };
+
+            const resolveRedirect = (defaultUri = fallbackRedirect) => {
+                const fallbackValue = typeof defaultUri === 'string' && defaultUri ? defaultUri : fallbackRedirect;
+                if (!overrideCandidate) {
+                    return resolveToAbsolute(fallbackValue, fallbackValue);
+                }
+                return resolveToAbsolute(overrideCandidate, fallbackValue);
+            };
+
+            return {
+                getGoogleRedirectUri(defaultUri = fallbackRedirect) {
+                    return resolveRedirect(defaultUri);
+                },
+                getGoogleRedirectOrigin(redirectUri, defaultUri = fallbackRedirect) {
+                    const fallbackValue = resolveRedirect(defaultUri);
+                    const effectiveUri = typeof redirectUri === 'string' && redirectUri
+                        ? resolveToAbsolute(redirectUri, fallbackValue)
+                        : fallbackValue;
+                    if (!effectiveUri) {
+                        return fallbackOrigin;
+                    }
+                    try {
+                        return new URL(effectiveUri).origin;
+                    } catch (error) {
+                        try {
+                            return new URL(effectiveUri, fallbackValue).origin;
+                        } catch (fallbackError) {
+                            return fallbackOrigin;
+                        }
+                    }
+                }
+            };
+        })();
+        const GoogleAuthState = {
+            encode(payload = {}) {
+                try {
+                    const json = JSON.stringify(payload);
+                    if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
+                        return window.btoa(json);
+                    }
+                    return encodeURIComponent(json);
+                } catch (error) {
+                    console.warn('Failed to encode Google auth state payload', error);
+                    return null;
+                }
+            },
+            decode(value) {
+                if (!value || typeof value !== 'string') {
+                    return null;
+                }
+                const attempts = [];
+                if (typeof window !== 'undefined' && typeof window.atob === 'function') {
+                    attempts.push((input) => window.atob(input));
+                    attempts.push((input) => {
+                        const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+                        const padding = normalized.length % 4;
+                        const padded = padding ? normalized + '='.repeat(4 - padding) : normalized;
+                        return window.atob(padded);
+                    });
+                }
+                attempts.push((input) => decodeURIComponent(input));
+
+                for (const attempt of attempts) {
+                    try {
+                        const decoded = attempt(value);
+                        if (decoded) {
+                            return JSON.parse(decoded);
+                        }
+                    } catch (error) {
+                        continue;
+                    }
+                }
+                return null;
+            }
+        };
         const Utils = {
             elements: {},
 
@@ -3608,11 +3777,14 @@
                 super();
                 this.name = 'googledrive';
                 this.clientId = '567988062464-fa6c1ovesqeudqs5398vv4mbo6q068p9.apps.googleusercontent.com';
-                this.redirectUri = window.location.origin + window.location.pathname;
+                const defaultRedirect = window.location.origin + window.location.pathname;
+                this.redirectUri = Config.getGoogleRedirectUri(defaultRedirect);
+                this.redirectOrigin = Config.getGoogleRedirectOrigin(this.redirectUri, defaultRedirect);
                 this.scope = 'https://www.googleapis.com/auth/drive';
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
                 this.accessToken = null; this.refreshToken = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
+                this.currentAuthState = null;
                 this.pkceVerifierKey = 'google_pkce_verifier';
                 this.loadStoredCredentials();
             }
@@ -3709,22 +3881,48 @@
                 }
                 return new Promise(async (resolve, reject) => {
                     try {
-                        const { authUrl, verifier } = await this.buildAuthRequest();
+                        const { authUrl, verifier, state } = await this.buildAuthRequest();
+                        this.currentAuthState = state || null;
                         sessionStorage.setItem(this.pkceVerifierKey, verifier);
                         const popup = window.open(authUrl, 'google-auth', 'width=500,height=600,scrollbars=yes,resizable=yes');
-                        if (!popup) { reject(new Error('Popup blocked by browser')); return; }
-                        const checkClosed = setInterval(() => { if (popup.closed) { clearInterval(checkClosed); reject(new Error('Authentication cancelled')); } }, 1000);
+                        if (!popup) { this.currentAuthState = null; reject(new Error('Popup blocked by browser')); return; }
+                        const checkClosed = setInterval(() => {
+                            if (popup.closed) {
+                                clearInterval(checkClosed);
+                                this.currentAuthState = null;
+                                reject(new Error('Authentication cancelled'));
+                            }
+                        }, 1000);
                         const messageHandler = async (event) => {
-                            if (event.origin !== window.location.origin) return;
-                            if (event.data.type === 'GOOGLE_AUTH_SUCCESS') {
+                            if (event.origin !== (this.redirectOrigin || window.location.origin)) return;
+                            const data = (event && event.data) || null;
+                            if (!data || typeof data !== 'object') {
+                                return;
+                            }
+                            const messageState = data.state;
+                            if (this.currentAuthState && messageState && messageState !== this.currentAuthState) {
+                                return;
+                            }
+                            if (data.type === 'GOOGLE_AUTH_SUCCESS') {
                                 clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close();
-                                try { await this.exchangeCodeForTokens(event.data.code); this.isAuthenticated = true; resolve(true); } catch (error) { reject(error); }
-                            } else if (event.data.type === 'GOOGLE_AUTH_ERROR') {
-                                clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close(); reject(new Error(event.data.error));
+                                try {
+                                    await this.exchangeCodeForTokens(data.code);
+                                    this.isAuthenticated = true;
+                                    this.currentAuthState = null;
+                                    resolve(true);
+                                } catch (error) {
+                                    this.currentAuthState = null;
+                                    reject(error);
+                                }
+                            } else if (data.type === 'GOOGLE_AUTH_ERROR') {
+                                clearInterval(checkClosed); window.removeEventListener('message', messageHandler); popup.close();
+                                this.currentAuthState = null;
+                                reject(new Error(data.error));
                             }
                         };
                         window.addEventListener('message', messageHandler);
                     } catch (error) {
+                        this.currentAuthState = null;
                         reject(error);
                     }
                 });
@@ -3732,7 +3930,18 @@
             async buildAuthRequest() {
                 const { verifier, challenge, method } = await generatePkcePair();
                 const params = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: 'code', scope: this.scope, access_type: 'offline', prompt: 'consent', code_challenge: challenge, code_challenge_method: method });
-                return { authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, verifier };
+                const statePayload = {
+                    origin: window.location.origin,
+                    ts: Date.now()
+                };
+                if (this.redirectOrigin && this.redirectOrigin !== window.location.origin) {
+                    statePayload.redirectOrigin = this.redirectOrigin;
+                }
+                const encodedState = GoogleAuthState.encode(statePayload);
+                if (encodedState) {
+                    params.set('state', encodedState);
+                }
+                return { authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, verifier, state: encodedState };
             }
             async exchangeCodeForTokens(code) {
                 const codeVerifier = sessionStorage.getItem(this.pkceVerifierKey);
@@ -4372,10 +4581,29 @@
         }
         if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
             const urlParams = new URLSearchParams(window.location.search);
-            const code = urlParams.get('code'); const error = urlParams.get('error');
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+            const stateParam = urlParams.get('state');
+            let targetOrigin = window.location.origin;
+            const decodedState = GoogleAuthState.decode(stateParam);
+            if (decodedState && typeof decodedState.origin === 'string' && decodedState.origin) {
+                try {
+                    const originUrl = new URL(decodedState.origin);
+                    targetOrigin = originUrl.origin;
+                } catch (originError) {
+                    console.warn('Invalid origin in Google auth state, falling back to current origin', originError);
+                }
+            }
             if (window.opener) {
-                if (error) { window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: error }, window.location.origin);
-                } else if (code) { window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS', code: code }, window.location.origin); }
+                const baseMessage = {};
+                if (stateParam) {
+                    baseMessage.state = stateParam;
+                }
+                if (error) {
+                    window.opener.postMessage({ ...baseMessage, type: 'GOOGLE_AUTH_ERROR', error: error }, targetOrigin);
+                } else if (code) {
+                    window.opener.postMessage({ ...baseMessage, type: 'GOOGLE_AUTH_SUCCESS', code: code }, targetOrigin);
+                }
                 window.close();
             }
         }
