@@ -1197,19 +1197,47 @@
                 }
                 return null;
             },
-            buildShareUrl(fileId) {
+            buildShareUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                const baseUrl = SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                if (!resourceKey) {
+                    return baseUrl;
+                }
+                try {
+                    const url = new URL(baseUrl);
+                    url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    return `${baseUrl}&resourcekey=${encodeURIComponent(resourceKey)}`;
+                }
             },
-            buildUcDownloadUrl(fileId) {
+            buildUcDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return `https://drive.google.com/uc?id=${fileId}&export=view`;
+                try {
+                    const url = new URL(`https://drive.google.com/uc?id=${fileId}&export=view`);
+                    if (resourceKey) {
+                        url.searchParams.set('resourcekey', resourceKey);
+                    }
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://drive.google.com/uc?id=${fileId}&export=view${resourcePart}`;
+                }
             },
-            buildApiDownloadUrl(fileId) {
+            buildApiDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+                try {
+                    const url = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+                    if (resourceKey) {
+                        url.searchParams.set('resourceKey', resourceKey);
+                    }
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourceKey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media${resourcePart}`;
+                }
             },
-            normalizeToAssetUrl(rawUrl, fallbackId = null) {
+            normalizeToAssetUrl(rawUrl, fallbackId = null, resourceKey = null) {
                 if (!rawUrl || typeof rawUrl !== 'string') return null;
                 const directHosts = new RegExp('(?:^|\.)googleusercontent\.com$');
                 const fileId = fallbackId || this.extractFileId(rawUrl);
@@ -1225,27 +1253,33 @@
                             if (!parsed.searchParams.get('id') && fileId) {
                                 parsed.searchParams.set('id', fileId);
                             }
+                            if (resourceKey) {
+                                parsed.searchParams.set('resourcekey', resourceKey);
+                            }
                             return parsed.toString();
                         }
                         if (fileId) {
-                            return this.buildUcDownloadUrl(fileId);
+                            return this.buildUcDownloadUrl(fileId, resourceKey);
                         }
                     }
                     if (host === 'www.googleapis.com') {
                         parsed.searchParams.set('alt', 'media');
+                        if (resourceKey) {
+                            parsed.searchParams.set('resourceKey', resourceKey);
+                        }
                         return parsed.toString();
                     }
                     if (fileId) {
-                        return this.buildUcDownloadUrl(fileId);
+                        return this.buildUcDownloadUrl(fileId, resourceKey);
                     }
                 } catch (error) {
                     if (fileId) {
-                        return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                        return this.buildUcDownloadUrl(fileId, resourceKey) || this.buildApiDownloadUrl(fileId, resourceKey);
                     }
                     return null;
                 }
                 if (fileId) {
-                    return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                    return this.buildUcDownloadUrl(fileId, resourceKey) || this.buildApiDownloadUrl(fileId, resourceKey);
                 }
                 return null;
             }
@@ -2264,7 +2298,7 @@
                     let resolved = false;
                     let request;
                     try {
-                        request = indexedDB.open('Orbital8-Goji-V1', 4);
+                        request = indexedDB.open('Orbital8-Goji-V1', 7);
                     } catch (error) {
                         this.db = null;
                         this.available = false;
@@ -3473,9 +3507,10 @@
                 const targetId = target?.id || null;
                 const fallbackId = targetId || file?.id || null;
                 const effectiveId = options.useShortcutId ? file.id : fallbackId;
-                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId) || '';
-                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
-                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId) : null) || apiDownloadUrl;
+                const resourceKey = target?.resourceKey || file?.resourceKey || target?.shortcutDetails?.targetResourceKey || file?.shortcutDetails?.targetResourceKey || null;
+                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId, resourceKey) || '';
+                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId, resourceKey) : null);
+                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId, resourceKey) : null) || apiDownloadUrl;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
 
                 const normalized = {
@@ -3486,13 +3521,14 @@
                     size: Number.isFinite(sizeValue) ? sizeValue : 0,
                     createdTime: target?.createdTime || file?.createdTime,
                     modifiedTime: target?.modifiedTime || file?.modifiedTime,
-                    thumbnailLink: target?.thumbnailLink || file?.thumbnailLink,
+                    thumbnailLink: DriveLinkHelper.normalizeToAssetUrl(target?.thumbnailLink || file?.thumbnailLink, fallbackId, resourceKey) || target?.thumbnailLink || file?.thumbnailLink,
                     downloadUrl,
                     viewUrl,
                     driveApiDownloadUrl: apiDownloadUrl,
                     appProperties: target?.appProperties || file?.appProperties || {},
                     parents: file?.parents || target?.parents || [],
-                    targetFileId: targetId || fallbackId || null
+                    targetFileId: targetId || fallbackId || null,
+                    resourceKey: resourceKey || null
                 };
 
                 if (options.useShortcutId) {
@@ -4219,7 +4255,8 @@
             getDirectImageURL(image) {
                 if (state.providerType === 'googledrive') {
                     const fileId = image?.targetFileId || image?.id;
-                    return DriveLinkHelper.buildShareUrl(fileId) || '';
+                    const resourceKey = image?.resourceKey || image?.shortcutDetails?.targetResourceKey || null;
+                    return DriveLinkHelper.buildShareUrl(fileId, resourceKey) || '';
                 } else if (state.providerType === 'onedrive') {
                     return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
                 }
