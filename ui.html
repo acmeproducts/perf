@@ -3321,7 +3321,64 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor(options = {}) {
+                this.abortController = null;
+                this.cache = new Map();
+                this.cacheSize = Number.isFinite(options.cacheSize) && options.cacheSize > 0 ? options.cacheSize : 50;
+            }
+            _getFileVersion(file) {
+                if (!file || typeof file !== 'object') return '';
+                const candidates = [
+                    file.version,
+                    file.fileVersion,
+                    file.eTag,
+                    file.etag,
+                    file.sha1Hash,
+                    file.checksum,
+                    file.modifiedTime,
+                    file.lastModifiedDateTime,
+                    file.updatedTime,
+                    file.updateTime,
+                    file.lastUpdated,
+                    file.localUpdatedAt,
+                    file.localUpdateTime,
+                ];
+                return candidates.find(value => value != null && value !== '') || '';
+            }
+            _getCacheKey(file) {
+                if (!file) return null;
+                const identifier = file.id || file.name || file.webContentLink || file.downloadUrl || null;
+                if (!identifier) return null;
+                const version = this._getFileVersion(file);
+                return `${identifier}::${version}`;
+            }
+            _cloneMetadata(metadata) {
+                if (!metadata || typeof metadata !== 'object') { return metadata; }
+                if (typeof structuredClone === 'function') {
+                    try { return structuredClone(metadata); } catch (error) { /* fall through */ }
+                }
+                try { return JSON.parse(JSON.stringify(metadata)); } catch (error) { return metadata; }
+            }
+            _getFromCache(key) {
+                if (!key || !this.cache.has(key)) return null;
+                const value = this.cache.get(key);
+                this.cache.delete(key);
+                this.cache.set(key, value);
+                return this._cloneMetadata(value);
+            }
+            _saveToCache(key, metadata) {
+                if (!key) return;
+                const value = this._cloneMetadata(metadata);
+                if (this.cache.has(key)) {
+                    this.cache.delete(key);
+                }
+                this.cache.set(key, value);
+                while (this.cache.size > this.cacheSize) {
+                    const oldestKey = this.cache.keys().next().value;
+                    if (oldestKey == null) break;
+                    this.cache.delete(oldestKey);
+                }
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -3368,6 +3425,12 @@
                     if (!isForExport) file.metadataStatus = 'loaded';
                     return { error: 'Not a PNG file' };
                 }
+                const cacheKey = this._getCacheKey(file);
+                const cached = this._getFromCache(cacheKey);
+                if (cached) {
+                    if (!isForExport) file.metadataStatus = 'loaded';
+                    return cached;
+                }
                 try {
                     this.abortController = new AbortController();
                     let response;
@@ -3382,7 +3445,11 @@
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
-                    return await this.extract(buffer);
+                    const metadata = await this.extract(buffer);
+                    if (!metadata.error) {
+                        this._saveToCache(cacheKey, metadata);
+                    }
+                    return metadata;
                 } catch (error) {
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
