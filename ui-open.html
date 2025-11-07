@@ -1176,14 +1176,49 @@
                 .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         }
 
+        function isSecureRandomSupported() {
+            return typeof window !== 'undefined'
+                && window.crypto
+                && typeof window.crypto.getRandomValues === 'function';
+        }
+
+        function generateFallbackVerifier(length = 64) {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+            let result = '';
+            for (let i = 0; i < length; i++) {
+                result += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+            }
+            return result;
+        }
+
         async function generatePkcePair() {
-            const verifierArray = new Uint8Array(64);
-            crypto.getRandomValues(verifierArray);
-            const verifier = base64UrlEncode(verifierArray);
-            const data = new TextEncoder().encode(verifier);
-            const digest = await crypto.subtle.digest('SHA-256', data);
-            const challenge = base64UrlEncode(digest);
-            return { verifier, challenge };
+            let verifier;
+            if (isSecureRandomSupported()) {
+                const verifierArray = new Uint8Array(64);
+                window.crypto.getRandomValues(verifierArray);
+                verifier = base64UrlEncode(verifierArray);
+            } else {
+                verifier = generateFallbackVerifier();
+            }
+
+            const subtle = typeof window !== 'undefined' ? (window.crypto && window.crypto.subtle) : null;
+            if (subtle && typeof subtle.digest === 'function') {
+                let data;
+                if (typeof TextEncoder !== 'undefined') {
+                    data = new TextEncoder().encode(verifier);
+                } else {
+                    const charCodes = new Uint8Array(verifier.length);
+                    for (let i = 0; i < verifier.length; i++) {
+                        charCodes[i] = verifier.charCodeAt(i);
+                    }
+                    data = charCodes;
+                }
+                const digest = await subtle.digest('SHA-256', data);
+                const challenge = base64UrlEncode(digest);
+                return { verifier, challenge, method: 'S256' };
+            }
+
+            return { verifier, challenge: verifier, method: 'plain' };
         }
 
         // ===== ORBITAL8 Goji Version - App Root =====
@@ -3547,8 +3582,8 @@
                 });
             }
             async buildAuthRequest() {
-                const { verifier, challenge } = await generatePkcePair();
-                const params = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: 'code', scope: this.scope, access_type: 'offline', prompt: 'consent', code_challenge: challenge, code_challenge_method: 'S256' });
+                const { verifier, challenge, method } = await generatePkcePair();
+                const params = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: 'code', scope: this.scope, access_type: 'offline', prompt: 'consent', code_challenge: challenge, code_challenge_method: method });
                 return { authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, verifier };
             }
             async exchangeCodeForTokens(code) {
@@ -3860,7 +3895,9 @@
                 this.currentParentPath = '';
                 this.breadcrumb = [];
                 this.onProgressCallback = null;
+                this.scopes = ['Files.ReadWrite.All', 'offline_access', 'User.Read'];
                 this.initMSAL();
+                this.handleRedirectResult();
 
                 const accounts = this.msalInstance.getAllAccounts();
                 if (accounts.length > 0) {
@@ -3876,25 +3913,50 @@
                 };
                 this.msalInstance = new msal.PublicClientApplication(msalConfig);
             }
+            async handleRedirectResult() {
+                try {
+                    const response = await this.msalInstance.handleRedirectPromise();
+                    if (response && response.account) {
+                        this.activeAccount = response.account;
+                        this.msalInstance.setActiveAccount(response.account);
+                        this.isAuthenticated = true;
+                    }
+                } catch (error) {
+                    console.warn('OneDrive redirect handling failed', error);
+                }
+            }
             async authenticate() {
                 try {
                     const accounts = this.msalInstance.getAllAccounts();
                     if (accounts.length > 0) { this.msalInstance.setActiveAccount(accounts[0]); this.activeAccount = accounts[0]; }
-                    else { const loginResponse = await this.msalInstance.loginPopup({ scopes: ['Files.ReadWrite.AppFolder', 'User.Read'] });
+                    else { const loginResponse = await this.msalInstance.loginPopup({ scopes: this.scopes });
                         this.activeAccount = loginResponse.account; this.msalInstance.setActiveAccount(this.activeAccount);
                     }
                     this.isAuthenticated = true; return true;
-                } catch (error) { this.isAuthenticated = false; throw new Error(`Authentication failed: ${error.message}`); }
+                } catch (error) {
+                    this.isAuthenticated = false;
+                    if (error && error.errorCode === 'popup_window_error') {
+                        throw new Error('Authentication popup was blocked. Please allow popups for this site and try again.');
+                    }
+                    throw new Error(`Authentication failed: ${error.message || error}`);
+                }
             }
             async getAccessToken() {
                 if (!this.activeAccount) { throw new Error('No active account'); }
                 try {
-                    const response = await this.msalInstance.acquireTokenSilent({ scopes: ['Files.ReadWrite.AppFolder'], account: this.activeAccount });
+                    const response = await this.msalInstance.acquireTokenSilent({ scopes: this.scopes, account: this.activeAccount });
                     return response.accessToken;
                 } catch (silentError) {
                     if (silentError instanceof msal.InteractionRequiredAuthError) {
-                        const response = await this.msalInstance.acquireTokenPopup({ scopes: ['Files.ReadWrite.AppFolder'], account: this.activeAccount });
-                        return response.accessToken;
+                        try {
+                            const response = await this.msalInstance.acquireTokenPopup({ scopes: this.scopes, account: this.activeAccount });
+                            return response.accessToken;
+                        } catch (popupError) {
+                            if (popupError && popupError.errorCode === 'popup_window_error') {
+                                throw new Error('Authentication popup was blocked. Please allow popups for this site and try again.');
+                            }
+                            throw popupError;
+                        }
                     } throw silentError;
                 }
             }
