@@ -2665,6 +2665,50 @@
             constructor() {
                 this.db = null;
                 this.initPromise = null;
+                this.usingMemoryFallback = false;
+                this.memoryStores = {
+                    metadata: new Map(),
+                    folderTimestamps: new Map()
+                };
+                this.fallbackReason = null;
+            }
+            isIndexedDBAvailable() {
+                return typeof indexedDB !== 'undefined' && indexedDB !== null;
+            }
+            shouldUseFallbackForError(error) {
+                if (!error) return false;
+                const name = String(error.name || '').toLowerCase();
+                const message = String(error.message || '').toLowerCase();
+                if (name === 'securityerror' || name === 'invalidstateerror') {
+                    return true;
+                }
+                if (name === 'unknownerror') {
+                    return true;
+                }
+                return message.includes('internal error opening backing store')
+                    || message.includes('a mutation operation was attempted on a database that did not allow mutations');
+            }
+            enableMemoryFallback(reason) {
+                if (this.usingMemoryFallback) {
+                    return;
+                }
+                this.usingMemoryFallback = true;
+                this.fallbackReason = typeof reason === 'string' ? reason : (reason?.message || null);
+                if (this.db) {
+                    try {
+                        this.db.close();
+                    } catch (closeError) {
+                        console.warn('Failed to close IndexedDB during fallback activation:', closeError);
+                    }
+                }
+                this.db = null;
+                console.warn('IndexedDB is unavailable. Falling back to in-memory storage only.', reason);
+            }
+            isUsingMemoryFallback() {
+                return this.usingMemoryFallback;
+            }
+            getFallbackReason() {
+                return this.fallbackReason;
             }
             isConnectionClosingError(error) {
                 if (!error) return false;
@@ -2675,6 +2719,9 @@
                 return message.includes('The database connection is closing');
             }
             attachDatabase(db) {
+                if (this.usingMemoryFallback) {
+                    return;
+                }
                 if (this.db && this.db !== db) {
                     try {
                         this.db.close();
@@ -2701,6 +2748,9 @@
                 };
             }
             async reopenConnection() {
+                if (this.usingMemoryFallback) {
+                    return;
+                }
                 if (this.db) {
                     try {
                         this.db.close();
@@ -2712,6 +2762,9 @@
                 await this.init();
             }
             async ensureConnection() {
+                if (this.usingMemoryFallback) {
+                    return null;
+                }
                 if (this.db) {
                     return this.db;
                 }
@@ -2719,6 +2772,9 @@
                 return this.db;
             }
             async withConnectionRetry(callback) {
+                if (this.usingMemoryFallback) {
+                    return callback();
+                }
                 let attempt = 0;
                 let lastError = null;
                 while (attempt < 2) {
@@ -2765,8 +2821,22 @@
                 if (this.initPromise) {
                     return this.initPromise;
                 }
+                if (this.usingMemoryFallback) {
+                    return;
+                }
+                if (!this.isIndexedDBAvailable()) {
+                    this.enableMemoryFallback('IndexedDB is not available in this environment.');
+                    return;
+                }
                 this.initPromise = new Promise((resolve, reject) => {
-                    const request = indexedDB.open('Orbital8-Goji-V1', 7);
+                    let request;
+                    try {
+                        request = indexedDB.open('Orbital8-Goji-V1', 7);
+                    } catch (error) {
+                        this.enableMemoryFallback(error);
+                        resolve();
+                        return;
+                    }
                     request.onupgradeneeded = (event) => {
                         const db = event.target.result;
                         const oldVersion = event.oldVersion || 0;
@@ -2840,13 +2910,25 @@
                         this.attachDatabase(db);
                         resolve();
                     };
-                    request.onerror = (event) => reject(event.target.error);
+                    request.onerror = (event) => {
+                        const error = event.target.error;
+                        if (this.shouldUseFallbackForError(error)) {
+                            this.enableMemoryFallback(error);
+                            resolve();
+                            return;
+                        }
+                        reject(error);
+                    };
                     request.onblocked = () => {
                         console.warn('IndexedDB upgrade blocked by another open connection.');
                     };
                 });
                 try {
                     await this.initPromise;
+                } catch (error) {
+                    if (!this.usingMemoryFallback) {
+                        throw error;
+                    }
                 } finally {
                     this.initPromise = null;
                 }
@@ -2861,6 +2943,13 @@
             }
             async getMetadata(fileId) {
                 if (!fileId) return null;
+                if (this.usingMemoryFallback) {
+                    const record = this.memoryStores.metadata.get(fileId);
+                    if (!record || !record.metadata) {
+                        return null;
+                    }
+                    return this.normalizeMetadata(record.metadata);
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -2886,6 +2975,16 @@
             async getManyMetadata(fileIds = []) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) {
                     return new Map();
+                }
+                if (this.usingMemoryFallback) {
+                    const results = new Map();
+                    fileIds.forEach(fileId => {
+                        const record = this.memoryStores.metadata.get(fileId);
+                        if (record && record.metadata) {
+                            results.set(fileId, this.normalizeMetadata(record.metadata));
+                        }
+                    });
+                    return results;
                 }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
@@ -2919,6 +3018,21 @@
             async saveMetadata(fileId, metadata, context = {}) {
                 if (!fileId) return;
                 const folderKey = this.resolveFolderKey(context);
+                if (this.usingMemoryFallback) {
+                    const normalized = this.normalizeMetadata(metadata);
+                    const record = { id: fileId, metadata: normalized };
+                    record.cloudVersion = normalized.cloudVersion ?? 0;
+                    record.cloudFingerprint = normalized.cloudFingerprint ?? null;
+                    record.lastUpdated = normalized.lastUpdated ?? 0;
+                    record.localUpdatedAt = normalized.localUpdatedAt ?? 0;
+                    if (folderKey) {
+                        record.folderKey = folderKey;
+                        record.provider = context.providerType || null;
+                        record.folderId = context.folderId || null;
+                    }
+                    this.memoryStores.metadata.set(fileId, record);
+                    return;
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -2947,6 +3061,10 @@
             }
             async deleteMetadata(fileId) {
                 if (!fileId) return;
+                if (this.usingMemoryFallback) {
+                    this.memoryStores.metadata.delete(fileId);
+                    return;
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -2965,6 +3083,14 @@
             async deleteMetadataByFolder(context) {
                 const folderKey = this.resolveFolderKey(context);
                 if (!folderKey) return;
+                if (this.usingMemoryFallback) {
+                    for (const [key, record] of this.memoryStores.metadata.entries()) {
+                        if (record && record.folderKey === folderKey) {
+                            this.memoryStores.metadata.delete(key);
+                        }
+                    }
+                    return;
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -2989,6 +3115,13 @@
             async getFolderTimestamp(context = {}) {
                 const key = this.resolveFolderKey(context);
                 if (!key) return null;
+                if (this.usingMemoryFallback) {
+                    const record = this.memoryStores.folderTimestamps.get(key);
+                    if (!record || typeof record.lastUpdated !== 'number') {
+                        return null;
+                    }
+                    return { ...record };
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -3022,6 +3155,17 @@
                 if (!key || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
                     return null;
                 }
+                if (this.usingMemoryFallback) {
+                    const record = {
+                        key,
+                        folderId: context.folderId || null,
+                        providerType: context.providerType || null,
+                        lastUpdated: timestamp,
+                        updatedAt: Date.now()
+                    };
+                    this.memoryStores.folderTimestamps.set(key, record);
+                    return record;
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -3047,6 +3191,10 @@
             async deleteFolderTimestamp(context = {}) {
                 const key = this.resolveFolderKey(context);
                 if (!key) return;
+                if (this.usingMemoryFallback) {
+                    this.memoryStores.folderTimestamps.delete(key);
+                    return;
+                }
                 const runner = () => new Promise((resolve, reject) => {
                     let transaction;
                     try {
@@ -8791,6 +8939,13 @@
                 state.export = new ExportSystem();
                 state.dbManager = new DBManager();
                 await state.dbManager.init();
+                if (state.dbManager.isUsingMemoryFallback && typeof state.dbManager.isUsingMemoryFallback === 'function') {
+                    if (state.dbManager.isUsingMemoryFallback()) {
+                        const reason = state.dbManager.getFallbackReason && state.dbManager.getFallbackReason();
+                        const details = reason ? ` (${reason})` : '';
+                        Utils.showToast(`Persistent storage is unavailable${details}. Changes may not be saved after closing the tab.`, 'warn', true);
+                    }
+                }
                 state.folderTimestampService = new FolderTimestampService(state);
                 window.__orbitalAppState = state;
                 window.__orbitalDbManager = state.dbManager;
