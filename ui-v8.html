@@ -1533,12 +1533,16 @@
         <div class="pill-counter left hidden" id="pill-skip" data-stack="skip">0</div>
         <div class="pill-counter right hidden" id="pill-review" data-stack="review">0</div>
 
-        <!-- NEW: Progress bar -->
+        <!-- NEW: Progress bar with breakdown -->
         <div id="progress-bar-container" class="progress-bar-container" style="display: none;">
             <div class="progress-bar-track">
                 <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
             </div>
-            <div id="progress-bar-text" class="progress-bar-text">0 of 0</div>
+            <div id="progress-bar-text" class="progress-bar-text">
+                <span id="progress-percentage">0%</span> •
+                <span id="progress-kept">0 kept</span> •
+                <span id="progress-deleted">0 deleted</span>
+            </div>
         </div>
         
         <div class="empty-state hidden" id="empty-state">
@@ -1580,23 +1584,19 @@
             <div class="tap-zone tap-zone-next" data-action="next"></div>
         </div>
 
-        <!-- NEW: Bottom action bar -->
+        <!-- NEW: Bottom action bar (3 buttons: Details, Favorite, Delete) -->
         <div id="bottom-action-bar" class="bottom-action-bar" style="display: none;">
-            <button class="action-btn" id="action-delete" data-action="delete">
-                <span class="action-icon">🗑️</span>
-                <span class="action-label">Delete</span>
-            </button>
-            <button class="action-btn" id="action-skip" data-action="skip">
-                <span class="action-icon">⏭️</span>
-                <span class="action-label">Skip</span>
-            </button>
-            <button class="action-btn" id="action-keep" data-action="keep">
-                <span class="action-icon">❤️</span>
-                <span class="action-label">Keep</span>
-            </button>
             <button class="action-btn" id="action-details" data-action="details">
                 <span class="action-icon">📝</span>
                 <span class="action-label">Details</span>
+            </button>
+            <button class="action-btn" id="action-favorite" data-action="favorite">
+                <span class="action-icon" id="favorite-icon">🤍</span>
+                <span class="action-label">Favorite</span>
+            </button>
+            <button class="action-btn" id="action-delete" data-action="delete">
+                <span class="action-icon" id="delete-icon">🗑️</span>
+                <span class="action-label" id="delete-label">Delete</span>
             </button>
         </div>
 
@@ -7413,6 +7413,24 @@ this.updateImageCounters();
                 }
                 const dir = this.hitTriangle(clientX, clientY);
                 if (!dir) return;
+
+                // NEW PARADIGM: left/right = navigation, up/down = actions
+                if (dir === 'left') {
+                    if (typeof NewParadigm !== 'undefined') {
+                        NewParadigm.navigateWithUndoClear(-1);
+                    } else {
+                        this.prevImage();
+                    }
+                    return;
+                } else if (dir === 'right') {
+                    if (typeof NewParadigm !== 'undefined') {
+                        NewParadigm.navigateWithUndoClear(1);
+                    } else {
+                        this.nextImage();
+                    }
+                    return;
+                }
+
                 this.highlightSortDirection(dir);
                 const mapped = dir === 'up' ? 'top' : dir === 'down' ? 'bottom' : dir;
                 const targetStack = this.directionToStack(mapped);
@@ -7429,14 +7447,14 @@ this.updateImageCounters();
                 if (Math.abs(deltaX) > Math.abs(deltaY)) { return deltaX > 0 ? 'right' : 'left'; } else { return deltaY > 0 ? 'bottom' : 'top'; }
             },
             directionToStack(direction) {
-                // NEW PARADIGM: Simple decision-based mapping
+                // NEW PARADIGM: up=keep, down=delete, left/right=navigation
                 const mapping = {
-                    'top': 'keep',      // Swipe/tap up = Keep
+                    'top': 'keep',      // Swipe up = Keep (favorite)
                     'up': 'keep',
-                    'bottom': 'delete', // Swipe/tap down = Delete
+                    'bottom': 'delete', // Swipe down = Delete (to recycle bin)
                     'down': 'delete',
-                    'left': 'skip',     // Swipe left = Skip
-                    'right': 'skip'     // Swipe right = Skip (or could be navigation)
+                    'left': null,       // Swipe left = Previous (handled as navigation)
+                    'right': null       // Swipe right = Next (handled as navigation)
                 };
                 return mapping[direction];
             },
@@ -8706,10 +8724,12 @@ this.updateImageCounters();
 
         // ===== NEW PARADIGM: Decision-Based Triage =====
         const NewParadigm = {
+            lastDeletedFile: null, // For undo functionality
+
             init() {
                 this.setupBottomActionBar();
                 this.setupTapZones();
-                this.updateGestureMappings();
+                this.setupGridGesture();
                 console.log('[NewParadigm] Decision-based triage initialized');
             },
 
@@ -8717,19 +8737,25 @@ this.updateImageCounters();
                 const bar = document.getElementById('bottom-action-bar');
                 if (!bar) return;
 
-                // Wire up action buttons
-                document.getElementById('action-delete')?.addEventListener('click', () => {
-                    this.performAction('delete');
-                });
-                document.getElementById('action-skip')?.addEventListener('click', () => {
-                    this.performAction('skip');
-                });
-                document.getElementById('action-keep')?.addEventListener('click', () => {
-                    this.performAction('keep');
-                });
+                // Details button
                 document.getElementById('action-details')?.addEventListener('click', () => {
                     if (state.stacks[state.currentStack].length > 0) {
                         Details.show();
+                    }
+                });
+
+                // Favorite toggle button
+                document.getElementById('action-favorite')?.addEventListener('click', () => {
+                    this.toggleFavorite();
+                });
+
+                // Delete/Undo button
+                document.getElementById('action-delete')?.addEventListener('click', () => {
+                    const label = document.getElementById('delete-label')?.textContent;
+                    if (label === 'Undo') {
+                        this.undoDelete();
+                    } else {
+                        this.performDelete();
                     }
                 });
             },
@@ -8742,49 +8768,163 @@ this.updateImageCounters();
                     zone.addEventListener('click', (e) => {
                         e.stopPropagation();
                         const action = zone.dataset.action;
-                        if (action === 'keep' || action === 'delete') {
-                            this.performAction(action);
+                        if (action === 'keep') {
+                            this.toggleFavorite(); // Tap top = favorite
+                        } else if (action === 'delete') {
+                            this.performDelete(); // Tap bottom = delete
                         } else if (action === 'prev') {
-                            Core.navigateImage(-1, { source: 'tap:prev' });
+                            this.navigateWithUndoClear(-1);
                         } else if (action === 'next') {
-                            Core.navigateImage(1, { source: 'tap:next' });
+                            this.navigateWithUndoClear(1);
                         }
                     });
                 });
             },
 
-            updateGestureMappings() {
-                // Update swipe gestures for new paradigm
-                // Swipe UP = Keep, Swipe DOWN = Delete, Swipe LEFT = Skip
-                // This will be handled by modifying the Gestures.executeFlick function
+            setupGridGesture() {
+                // Swipe down from top edge (top 15%) triggers grid
+                const viewport = Utils.elements.imageViewport;
+                if (!viewport) return;
+
+                let startY = null;
+                viewport.addEventListener('touchstart', (e) => {
+                    if (e.touches.length === 1) {
+                        startY = e.touches[0].clientY;
+                    }
+                }, { passive: true });
+
+                viewport.addEventListener('touchend', (e) => {
+                    if (!startY) return;
+                    const endY = e.changedTouches[0].clientY;
+                    const deltaY = endY - startY;
+                    const viewportHeight = viewport.clientHeight;
+
+                    // Swipe started from top 15% and moved down > 50px
+                    if (startY < viewportHeight * 0.15 && deltaY > 50) {
+                        this.showGrid();
+                    }
+                    startY = null;
+                }, { passive: true });
             },
 
-            async performAction(action) {
+            async toggleFavorite() {
                 const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
                 if (!currentFile) return;
 
-                const actionMap = {
-                    'keep': 'keep',
-                    'delete': 'delete',
-                    'skip': 'skip'
-                };
+                // Toggle favorite status
+                const isFavorited = currentFile.favorited || false;
+                const newFavoriteStatus = !isFavorited;
 
-                const targetStack = actionMap[action];
-                if (!targetStack) return;
+                // Update icon
+                const icon = document.getElementById('favorite-icon');
+                if (icon) {
+                    icon.textContent = newFavoriteStatus ? '❤️' : '🤍';
+                }
+
+                // Save to file metadata
+                await Core.updateUserMetadata(currentFile.id, {
+                    favorited: newFavoriteStatus
+                }, { skipDebounce: true });
+
+                currentFile.favorited = newFavoriteStatus;
 
                 // Visual feedback
                 if (state.haptic) {
-                    state.haptic.triggerFeedback(action === 'delete' ? 'error' : 'success');
+                    state.haptic.triggerFeedback('success');
                 }
 
-                // Move to target stack with comet trail
-                await Core.moveToStack(targetStack, {
-                    source: `button:${action}`,
+                Utils.showToast(newFavoriteStatus ? 'Added to favorites' : 'Removed from favorites', 'success');
+            },
+
+            async performDelete() {
+                const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                if (!currentFile) return;
+
+                // Store for undo
+                this.lastDeletedFile = {
+                    file: currentFile,
+                    fromStack: state.currentStack,
+                    position: state.currentStackPosition
+                };
+
+                // Visual feedback
+                if (state.haptic) {
+                    state.haptic.triggerFeedback('error');
+                }
+
+                // Move to delete stack with comet trail
+                await Core.moveToStack('delete', {
+                    source: 'action:delete',
                     showComet: true
                 });
 
+                // Change delete button to undo
+                this.showUndoButton();
+
                 // Update progress
                 this.updateProgress();
+
+                // Show toast
+                Utils.showToast('Moved to recycle bin', 'info');
+            },
+
+            showUndoButton() {
+                const icon = document.getElementById('delete-icon');
+                const label = document.getElementById('delete-label');
+                if (icon) icon.textContent = '↶';
+                if (label) label.textContent = 'Undo';
+            },
+
+            hideUndoButton() {
+                const icon = document.getElementById('delete-icon');
+                const label = document.getElementById('delete-label');
+                if (icon) icon.textContent = '🗑️';
+                if (label) label.textContent = 'Delete';
+            },
+
+            async undoDelete() {
+                if (!this.lastDeletedFile) return;
+
+                const { file, fromStack, position } = this.lastDeletedFile;
+
+                // Move back from delete stack to original stack
+                const deleteIndex = state.stacks.delete.findIndex(f => f.id === file.id);
+                if (deleteIndex !== -1) {
+                    state.stacks.delete.splice(deleteIndex, 1);
+                    state.stacks[fromStack].splice(position, 0, file);
+
+                    // Update file metadata
+                    await Core.updateUserMetadata(file.id, {
+                        stack: fromStack,
+                        stackSequence: position
+                    }, { skipDebounce: true });
+
+                    // Navigate to it
+                    state.currentStack = fromStack;
+                    state.currentStackPosition = position;
+                    await Core.displayCurrentImage();
+
+                    Utils.showToast('Undo successful', 'success');
+                }
+
+                this.lastDeletedFile = null;
+                this.hideUndoButton();
+                this.updateProgress();
+            },
+
+            navigateWithUndoClear(direction) {
+                // Clear undo on forward navigation only
+                if (direction > 0 && this.lastDeletedFile) {
+                    this.lastDeletedFile = null;
+                    this.hideUndoButton();
+                }
+                Core.navigateImage(direction, { source: direction > 0 ? 'tap:next' : 'tap:prev' });
+            },
+
+            showGrid() {
+                if (typeof Grid !== 'undefined' && Grid.show) {
+                    Grid.show();
+                }
             },
 
             showUI() {
@@ -8797,6 +8937,7 @@ this.updateImageCounters();
                 if (tapZones) tapZones.style.display = 'block';
 
                 this.updateProgress();
+                this.updateFavoriteIcon();
             },
 
             hideUI() {
@@ -8809,16 +8950,30 @@ this.updateImageCounters();
                 if (tapZones) tapZones.style.display = 'none';
             },
 
+            updateFavoriteIcon() {
+                const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                const icon = document.getElementById('favorite-icon');
+                if (icon && currentFile) {
+                    icon.textContent = currentFile.favorited ? '❤️' : '🤍';
+                }
+            },
+
             updateProgress() {
                 const total = state.imageFiles.length;
-                const reviewed = state.stacks.keep.length + state.stacks.delete.length;
-                const progress = total > 0 ? (reviewed / total) * 100 : 0;
+                const kept = state.stacks.keep.length;
+                const deleted = state.stacks.delete.length;
+                const reviewed = kept + deleted;
+                const percentage = total > 0 ? Math.round((reviewed / total) * 100) : 0;
 
                 const fillEl = document.getElementById('progress-bar-fill');
-                const textEl = document.getElementById('progress-bar-text');
+                const percentEl = document.getElementById('progress-percentage');
+                const keptEl = document.getElementById('progress-kept');
+                const deletedEl = document.getElementById('progress-deleted');
 
-                if (fillEl) fillEl.style.width = `${progress}%`;
-                if (textEl) textEl.textContent = `${reviewed} of ${total}`;
+                if (fillEl) fillEl.style.width = `${percentage}%`;
+                if (percentEl) percentEl.textContent = `${percentage}%`;
+                if (keptEl) keptEl.textContent = `${kept} kept`;
+                if (deletedEl) deletedEl.textContent = `${deleted} deleted`;
 
                 // Check for completion
                 if (reviewed === total && total > 0) {
@@ -8829,13 +8984,12 @@ this.updateImageCounters();
             showSessionComplete() {
                 const keepCount = state.stacks.keep.length;
                 const deleteCount = state.stacks.delete.length;
-                const skipCount = state.stacks.skip.length;
 
-                const message = `Session Complete!\n\n❤️ ${keepCount} kept\n🗑️ ${deleteCount} deleted\n⏭️ ${skipCount} skipped`;
+                const message = `Session Complete!\n\n❤️ ${keepCount} kept\n🗑️ ${deleteCount} deleted (in recycle bin)`;
 
                 if (confirm(message + '\n\nView kept images in grid?')) {
                     state.grid.stack = 'keep';
-                    Grid.show();
+                    this.showGrid();
                 }
             }
         };
