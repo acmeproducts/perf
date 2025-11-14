@@ -7463,7 +7463,20 @@ this.updateImageCounters();
                 try {
                     UI.acknowledgePillCounter(targetStack);
                     if (state.haptic) { state.haptic.triggerFeedback('swipe'); }
-                    await Core.moveToStack(targetStack, { source: 'gesture:flick' });
+
+                    // NEW PARADIGM: Route keep/delete through NewParadigm for consistent behavior
+                    if (typeof NewParadigm !== 'undefined') {
+                        if (targetStack === 'keep') {
+                            await NewParadigm.performKeep();
+                        } else if (targetStack === 'delete') {
+                            await NewParadigm.performDelete();
+                        } else {
+                            await Core.moveToStack(targetStack, { source: 'gesture:flick' });
+                        }
+                    } else {
+                        await Core.moveToStack(targetStack, { source: 'gesture:flick' });
+                    }
+
                     this.hideAllEdgeGlows();
                 } catch(error) {
                     Utils.showToast(`Flick failed: ${error.message}`, 'error', true);
@@ -8769,7 +8782,7 @@ this.updateImageCounters();
                         e.stopPropagation();
                         const action = zone.dataset.action;
                         if (action === 'keep') {
-                            this.toggleFavorite(); // Tap top = favorite
+                            this.performKeep(); // Tap top = Keep (move to keep stack)
                         } else if (action === 'delete') {
                             this.performDelete(); // Tap bottom = delete
                         } else if (action === 'prev') {
@@ -8834,6 +8847,31 @@ this.updateImageCounters();
                 }
 
                 Utils.showToast(newFavoriteStatus ? 'Added to favorites' : 'Removed from favorites', 'success');
+            },
+
+            async performKeep() {
+                const currentFile = state.stacks[state.currentStack][state.currentStackPosition];
+                if (!currentFile) return;
+
+                // Visual feedback
+                if (state.haptic) {
+                    state.haptic.triggerFeedback('success');
+                }
+
+                // Move to keep stack with comet trail
+                await Core.moveToStack('keep', {
+                    source: 'action:keep',
+                    showComet: true
+                });
+
+                // Clear undo if any
+                this.lastDeletedFile = null;
+                this.hideUndoButton();
+
+                // Update progress
+                this.updateProgress();
+
+                Utils.showToast('Added to keep', 'success');
             },
 
             async performDelete() {
