@@ -10,6 +10,18 @@ We need a shared plan for evolving `ui-v8.html` without locking ourselves into e
 4. **Zero overlap, clear ownership** – A UI element either belongs to the core frame or to a feature module that the active cartridge explicitly enables. Nothing should render twice or be left hidden-but-active underneath another layer.
 5. **Stateless-friendly, state-aware** – URL parameters can continue to offer quick cartridge overrides, but persistent associations (per user, per folder, per provider) must be maintained outside the URL so OAuth callbacks and bookmarks remain clean.
 
+## Addition-by-Subtraction Doctrine
+Simplifying the experience is now a first-class objective alongside core consolidation. Whenever the recycle bin (or any other provider trash) already guarantees reversibility, we remove overlapping UI such as bespoke undo banners so the core can stay lean. Recoverability shifts to smarter affordances, for example a **Multi-Layer Popup Menu (MLPUM)** module that exposes the recycle bin grid as a contextual action instead of persistent chrome.
+
+Concrete simplifications to pursue during or after the B1–B5 bundle:
+
+1. **Retire inline undo** – Delete the dedicated undo queue/controls and rely on the provider recycle bin for reversibility. The MLPUM grid becomes the single entry point for restoring discarded items, eliminating snackbar timers and stack rewrites.
+2. **Contextual recycle bin grid** – Replace always-visible recycle lists with an on-demand, layered popup that previews trashed images in place. This aligns with the modular chrome approach and removes yet another overlapping panel.
+3. **Handle-free grid mode** – Preserve drag-and-drop semantics in grid view but drop the visible grab handles so thumbnails reclaim space. Pointer cues (cursor changes, ripple) communicate draggability without extra chrome.
+4. **Footer discipline** – Treat the footer as a constrained module with a maximum height budget (or auto-hide behavior) to protect the image viewport’s aspect ratio. Only data that passes the similarity/parameter tests stays in the footer; everything else moves into contextual modules such as the MLPUM.
+
+The doctrine mirrors the “core before configuration” rule: first prove that a feature is essential and irreducible; if not, remove or fold it into a contextual module so we add value by subtracting redundant UI.
+
 ## Core Assimilation Strategy
 1. **Inventory similarities** – Audit `ui-v7.html`, `ui-v8.html`, and other experimental files to list elements, gestures, data paths, and metadata flows that already behave identically. Move each confirmed match into a shared core module.
 2. **Promote near-similar elements** – For features that differ only cosmetically (e.g., counter placement, focus toggle radius), extract shared structure and expose lightweight parameters (sizes, label text, icon choice) rather than duplicating entire components.
@@ -35,5 +47,12 @@ We need a shared plan for evolving `ui-v8.html` without locking ourselves into e
 3. Draft the canonical action dictionary and update serialization/persistence helpers to adopt it.
 4. Prototype the module registry: render the same cartridge twice (baseline and paradigm) but with overlap eliminated via explicit module opt-ins.
 5. Revisit cartridge persistence once the core/module boundary is firm, ensuring folder-level defaults survive OAuth callbacks without relying on URL params.
+6. Confirm the release-plan readiness gate (data reset approved, QA owner assigned, single-PR commitment) before any engineering branch opens, so B1 starts with all prerequisites satisfied. *(Status: confirmed – proceed with B1 similarity inventory.)*
+
+## Release Packaging
+All work streams that implement the core-first strategy will ship together inside a single
+“Core-first UI bundle (B1–B5)” pull request. The companion document `core-ui-release-plan.md`
+details the bundle scope, task breakdown, and QA expectations so every overlap fix, canonical
+action change, and persistence update lands in one cohesive release.
 
 Following this “core-first” approach keeps us laser-focused on rationalizing existing similarities before inventing new abstractions, yielding a stable foundation for whatever configuration types we ultimately support.
