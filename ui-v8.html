@@ -778,6 +778,31 @@
             background: rgba(255, 255, 255, 0.15);
             transform: scale(0.92);
         }
+        .action-pulse {
+            display: inline-flex;
+            animation: actionPulse 0.45s ease;
+        }
+        .progress-pulse {
+            animation: progressPulse 0.6s ease;
+        }
+        .progress-fill-pulse {
+            animation: progressFillPulse 0.6s ease;
+        }
+        @keyframes actionPulse {
+            0% { transform: scale(1); opacity: 0.9; }
+            40% { transform: scale(1.25); opacity: 1; }
+            100% { transform: scale(1); opacity: 0.9; }
+        }
+        @keyframes progressPulse {
+            0% { transform: scale(1); opacity: 0.9; }
+            50% { transform: scale(1.08); opacity: 1; }
+            100% { transform: scale(1); opacity: 0.9; }
+        }
+        @keyframes progressFillPulse {
+            0% { filter: brightness(1); box-shadow: none; }
+            50% { filter: brightness(1.4); box-shadow: 0 0 20px rgba(245, 158, 11, 0.45); }
+            100% { filter: brightness(1); box-shadow: none; }
+        }
         .action-btn:hover {
             background: rgba(255, 255, 255, 0.1);
         }
@@ -8190,17 +8215,34 @@ this.updateImageCounters();
                 Utils.elements.selectAnotherFolderBtn.style.display = 'block';
             },
             acknowledgePillCounter(stackName) {
-                const pill = document.getElementById(`pill-${stackName}`);
-                if (pill) {
-                    pill.classList.remove('triple-ripple', 'glow-effect');
-                    pill.offsetHeight; pill.classList.add('triple-ripple');
-                    setTimeout(() => { pill.classList.add('glow-effect'); }, 100);
-                    setTimeout(() => { pill.classList.remove('triple-ripple', 'glow-effect'); }, 3000);
+                const animate = (element, className) => {
+                    if (!element) return false;
+                    element.classList.remove(className);
+                    void element.offsetWidth;
+                    element.classList.add(className);
+                    setTimeout(() => element.classList.remove(className), 600);
+                    return true;
+                };
+
+                if (stackName === 'keep') {
+                    if (!animate(document.getElementById('favorite-icon'), 'action-pulse')) {
+                        animate(document.getElementById('action-favorite'), 'action-pulse');
+                    }
+                } else if (stackName === 'delete') {
+                    if (!animate(document.getElementById('delete-icon'), 'action-pulse')) {
+                        animate(document.getElementById('action-delete'), 'action-pulse');
+                    }
                 }
+
+                const progressText = document.getElementById('progress-bar-text');
+                animate(document.getElementById('progress-bar-fill'), 'progress-fill-pulse');
+                animate(progressText, 'progress-pulse');
             },
             switchToStack(stackName) { return Core.displayTopImageFromStack(stackName); },
             cycleThroughPills() {
-                const stackOrder = ['in', 'out', 'priority', 'trash'];
+                const stackOrder = Array.isArray(STACKS) && STACKS.length > 0
+                    ? STACKS
+                    : ['review', 'keep', 'delete', 'skip'];
                 const currentIndex = stackOrder.indexOf(state.currentStack);
                 const nextIndex = (currentIndex + 1) % stackOrder.length;
                 const nextStack = stackOrder[nextIndex];
@@ -8744,11 +8786,16 @@ this.updateImageCounters();
         // ===== NEW PARADIGM: Decision-Based Triage =====
         const NewParadigm = {
             lastDeletedFile: null, // For undo functionality
+            initialized: false,
 
             init() {
+                if (this.initialized) {
+                    return;
+                }
                 this.setupBottomActionBar();
                 this.setupTapZones();
                 this.setupGridGesture();
+                this.initialized = true;
                 console.log('[NewParadigm] Decision-based triage initialized');
             },
 
@@ -8972,6 +9019,15 @@ this.updateImageCounters();
             },
 
             showUI() {
+                if (!state?.provider || !state?.currentFolder?.id) {
+                    console.warn('[NewParadigm] showUI skipped – provider or folder not ready');
+                    return;
+                }
+
+                if (!this.initialized) {
+                    this.init();
+                }
+
                 const bar = document.getElementById('bottom-action-bar');
                 const progress = document.getElementById('progress-bar-container');
                 const tapZones = document.getElementById('image-tap-zones');
@@ -9056,7 +9112,6 @@ this.updateImageCounters();
                 Utils.showScreen('provider-screen');
                 Events.init();
                 Gestures.init();
-                NewParadigm.init(); // Initialize new paradigm
                 Core.updateActiveProxTab();
             } catch (error) {
                 console.error("Fatal initialization error:", error);
