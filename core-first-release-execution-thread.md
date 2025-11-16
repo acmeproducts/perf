@@ -11,9 +11,10 @@ our core-first plan. This replaces the conflicted release draft and captures the
   inventory and resulting changes directly inside the existing HTML/JS files
   (`ui-v7.html`, `ui-v8.html`, cartridge helpers) via structured comments or
   inline JSON snippets—no new standalone modules.
-- **Single PR covering B1–B5.** The branch that updates `ui-v8.html` must also
-  carry the rest of the core-first bundles so QA can validate baseline
-  regression coverage and paradigm parity at once.
+- **Conflict-free, developer-managed increments.** Each bundle (or tight pair of
+  bundles) now lands as its own PR so the solo tester only needs to click
+  "Merge" in the GitHub UI. Engineering owns all rebases, conflict resolution,
+  and verification before handing a PR off for review.
 - **No metadata migration.** All current data is disposable test content, so
   engineering can reset as needed while introducing the canonical action layer.
 
@@ -49,19 +50,19 @@ our core-first plan. This replaces the conflicted release draft and captures the
      parity) when opening the PR so testers can execute it verbatim.
 
 ## Output expectations
-- A single PR titled **"Core-first UI bundle (B1–B5)"** containing:
-  - Updated `ui-v8.html` that reflects the shared core, canonical actions, and
-    chrome modules without overlap.
-  - Companion updates in `ui-v7.html`, `codex-storage.js`, and other existing
-    script sections, each documenting inventory details inline per the decision
-    above.
-  - Reference links back to this release instruction file in the PR
-    description, so future threads can trace the execution context quickly.
+- A sequence of conflict-free PRs, each tied to one bundle (or at most two)
+  with:
+  - Updated `ui-v8.html` plus any companion files needed for that bundle.
+  - Inline similarity-inventory comments that explain what merged into the
+    shared core during that PR.
+  - A short “handoff note” summarizing how QA can exercise the feature with no
+    local setup beyond opening the deploy preview.
 
 ## Handling upstream changes and merge conflicts
-- **Stay on the existing branch/PR.** The single-PR commitment still applies
-  even when `main` advances. Pull the latest baseline into the same branch,
-  resolve conflicts locally, and update the PR instead of opening a new one.
+- **Keep refreshing the active PR.** When `main` advances during review, pull
+  the latest baseline into the same branch, resolve conflicts locally, and push
+  the updated diff so the tester never has to start a fresh PR just to stay
+  current.
 - **Resolve, then re-run quick audits.** After fixing conflicts, re-check the
   similarity inventory comments and chrome-module guards to confirm no
   duplicate DOM snuck back in from `main`.
@@ -72,6 +73,24 @@ our core-first plan. This replaces the conflicted release draft and captures the
 - **Smoke-test the shared skeleton.** Run at least a fast local validation of
   gesture bindings and the MLPUM toggle after each conflict resolution to catch
   regressions before re-pushing the branch.
+
+## Solo tester-friendly workflow
+- **Developers do the rebases.** When `main` moves, engineering rebases or
+  merges locally, reruns the overlap checks, and force-pushes the updated
+  branch. The tester should never see a “Resolve conflicts” banner.
+- **Small, serial deliveries.** Ship the bundles in order (B1 → B5) as separate
+  PRs. Wait for QA sign-off on the currently-open PR before opening the next so
+  the tester always has a single clean branch to validate.
+- **Plain-language release notes.** Each PR description must include a “How to
+  test this with just the GitHub UI” section with links to the deploy preview or
+  attached video/screenshot. Assume no local dev tools.
+- **Link the tester instructions.** Drop a quick reference to
+  `tester-merge-guide.md` in every PR description so the reviewer knows exactly
+  what to do when it is time to merge.
+- **Escalate blockers quickly.** If the tester reports that a PR shows merge
+  conflicts or the deploy preview is missing, treat it as a P0: engineering must
+  refresh the branch immediately and confirm in writing that the UI is ready
+  again.
 
 Once this file is committed, it becomes the authoritative reference for the
 next implementation thread, ensuring we never revisit the previous merge

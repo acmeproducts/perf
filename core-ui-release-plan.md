@@ -2,9 +2,9 @@
 
 ## Purpose
 Lay out the first implementation wave for the core-first (Approach D) strategy so all
-necessary work lands in a single, coherent pull request. This ensures reviewers and
-QA see the full end-to-end experience—shared core, canonical actions, and frame-safe
-chrome—before we branch into future cartridges.
+necessary work lands through a string of conflict-free, easy-to-review pull requests.
+This ensures the solo tester can validate each bundle sequentially without ever
+having to resolve merge conflicts or juggle multiple branches.
 
 ## Release scope
 1. **Similarity inventory + promotion.** Document every overlapping widget across
@@ -22,8 +22,9 @@ chrome—before we branch into future cartridges.
    (folder-level/localStorage hybrid) while still honoring manual `?cartridge=`
    overrides. OAuth callbacks remain untouched.
 
-All five deliverables land together so QA can validate the full “smart config, dumb
-UI shell” contract in a single test cycle.
+Each deliverable becomes its own PR (or is paired with its closest neighbor) so QA
+can validate the “smart config, dumb UI shell” contract incrementally while keeping
+`main` unblocked.
 
 ### Readiness gate (pre-implementation)
 Before engineering starts on B1, the following go/no-go criteria are confirmed:
@@ -34,9 +35,9 @@ Before engineering starts on B1, the following go/no-go criteria are confirmed:
 2. **QA capacity confirmed.** The QA team will run the bundled checklist (below)
    in one pass, validating both baseline regression coverage and paradigm feature
    parity.
-3. **Single-PR commitment.** Engineering agrees the B1–B5 work streams ship
-   together on one branch/PR, so reviewers always see the end-to-end core-first
-   experience.
+3. **Conflict-free incremental PRs.** Engineering agrees to prep, rebase, and test
+   each bundle locally so that every PR the tester sees is mergeable without manual
+   conflict resolution.
 4. **Checklist ownership.** A named QA owner is assigned before coding begins so
    the final verification window is already booked when the PR opens.
 
@@ -46,10 +47,10 @@ similarity inventory without revisiting upstream dependencies.
 #### Gate status — Ready ✅
 - **Data reset:** Confirmed. Existing triage artifacts are disposable test assets,
   so engineers can overwrite them while introducing the canonical action schema.
-- **QA capacity:** Confirmed. QA has committed to running the bundled checklist
-  (baseline regression + paradigm parity) as soon as the single PR is posted.
-- **Single-PR plan:** Confirmed. All B1–B5 bundles will land together in one PR
-  titled “Core-first UI bundle (B1–B5)” per this plan.
+- **QA capacity:** Confirmed. QA has committed to running the bundled checklist in
+  smaller passes, green-lighting each PR before the next one opens.
+- **Incremental plan:** Confirmed. All B1–B5 bundles will land as serial PRs, each
+  rebased onto the latest `main` before the tester touches it.
 - **Checklist owner:** Confirmed. QA leadership accepted ownership of the
   checklist deliverable and is tracking it alongside the release test plan.
 
@@ -71,7 +72,7 @@ new serialization paths are internally consistent.
 - **Footer guardrails:** Freeze a maximum footer height (and optional auto-hide)
   so image aspect ratios remain intact, even when cartridges expose footer copy.
 
-## Task bundles (single PR)
+## Task bundles (serial PRs)
 | Bundle | Description | Key files |
 | --- | --- | --- |
 | B1 | Similarity inventory + shared inline blocks | `core-ui-rationalization.md`, `ui-v7.html`, `ui-v8.html` |
@@ -80,8 +81,9 @@ new serialization paths are internally consistent.
 | B4 | Chrome modules (pill counters, progress bar, tap zones, MLPUM) with activation guards | `ui-v7.html`, `ui-v8.html` |
 | B5 | Cartridge persistence refactor | `ui-v8.html`, `codex-storage.js`, cartridge manager utilities |
 
-We queue the bundles sequentially inside one branch but only open the PR when all five
-are complete. Intermediate commits stay local until the full release bundle is ready.
+We keep the bundles in order and open a fresh PR for each one. Engineering closes out
+review comments, merges, and rebases to `main` before starting the next PR so testers
+never face multiple active conflict banners.
 
 ## Execution guidelines
 1. **Start with docs.** Update `core-ui-rationalization.md` as modules graduate into
@@ -92,13 +94,19 @@ are complete. Intermediate commits stay local until the full release bundle is r
 3. **Overlap checks.** After every bundle, run an overlap audit (visual or DOM diff)
    to confirm only one set of chrome elements renders at a time.
 4. **Testing cadence.** Smoke-test both baseline and paradigm scenarios after each
-   bundle locally, but defer full regression to the final PR build.
-5. **PR packaging.** Squash or organize commits logically, then open a single PR titled
-   “Core-first UI bundle (B1–B5)” summarizing all bundles with shared testing notes.
+   bundle locally, then document what QA should re-check when that bundle’s PR opens.
+5. **PR packaging.** Keep each PR scoped to the current bundle, include plain-language
+   testing notes plus screenshots/video, and link back to the inline similarity
+   inventory for quick review.
+6. **Tester workflow link.** Reference `tester-merge-guide.md` in every PR description
+   so the reviewer always knows what to do if they see conflicts or missing previews.
 
 ## QA checklist (baseline parity + paradigm parity)
-QA will execute this discrete list once the single PR is ready. Each item must pass
-in both the baseline and paradigm cartridges unless otherwise noted.
+QA runs this list in stages. Each PR calls out which subset to execute, and the full
+checklist still runs once the final bundle lands so we lock in parity across carts.
+
+See `tester-merge-guide.md` for the GitHub-only steps the tester follows when merging
+each PR.
 
 1. **Authentication & folder load** – Launch the app, authenticate with the
    storage provider, and open a test folder without URL parameter overrides.

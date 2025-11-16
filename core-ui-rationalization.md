@@ -50,9 +50,12 @@ The doctrine mirrors the “core before configuration” rule: first prove that 
 6. Confirm the release-plan readiness gate (data reset approved, QA owner assigned, single-PR commitment) before any engineering branch opens, so B1 starts with all prerequisites satisfied. *(Status: confirmed – proceed with B1 similarity inventory.)*
 
 ## Release Packaging
-All work streams that implement the core-first strategy will ship together inside a single
-“Core-first UI bundle (B1–B5)” pull request. The companion document `core-ui-release-plan.md`
-details the bundle scope, task breakdown, and QA expectations so every overlap fix, canonical
-action change, and persistence update lands in one cohesive release.
+All work streams that implement the core-first strategy will ship as a ladder of small,
+conflict-free pull requests (roughly one per bundle). The companion document
+`core-ui-release-plan.md` details the bundle scope, task breakdown, and QA expectations so
+every overlap fix, canonical action change, and persistence update lands with a clear handoff
+note the solo tester can run without touching git. Reference `tester-merge-guide.md` in each
+PR so the reviewer always knows how to proceed when GitHub shows new commits or a ready-to-
+merge banner.
 
 Following this “core-first” approach keeps us laser-focused on rationalizing existing similarities before inventing new abstractions, yielding a stable foundation for whatever configuration types we ultimately support.
