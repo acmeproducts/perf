@@ -16,6 +16,16 @@ only the GitHub web interface.
 - Wait for the developer to push a conflict-free update. The tester should never attempt
   to resolve conflicts in the browser editor.
 
+### FAQ: “Should I update the branch myself or start a new PR?”
+- **Never update the branch yourself.** Developers handle rebases/refreshes in Codex or
+  their local tooling. Just leave the conflict warning in place and comment as noted
+  above.
+- **Do not open a replacement PR.** Stay on the existing PR and wait for the developer to
+  push an update. Creating another PR can lose review history and makes conflicts harder
+  to trace.
+- **If the refresh is taking too long**, follow the escalation rule in section 5 so the
+  developer knows you are blocked.
+
 ## 3. Merging a clean PR
 1. Confirm the checks are green and the deploy preview looks good.
 2. Click **Merge pull request** → **Confirm merge**.
