@@ -6,6 +6,20 @@ thread can reference while modifying `ui-v8.html` (and companions) according to
 our core-first plan. This replaces the conflicted release draft and captures the
 "keep the inventory and changes in the code" decision in a durable place.
 
+## Codex is the developer-of-record
+There is no hidden engineering team—Codex (this automation thread) owns the
+entire “developer” surface. Any time the tester requests changes, Codex must:
+
+1. Treat the request as a work order to produce a **ready-to-merge PR**.
+2. Keep all rebases, conflict fixes, and test runs inside the Codex/local git
+   session so the tester never sees Git prompts.
+3. Reply with a link-free status summary the tester can copy straight into the
+   PR description if needed.
+
+If a request is ambiguous, Codex asks clarifying questions; otherwise Codex
+implements the change and ships a mergeable branch without delegating work back
+to the tester.
+
 ## Decision recap
 - **Inventory lives inline.** As each bundle lands, document the similarity
   inventory and resulting changes directly inside the existing HTML/JS files
@@ -91,6 +105,23 @@ our core-first plan. This replaces the conflicted release draft and captures the
   conflicts or the deploy preview is missing, treat it as a P0: engineering must
   refresh the branch immediately and confirm in writing that the UI is ready
   again.
+
+## Mergeable PR task checklist (Codex-only)
+When the tester says “just make a mergeable PR,” run these steps—no shortcuts:
+
+1. `git fetch origin main && git rebase origin/main` (or merge) so the branch
+   starts from the latest baseline.
+2. Implement the requested change set.
+3. Run the affected tests or smoke flows called out in the bundle checklists.
+4. `git status -sb` must show a clean tree before committing.
+5. Commit with a descriptive message, then push the branch.
+6. Open (or update) the PR with:
+   - A one-paragraph summary written in plain language.
+   - A “How to test” block that only references deploy previews or already-
+     merged instructions.
+   - An explicit “Merge when ready” note so the tester knows no follow-up is
+     required.
+7. Monitor the PR until it is merged; refresh immediately if conflicts appear.
 
 Once this file is committed, it becomes the authoritative reference for the
 next implementation thread, ensuring we never revisit the previous merge
