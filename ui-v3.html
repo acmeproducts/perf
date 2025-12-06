@@ -1192,6 +1192,7 @@
             folderMoveMode: { active: false, files: [] },
             isReturningToFolders: false,
             navigationToken: null,
+            currentImageAbort: null,
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
@@ -1275,6 +1276,8 @@
         const Utils = {
             elements: {},
             imagePrefetchCache: new Map(),
+            imageObjectCache: new Map(),
+            imageCacheLimit: 24,
 
             normalizeFavorite(value) {
                 if (value === true || value === false) {
@@ -1486,24 +1489,19 @@
                 }
             },
 
-            prefetchImages(urls = []) {
+            prefetchImages(urls = [], options = {}) {
                 if (!Array.isArray(urls) || urls.length === 0) return;
+                const { decode = false, signal = null } = options;
 
                 const now = performance.now();
                 urls.forEach((url) => {
                     if (!url || this.imagePrefetchCache.has(url)) return;
 
-                    const img = new Image();
-                    img.decoding = 'async';
-                    img.loading = 'eager';
-
-                    const promise = new Promise((resolve) => {
-                        img.onload = () => resolve(true);
-                        img.onerror = () => resolve(false);
-                    });
+                    const promise = this.fetchImageObjectUrl(url, signal)
+                        .then((objectUrl) => decode ? this.decodeObjectUrl(url, objectUrl, signal) : true)
+                        .catch(() => false);
 
                     this.imagePrefetchCache.set(url, { promise, timestamp: now });
-                    img.src = url;
                 });
 
                 const maxEntries = 32;
@@ -1518,30 +1516,166 @@
                 const entry = url ? this.imagePrefetchCache.get(url) : null;
                 if (entry) entry.timestamp = performance.now();
             },
-            
+
             async setImageSrc(img, file) {
+                if (state.currentImageAbort) {
+                    state.currentImageAbort.abort();
+                }
+
+                const controller = new AbortController();
+                state.currentImageAbort = controller;
+
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
-                const imageUrl = this.getPreferredImageUrl(file);
-                this.touchPrefetch(imageUrl);
-                return new Promise((resolve) => {
-                    img.onload = () => {
-                        if (state.currentImageLoadId !== loadId) return;
-                        resolve();
-                    };
-                    img.onerror = () => {
-                        if (state.currentImageLoadId !== loadId) return;
-                        const fallbackUrl = this.getFallbackImageUrl(file);
+                const preferredUrl = this.getPreferredImageUrl(file);
+                const fallbackUrl = this.getFallbackImageUrl(file);
+                const candidates = [preferredUrl, fallbackUrl].filter(Boolean);
 
-                        img.onerror = () => {
-                            if (state.currentImageLoadId !== loadId) return;
-                            img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
-                            resolve();
-                        };
-                        img.src = fallbackUrl;
+                try {
+                    for (const url of candidates) {
+                        this.touchPrefetch(url);
+                        try {
+                            const objectUrl = await this.fetchImageObjectUrl(url, controller.signal);
+                            await this.decodeObjectUrl(url, objectUrl, controller.signal);
+
+                            if (controller.signal.aborted || state.currentImageLoadId !== loadId) return;
+
+                            img.src = objectUrl;
+                            img.alt = file.name || 'Image';
+                            return;
+                        } catch (error) {
+                            if (controller.signal.aborted) return;
+                            console.warn(`Image load failed for ${url}: ${error?.message || error}`);
+                            this.releaseCachedImage(url);
+                        }
+                    }
+
+                    if (controller.signal.aborted || state.currentImageLoadId !== loadId) return;
+
+                    img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
+                } finally {
+                    if (state.currentImageAbort === controller) {
+                        state.currentImageAbort = null;
+                    }
+                }
+            },
+
+            async fetchImageObjectUrl(url, signal = null) {
+                if (!url) return null;
+
+                const now = performance.now();
+                const cached = this.imageObjectCache.get(url);
+                if (cached?.objectUrl) {
+                    cached.lastUsed = now;
+                    return cached.objectUrl;
+                }
+                if (cached?.promise) {
+                    cached.lastUsed = now;
+                    return cached.promise;
+                }
+
+                const promise = (async () => {
+                    const response = await fetch(url, { signal });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                    const blob = await response.blob();
+                    const objectUrl = URL.createObjectURL(blob);
+                    this.imageObjectCache.set(url, {
+                        objectUrl,
+                        lastUsed: performance.now(),
+                        size: blob.size,
+                        decoded: false
+                    });
+                    this.trimImageObjectCache();
+                    return objectUrl;
+                })();
+
+                this.imageObjectCache.set(url, { promise, lastUsed: now });
+
+                try {
+                    const objectUrl = await promise;
+                    const entry = this.imageObjectCache.get(url);
+                    if (entry) entry.objectUrl = objectUrl;
+                    return objectUrl;
+                } catch (error) {
+                    this.imageObjectCache.delete(url);
+                    throw error;
+                }
+            },
+
+            async decodeObjectUrl(url, objectUrl, signal = null) {
+                const entry = url ? this.imageObjectCache.get(url) : null;
+                if (entry?.decoded) return true;
+
+                return new Promise((resolve, reject) => {
+                    const decodeImg = new Image();
+                    decodeImg.decoding = 'async';
+                    decodeImg.loading = 'eager';
+
+                    const cleanup = () => {
+                        decodeImg.onload = null;
+                        decodeImg.onerror = null;
                     };
-                    img.src = imageUrl;
-                    img.alt = file.name || 'Image';
+
+                    const onAbort = () => {
+                        cleanup();
+                        reject(new DOMException('Image decode aborted', 'AbortError'));
+                    };
+
+                    if (signal) {
+                        if (signal.aborted) return onAbort();
+                        signal.addEventListener('abort', onAbort, { once: true });
+                    }
+
+                    decodeImg.onload = () => {
+                        cleanup();
+                        if (signal) signal.removeEventListener('abort', onAbort);
+                        if (entry) entry.decoded = true;
+                        resolve(true);
+                    };
+                    decodeImg.onerror = (error) => {
+                        cleanup();
+                        if (signal) signal.removeEventListener('abort', onAbort);
+                        reject(error);
+                    };
+                    decodeImg.src = objectUrl;
+                });
+            },
+
+            releaseCachedImage(url) {
+                const entry = url ? this.imageObjectCache.get(url) : null;
+                if (!entry) return;
+                if (entry.objectUrl) {
+                    URL.revokeObjectURL(entry.objectUrl);
+                }
+                this.imageObjectCache.delete(url);
+            },
+
+            clearImageObjectCache() {
+                this.imageObjectCache.forEach((entry) => {
+                    if (entry.objectUrl) {
+                        URL.revokeObjectURL(entry.objectUrl);
+                    }
+                });
+                this.imageObjectCache.clear();
+            },
+
+            trimImageObjectCache() {
+                if (this.imageObjectCache.size <= this.imageCacheLimit) return;
+
+                const sorted = [...this.imageObjectCache.entries()].sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0));
+                while (this.imageObjectCache.size > this.imageCacheLimit && sorted.length) {
+                    const [url] = sorted.shift();
+                    this.releaseCachedImage(url);
+                }
+            },
+
+            releaseCachedImagesForFiles(files = []) {
+                files.forEach((file) => {
+                    if (!file) return;
+                    [this.getPreferredImageUrl(file), this.getFallbackImageUrl(file)]
+                        .filter(Boolean)
+                        .forEach((url) => this.releaseCachedImage(url));
                 });
             },
             getPreferredImageUrl(file) {
@@ -5189,6 +5323,7 @@
         };
         const Core = {
             initializeStacks() {
+                Utils.clearImageObjectCache();
                 STACKS.forEach(stack => { state.stacks[stack] = []; });
                 state.imageFiles.forEach(file => {
                     const stack = file.stack || 'in';
@@ -5216,7 +5351,7 @@
                 }
 
                 if (urls.length) {
-                    Utils.prefetchImages(urls.filter(Boolean));
+                    Utils.prefetchImages(urls.filter(Boolean), { decode: true });
                 }
             },
             
@@ -5478,6 +5613,7 @@
                         await this.displayCurrentImage();
                         return;
                     }
+                    Utils.releaseCachedImagesForFiles([currentFile]);
                     this.updateStackCounts();
                     const updatedStack = state.stacks[currentStackName] || [];
                     if (updatedStack.length === 0) {
