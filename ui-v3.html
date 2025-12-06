@@ -1274,6 +1274,7 @@
         };
         const Utils = {
             elements: {},
+            imagePrefetchCache: new Map(),
 
             normalizeFavorite(value) {
                 if (value === true || value === false) {
@@ -1484,11 +1485,45 @@
                     toast.textContent = '';
                 }
             },
+
+            prefetchImages(urls = []) {
+                if (!Array.isArray(urls) || urls.length === 0) return;
+
+                const now = performance.now();
+                urls.forEach((url) => {
+                    if (!url || this.imagePrefetchCache.has(url)) return;
+
+                    const img = new Image();
+                    img.decoding = 'async';
+                    img.loading = 'eager';
+
+                    const promise = new Promise((resolve) => {
+                        img.onload = () => resolve(true);
+                        img.onerror = () => resolve(false);
+                    });
+
+                    this.imagePrefetchCache.set(url, { promise, timestamp: now });
+                    img.src = url;
+                });
+
+                const maxEntries = 32;
+                if (this.imagePrefetchCache.size > maxEntries) {
+                    const sorted = [...this.imagePrefetchCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+                    const overflow = this.imagePrefetchCache.size - maxEntries;
+                    sorted.slice(0, overflow).forEach(([url]) => this.imagePrefetchCache.delete(url));
+                }
+            },
+
+            touchPrefetch(url) {
+                const entry = url ? this.imagePrefetchCache.get(url) : null;
+                if (entry) entry.timestamp = performance.now();
+            },
             
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
                 const imageUrl = this.getPreferredImageUrl(file);
+                this.touchPrefetch(imageUrl);
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -5168,6 +5203,22 @@
                 });
                 this.updateStackCounts();
             },
+
+            prefetchNeighborImages(stack, index, windowSize = 3) {
+                if (!stack || stack.length <= 1) return;
+
+                const urls = [];
+                for (let offset = 1; offset <= windowSize; offset++) {
+                    const next = stack[index + offset];
+                    const prev = stack[index - offset];
+                    if (next) urls.push(Utils.getPreferredImageUrl(next));
+                    if (prev) urls.push(Utils.getPreferredImageUrl(prev));
+                }
+
+                if (urls.length) {
+                    Utils.prefetchImages(urls.filter(Boolean));
+                }
+            },
             
             sortFiles(files) {
                 return [...files].sort((a, b) => {
@@ -5247,11 +5298,13 @@
                 try {
                     Utils.elements.detailsButton.style.display = 'flex';
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
-                    
+
 
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
+
+                    this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
 
                     Utils.defer(() => {
                         Core.updateImageCounters();
