@@ -1274,6 +1274,7 @@
         };
         const Utils = {
             elements: {},
+            imagePrefetchCache: new Map(),
 
             normalizeFavorite(value) {
                 if (value === true || value === false) {
@@ -1484,11 +1485,45 @@
                     toast.textContent = '';
                 }
             },
+
+            prefetchImages(urls = []) {
+                if (!Array.isArray(urls) || urls.length === 0) return;
+
+                const now = performance.now();
+                urls.forEach((url) => {
+                    if (!url || this.imagePrefetchCache.has(url)) return;
+
+                    const img = new Image();
+                    img.decoding = 'async';
+                    img.loading = 'eager';
+
+                    const promise = new Promise((resolve) => {
+                        img.onload = () => resolve(true);
+                        img.onerror = () => resolve(false);
+                    });
+
+                    this.imagePrefetchCache.set(url, { promise, timestamp: now });
+                    img.src = url;
+                });
+
+                const maxEntries = 32;
+                if (this.imagePrefetchCache.size > maxEntries) {
+                    const sorted = [...this.imagePrefetchCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+                    const overflow = this.imagePrefetchCache.size - maxEntries;
+                    sorted.slice(0, overflow).forEach(([url]) => this.imagePrefetchCache.delete(url));
+                }
+            },
+
+            touchPrefetch(url) {
+                const entry = url ? this.imagePrefetchCache.get(url) : null;
+                if (entry) entry.timestamp = performance.now();
+            },
             
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
                 state.currentImageLoadId = loadId;
                 const imageUrl = this.getPreferredImageUrl(file);
+                this.touchPrefetch(imageUrl);
                 return new Promise((resolve) => {
                     img.onload = () => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -3338,7 +3373,89 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor() {
+                this.abortController = null;
+                this.requestId = 0;
+                this.pendingRequests = new Map();
+                this.worker = this.createWorker();
+            }
+            createWorker() {
+                const workerSource = `
+                    const extract = (buffer) => {
+                        if (!buffer) return {};
+                        const metadata = {};
+                        const view = new DataView(buffer);
+                        if (buffer.byteLength < 8) return {};
+                        let pos = 8;
+                        while (pos < buffer.byteLength - 12) {
+                            const chunkLength = view.getUint32(pos, false);
+                            pos += 4;
+                            let chunkType = '';
+                            for (let i = 0; i < 4; i++) { chunkType += String.fromCharCode(view.getUint8(pos + i)); }
+                            pos += 4;
+                            if (chunkType === 'tEXt') {
+                                let keyword = '';
+                                let value = '';
+                                let nullFound = false;
+                                for (let i = 0; i < chunkLength; i++) {
+                                    const byte = view.getUint8(pos + i);
+                                    if (!nullFound) {
+                                        if (byte === 0) { nullFound = true; } else { keyword += String.fromCharCode(byte); }
+                                    } else { value += String.fromCharCode(byte); }
+                                }
+                                metadata[keyword] = value;
+                            } else if (chunkType === 'IHDR') {
+                                const width = view.getUint32(pos, false);
+                                const height = view.getUint32(pos + 4, false);
+                                metadata._dimensions = { width, height };
+                            } else if (chunkType === 'IEND') { break; }
+                            pos += chunkLength + 4;
+                            if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
+                        }
+                        return metadata;
+                    };
+                    self.onmessage = (event) => {
+                        const { id, buffer } = event.data || {};
+                        try {
+                            const metadata = extract(buffer);
+                            self.postMessage({ id, metadata });
+                        } catch (error) {
+                            self.postMessage({ id, error: error?.message || 'Worker parsing error' });
+                        }
+                    };
+                `;
+                const workerBlob = new Blob([workerSource], { type: 'application/javascript' });
+                const worker = new Worker(URL.createObjectURL(workerBlob));
+                worker.onmessage = (event) => {
+                    const { id, metadata, error } = event.data || {};
+                    const pending = this.pendingRequests.get(id);
+                    if (!pending) return;
+                    this.pendingRequests.delete(id);
+                    if (error) {
+                        pending.reject(new Error(error));
+                    } else {
+                        pending.resolve(metadata || {});
+                    }
+                };
+                worker.onerror = (error) => {
+                    this.pendingRequests.forEach(({ reject }) => reject(error));
+                    this.pendingRequests.clear();
+                };
+                return worker;
+            }
+            async parseInWorker(buffer) {
+                if (!this.worker) { return this.extract(buffer); }
+                return new Promise((resolve, reject) => {
+                    const id = ++this.requestId;
+                    this.pendingRequests.set(id, { resolve, reject });
+                    try {
+                        this.worker.postMessage({ id, buffer }, [buffer]);
+                    } catch (error) {
+                        this.pendingRequests.delete(id);
+                        reject(error);
+                    }
+                });
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -3399,7 +3516,7 @@
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
-                    return await this.extract(buffer);
+                    return await this.parseInWorker(buffer);
                 } catch (error) {
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
@@ -5086,6 +5203,22 @@
                 });
                 this.updateStackCounts();
             },
+
+            prefetchNeighborImages(stack, index, windowSize = 3) {
+                if (!stack || stack.length <= 1) return;
+
+                const urls = [];
+                for (let offset = 1; offset <= windowSize; offset++) {
+                    const next = stack[index + offset];
+                    const prev = stack[index - offset];
+                    if (next) urls.push(Utils.getPreferredImageUrl(next));
+                    if (prev) urls.push(Utils.getPreferredImageUrl(prev));
+                }
+
+                if (urls.length) {
+                    Utils.prefetchImages(urls.filter(Boolean));
+                }
+            },
             
             sortFiles(files) {
                 return [...files].sort((a, b) => {
@@ -5165,11 +5298,13 @@
                 try {
                     Utils.elements.detailsButton.style.display = 'flex';
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
-                    
+
 
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
+
+                    this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
 
                     Utils.defer(() => {
                         Core.updateImageCounters();
