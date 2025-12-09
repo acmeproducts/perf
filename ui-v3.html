@@ -1486,9 +1486,43 @@
                 }
             },
 
-            prefetchImages() {},
+            prefetchImages(files = []) {
+                files.forEach(file => {
+                    const preferredUrl = this.getPreferredImageUrl(file);
+                    const fallbackUrl = this.getFallbackImageUrl(file);
+                    if (!preferredUrl && !fallbackUrl) return;
 
-            touchPrefetch() {},
+                    const cacheEntry = this.imageObjectCache.get(file.id);
+                    const hasPreferred = cacheEntry?.preferred?.url === preferredUrl;
+                    const hasFallback = cacheEntry?.fallback?.url === fallbackUrl;
+                    if (hasPreferred || hasFallback) return;
+
+                    const preloader = new Image();
+                    const onLoad = (url, isFallback = false) => {
+                        const latest = this.imageObjectCache.get(file.id) || {};
+                        this.imageObjectCache.set(file.id, {
+                            ...latest,
+                            [isFallback ? 'fallback' : 'preferred']: { url, img: preloader },
+                            lastUsed: Date.now()
+                        });
+                        this.trimImageObjectCache();
+                    };
+
+                    preloader.onload = () => onLoad(preloader.src);
+                    preloader.onerror = () => {
+                        if (!fallbackUrl || preloader.src === fallbackUrl) return;
+                        preloader.onload = () => onLoad(fallbackUrl, true);
+                        preloader.onerror = null;
+                        preloader.src = fallbackUrl;
+                    };
+
+                    preloader.src = preferredUrl || fallbackUrl;
+                });
+            },
+
+            touchPrefetch(files = []) {
+                this.prefetchImages(files);
+            },
 
             async setImageSrc(img, file) {
                 const loadId = file.id + '_' + Date.now();
@@ -1499,6 +1533,23 @@
                 const fallbackUrl = this.getFallbackImageUrl(file);
                 const fallbackPlaceholder = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
 
+                const resolveFromCache = () => {
+                    const cacheEntry = this.imageObjectCache.get(file.id);
+                    const cachedPreferred = cacheEntry?.preferred?.url === preferredUrl ? cacheEntry.preferred.img : null;
+                    const cachedFallback = cacheEntry?.fallback?.url === fallbackUrl ? cacheEntry.fallback.img : null;
+                    const cached = cachedPreferred || cachedFallback;
+                    if (cached) {
+                        if (cacheEntry) {
+                            cacheEntry.lastUsed = Date.now();
+                        }
+                        img.src = cached.src;
+                        return true;
+                    }
+                    return false;
+                };
+
+                if (resolveFromCache()) return Promise.resolve();
+
                 return new Promise((resolve) => {
                     const maybeResolve = () => {
                         img.onload = null;
@@ -1506,40 +1557,78 @@
                         resolve();
                     };
 
+                    const cacheAndResolve = (sourceImg, isFallback = false) => {
+                        if (state.currentImageLoadId !== loadId) {
+                            maybeResolve();
+                            return;
+                        }
+                        this.imageObjectCache.set(file.id, {
+                            ...this.imageObjectCache.get(file.id),
+                            [isFallback ? 'fallback' : 'preferred']: { url: sourceImg.src, img: sourceImg },
+                            lastUsed: Date.now()
+                        });
+                        this.trimImageObjectCache();
+                        img.src = sourceImg.src;
+                        maybeResolve();
+                    };
+
                     const useFallback = () => {
                         if (!fallbackUrl || state.currentImageLoadId !== loadId) {
                             maybeResolve();
                             return;
                         }
-                        img.onerror = () => {
+                        const fallbackImg = new Image();
+                        fallbackImg.onload = () => cacheAndResolve(fallbackImg, true);
+                        fallbackImg.onerror = () => {
                             if (state.currentImageLoadId === loadId) {
                                 img.src = fallbackPlaceholder;
                             }
                             maybeResolve();
                         };
-                        img.onload = maybeResolve;
-                        img.src = fallbackUrl;
+                        fallbackImg.src = fallbackUrl;
                     };
 
-                    img.onload = maybeResolve;
-                    img.onerror = () => {
+                    const preferredImg = new Image();
+                    preferredImg.onload = () => cacheAndResolve(preferredImg);
+                    preferredImg.onerror = () => {
                         if (state.currentImageLoadId !== loadId) return;
                         useFallback();
                     };
 
-                    img.src = preferredUrl || fallbackUrl || fallbackPlaceholder;
+                    preferredImg.src = preferredUrl || fallbackUrl || fallbackPlaceholder;
                 });
             },
 
-            releaseCachedImage() {},
+            releaseCachedImage(fileId) {
+                if (!fileId) return;
+                this.imageObjectCache.delete(fileId);
+            },
 
             clearImageObjectCache() {
                 this.imageObjectCache.clear();
             },
 
-            trimImageObjectCache() {},
+            trimImageObjectCache() {
+                while (this.imageObjectCache.size > this.imageCacheLimit) {
+                    let oldestKey = null;
+                    let oldestTime = Infinity;
+                    this.imageObjectCache.forEach((value, key) => {
+                        if ((value?.lastUsed || 0) < oldestTime) {
+                            oldestKey = key;
+                            oldestTime = value?.lastUsed || 0;
+                        }
+                    });
+                    if (oldestKey !== null) {
+                        this.imageObjectCache.delete(oldestKey);
+                    } else {
+                        break;
+                    }
+                }
+            },
 
-            releaseCachedImagesForFiles() {},
+            releaseCachedImagesForFiles(files = []) {
+                files.forEach(file => this.releaseCachedImage(file?.id));
+            },
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
@@ -5208,7 +5297,11 @@
             },
 
             prefetchNeighborImages(stack, index, windowSize = 3) {
-                return;
+                if (!Array.isArray(stack) || stack.length === 0) return;
+                const start = Math.max(0, index - windowSize);
+                const end = Math.min(stack.length, index + windowSize + 1);
+                const neighbors = stack.slice(start, end).filter(Boolean);
+                Utils.prefetchImages(neighbors);
             },
             
             sortFiles(files) {
