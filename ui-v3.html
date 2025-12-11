@@ -33,9 +33,11 @@
         .screen.hidden { display: none; }
         
         .card {
-            background: rgba(17, 17, 17, 0.9);
-            border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 20px;
+            background: var(--glass);
+            backdrop-filter: blur(18px);
+            border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 20px;
             padding: 40px; text-align: center; max-width: 500px; width: 90%;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
         }
         
         .title { color: white; font-size: 24px; font-weight: 600; margin-bottom: 16px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8); }
@@ -43,7 +45,7 @@
         
         .input, .notes-textarea, .tag-input {
             width: 100%; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px;
-            background: rgba(26, 26, 26, 0.85); color: white; font-size: 14px; margin-bottom: 16px;
+            background: var(--glass); color: white; font-size: 14px; margin-bottom: 16px; backdrop-filter: blur(10px);
         }
         .input::placeholder { color: rgba(255, 255, 255, 0.5); }
         .tag-input::placeholder { color: rgba(0, 0, 0, 0.4); }
@@ -77,8 +79,8 @@
         .button:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         
         .folder-button {
-            flex: 1; padding: 12px 24px; border: 1px solid var(--border); background: rgba(26, 26, 26, 0.85);
-            font-size: 14px; width: auto; margin-bottom: 0;
+            flex: 1; padding: 12px 24px; border: 1px solid var(--border); background: var(--glass);
+            font-size: 14px; width: auto; margin-bottom: 0; backdrop-filter: blur(10px);
         }
         .folder-button.danger { border-color: rgba(239, 68, 68, 0.3); color: #ef4444; }
         .folder-button.danger:hover { background: rgba(239, 68, 68, 0.1); }
@@ -93,13 +95,14 @@
         
         .provider-button {
             display: flex; align-items: center; justify-content: center; gap: 12px;
-            background: rgba(26, 26, 26, 0.9); border: 1px solid rgba(255, 255, 255, 0.2);
+            background: var(--glass); border: 1px solid rgba(255, 255, 255, 0.3);
             border-radius: 15px; padding: 20px; margin-bottom: 16px; color: white;
             font-size: 16px; font-weight: 500; cursor: pointer; transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+            backdrop-filter: blur(10px);
         }
         .provider-button:hover {
-            background: rgba(255, 255, 255, 0.08); border-color: var(--accent);
-            transform: translateY(-2px); box-shadow: 0 2px 12px rgba(245, 158, 11, 0.25);
+            background: rgba(255, 255, 255, 0.16); border-color: var(--accent);
+            transform: translateY(-2px); box-shadow: 0 4px 16px rgba(245, 158, 11, 0.3);
         }
         
         .settings-section {
@@ -237,12 +240,13 @@
             top: calc(100% + 4px);
             left: 0;
             right: 0;
-            background: rgba(17, 24, 39, 0.95);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(17, 24, 39, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 12px;
             max-height: 220px;
             overflow-y: auto;
             box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(16px);
             z-index: 20;
         }
         .omni-search-results.hidden { display: none; }
@@ -274,11 +278,12 @@
         }
         .folder-item {
             display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px;
-            background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
             border-radius: 12px; cursor: pointer; transition: transform 0.2s ease, background-color 0.2s ease, border-color 0.2s ease; color: white; justify-content: space-between;
+            backdrop-filter: blur(12px);
         }
         .folder-item:hover {
-            background: rgba(255, 255, 255, 0.1); border-color: rgba(245, 158, 11, 0.3); transform: translateY(-1px);
+            background: rgba(255, 255, 255, 0.12); border-color: rgba(245, 158, 11, 0.3); transform: translateY(-1px);
         }
         .folder-icon { width: 20px; height: 20px; margin-right: 12px; color: var(--accent); }
         .folder-info { flex: 1; }
@@ -3641,6 +3646,7 @@
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
                 this.folderImageCountCache = new Map();
+                this.folderHasImagesCache = new Map();
                 this.loadStoredCredentials();
             }
             normalizeDriveFileMetadata(file, options = {}) {
@@ -3776,7 +3782,8 @@
                 return response;
             }
             async getFolders(options = {}) {
-                const { includeImageCounts = false } = options;
+                const { includeImageCounts = false, signal: explicitSignal } = options;
+                const signal = explicitSignal || state?.activeRequests?.signal;
                 const allFolders = [];
                 let nextPageToken = null;
 
@@ -3784,7 +3791,7 @@
                     let url = '/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime),nextPageToken&pageSize=100&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true';
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
-                    const response = await this.makeApiCall(url);
+                    const response = await this.makeApiCall(url, { signal });
                     const folders = Array.isArray(response.files) ? response.files : [];
                     allFolders.push(...folders);
                     nextPageToken = response.nextPageToken;
@@ -3800,11 +3807,79 @@
                     hasChildren: false // Assume false to not show a non-functional 'Browse' button
                 }));
 
+                const filtered = await this.filterFoldersWithImages(normalized, { signal });
+
                 if (includeImageCounts) {
-                    return await this.annotateFoldersWithImageCounts(normalized);
+                    return await this.annotateFoldersWithImageCounts(filtered);
                 }
 
-                return normalized;
+                return filtered;
+            }
+            async filterFoldersWithImages(folders = [], options = {}) {
+                if (!Array.isArray(folders) || folders.length === 0) {
+                    return Array.isArray(folders) ? folders.slice() : [];
+                }
+
+                const signal = options.signal;
+                const results = new Array(folders.length);
+                let index = 0;
+                const maxConcurrency = Math.min(4, folders.length);
+
+                const workers = Array.from({ length: maxConcurrency }, () => (async () => {
+                    while (index < folders.length) {
+                        const currentIndex = index++;
+                        const folder = folders[currentIndex];
+                        if (!folder) continue;
+                        try {
+                            const hasImages = await this.folderHasImages(folder.id, { signal });
+                            if (hasImages) {
+                                const cachedCount = this.folderImageCountCache.get(folder.id);
+                                const merged = { ...folder };
+                                if (typeof cachedCount === 'number') {
+                                    merged.imageCount = cachedCount;
+                                    merged.itemCount = cachedCount;
+                                }
+                                results[currentIndex] = merged;
+                            }
+                        } catch (error) {
+                            console.warn(`Failed folder visibility check for ${folder.id}:`, error);
+                        }
+                    }
+                })());
+
+                await Promise.all(workers);
+                return results.filter(Boolean);
+            }
+            async folderHasImages(folderId, options = {}) {
+                if (!folderId) { return false; }
+                if (this.folderHasImagesCache.has(folderId)) {
+                    return this.folderHasImagesCache.get(folderId);
+                }
+
+                const cachedCount = this.folderImageCountCache.get(folderId);
+                if (typeof cachedCount === 'number') {
+                    const hasImages = cachedCount > 0;
+                    this.folderHasImagesCache.set(folderId, hasImages);
+                    return hasImages;
+                }
+
+                const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                let url = `/files?q=${encodeURIComponent(query)}&fields=files(mimeType,shortcutDetails(targetMimeType))&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                const response = await this.makeApiCall(url, { signal: options.signal });
+                const files = Array.isArray(response?.files) ? response.files : [];
+                const hasImages = files.some(file => {
+                    if (file?.mimeType?.startsWith('image/')) return true;
+                    return file?.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails?.targetMimeType?.startsWith('image/');
+                });
+
+                if (hasImages) {
+                    const existingCount = this.folderImageCountCache.get(folderId);
+                    const inferredCount = typeof existingCount === 'number' ? Math.max(existingCount, 1) : 1;
+                    this.folderImageCountCache.set(folderId, inferredCount);
+                }
+
+                this.folderHasImagesCache.set(folderId, hasImages);
+                return hasImages;
             }
             async annotateFoldersWithImageCounts(folders = []) {
                 if (!Array.isArray(folders) || folders.length === 0) {
@@ -3867,6 +3942,7 @@
                 } while (nextPageToken);
 
                 this.folderImageCountCache.set(folderId, count);
+                this.folderHasImagesCache.set(folderId, count > 0);
                 return count;
             }
             async getFilesAndMetadata(folderId = 'root') {
@@ -4097,6 +4173,11 @@
             async updateFileMetadata(fileId, metadata) {
                 await this.makeApiCall(`/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ appProperties: metadata }) });
                 return true;
+            }
+            updateFolderImageCache(folderId, count) {
+                if (!folderId || typeof count !== 'number') { return; }
+                this.folderImageCountCache.set(folderId, count);
+                this.folderHasImagesCache.set(folderId, count > 0);
             }
             async updateUserMetadata(fileId, updates) {
                 const file = state.imageFiles.find(f => f.id === fileId);
@@ -4987,7 +5068,11 @@
                     fileCount,
                     lastUpdated: new Date(latestTimestamp).toISOString()
                 };
+                state.currentFolder.imageCount = fileCount;
                 state.lastPickedFolder = payload;
+                if (typeof state.provider?.updateFolderImageCache === 'function') {
+                    state.provider.updateFolderImageCache(state.currentFolder.id, fileCount);
+                }
                 try {
                     localStorage.setItem(LAST_FOLDER_STORAGE_KEY, JSON.stringify(payload));
                 } catch (error) {
@@ -6845,6 +6930,8 @@ this.updateImageCounters();
                     return;
                 }
 
+                const fragment = document.createDocumentFragment();
+
                 folders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
@@ -6862,8 +6949,10 @@ this.updateImageCounters();
                                          ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
-                    folderList.appendChild(div);
+                    fragment.appendChild(div);
                 });
+
+                folderList.appendChild(fragment);
 
                 this.addEventListeners();
                 this.handleSearchInput(state.folderSearchTerm || '');
