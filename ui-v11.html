@@ -3673,10 +3673,33 @@
                     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, code: code, grant_type: 'authorization_code', redirect_uri: this.redirectUri })
                 });
-                if (!response.ok) { throw new Error('Token exchange failed'); }
+                if (!response.ok) {
+                    let payload = null;
+                    try { payload = await response.json(); } catch (_) { /* ignore parse errors */ }
+                    throw new Error(this.buildTokenExchangeErrorMessage(response, payload));
+                }
                 const tokens = await response.json();
                 this.accessToken = tokens.access_token; this.refreshToken = tokens.refresh_token;
                 this.storeCredentials();
+            }
+            buildTokenExchangeErrorMessage(response, payload) {
+                const oauthError = payload?.error || 'unknown_error';
+                const oauthDescription = payload?.error_description || '';
+                const detail = oauthDescription || `${response.status} ${response.statusText}`;
+
+                if (oauthError === 'invalid_grant') {
+                    return `Token exchange failed (${detail}). This usually means the auth code expired or the OAuth redirect URI does not match exactly.`;
+                }
+                if (oauthError === 'invalid_client') {
+                    return `Token exchange failed (${detail}). Check that your Google OAuth client ID and client secret belong to the same Web application client.`;
+                }
+                if (oauthError === 'unauthorized_client' || oauthError === 'access_denied') {
+                    return `Token exchange failed (${detail}). Verify OAuth consent screen setup, test-user access, and required Google Drive scopes.`;
+                }
+                if (response.status === 403) {
+                    return `Token exchange failed (${detail}). Google Drive OAuth token exchange itself usually does not require billing, but your project may be restricted by org policy or disabled APIs.`;
+                }
+                return `Token exchange failed (${detail}).`;
             }
             async refreshAccessToken() {
                 if (!this.refreshToken || !this.clientSecret) { throw new Error('No refresh token or client secret available'); }
