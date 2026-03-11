@@ -1208,6 +1208,14 @@
                 if (!fileId) return null;
                 return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
             },
+            getPermanentViewUrl(input, fallbackId = null) {
+                const fileId = fallbackId || this.extractFileId(input);
+                return fileId ? this.buildUcDownloadUrl(fileId) : null;
+            },
+            resolveApiDownloadUrl(input, fallbackId = null) {
+                const fileId = fallbackId || this.extractFileId(input);
+                return fileId ? this.buildApiDownloadUrl(fileId) : null;
+            },
             normalizeToAssetUrl(rawUrl, fallbackId = null) {
                 if (!rawUrl || typeof rawUrl !== 'string') return null;
                 const directHosts = new RegExp('(?:^|\.)googleusercontent\.com$');
@@ -1489,8 +1497,15 @@
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
+                    const stableViewUrl = DriveLinkHelper.getPermanentViewUrl(file?.webContentLink, effectiveId)
+                        || DriveLinkHelper.getPermanentViewUrl(file?.webViewLink, effectiveId)
+                        || DriveLinkHelper.getPermanentViewUrl(file?.thumbnailLink, effectiveId);
+                    if (stableViewUrl) {
+                        return stableViewUrl;
+                    }
+                    const apiDownloadUrl = DriveLinkHelper.resolveApiDownloadUrl(file?.webContentLink, effectiveId);
+                    if (apiDownloadUrl) {
+                        return apiDownloadUrl;
                     }
                     return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w1000`;
                 } else { // OneDrive
@@ -5447,17 +5462,11 @@ this.updateImageCounters();
                     if (state.grid.selected.includes(file.id)) { div.classList.add('selected'); }
                     const img = document.createElement('img');
                     img.className = 'grid-image'; img.alt = file.name || 'Image';
-                    img.dataset.src = Utils.getPreferredImageUrl(file);
-                    img.onload = () => img.classList.add('loaded');
-                    img.onerror = () => {
-                        img.src = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
-                        img.classList.add('loaded');
-                    };
+                    this.loadGridThumbnail(img, file);
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     div.appendChild(img);
                     container.appendChild(div);
                 });
-                container.querySelectorAll('.grid-image:not([src])').forEach(img => { img.src = img.dataset.src; });
                 lazyState.renderedCount += filesToRender.length;
 
                 if (lazyState.renderedCount < lazyState.allFiles.length) {
@@ -5466,6 +5475,27 @@ this.updateImageCounters();
                     container.appendChild(sentinel);
                     if (lazyState.observer) { lazyState.observer.observe(sentinel); }
                 }
+            },
+
+            loadGridThumbnail(img, file) {
+                const placeholder = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'150\' height=\'150\' viewBox=\'0 0 150 150\' fill=\'none\'%3E%3Crect width=\'150\' height=\'150\' fill=\'%23E5E7EB\'/%3E%3Cpath d=\'M65 60H85V90H65V60Z\' fill=\'%239CA3AF\'/%3E%3Ccircle cx=\'75\' cy=\'45\' r=\'10\' fill=\'%239CA3AF\'/%3E%3C/svg%3E';
+                const preferredUrl = Utils.getPreferredImageUrl(file);
+                const fallbackUrl = Utils.getFallbackImageUrl(file);
+
+                img.onload = () => {
+                    img.classList.add('loaded');
+                };
+                img.onerror = () => {
+                    if (img.dataset.retryAttempted === 'true' || !fallbackUrl || fallbackUrl === preferredUrl) {
+                        img.onerror = null;
+                        img.src = placeholder;
+                        img.classList.add('loaded');
+                        return;
+                    }
+                    img.dataset.retryAttempted = 'true';
+                    img.src = fallbackUrl;
+                };
+                img.src = preferredUrl;
             },
             
             toggleSelection(e, fileId) {
