@@ -150,6 +150,13 @@
         
         /* ===== Folder Items ===== */
         .folder-list { flex: 1; overflow-y: auto; margin-bottom: 20px; max-height: 400px; }
+        .folder-toolbar { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+        .last-folder-banner { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 12px; background: rgba(255, 255, 255, 0.05); color: white; }
+        .last-folder-banner.hidden, .folder-search.hidden { display: none; }
+        .last-folder-link { color: var(--app-accent); font-weight: 600; text-decoration: none; }
+        .last-folder-link:hover { text-decoration: underline; }
+        .last-folder-meta { font-size: 12px; color: rgba(255, 255, 255, 0.7); }
+        .folder-search { margin-bottom: 0; }
         .folder-item {
             display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px;
             background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
@@ -562,6 +569,13 @@
         <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
             <h2 class="title">Google Drive - Select Folder</h2>
             <div class="subtitle">Choose a folder containing images</div>
+            <div class="folder-toolbar">
+                <div class="last-folder-banner hidden" id="gdrive-last-folder-banner">
+                    <span>Last folder: <a href="#" class="last-folder-link" id="gdrive-last-folder-link"></a></span>
+                    <span class="last-folder-meta" id="gdrive-last-folder-meta"></span>
+                </div>
+                <input type="text" class="input folder-search hidden" id="gdrive-folder-search" placeholder="Search folders..." autocomplete="off">
+            </div>
             <div class="folder-list" id="gdrive-folder-list"></div>
             <div class="folder-actions">
                 <button class="folder-button" id="gdrive-refresh-folders">Refresh</button>
@@ -577,6 +591,13 @@
         <div class="card" style="max-height: 80vh; display: flex; flex-direction: column;">
             <h2 class="title">OneDrive - Select Folder</h2>
             <div class="subtitle" id="onedrive-folder-subtitle">Starting from Downloads folder - browse or select any folder</div>
+            <div class="folder-toolbar">
+                <div class="last-folder-banner hidden" id="onedrive-last-folder-banner">
+                    <span>Last folder: <a href="#" class="last-folder-link" id="onedrive-last-folder-link"></a></span>
+                    <span class="last-folder-meta" id="onedrive-last-folder-meta"></span>
+                </div>
+                <input type="text" class="input folder-search hidden" id="onedrive-folder-search" placeholder="Search folders..." autocomplete="off">
+            </div>
             <div class="folder-list" id="onedrive-folder-list"></div>
             <div class="folder-actions">
                 <button class="folder-button" id="onedrive-refresh-folders">Refresh</button>
@@ -817,6 +838,8 @@
         const STACK_TYPES = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'In', 'out': 'Out', 'priority': 'Priority', 'trash': 'Trash' };
         
+        const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const SHARE_URL_TEMPLATE = 'https://drive.google.com/file/d/${fileId}/view';
         const appState = {
             currentProvider: null,
             currentProviderType: null,
@@ -841,7 +864,48 @@
             grid: { stack: null, selected: [], filtered: [] },
             tags: new Set(),
             loadingProgress: { current: 0, total: 0 },
-            folderMoveMode: { active: false, files: [] }
+            folderMoveMode: { active: false, files: [] },
+            lastPickedFolder: (() => { try { return JSON.parse(localStorage.getItem(LAST_FOLDER_STORAGE_KEY) || 'null'); } catch (error) { return null; } })(),
+            folderDatasets: { googledrive: [], onedrive: [] },
+            folderSearchTerms: { googledrive: '', onedrive: '' }
+        };
+
+        const DriveLinkHelper = {
+            buildShareUrl(fileId, resourceKey = null) {
+                if (!fileId) return null;
+                const baseUrl = SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                if (!resourceKey) return baseUrl;
+                try {
+                    const url = new URL(baseUrl);
+                    url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    return `${baseUrl}?resourcekey=${encodeURIComponent(resourceKey)}`;
+                }
+            },
+            buildUcDownloadUrl(fileId, resourceKey = null) {
+                if (!fileId) return null;
+                try {
+                    const url = new URL(`https://drive.google.com/uc?id=${fileId}&export=view`);
+                    if (resourceKey) url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://drive.google.com/uc?id=${fileId}&export=view${resourcePart}`;
+                }
+            },
+            buildThumbnailUrl(fileId, width = 1000, resourceKey = null) {
+                if (!fileId) return null;
+                try {
+                    const url = new URL(`https://drive.google.com/thumbnail?id=${fileId}`);
+                    url.searchParams.set('sz', `w${Math.max(64, Number(width) || 1000)}`);
+                    if (resourceKey) url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${Math.max(64, Number(width) || 1000)}${resourcePart}`;
+                }
+            }
         };
 
         // ===== Unified Utilities =====
@@ -870,6 +934,10 @@
                     gdriveBackButton: document.getElementById('gdrive-back-button'),
                     gdriveAuthStatus: document.getElementById('gdrive-auth-status'),
                     gdriveFolderList: document.getElementById('gdrive-folder-list'),
+                    gdriveLastFolderBanner: document.getElementById('gdrive-last-folder-banner'),
+                    gdriveLastFolderLink: document.getElementById('gdrive-last-folder-link'),
+                    gdriveLastFolderMeta: document.getElementById('gdrive-last-folder-meta'),
+                    gdriveFolderSearch: document.getElementById('gdrive-folder-search'),
                     gdriveRefreshFolders: document.getElementById('gdrive-refresh-folders'),
                     gdriveBackToProvider: document.getElementById('gdrive-back-to-provider'),
                     gdriveLogout: document.getElementById('gdrive-logout'),
@@ -879,6 +947,10 @@
                     onedriveBackButton: document.getElementById('onedrive-back-button'),
                     onedriveAuthStatus: document.getElementById('onedrive-auth-status'),
                     onedriveFolderList: document.getElementById('onedrive-folder-list'),
+                    onedriveLastFolderBanner: document.getElementById('onedrive-last-folder-banner'),
+                    onedriveLastFolderLink: document.getElementById('onedrive-last-folder-link'),
+                    onedriveLastFolderMeta: document.getElementById('onedrive-last-folder-meta'),
+                    onedriveFolderSearch: document.getElementById('onedrive-folder-search'),
                     onedriveFolderSubtitle: document.getElementById('onedrive-folder-subtitle'),
                     onedriveRefreshFolders: document.getElementById('onedrive-refresh-folders'),
                     onedriveBackToProvider: document.getElementById('onedrive-back-to-provider'),
@@ -1006,9 +1078,12 @@
 
                         let fallbackUrl;
                         if (appState.currentProviderType === 'googledrive') {
-                            fallbackUrl = file.thumbnailLink ? 
-                                file.thumbnailLink.replace('=s220', '=s800') :
-                                `https://drive.google.com/thumbnail?id=${file.id}&sz=w800`;
+                            const resourceKey = file?.resourceKey || null;
+                            fallbackUrl = file.permanentThumbnailUrlSmall
+                                || file.permanentThumbnailUrl
+                                || DriveLinkHelper.buildThumbnailUrl(file.targetFileId || file.id, 800, resourceKey)
+                                || file.downloadUrl
+                                || DriveLinkHelper.buildUcDownloadUrl(file.targetFileId || file.id, resourceKey);
                         } else {
                             fallbackUrl = file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                         }
@@ -1027,10 +1102,12 @@
             
             generateImageUrl(file) {
                 if (appState.currentProviderType === 'googledrive') {
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
-                    }
-                    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                    const resourceKey = file?.resourceKey || null;
+                    return file.permanentImageUrl
+                        || file.permanentThumbnailUrl
+                        || DriveLinkHelper.buildThumbnailUrl(file.targetFileId || file.id, 1000, resourceKey)
+                        || file.downloadUrl
+                        || DriveLinkHelper.buildUcDownloadUrl(file.targetFileId || file.id, resourceKey);
                 } else {
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1261,6 +1338,81 @@
         class ProgressiveMetadataExtractor {
             constructor() {
                 this.abortController = null;
+                this.requestId = 0;
+                this.pendingRequests = new Map();
+                this.worker = this.createWorker();
+            }
+            createWorker() {
+                const workerSource = `
+                    const extract = (buffer) => {
+                        if (!buffer) return {};
+                        const metadata = {};
+                        const view = new DataView(buffer);
+                        if (buffer.byteLength < 8) return {};
+                        let pos = 8;
+                        while (pos < buffer.byteLength - 12) {
+                            const chunkLength = view.getUint32(pos, false);
+                            pos += 4;
+                            let chunkType = '';
+                            for (let i = 0; i < 4; i++) { chunkType += String.fromCharCode(view.getUint8(pos + i)); }
+                            pos += 4;
+                            if (chunkType === 'tEXt') {
+                                let keyword = '';
+                                let value = '';
+                                let nullFound = false;
+                                for (let i = 0; i < chunkLength; i++) {
+                                    const byte = view.getUint8(pos + i);
+                                    if (!nullFound) {
+                                        if (byte === 0) { nullFound = true; } else { keyword += String.fromCharCode(byte); }
+                                    } else { value += String.fromCharCode(byte); }
+                                }
+                                metadata[keyword] = value;
+                            } else if (chunkType === 'IHDR') {
+                                const width = view.getUint32(pos, false);
+                                const height = view.getUint32(pos + 4, false);
+                                metadata._dimensions = { width, height };
+                            } else if (chunkType === 'IEND') { break; }
+                            pos += chunkLength + 4;
+                            if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
+                        }
+                        return metadata;
+                    };
+                    self.onmessage = (event) => {
+                        const { id, buffer } = event.data || {};
+                        try {
+                            self.postMessage({ id, metadata: extract(buffer) });
+                        } catch (error) {
+                            self.postMessage({ id, error: error?.message || 'Worker parsing error' });
+                        }
+                    };
+                `;
+                const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' })));
+                worker.onmessage = (event) => {
+                    const { id, metadata, error } = event.data || {};
+                    const pending = this.pendingRequests.get(id);
+                    if (!pending) return;
+                    this.pendingRequests.delete(id);
+                    if (error) pending.reject(new Error(error));
+                    else pending.resolve(metadata || {});
+                };
+                worker.onerror = (error) => {
+                    this.pendingRequests.forEach(({ reject }) => reject(error));
+                    this.pendingRequests.clear();
+                };
+                return worker;
+            }
+            async parseInWorker(buffer) {
+                if (!this.worker) return this.extract(buffer);
+                return new Promise((resolve, reject) => {
+                    const id = ++this.requestId;
+                    this.pendingRequests.set(id, { resolve, reject });
+                    try {
+                        this.worker.postMessage({ id, buffer }, [buffer]);
+                    } catch (error) {
+                        this.pendingRequests.delete(id);
+                        reject(error);
+                    }
+                });
             }
             
             abort() {
@@ -1366,7 +1518,7 @@
                     }
                     
                     const buffer = await response.arrayBuffer();
-                    return await this.extract(buffer);
+                    return await this.parseInWorker(buffer);
                 } catch (error) {
                     if (error.name === 'AbortError') {
                         return { error: 'Operation cancelled' };
@@ -1388,6 +1540,7 @@
                 this.refreshToken = null;
                 this.clientSecret = null;
                 this.isAuthenticated = false;
+                this.folderHasImagesCache = new Map();
                 this.loadStoredCredentials();
             }
             
@@ -1574,13 +1727,29 @@
             
             async getFolders() {
                 const response = await this.makeApiCall('/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime)&orderBy=modifiedTime%20desc');
-                return response.files.map(folder => ({
-                    id: folder.id,
-                    name: folder.name,
-                    type: 'folder',
-                    createdTime: folder.createdTime,
-                    modifiedTime: folder.modifiedTime
+                const folders = await Promise.all((response.files || []).map(async (folder) => {
+                    const hasImages = await this.folderHasImages(folder.id);
+                    return hasImages ? {
+                        id: folder.id,
+                        name: folder.name,
+                        type: 'folder',
+                        createdTime: folder.createdTime,
+                        modifiedTime: folder.modifiedTime
+                    } : null;
                 }));
+                return folders.filter(Boolean);
+            }
+
+            async folderHasImages(folderId) {
+                if (!folderId) return false;
+                if (this.folderHasImagesCache.has(folderId)) {
+                    return this.folderHasImagesCache.get(folderId);
+                }
+                const query = `'${folderId}' in parents and trashed=false and mimeType contains 'image/'`;
+                const response = await this.makeApiCall(`/files?q=${encodeURIComponent(query)}&fields=files(id)&pageSize=1`);
+                const hasImages = Array.isArray(response.files) && response.files.length > 0;
+                this.folderHasImagesCache.set(folderId, hasImages);
+                return hasImages;
             }
             
             async getFiles(folderId = 'root') {
@@ -1589,7 +1758,7 @@
                 
                 do {
                     const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/')`;
-                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,appProperties,parents),nextPageToken&pageSize=100`;
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,resourceKey,appProperties,parents),nextPageToken&pageSize=100`;
                     
                     if (nextPageToken) {
                         url += `&pageToken=${nextPageToken}`;
@@ -1599,19 +1768,30 @@
                     
                     const files = response.files
                         .filter(file => file.mimeType && file.mimeType.startsWith('image/'))
-                        .map(file => ({
-                            id: file.id,
-                            name: file.name,
-                            type: 'file',
-                            mimeType: file.mimeType,
-                            size: file.size ? parseInt(file.size) : 0,
-                            createdTime: file.createdTime,
-                            modifiedTime: file.modifiedTime,
-                            thumbnailLink: file.thumbnailLink,
-                            downloadUrl: file.webContentLink,
-                            appProperties: file.appProperties || {},
-                            parents: file.parents
-                        }));
+                        .map(file => {
+                            const resourceKey = file.resourceKey || null;
+                            const permanentImageUrl = DriveLinkHelper.buildUcDownloadUrl(file.id, resourceKey) || file.webContentLink;
+                            return {
+                                id: file.id,
+                                name: file.name,
+                                type: 'file',
+                                mimeType: file.mimeType,
+                                size: file.size ? parseInt(file.size) : 0,
+                                createdTime: file.createdTime,
+                                modifiedTime: file.modifiedTime,
+                                thumbnailLink: file.thumbnailLink,
+                                permanentThumbnailUrl: DriveLinkHelper.buildThumbnailUrl(file.id, 1000, resourceKey),
+                                permanentThumbnailUrlSmall: DriveLinkHelper.buildThumbnailUrl(file.id, 800, resourceKey),
+                                downloadUrl: permanentImageUrl,
+                                permanentImageUrl,
+                                viewUrl: file.webViewLink || DriveLinkHelper.buildShareUrl(file.id, resourceKey),
+                                permanentViewUrl: file.webViewLink || DriveLinkHelper.buildShareUrl(file.id, resourceKey),
+                                resourceKey,
+                                appProperties: file.appProperties || {},
+                                parents: file.parents,
+                                targetFileId: file.id
+                            };
+                        });
                     
                     allFiles.push(...files);
                     nextPageToken = response.nextPageToken;
@@ -1832,7 +2012,7 @@
                         const data = await response.json();
                         
                         const folderItems = data.value
-                            .filter(item => item.folder)
+                            .filter(item => item.folder && (item.folder.childCount || 0) > 0)
                             .map(folder => ({
                                 id: folder.id,
                                 name: folder.name,
@@ -2125,7 +2305,7 @@
             
             getDirectImageURL(image) {
                 if (appState.currentProviderType === 'googledrive') {
-                    return `https://drive.google.com/uc?id=${image.id}&export=view`;
+                    return image.permanentImageUrl || image.downloadUrl || DriveLinkHelper.buildUcDownloadUrl(image.targetFileId || image.id, image.resourceKey || null);
                 } else if (appState.currentProviderType === 'onedrive') {
                     return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
                 }
@@ -2219,6 +2399,7 @@
                 appState.currentProvider = providerInstance;
                 appState.currentFolder.id = folderId;
                 appState.currentFolder.name = folderName;
+                saveLastFolderSelection(providerType, folderId, folderName);
                 
                 await this.loadImages();
                 this.switchToCommonUI();
@@ -3998,6 +4179,103 @@
         }
         
         // ===== Folder Loading Functions =====
+
+        function saveLastFolderSelection(providerType, folderId, folderName) {
+            const payload = { providerType, folderId, folderName, savedAt: Date.now() };
+            appState.lastPickedFolder = payload;
+            try { localStorage.setItem(LAST_FOLDER_STORAGE_KEY, JSON.stringify(payload)); } catch (error) {}
+        }
+
+        function updateLastFolderBanner(providerType) {
+            const isGoogle = providerType === 'googledrive';
+            const banner = isGoogle ? utils.elements.gdriveLastFolderBanner : utils.elements.onedriveLastFolderBanner;
+            const link = isGoogle ? utils.elements.gdriveLastFolderLink : utils.elements.onedriveLastFolderLink;
+            const meta = isGoogle ? utils.elements.gdriveLastFolderMeta : utils.elements.onedriveLastFolderMeta;
+            const lastFolder = appState.lastPickedFolder;
+            if (!banner || !link || !lastFolder || lastFolder.providerType !== providerType) {
+                if (banner) banner.classList.add('hidden');
+                return;
+            }
+            banner.classList.remove('hidden');
+            link.textContent = lastFolder.folderName || 'Untitled folder';
+            if (meta) {
+                meta.textContent = lastFolder.savedAt ? `Saved ${new Date(lastFolder.savedAt).toLocaleString()}` : '';
+            }
+        }
+
+        function applyFolderSearch(providerType) {
+            const isGoogle = providerType === 'googledrive';
+            const term = (appState.folderSearchTerms[providerType] || '').trim().toLowerCase();
+            const dataset = appState.folderDatasets[providerType] || [];
+            const filtered = !term ? dataset : dataset.filter(folder => (folder?.name || '').toLowerCase().includes(term));
+            if (isGoogle) {
+                renderGoogleDriveFolders(filtered);
+            } else {
+                displayOneDriveFolders(filtered);
+            }
+        }
+
+        function setupFolderSearchInputs() {
+            const mappings = [
+                ['googledrive', utils.elements.gdriveFolderSearch],
+                ['onedrive', utils.elements.onedriveFolderSearch]
+            ];
+            mappings.forEach(([providerType, input]) => {
+                if (!input) return;
+                input.addEventListener('input', (event) => {
+                    appState.folderSearchTerms[providerType] = event.target.value || '';
+                    applyFolderSearch(providerType);
+                });
+            });
+            if (utils.elements.gdriveLastFolderLink) {
+                utils.elements.gdriveLastFolderLink.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    const lastFolder = appState.lastPickedFolder;
+                    if (lastFolder?.providerType === 'googledrive' && appState.currentProvider) {
+                        masterController.initializeWithProvider('googledrive', lastFolder.folderId, lastFolder.folderName || '', appState.currentProvider);
+                    }
+                });
+            }
+            if (utils.elements.onedriveLastFolderLink) {
+                utils.elements.onedriveLastFolderLink.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    const lastFolder = appState.lastPickedFolder;
+                    if (lastFolder?.providerType === 'onedrive' && appState.currentProvider) {
+                        masterController.initializeWithProvider('onedrive', lastFolder.folderId, lastFolder.folderName || '', appState.currentProvider);
+                    }
+                });
+            }
+        }
+
+        function renderGoogleDriveFolders(folders) {
+            utils.elements.gdriveFolderList.innerHTML = '';
+            if (!folders.length) {
+                utils.elements.gdriveFolderList.innerHTML = `<div style="text-align:center; padding:40px; color: rgba(255,255,255,0.7);"><span>No folders found</span></div>`;
+                return;
+            }
+            folders.forEach(folder => {
+                const div = document.createElement('div');
+                div.className = 'folder-item';
+                div.innerHTML = `
+                    <svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                    </svg>
+                    <div class="folder-info">
+                        <div class="folder-name">${folder.name}</div>
+                        <div class="folder-date">${new Date(folder.modifiedTime).toLocaleDateString()}</div>
+                    </div>
+                `;
+                div.addEventListener('click', () => {
+                    if (appState.folderMoveMode.active) {
+                        handleFolderMoveSelection(folder.id, folder.name);
+                    } else {
+                        masterController.initializeWithProvider('googledrive', folder.id, folder.name, appState.currentProvider);
+                    }
+                });
+                utils.elements.gdriveFolderList.appendChild(div);
+            });
+        }
+
         async function loadGoogleDriveFolders() {
             utils.elements.gdriveFolderList.innerHTML = `
                 <div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);">
@@ -4058,7 +4336,10 @@
             
             try {
                 const folders = await appState.currentProvider.getFolders();
-                displayOneDriveFolders(folders);
+                appState.folderDatasets.onedrive = folders;
+                updateLastFolderBanner('onedrive');
+                utils.elements.onedriveFolderSearch.classList.toggle('hidden', folders.length === 0);
+                applyFolderSearch('onedrive');
                 updateOneDriveNavigation();
             } catch (error) {
                 utils.showToast('Error loading folders', 'error', true);
@@ -4091,7 +4372,8 @@
                     <div class="folder-info">
                         <div class="folder-name">${folder.name}</div>
                         <div class="folder-date">
-                            ${new Date(folder.modifiedTime).toLocaleDateString()} • ${folder.itemCount} items
+                            ${new Date(folder.modifiedTime).toLocaleDateString()}
+                            ${typeof folder.imageCount === 'number' ? ` • ${folder.imageCount} image${folder.imageCount === 1 ? '' : 's'}` : ''}
                             ${hasChildren ? ' • Has subfolders' : ''}
                         </div>
                     </div>
@@ -4101,6 +4383,14 @@
                     </div>
                 `;
                 
+                div.addEventListener('click', (event) => {
+                    if (event.target.closest('.drill-btn')) return;
+                    if (appState.folderMoveMode.active) {
+                        handleFolderMoveSelection(folder.id, folder.name);
+                    } else {
+                        masterController.initializeWithProvider('onedrive', folder.id, folder.name, appState.currentProvider);
+                    }
+                });
                 utils.elements.onedriveFolderList.appendChild(div);
             });
             
@@ -4113,7 +4403,8 @@
                     
                     try {
                         const subfolders = await appState.currentProvider.drillIntoFolder({ id: folderId, name: folderName });
-                        displayOneDriveFolders(subfolders);
+                        appState.folderDatasets.onedrive = subfolders;
+                        applyFolderSearch('onedrive');
                         updateOneDriveNavigation();
                     } catch (error) {
                         utils.showToast('Error loading subfolders', 'error', true);
@@ -4213,6 +4504,7 @@
                 utils.showScreen('provider-screen');
                 
                 setupEventHandlers();
+                setupFolderSearchInputs();
                 setupGestureSystem();
                 setupPinchZoom();
                 

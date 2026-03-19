@@ -1222,19 +1222,53 @@
                 }
                 return null;
             },
-            buildShareUrl(fileId) {
+            buildShareUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                const baseUrl = SHARE_URL_TEMPLATE.replace('${fileId}', fileId);
+                if (!resourceKey) return baseUrl;
+                try {
+                    const url = new URL(baseUrl);
+                    url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    return `${baseUrl}&resourcekey=${encodeURIComponent(resourceKey)}`;
+                }
             },
-            buildUcDownloadUrl(fileId) {
+            buildUcDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return `https://drive.google.com/uc?id=${fileId}&export=view`;
+                try {
+                    const url = new URL(`https://drive.google.com/uc?id=${fileId}&export=view`);
+                    if (resourceKey) url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://drive.google.com/uc?id=${fileId}&export=view${resourcePart}`;
+                }
             },
-            buildApiDownloadUrl(fileId) {
+            buildApiDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
-                return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+                try {
+                    const url = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+                    if (resourceKey) url.searchParams.set('resourceKey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourceKey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media${resourcePart}`;
+                }
             },
-            normalizeToAssetUrl(rawUrl, fallbackId = null) {
+            buildThumbnailUrl(fileId, width = 1000, resourceKey = null) {
+                if (!fileId) return null;
+                try {
+                    const url = new URL(`https://drive.google.com/thumbnail?id=${fileId}`);
+                    url.searchParams.set('sz', `w${Math.max(64, Number(width) || 1000)}`);
+                    if (resourceKey) url.searchParams.set('resourcekey', resourceKey);
+                    return url.toString();
+                } catch (error) {
+                    const resourcePart = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : '';
+                    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${Math.max(64, Number(width) || 1000)}${resourcePart}`;
+                }
+            },
+            normalizeToAssetUrl(rawUrl, fallbackId = null, resourceKey = null) {
                 if (!rawUrl || typeof rawUrl !== 'string') return null;
                 const directHosts = new RegExp('(?:^|\.)googleusercontent\.com$');
                 const fileId = fallbackId || this.extractFileId(rawUrl);
@@ -1250,27 +1284,29 @@
                             if (!parsed.searchParams.get('id') && fileId) {
                                 parsed.searchParams.set('id', fileId);
                             }
+                            if (resourceKey) parsed.searchParams.set('resourcekey', resourceKey);
                             return parsed.toString();
                         }
                         if (fileId) {
-                            return this.buildUcDownloadUrl(fileId);
+                            return this.buildUcDownloadUrl(fileId, resourceKey);
                         }
                     }
                     if (host === 'www.googleapis.com') {
                         parsed.searchParams.set('alt', 'media');
+                        if (resourceKey) parsed.searchParams.set('resourceKey', resourceKey);
                         return parsed.toString();
                     }
                     if (fileId) {
-                        return this.buildUcDownloadUrl(fileId);
+                        return this.buildUcDownloadUrl(fileId, resourceKey);
                     }
                 } catch (error) {
                     if (fileId) {
-                        return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                        return this.buildUcDownloadUrl(fileId, resourceKey) || this.buildApiDownloadUrl(fileId, resourceKey);
                     }
                     return null;
                 }
                 if (fileId) {
-                    return this.buildUcDownloadUrl(fileId) || this.buildApiDownloadUrl(fileId);
+                    return this.buildUcDownloadUrl(fileId, resourceKey) || this.buildApiDownloadUrl(fileId, resourceKey);
                 }
                 return null;
             }
@@ -1637,10 +1673,13 @@
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s1000');
-                    }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w1000`;
+                    const resourceKey = file?.resourceKey || file?.shortcutDetails?.targetResourceKey || null;
+                    return file?.permanentImageUrl
+                        || file?.permanentThumbnailUrl
+                        || DriveLinkHelper.normalizeToAssetUrl(file?.thumbnailLink, effectiveId, resourceKey)
+                        || DriveLinkHelper.buildThumbnailUrl(effectiveId, 1000, resourceKey)
+                        || file?.downloadUrl
+                        || DriveLinkHelper.buildUcDownloadUrl(effectiveId, resourceKey);
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1652,13 +1691,13 @@
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
-                    if (file.thumbnailLink) {
-                        return file.thumbnailLink.replace('=s220', '=s800');
-                    }
-                    if (file.thumbnail && file.thumbnail.url) {
-                        return file.thumbnail.url.replace('=s220', '=s800');
-                    }
-                    return `https://drive.google.com/thumbnail?id=${effectiveId}&sz=w800`;
+                    const resourceKey = file?.resourceKey || file?.shortcutDetails?.targetResourceKey || null;
+                    return file?.permanentThumbnailUrlSmall
+                        || file?.permanentThumbnailUrl
+                        || DriveLinkHelper.normalizeToAssetUrl(file?.thumbnailLink || file?.thumbnail?.url, effectiveId, resourceKey)
+                        || DriveLinkHelper.buildThumbnailUrl(effectiveId, 800, resourceKey)
+                        || file?.downloadUrl
+                        || DriveLinkHelper.buildUcDownloadUrl(effectiveId, resourceKey);
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3654,9 +3693,12 @@
                 const targetId = target?.id || null;
                 const fallbackId = targetId || file?.id || null;
                 const effectiveId = options.useShortcutId ? file.id : fallbackId;
-                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId) || '';
-                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
-                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId) : null) || apiDownloadUrl;
+                const resourceKey = target?.resourceKey || file?.resourceKey || target?.shortcutDetails?.targetResourceKey || file?.shortcutDetails?.targetResourceKey || null;
+                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId, resourceKey) || '';
+                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId, resourceKey) : null);
+                const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId, resourceKey) : null) || apiDownloadUrl;
+                const permanentThumbnailUrl = fallbackId ? DriveLinkHelper.buildThumbnailUrl(fallbackId, 1000, resourceKey) : null;
+                const permanentThumbnailUrlSmall = fallbackId ? DriveLinkHelper.buildThumbnailUrl(fallbackId, 800, resourceKey) : null;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
 
                 const normalized = {
@@ -3667,13 +3709,18 @@
                     size: Number.isFinite(sizeValue) ? sizeValue : 0,
                     createdTime: target?.createdTime || file?.createdTime,
                     modifiedTime: target?.modifiedTime || file?.modifiedTime,
-                    thumbnailLink: target?.thumbnailLink || file?.thumbnailLink,
+                    thumbnailLink: DriveLinkHelper.normalizeToAssetUrl(target?.thumbnailLink || file?.thumbnailLink, fallbackId, resourceKey) || target?.thumbnailLink || file?.thumbnailLink,
                     downloadUrl,
+                    permanentImageUrl: downloadUrl,
                     viewUrl,
+                    permanentViewUrl: viewUrl,
                     driveApiDownloadUrl: apiDownloadUrl,
+                    permanentThumbnailUrl,
+                    permanentThumbnailUrlSmall,
                     appProperties: target?.appProperties || file?.appProperties || {},
                     parents: file?.parents || target?.parents || [],
-                    targetFileId: targetId || fallbackId || null
+                    targetFileId: targetId || fallbackId || null,
+                    resourceKey: resourceKey || null
                 };
 
                 if (options.useShortcutId) {
@@ -3687,7 +3734,7 @@
             async fetchRawFilesByIds(fileIds = [], options = {}) {
                 if (!Array.isArray(fileIds) || fileIds.length === 0) return [];
                 const signal = options.signal;
-                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,shortcutDetails(targetId,targetMimeType)';
+                const fields = 'id,name,mimeType,size,createdTime,modifiedTime,appProperties,parents,thumbnailLink,webContentLink,webViewLink,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)';
                 const requests = fileIds.map(id => this.makeApiCall(`/files/${id}?fields=${fields}&supportsAllDrives=true&includeItemsFromAllDrives=true`, { signal }));
                 const responses = await Promise.allSettled(requests);
                 return responses
@@ -3952,7 +3999,7 @@
 
                 do {
                     const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
-                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,shortcutDetails(targetId,targetMimeType)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
                     const response = await this.makeApiCall(url, { signal });
@@ -4408,7 +4455,7 @@
                 do {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''));
                     const data = await response.json();
-                    const folderItems = data.value.filter(item => item.folder).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
+                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
@@ -6935,6 +6982,8 @@ this.updateImageCounters();
                 folders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
+                    div.dataset.folderId = folder.id || '';
+                    div.dataset.folderName = folder.name || '';
 
                     const metaInfo = this.formatFolderMeta(folder);
 
@@ -6980,6 +7029,18 @@ this.updateImageCounters();
                             this.handleFolderMoveSelection(folderId, folderName);
                         } else {
                             App.initializeWithProvider(state.providerType, folderId, folderName, state.provider);
+                        }
+                    });
+                });
+                document.querySelectorAll('#folder-list .folder-item').forEach(item => {
+                    item.addEventListener('click', (event) => {
+                        if (event.target.closest('.drill-btn')) return;
+                        const { folderId, folderName } = item.dataset;
+                        if (!folderId) return;
+                        if (state.folderMoveMode.active) {
+                            this.handleFolderMoveSelection(folderId, folderName || '');
+                        } else {
+                            App.initializeWithProvider(state.providerType, folderId, folderName || '', state.provider);
                         }
                     });
                 });
@@ -7070,7 +7131,7 @@ this.updateImageCounters();
 
             formatFolderMeta(folder) {
                 const parts = [];
-                const itemCountRaw = folder?.imageCount ?? folder?.itemCount;
+                const itemCountRaw = folder?.imageCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     const label = itemCount === 1 ? 'image' : 'images';
