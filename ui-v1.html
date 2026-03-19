@@ -412,6 +412,13 @@
             object-fit: contain;
         }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
+        .grid-item.drop-target { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.6); }
+        .grid-item.dragging { opacity: 0.72; transform: scale(0.98); cursor: grabbing; }
+        .grid-drag-handle { position: absolute; top: 8px; right: 8px; z-index: 3; width: 32px; height: 32px; border: none; border-radius: 999px; background: rgba(59, 130, 246, 0.78); color: white; font-size: 18px; line-height: 1; cursor: grab; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.28); }
+        .grid-drag-handle:hover { background: rgba(59, 130, 246, 0.9); }
+        .grid-drag-handle:focus { outline: 2px solid #bfdbfe; outline-offset: 2px; }
+        .grid-drag-handle:active { cursor: grabbing; }
+        .grid-item.dragging .grid-drag-handle { background: rgba(59, 130, 246, 0.9); }
         
         /* ===== Details Modal ===== */
         .details-modal-content { max-width: 800px; max-height: 95vh; height: 95vh; display: flex; flex-direction: column; }
@@ -703,7 +710,7 @@
                     </div>
                 </div>
             </div>
-            <div class="grid-content">
+            <div id="grid-content" class="grid-content">
                 <div id="grid-container" class="grid-container"></div>
             </div>
         </div>
@@ -840,6 +847,13 @@
         
         const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
         const SHARE_URL_TEMPLATE = 'https://drive.google.com/file/d/${fileId}/view';
+        const createDefaultGridDragSession = () => ({
+            active: false,
+            pointerId: null,
+            selectedIds: [],
+            dropTarget: null,
+            dragElements: []
+        });
         const appState = {
             currentProvider: null,
             currentProviderType: null,
@@ -861,7 +875,7 @@
             maxScale: 4,
             minScale: 0.3,
             panOffset: { x: 0, y: 0 },
-            grid: { stack: null, selected: [], filtered: [] },
+            grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false, dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 24 } },
             tags: new Set(),
             loadingProgress: { current: 0, total: 0 },
             folderMoveMode: { active: false, files: [] },
@@ -987,6 +1001,7 @@
                     
                     // Grid modal
                     gridModal: document.getElementById('grid-modal'),
+                    gridContent: document.getElementById('grid-content'),
                     gridTitle: document.getElementById('grid-title'),
                     gridContainer: document.getElementById('grid-container'),
                     selectAllBtn: document.getElementById('select-all-btn'),
@@ -2858,222 +2873,325 @@
         const gridView = {
             open(stack) {
                 utils.showModal('grid-modal');
+                this.resetDragSession();
                 utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
-                
                 appState.grid.stack = stack;
-                
+                appState.grid.isDirty = false;
+                appState.grid.skipReorderOnClose = false;
                 if (appState.currentStack === stack && appState.currentImageIndex !== -1) {
                     const currentFile = appState.imageFiles[appState.currentImageIndex];
-                    const stackArray = appState.stacks[stack];
-                    const index = stackArray.findIndex(f => f.id === currentFile.id);
-                    if (index > 0) {
-                        const [item] = stackArray.splice(index, 1);
-                        stackArray.unshift(item);
-                    }
-                    appState.grid.selected = [currentFile.id];
+                    appState.grid.selected = currentFile ? [currentFile.id] : [];
                 } else {
                     appState.grid.selected = [];
                 }
-                
                 appState.grid.filtered = [];
-                
+                utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${utils.elements.gridSize.value}, 1fr)`;
+                utils.elements.gridContainer.innerHTML = '';
+                this.initializeLazyLoad(stack);
                 this.updateSelectionUI();
-                this.populate(stack);
                 commonFunctions.updateStackCounts();
             },
-            
-            close() {
+
+            async close() {
+                this.clearDragState();
                 if (appState.grid.filtered.length > 0) {
                     const currentStack = appState.stacks[appState.currentStack];
                     const filteredIds = new Set(appState.grid.filtered.map(f => f.id));
                     const otherImages = currentStack.filter(f => !filteredIds.has(f.id));
                     appState.stacks[appState.currentStack] = [...appState.grid.filtered, ...otherImages];
                 }
-
+                if (appState.grid.isDirty && !appState.grid.skipReorderOnClose) {
+                    await this.reorderStackOnClose();
+                }
                 utils.hideModal('grid-modal');
                 this.resetSearch();
-                
-                const selectedImages = appState.grid.selected;
-                const hasSelection = selectedImages.length === 1;
-                
-                if (hasSelection) {
+                const selectedImages = [...appState.grid.selected];
+                if (selectedImages.length === 1) {
                     const selectedFileId = selectedImages[0];
                     const selectedIndex = appState.imageFiles.findIndex(f => f.id === selectedFileId);
                     if (selectedIndex !== -1) {
                         appState.currentImageIndex = selectedIndex;
-                        
-                        const currentStackImages = appState.stacks[appState.currentStack];
-                        const stackIndex = currentStackImages.findIndex(f => f.id === selectedFileId);
-                        
-                        if (stackIndex > 0) {
-                            const [item] = currentStackImages.splice(stackIndex, 1);
-                            currentStackImages.unshift(item);
-                        }
-                        
-                        commonFunctions.displayCurrentImage();
+                        await commonFunctions.displayCurrentImage();
                     }
                 } else {
-                    commonFunctions.displayTopImageFromStack(appState.currentStack);
+                    await commonFunctions.displayTopImageFromStack(appState.currentStack);
                 }
-                
                 appState.grid.stack = null;
                 appState.grid.selected = [];
                 appState.grid.filtered = [];
+                appState.grid.skipReorderOnClose = false;
             },
-            
+
+            handleIntersection(entries) {
+                if (entries[0].isIntersecting) this.renderBatch();
+            },
+
+            initializeLazyLoad(stack, filesOverride = null) {
+                const lazyState = appState.grid.lazyLoadState;
+                const stackFiles = appState.stacks[stack] || [];
+                const sourceFiles = Array.isArray(filesOverride) ? filesOverride : (appState.grid.filtered.length > 0 ? appState.grid.filtered : stackFiles);
+                lazyState.allFiles = sourceFiles;
+                lazyState.renderedCount = 0;
+                utils.elements.selectAllBtn.textContent = sourceFiles.length;
+                this.renderBatch();
+                if (lazyState.observer) lazyState.observer.disconnect();
+                lazyState.observer = new IntersectionObserver(this.handleIntersection.bind(this), { root: utils.elements.gridContent, rootMargin: '400px' });
+                const sentinel = document.getElementById('grid-sentinel');
+                if (sentinel) lazyState.observer.observe(sentinel);
+            },
+
+            destroyLazyLoad() {
+                const lazyState = appState.grid.lazyLoadState;
+                if (lazyState.observer) { lazyState.observer.disconnect(); lazyState.observer = null; }
+                lazyState.allFiles = [];
+                lazyState.renderedCount = 0;
+            },
+
             populate(stack) {
+                this.initializeLazyLoad(stack);
+            },
+
+            renderBatch() {
+                const lazyState = appState.grid.lazyLoadState;
                 const container = utils.elements.gridContainer;
-                container.innerHTML = '';
-                container.style.gridTemplateColumns = `repeat(${utils.elements.gridSize.value}, 1fr)`;
-                
-                const filesToShow = appState.grid.filtered.length > 0 ? appState.grid.filtered : appState.stacks[stack];
-                utils.elements.selectAllBtn.textContent = filesToShow.length;
-                
-                filesToShow.forEach((file) => {
+                const filesToRender = lazyState.allFiles.slice(lazyState.renderedCount, lazyState.renderedCount + lazyState.batchSize);
+                const oldSentinel = document.getElementById('grid-sentinel');
+                if (oldSentinel && lazyState.observer) { lazyState.observer.unobserve(oldSentinel); oldSentinel.remove(); }
+                filesToRender.forEach(file => {
                     const div = document.createElement('div');
                     div.className = 'grid-item';
                     div.dataset.fileId = file.id;
-                    
-                    if (appState.grid.selected.includes(file.id)) {
-                        div.classList.add('selected');
-                    }
-                    
+                    if (appState.grid.selected.includes(file.id)) div.classList.add('selected');
                     const img = document.createElement('img');
                     img.className = 'grid-image';
-                    
-                    const imageUrl = utils.generateImageUrl(file);
-                    img.src = imageUrl;
                     img.alt = file.name || 'Image';
-                    
-                    img.onerror = () => {
-                        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" fill="none"%3E%3Crect width="150" height="150" fill="%23E5E7EB"/%3E%3Cpath d="M65 60H85V90H65V60Z" fill="%239CA3AF"/%3E%3Ccircle cx="75" cy="45" r="10" fill="%239CA3AF"/%3E%3C/svg%3E';
-                    };
-                    
+                    img.loading = 'lazy';
+                    const resourceKey = file.resourceKey || null;
+                    img.src = file.permanentThumbnailUrlSmall || file.permanentThumbnailUrl || file.permanentImageUrl || DriveLinkHelper.buildThumbnailUrl(file.targetFileId || file.id, 800, resourceKey) || utils.generateImageUrl(file);
+                    img.onerror = () => { img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" fill="none"%3E%3Crect width="150" height="150" fill="%23E5E7EB"/%3E%3Cpath d="M65 60H85V90H65V60Z" fill="%239CA3AF"/%3E%3Ccircle cx="75" cy="45" r="10" fill="%239CA3AF"/%3E%3C/svg%3E'; };
                     div.addEventListener('click', e => {
                         e.stopPropagation();
-                        
-                        if (appState.grid.selected.length === 1 && 
-                            appState.grid.selected[0] === file.id && 
-                            utils.elements.gridSize.value === '1') {
-                            let viewUrl;
-                            if (appState.currentProviderType === 'googledrive') {
-                                viewUrl = `https://drive.google.com/file/d/${file.id}/view`;
-                            } else {
-                                viewUrl = file.downloadUrl || `https://1drv.ms/i/s!${file.id}`;
-                            }
-                            window.open(viewUrl, '_blank');
+                        if (appState.grid.selected.length === 1 && appState.grid.selected[0] === file.id && utils.elements.gridSize.value === '1') {
+                            window.open(file.permanentViewUrl || `https://drive.google.com/file/d/${file.id}/view`, '_blank');
                             return;
                         }
-                        
                         this.toggleSelection(e, file.id);
                     });
-                    
                     div.appendChild(img);
+                    div.appendChild(this.createDragHandle(div, file.id));
                     container.appendChild(div);
                 });
+                lazyState.renderedCount += filesToRender.length;
+                if (lazyState.renderedCount < lazyState.allFiles.length) {
+                    const sentinel = document.createElement('div');
+                    sentinel.id = 'grid-sentinel';
+                    container.appendChild(sentinel);
+                    if (lazyState.observer) lazyState.observer.observe(sentinel);
+                }
             },
-            
+
+            createDragHandle(gridItem, fileId) {
+                const handle = document.createElement('button');
+                handle.type = 'button';
+                handle.className = 'grid-drag-handle';
+                handle.textContent = '⠿';
+                handle.setAttribute('aria-label', 'Drag to reorder');
+                handle.addEventListener('pointerdown', event => { event.stopPropagation(); this.startDrag(event, fileId, gridItem); });
+                handle.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
+                return handle;
+            },
+
+            startDrag(event, fileId, gridItem) {
+                if (appState.grid.isDragging || !appState.grid.stack) return;
+                if (event.pointerType === 'mouse' && event.button !== 0) return;
+                if (!appState.grid.selected.includes(fileId)) {
+                    this.deselectAll();
+                    appState.grid.selected = [fileId];
+                    gridItem.classList.add('selected');
+                    this.updateSelectionUI();
+                }
+                const selectedIds = appState.grid.selected.length > 0 ? [...appState.grid.selected] : [fileId];
+                const selectedSet = new Set(selectedIds);
+                const draggedElements = [];
+                utils.elements.gridContainer.querySelectorAll('.grid-item').forEach(tile => {
+                    if (selectedSet.has(tile.dataset.fileId)) { tile.classList.add('dragging'); draggedElements.push(tile); }
+                });
+                document.body.style.userSelect = 'none';
+                appState.grid.isDragging = true;
+                appState.grid.dragSession = { ...createDefaultGridDragSession(), active: true, pointerId: event.pointerId ?? null, selectedIds, dragElements: draggedElements };
+                this._dragMoveHandler = this.handlePointerMove.bind(this);
+                this._dragEndHandler = this.handlePointerRelease.bind(this);
+                window.addEventListener('pointermove', this._dragMoveHandler, { passive: false });
+                window.addEventListener('pointerup', this._dragEndHandler);
+                window.addEventListener('pointercancel', this._dragEndHandler);
+                if (event.cancelable) event.preventDefault();
+            },
+
+            handlePointerMove(event) {
+                const session = appState.grid.dragSession;
+                if (!session.active) return;
+                if (session.pointerId !== null && event.pointerId !== session.pointerId) return;
+                if (event.cancelable) event.preventDefault();
+                const element = document.elementFromPoint(event.clientX, event.clientY);
+                const tile = element ? element.closest('.grid-item') : null;
+                this.setDropTarget(tile && tile.id === 'grid-sentinel' ? null : tile);
+            },
+
+            async handlePointerRelease(event) {
+                const session = appState.grid.dragSession;
+                if (!session.active) return;
+                if (session.pointerId !== null && event.pointerId !== session.pointerId) return;
+                this.detachDragListeners();
+                if (event.type === 'pointercancel') return this.clearDragState();
+                if (event.cancelable) event.preventDefault();
+                if (!session.dropTarget) return this.clearDragState();
+                const dropTargetId = session.dropTarget.dataset.fileId;
+                if (!dropTargetId || session.selectedIds.includes(dropTargetId)) return this.clearDragState();
+                const allFiles = Array.isArray(appState.grid.lazyLoadState.allFiles) ? appState.grid.lazyLoadState.allFiles : [];
+                let targetIndex = allFiles.findIndex(file => file.id === dropTargetId);
+                if (targetIndex === -1) targetIndex = allFiles.length;
+                await this.applyReorder(session.selectedIds, targetIndex);
+                this.clearDragState();
+            },
+
+            async applyReorder(selectedIds, targetIndex) {
+                const stackName = appState.grid.stack;
+                const stackArray = appState.stacks[stackName] || [];
+                const allFiles = appState.grid.lazyLoadState.allFiles || stackArray;
+                const selectedSet = new Set(selectedIds);
+                const movingItems = [];
+                const remainingItems = [];
+                stackArray.forEach(file => { if (selectedSet.has(file.id)) movingItems.push(file); else remainingItems.push(file); });
+                const clampedIndex = Math.max(0, Math.min(targetIndex, allFiles.length));
+                let insertionIndex = remainingItems.length;
+                if (clampedIndex < allFiles.length) {
+                    let count = 0;
+                    for (let i = 0; i < clampedIndex; i++) { if (!selectedSet.has(allFiles[i].id)) count += 1; }
+                    insertionIndex = Math.min(count, remainingItems.length);
+                }
+                const newStackOrder = [...remainingItems.slice(0, insertionIndex), ...movingItems, ...remainingItems.slice(insertionIndex)];
+                const timestamp = Date.now();
+                for (let i = 0; i < newStackOrder.length; i++) {
+                    newStackOrder[i].stackSequence = timestamp - i;
+                    await masterController.updateUserMetadata(newStackOrder[i].id, { stackSequence: newStackOrder[i].stackSequence });
+                }
+                appState.stacks[stackName] = newStackOrder;
+                appState.grid.lazyLoadState.allFiles = newStackOrder;
+                appState.grid.selected = [...selectedIds];
+                appState.grid.isDirty = false;
+                appState.grid.skipReorderOnClose = true;
+                utils.elements.gridContainer.innerHTML = '';
+                this.initializeLazyLoad(stackName);
+                this.updateSelectionUI();
+                commonFunctions.updateStackCounts();
+            },
+
+            detachDragListeners() {
+                if (this._dragMoveHandler) { window.removeEventListener('pointermove', this._dragMoveHandler); this._dragMoveHandler = null; }
+                if (this._dragEndHandler) { window.removeEventListener('pointerup', this._dragEndHandler); window.removeEventListener('pointercancel', this._dragEndHandler); this._dragEndHandler = null; }
+            },
+
+            setDropTarget(tile) {
+                const session = appState.grid.dragSession;
+                if (session.dropTarget === tile) return;
+                if (session.dropTarget) session.dropTarget.classList.remove('drop-target');
+                if (tile) { tile.classList.add('drop-target'); session.dropTarget = tile; } else session.dropTarget = null;
+            },
+
+            clearDragState() {
+                const session = appState.grid.dragSession;
+                if (session.dropTarget) session.dropTarget.classList.remove('drop-target');
+                (session.dragElements || []).forEach(el => el.classList.remove('dragging'));
+                document.body.style.userSelect = '';
+                this.resetDragSession();
+            },
+
+            resetDragSession() {
+                this.detachDragListeners();
+                appState.grid.dragSession = createDefaultGridDragSession();
+                appState.grid.isDragging = false;
+            },
+
             toggleSelection(e, fileId) {
                 const gridItem = e.currentTarget;
                 const index = appState.grid.selected.indexOf(fileId);
-                
-                if (index === -1) {
-                    appState.grid.selected.push(fileId);
-                    gridItem.classList.add('selected');
-                } else {
-                    appState.grid.selected.splice(index, 1);
-                    gridItem.classList.remove('selected');
-                }
-                
+                if (index === -1) { appState.grid.selected.push(fileId); gridItem.classList.add('selected'); }
+                else { appState.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
+                appState.grid.isDirty = true;
+                appState.grid.skipReorderOnClose = false;
                 this.updateSelectionUI();
-                
-                if (appState.grid.selected.length === 1 && utils.elements.gridSize.value === '1') {
-                    this.focusOnSelectedItem(appState.grid.selected[0]);
-                }
+                if (appState.grid.selected.length === 1 && utils.elements.gridSize.value === '1') this.focusOnSelectedItem(appState.grid.selected[0]);
             },
-            
+
             focusOnSelectedItem(fileId) {
                 const selectedItem = document.querySelector(`.grid-item[data-file-id="${fileId}"]`);
-                if (selectedItem) {
-                    selectedItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
+                if (selectedItem) selectedItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
             },
-            
+
             updateSelectionUI() {
                 const count = appState.grid.selected.length;
-                const buttons = [utils.elements.tagSelected, utils.elements.moveSelected, utils.elements.deleteSelected, 
-                               utils.elements.exportSelected, utils.elements.folderSelected];
-                
+                const buttons = [utils.elements.tagSelected, utils.elements.moveSelected, utils.elements.deleteSelected, utils.elements.exportSelected, utils.elements.folderSelected];
                 utils.elements.selectionText.textContent = `${count} selected`;
-                
-                buttons.forEach(btn => {
-                    if (btn) btn.disabled = (count === 0);
-                });
+                buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
             },
-            
+
             selectAll() {
-                const filesToSelect = appState.grid.filtered.length > 0 ? appState.grid.filtered : appState.stacks[appState.grid.stack];
+                const filesToSelect = appState.grid.filtered.length > 0 ? appState.grid.filtered : (appState.grid.lazyLoadState.allFiles || appState.stacks[appState.grid.stack]);
                 appState.grid.selected = filesToSelect.map(f => f.id);
-                
-                document.querySelectorAll('#grid-container .grid-item').forEach(item => {
-                    item.classList.add('selected');
-                });
-                
+                document.querySelectorAll('#grid-container .grid-item').forEach(item => item.classList.add('selected'));
+                appState.grid.isDirty = true;
                 this.updateSelectionUI();
             },
-            
+
             deselectAll() {
-                document.querySelectorAll('#grid-container .grid-item').forEach(item => 
-                    item.classList.remove('selected')
-                );
+                document.querySelectorAll('#grid-container .grid-item').forEach(item => item.classList.remove('selected'));
                 appState.grid.selected = [];
                 this.updateSelectionUI();
             },
-            
+
             performSearch() {
                 const query = utils.elements.omniSearch.value.trim();
                 appState.grid.selected = [];
-                
-                if (!query) {
-                    this.resetSearch();
-                    return;
-                }
-                
+                if (!query) return this.resetSearch();
                 const filteredImages = this.searchImages(query);
                 appState.grid.filtered = filteredImages;
-                
                 appState.grid.selected = filteredImages.map(f => f.id);
-                
-                utils.elements.selectAllBtn.textContent = filteredImages.length;
-                
-                this.populate(appState.grid.stack);
+                utils.elements.gridContainer.innerHTML = '';
+                this.initializeLazyLoad(appState.grid.stack, filteredImages);
                 this.updateSelectionUI();
             },
 
             resetSearch() {
                 utils.elements.omniSearch.value = '';
                 appState.grid.filtered = [];
-                this.populate(appState.grid.stack);
+                utils.elements.gridContainer.innerHTML = '';
+                if (appState.grid.stack) this.initializeLazyLoad(appState.grid.stack);
                 commonFunctions.updateStackCounts();
             },
-            
-            searchImages(query) {
-                const pattern = query
-                    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                    .replace(/\\\*/g, '.*')
-                    .replace(/\\\?/g, '.');
-                const regex = new RegExp(pattern, 'i');
 
-                return appState.stacks[appState.grid.stack].filter(file => {
-                    const searchableText = [
-                        file.name || '',
-                        file.tags?.join(' ') || '',
-                        file.notes || '',
-                        JSON.stringify(file.extractedMetadata || {})
-                    ].join(' ');
-                    
-                    return regex.test(searchableText);
-                });
+            searchImages(query) {
+                const pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
+                const regex = new RegExp(pattern, 'i');
+                return appState.stacks[appState.grid.stack].filter(file => regex.test([file.name || '', file.tags?.join(' ') || '', file.notes || '', JSON.stringify(file.extractedMetadata || {})].join(' ')));
+            },
+
+            async reorderStackOnClose() {
+                const stackArray = appState.stacks[appState.grid.stack];
+                if (!stackArray || stackArray.length === 0) return;
+                let newStack = stackArray;
+                if (appState.grid.filtered.length > 0) {
+                    const filteredIds = new Set(appState.grid.filtered.map(f => f.id));
+                    newStack = [...appState.grid.filtered, ...stackArray.filter(f => !filteredIds.has(f.id))];
+                } else if (appState.grid.selected.length > 0) {
+                    const selectedIds = new Set(appState.grid.selected);
+                    newStack = [...stackArray.filter(f => selectedIds.has(f.id)).sort((a,b) => a.name.localeCompare(b.name)), ...stackArray.filter(f => !selectedIds.has(f.id))];
+                }
+                const timestamp = Date.now();
+                for (let i = 0; i < newStack.length; i++) {
+                    newStack[i].stackSequence = timestamp - i;
+                    await masterController.updateUserMetadata(newStack[i].id, { stackSequence: newStack[i].stackSequence });
+                }
+                appState.stacks[appState.grid.stack] = newStack;
             }
         };
 
