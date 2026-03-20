@@ -332,16 +332,26 @@
             transition: opacity 0.2s ease, box-shadow 0.3s ease; transform-origin: center center; cursor: default;
             background: rgba(15, 23, 42, 0.92); border-radius: 18px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
         }
+        .center-embed {
+            width: min(100%, 1280px);
+            height: min(72vh, 820px);
+            max-width: min(100vw, 100%);
+            border: 0;
+            border-radius: 18px;
+            background: rgba(15, 23, 42, 0.92);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+        }
+        .center-embed.hidden { display: none; }
         .center-image.dragging { filter: brightness(0.9); }
         .center-image.zoomable { pointer-events: auto; }
         .video-fallback {
-            position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%);
-            width: min(92vw, 760px); padding: 24px; border-radius: 18px; border: 1px solid rgba(245, 158, 11, 0.35);
+            position: absolute; left: 50%; bottom: max(24px, env(safe-area-inset-bottom, 0px) + 12px); transform: translateX(-50%);
+            width: min(92vw, 560px); padding: 18px 20px; border-radius: 18px; border: 1px solid rgba(245, 158, 11, 0.35);
             background: rgba(15, 23, 42, 0.94); color: white; z-index: 4; text-align: left; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
         }
         .video-fallback.hidden { display: none; }
         .video-fallback h3 { margin: 0 0 8px; font-size: 18px; }
-        .video-fallback p { margin: 0 0 12px; color: rgba(255, 255, 255, 0.78); }
+        .video-fallback p { margin: 0 0 12px; color: rgba(255, 255, 255, 0.78); font-size: 14px; line-height: 1.5; }
         .video-fallback-links { display: flex; flex-wrap: wrap; gap: 12px; }
         .video-fallback-link {
             color: white; text-decoration: none; padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.18);
@@ -983,6 +993,7 @@
             <video class="center-image zoomable" id="center-image" controls playsinline preload="metadata">
                 Sorry, your browser does not support embedded video playback.
             </video>
+            <iframe class="center-embed hidden" id="center-embed" allow="autoplay; fullscreen; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin"></iframe>
             <div class="video-fallback hidden" id="video-fallback">
                 <h3 id="video-fallback-title">Video preview unavailable</h3>
                 <p id="video-fallback-message">This video can still be tagged, rated, moved, or deleted.</p>
@@ -1377,6 +1388,12 @@
                     resourcekey: resourceKey
                 });
             },
+            buildPreviewUrl(fileId, resourceKey = null) {
+                if (!fileId) return null;
+                return this.buildDriveUrl(`https://drive.google.com/file/d/${fileId}/preview`, {
+                    resourcekey: resourceKey
+                });
+            },
             buildUcDownloadUrl(fileId, resourceKey = null) {
                 if (!fileId) return null;
                 return this.buildDriveUrl('https://drive.google.com/uc', {
@@ -1458,6 +1475,7 @@
                     fileId,
                     resourceKey,
                     viewUrl,
+                    embedUrl: this.buildPreviewUrl(fileId, resourceKey),
                     directUrl,
                     exportUrl: directUrl,
                     thumbnailUrl: fileId ? this.buildThumbnailUrl(fileId, 1000, resourceKey) : null,
@@ -1561,6 +1579,7 @@
                     detailsButton: document.getElementById('details-button'),
                     imageViewport: document.getElementById('image-viewport'),
                     centerImage: document.getElementById('center-image'),
+                    centerEmbed: document.getElementById('center-embed'),
                     emptyState: document.getElementById('empty-state'),
                     selectAnotherStackBtn: document.getElementById('select-another-stack-btn'),
                     selectAnotherFolderBtn: document.getElementById('select-another-folder-btn'),
@@ -1725,7 +1744,8 @@
                         openUrl: driveUrls.directUrl || driveUrls.viewUrl || '#',
                         downloadUrl: driveUrls.directUrl || driveUrls.exportUrl || driveUrls.viewUrl || '#',
                         providerUrl: driveUrls.viewUrl || driveUrls.directUrl || '#',
-                        previewUrl: driveUrls.thumbnailUrl || driveUrls.thumbnailUrlSmall || null
+                        previewUrl: driveUrls.thumbnailUrl || driveUrls.thumbnailUrlSmall || null,
+                        embedUrl: driveUrls.embedUrl || driveUrls.viewUrl || null
                     };
                 }
                 const downloadUrl = file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
@@ -1734,8 +1754,31 @@
                     openUrl: downloadUrl,
                     downloadUrl,
                     providerUrl,
-                    previewUrl: file.thumbnails?.large?.url || file.thumbnails?.medium?.url || file.thumbnails?.small?.url || null
+                    previewUrl: file.thumbnails?.large?.url || file.thumbnails?.medium?.url || file.thumbnails?.small?.url || null,
+                    embedUrl: null
                 };
+            },
+            hideEmbeddedPreview() {
+                const embed = this.elements.centerEmbed;
+                if (!embed) return;
+                embed.classList.add('hidden');
+                if (embed.src) {
+                    embed.removeAttribute('src');
+                }
+            },
+            showEmbeddedPreview(url) {
+                const embed = this.elements.centerEmbed;
+                const video = this.elements.centerImage;
+                if (!embed || !url) return false;
+                if (video) {
+                    video.pause?.();
+                    video.removeAttribute('src');
+                    video.load?.();
+                    video.classList.add('hidden');
+                }
+                embed.src = url;
+                embed.classList.remove('hidden');
+                return true;
             },
             hideVideoFallback() {
                 const fallback = this.elements.videoFallback;
@@ -1767,6 +1810,8 @@
                 const links = this.getProviderLinks(file);
                 const videoUrl = links.openUrl;
                 this.hideVideoFallback();
+                this.hideEmbeddedPreview();
+                video.classList.remove('hidden');
                 return new Promise((resolve) => {
                     const complete = (ok, reason = '') => {
                         if (state.currentImageLoadId !== loadId) return;
@@ -1778,6 +1823,11 @@
                         }
                         resolve();
                     };
+                    if (state.providerType === 'googledrive' && links.embedUrl) {
+                        this.showEmbeddedPreview(links.embedUrl);
+                        complete(true);
+                        return;
+                    }
                     video.pause();
                     video.removeAttribute('poster');
                     video.src = videoUrl || '';
@@ -5456,7 +5506,9 @@
                     centerImage.style.opacity = '0';
                     centerImage.removeAttribute('src');
                     centerImage.load?.();
+                    centerImage.classList.remove('hidden');
                     Utils.hideVideoFallback();
+                    Utils.hideEmbeddedPreview();
                     requestAnimationFrame(() => {
                         centerImage.style.opacity = '1';
                     });
