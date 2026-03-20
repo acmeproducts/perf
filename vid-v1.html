@@ -2597,7 +2597,7 @@
                     let resolved = false;
                     let request;
                     try {
-                        request = indexedDB.open(APP_IDENTITY.dbName, 7);
+                        request = indexedDB.open(APP_IDENTITY.dbName, 8);
                     } catch (error) {
                         this.db = null;
                         this.available = false;
@@ -2639,6 +2639,10 @@
                             const manifestStore = db.createObjectStore('folderManifests', { keyPath: 'folderKey' });
                             manifestStore.createIndex('provider', 'provider', { unique: false });
                             manifestStore.createIndex('folderId', 'folderId', { unique: false });
+                        }
+
+                        if (oldVersion < 8 && !db.objectStoreNames.contains('folderListCache')) {
+                            db.createObjectStore('folderListCache', { keyPath: 'cacheKey' });
                         }
                         if (db.objectStoreNames.contains('metadata')) {
                             const metadataStore = request.transaction.objectStore('metadata');
@@ -2775,6 +2779,16 @@
                     request.onerror = () => reject(request.error);
                 });
             }
+            async getFolderListCache(cacheKey) {
+                if (!this.db || !cacheKey) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderListCache', 'readonly');
+                    const store = transaction.objectStore('folderListCache');
+                    const request = store.get(cacheKey);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
             async saveFolderCache(folderId, files) {
                 if (!this.db) return;
                 return new Promise((resolve, reject) => {
@@ -2792,6 +2806,21 @@
                     const store = transaction.objectStore('folderCache');
                     const request = store.delete(folderId);
                     request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            async saveFolderListCache(cacheKey, folders = []) {
+                if (!this.db || !cacheKey) return null;
+                const payload = {
+                    cacheKey,
+                    folders: Array.isArray(folders) ? folders.map(folder => ({ ...folder })) : [],
+                    updatedAt: Date.now()
+                };
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction('folderListCache', 'readwrite');
+                    const store = transaction.objectStore('folderListCache');
+                    const request = store.put(payload);
+                    request.onsuccess = () => resolve(payload);
                     request.onerror = () => reject(request.error);
                 });
             }
@@ -7595,19 +7624,43 @@
                 return `${providerType || 'unknown'}::${contextKey || 'root'}`;
             },
 
-            getCachedFolders(cacheKey) {
+            async getCachedFolders(cacheKey) {
                 if (!cacheKey) return null;
-                const entry = state.folderListCache.get(cacheKey);
-                if (!entry || !Array.isArray(entry.folders)) return null;
-                return entry;
+                const memoryEntry = state.folderListCache.get(cacheKey);
+                if (memoryEntry && Array.isArray(memoryEntry.folders)) {
+                    return memoryEntry;
+                }
+                if (!state.dbManager) return null;
+                try {
+                    const persistedEntry = await state.dbManager.getFolderListCache(cacheKey);
+                    if (persistedEntry && Array.isArray(persistedEntry.folders)) {
+                        state.folderListCache.set(cacheKey, persistedEntry);
+                        return persistedEntry;
+                    }
+                } catch (error) {
+                    console.warn('Failed to load persisted folder list cache:', error);
+                }
+                return null;
             },
 
-            setCachedFolders(cacheKey, folders = []) {
-                if (!cacheKey) return;
-                state.folderListCache.set(cacheKey, {
+            async setCachedFolders(cacheKey, folders = []) {
+                if (!cacheKey) return null;
+                const entry = {
                     folders: Array.isArray(folders) ? folders.map(folder => ({ ...folder })) : [],
                     updatedAt: Date.now()
-                });
+                };
+                state.folderListCache.set(cacheKey, entry);
+                if (!state.dbManager) return entry;
+                try {
+                    const persistedEntry = await state.dbManager.saveFolderListCache(cacheKey, entry.folders);
+                    if (persistedEntry) {
+                        state.folderListCache.set(cacheKey, persistedEntry);
+                        return persistedEntry;
+                    }
+                } catch (error) {
+                    console.warn('Failed to persist folder list cache:', error);
+                }
+                return entry;
             },
 
             foldersChanged(previousFolders = [], nextFolders = []) {
@@ -7635,7 +7688,7 @@
                     retry = null
                 } = options;
                 const { folderList } = Utils.elements;
-                const cachedEntry = this.getCachedFolders(cacheKey);
+                const cachedEntry = await this.getCachedFolders(cacheKey);
                 const cacheIsFresh = cachedEntry && (Date.now() - cachedEntry.updatedAt) < FOLDER_LIST_CACHE_TTL_MS;
                 this.setFolderScanProgress({ active: true, message: loadingMessage, current: 0, total: 0, currentFolderName: '' });
 
@@ -7656,7 +7709,7 @@
                     if (!cachedEntry || this.foldersChanged(cachedEntry.folders, folders)) {
                         this.display(folders);
                     }
-                    this.setCachedFolders(cacheKey, folders);
+                    await this.setCachedFolders(cacheKey, folders);
                     this.updateNavigation();
                     this.clearFolderScanProgress();
                     return folders;
@@ -7938,6 +7991,7 @@
                     if (changed) {
                         entry.updatedAt = Date.now();
                     }
+                    this.setCachedFolders(cacheKey, entry.folders);
                 }
             },
 
