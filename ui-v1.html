@@ -165,6 +165,11 @@
         .folder-card .subtitle {
             margin-bottom: 0;
             color: rgba(255, 255, 255, 0.65);
+            width: 100%;
+            min-height: 1.25em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .folder-card .last-folder-banner {
             align-items: flex-start;
@@ -328,10 +333,15 @@
             color: rgba(255, 255, 255, 0.72);
         }
         .folder-loading-name {
+            display: block;
+            max-width: 100%;
+            min-height: 1.25em;
             font-size: 13px;
             color: var(--accent);
             margin-top: 10px;
-            word-break: break-word;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .spinner {
@@ -5886,17 +5896,14 @@
 
                 try {
                     Utils.elements.detailsButton.style.display = 'flex';
+                    Utils.elements.emptyState.classList.add('hidden');
+                    this.updateImageCounters();
+                    this.updateFavoriteButton();
                     await Utils.setImageSrc(Utils.elements.centerImage, currentFile);
-
 
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
-
-                    Utils.defer(() => {
-                        Core.updateImageCounters();
-                        Core.updateFavoriteButton();
-                    }, { priority: 'animation' });
 
                     if (currentFile.metadataStatus === 'pending') {
                         currentFile.metadataStatus = 'queued';
@@ -6057,20 +6064,10 @@
                         details: `User requested moving ${currentFile.name || fileId} from ${STACK_NAMES[originalStack] || originalStack} into the provider recycle bin (${source}). No permanent deletion occurs.`,
                         data: { from: originalStack, source }
                     });
-                    const movedToRecycle = await App.deleteFile(fileId, { source, originStack: originalStack, name: currentFile.name });
-                    if (!movedToRecycle) {
-                        state.syncLog?.log({
-                            event: 'ui:provider-trash-abort',
-                            level: 'error',
-                            fileId,
-                            details: `Provider recycle move failed for ${currentFile.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
-                            data: { from: originalStack, source }
-                        });
-                        await this.displayCurrentImage();
-                        return;
-                    }
+                    const deleteRequest = App.deleteFile(fileId, { source, originStack: originalStack, name: currentFile.name });
                     this.updateStackCounts();
                     const updatedStack = state.stacks[currentStackName] || [];
+                    let pendingDisplay = null;
                     if (updatedStack.length === 0) {
                         state.currentStackPosition = 0;
                         if (state.isFocusMode && exitFocusIfEmpty) {
@@ -6086,7 +6083,22 @@
                             nextIndex = 0;
                         }
                         state.currentStackPosition = nextIndex;
+                        pendingDisplay = this.displayCurrentImage();
+                    }
+                    const movedToRecycle = await deleteRequest;
+                    if (!movedToRecycle) {
+                        state.syncLog?.log({
+                            event: 'ui:provider-trash-abort',
+                            level: 'error',
+                            fileId,
+                            details: `Provider recycle move failed for ${currentFile.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
+                            data: { from: originalStack, source }
+                        });
                         await this.displayCurrentImage();
+                        return;
+                    }
+                    if (pendingDisplay) {
+                        await pendingDisplay;
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
                     Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
@@ -7545,9 +7557,9 @@ this.updateImageCounters();
 
                 if (distance > 80) {
                     if (state.isFocusMode) {
-                        const direction = deltaX < 0 ? 'right' : 'left';
+                        const direction = deltaX > 0 ? 'right' : 'left';
                         this.highlightFocusDirection(direction);
-                        if (deltaX < 0) { this.nextImage(); }
+                        if (deltaX > 0) { this.nextImage(); }
                         else { this.prevImage(); }
                     } else {
                         const direction = this.determineSwipeDirection(deltaX, deltaY);
