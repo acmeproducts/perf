@@ -307,7 +307,10 @@
             font-size: 13px;
             color: var(--accent);
             margin-top: 10px;
-            word-break: break-word;
+            min-height: 1.25rem;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
         }
 
         .spinner {
@@ -5535,7 +5538,7 @@
                 }
             },
             async deleteFile(fileId, options = {}) {
-                const { source = 'ui', originStack = null, name = null } = options;
+                const { source = 'ui', originStack = null, name = null, onLocalStateChange = null, onRestore = null } = options;
                 const fileIndex = state.imageFiles.findIndex(f => f.id === fileId);
                 let file = null;
                 let stackRemoval = null;
@@ -5570,6 +5573,9 @@
                         state.stacks[file.stack].push(file);
                     }
                     await persistState();
+                    if (typeof onRestore === 'function') {
+                        await onRestore({ file, fileIndex, stackRemoval, stackBefore });
+                    }
                     state.syncLog?.log({
                         event: 'provider:trash:rollback',
                         level: 'warn',
@@ -5580,6 +5586,9 @@
                     return true;
                 };
                 await persistState();
+                if (typeof onLocalStateChange === 'function') {
+                    await onLocalStateChange({ file, fileIndex, stackRemoval, stackBefore });
+                }
 
                 const provider = state.provider;
                 const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
@@ -5927,6 +5936,32 @@
                 }
             },
 
+            async refreshCurrentStackAfterRemoval(stackName, previousPosition, options = {}) {
+                const { exitFocusIfEmpty = true } = options;
+                this.updateStackCounts();
+                if (stackName !== state.currentStack) {
+                    return;
+                }
+                const updatedStack = state.stacks[stackName] || [];
+                if (updatedStack.length === 0) {
+                    state.currentStackPosition = 0;
+                    if (state.isFocusMode && exitFocusIfEmpty) {
+                        Gestures.toggleFocusMode();
+                    }
+                    this.showEmptyState();
+                    return;
+                }
+                let nextIndex = previousPosition;
+                if (nextIndex >= updatedStack.length) {
+                    nextIndex = updatedStack.length - 1;
+                }
+                if (nextIndex < 0) {
+                    nextIndex = 0;
+                }
+                state.currentStackPosition = nextIndex;
+                await this.displayCurrentImage();
+            },
+
             async deleteCurrentImage(options = {}) {
                 const { exitFocusIfEmpty = true, source = 'ui:direct' } = options;
                 if (state.isImageTransitioning) return;
@@ -5940,6 +5975,7 @@
                 state.isImageTransitioning = true;
                 const fileId = currentFile.id;
                 const originalStack = currentFile.stack || currentStackName;
+                let refreshedAfterRemoval = false;
 
                 try {
                     state.syncLog?.log({
@@ -5949,7 +5985,29 @@
                         details: `User requested moving ${currentFile.name || fileId} from ${STACK_NAMES[originalStack] || originalStack} into the provider recycle bin (${source}). No permanent deletion occurs.`,
                         data: { from: originalStack, source }
                     });
-                    const movedToRecycle = await App.deleteFile(fileId, { source, originStack: originalStack, name: currentFile.name });
+                    const movedToRecycle = await App.deleteFile(fileId, {
+                        source,
+                        originStack: originalStack,
+                        name: currentFile.name,
+                        onLocalStateChange: async () => {
+                            refreshedAfterRemoval = true;
+                            await this.refreshCurrentStackAfterRemoval(currentStackName, previousPosition, { exitFocusIfEmpty });
+                        },
+                        onRestore: async () => {
+                            this.updateStackCounts();
+                            if (currentStackName !== state.currentStack) {
+                                return;
+                            }
+                            const restoredStack = state.stacks[currentStackName] || [];
+                            const restoredIndex = restoredStack.findIndex(file => file.id === fileId);
+                            state.currentStackPosition = restoredIndex > -1 ? restoredIndex : Math.min(previousPosition, Math.max(restoredStack.length - 1, 0));
+                            if (restoredStack.length > 0) {
+                                await this.displayCurrentImage();
+                            } else {
+                                this.showEmptyState();
+                            }
+                        }
+                    });
                     if (!movedToRecycle) {
                         state.syncLog?.log({
                             event: 'ui:provider-trash-abort',
@@ -5958,27 +6016,13 @@
                             details: `Provider recycle move failed for ${currentFile.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
                             data: { from: originalStack, source }
                         });
-                        await this.displayCurrentImage();
+                        if (!refreshedAfterRemoval) {
+                            await this.displayCurrentImage();
+                        }
                         return;
                     }
-                    this.updateStackCounts();
-                    const updatedStack = state.stacks[currentStackName] || [];
-                    if (updatedStack.length === 0) {
-                        state.currentStackPosition = 0;
-                        if (state.isFocusMode && exitFocusIfEmpty) {
-                            Gestures.toggleFocusMode();
-                        }
-                        this.showEmptyState();
-                    } else {
-                        let nextIndex = previousPosition;
-                        if (nextIndex >= updatedStack.length) {
-                            nextIndex = updatedStack.length - 1;
-                        }
-                        if (nextIndex < 0) {
-                            nextIndex = 0;
-                        }
-                        state.currentStackPosition = nextIndex;
-                        await this.displayCurrentImage();
+                    if (!refreshedAfterRemoval) {
+                        await this.refreshCurrentStackAfterRemoval(currentStackName, previousPosition, { exitFocusIfEmpty });
                     }
                     Utils.showToast('Moved to provider recycle bin. Restore it from your cloud trash if needed.', 'info', true);
                     Grid.syncWithStack(originalStack, { removedIds: [fileId], preselectFirst: false });
@@ -7242,8 +7286,7 @@
                     const fx = (clientX - rect.left) / rect.width;
                     const direction = fx < 0.5 ? 'left' : 'right';
                     this.highlightFocusDirection(direction);
-                    if (direction === 'left') { this.prevImage(); }
-                    else { this.nextImage(); }
+                    this.navigateFocus(direction);
                     return;
                 }
                 const dir = this.hitTriangle(clientX, clientY);
@@ -7252,6 +7295,15 @@
                 const mapped = dir === 'up' ? 'top' : dir === 'down' ? 'bottom' : dir;
                 const targetStack = this.directionToStack(mapped);
                 if (targetStack) this.executeFlick(targetStack);
+            },
+            navigateFocus(direction) {
+                if (direction === 'left') {
+                    return this.prevImage();
+                }
+                if (direction === 'right') {
+                    return this.nextImage();
+                }
+                return Promise.resolve();
             },
             showEdgeGlow(direction) {
                 this.edgeElements.forEach(edge => edge.classList.remove('active'));
@@ -7376,8 +7428,7 @@
                     if (state.isFocusMode) {
                         const direction = deltaX < 0 ? 'right' : 'left';
                         this.highlightFocusDirection(direction);
-                        if (deltaX < 0) { this.nextImage(); }
-                        else { this.prevImage(); }
+                        this.navigateFocus(direction);
                     } else {
                         const direction = this.determineSwipeDirection(deltaX, deltaY);
                         const targetStack = this.directionToStack(direction);
@@ -7778,7 +7829,7 @@
                 const total = Number(scan.total) > 0 ? scan.total : null;
                 const current = Number(scan.current) > 0 ? scan.current : 0;
                 const detail = total ? `Reading folders ${Math.min(current, total)} of ${total}` : 'Reading folder tree…';
-                const currentName = scan.currentFolderName ? `<div class="folder-loading-name">Current: ${scan.currentFolderName}</div>` : '';
+                const currentName = scan.currentFolderName ? `Current: ${scan.currentFolderName}` : '&nbsp;';
                 folderList.innerHTML = `<div class="folder-loading-state">
                     <div class="folder-loading-card">
                         <div class="folder-loading-header">
@@ -7788,7 +7839,7 @@
                                 <div class="folder-loading-detail">${detail}</div>
                             </div>
                         </div>
-                        ${currentName}
+                        <div class="folder-loading-name">${currentName}</div>
                     </div>
                 </div>`;
             },
