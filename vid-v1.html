@@ -956,6 +956,7 @@
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-controls">
                 <button class="folder-button" id="folder-refresh-button">Refresh</button>
+                <button class="folder-button" id="folder-set-root-button">Set Root</button>
                 <button class="folder-button" id="folder-back-button">← Provider</button>
                 <button class="folder-button danger" id="folder-logout-button">Disconnect</button>
             </div>
@@ -1241,6 +1242,7 @@
         };
         const APP_STORAGE_KEYS = {
             lastFolder: `${APP_IDENTITY.storagePrefix}:last_folder`,
+            onedriveRoot: `${APP_IDENTITY.storagePrefix}:onedrive_root`,
             visualIntensity: `${APP_IDENTITY.storagePrefix}:visual_intensity`,
             hapticEnabled: `${APP_IDENTITY.storagePrefix}:haptic_enabled`,
             googleAccessToken: `${APP_IDENTITY.storagePrefix}:google_access_token`,
@@ -1310,7 +1312,8 @@
             googleDriveFolderCacheStore: {
                 schemaVersion: GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION,
                 entries: new Map()
-            }
+            },
+            folderRootSelection: { active: false, providerType: null }
         };
         const GoogleDriveFolderCacheStore = {
             ensureSchema() {
@@ -1571,6 +1574,7 @@
                     folderSearchResults: document.getElementById('folder-search-results'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
+                    folderSetRootButton: document.getElementById('folder-set-root-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
                     folderLogoutButton: document.getElementById('folder-logout-button'),
 
@@ -4437,6 +4441,7 @@
                 this.onProgressCallback = null;
                 this.folderImageCountCache = new Map();
                 this.folderHasImagesCache = new Map();
+                this.rootFolder = this.loadStoredRootFolder();
                 this.initMSAL();
 
                 const accounts = this.msalInstance.getAllAccounts();
@@ -4619,12 +4624,129 @@
                     webUrl: item.webUrl || null
                 }));
             }
-            async getDownloadsFolder() {
-                const response = await this.makeApiCall('/me/drive/root/children');
-                const data = await response.json();
-                const downloadsFolder = data.value.find(item => item.folder && (item.name.toLowerCase() === 'downloads' || item.name.toLowerCase() === 'download'));
+            loadStoredRootFolder() {
+                try {
+                    const raw = localStorage.getItem(APP_STORAGE_KEYS.onedriveRoot);
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    if (parsed && parsed.id) {
+                        return parsed;
+                    }
+                } catch (error) {
+                    console.warn('Failed to load OneDrive root folder:', error);
+                }
+                return null;
+            }
+            persistRootFolder(folder) {
+                if (!folder?.id) return;
+                const payload = {
+                    id: folder.id,
+                    name: folder.name || 'Root',
+                    parentId: folder.parentId || 'root',
+                    updatedAt: new Date().toISOString()
+                };
+                this.rootFolder = payload;
+                try {
+                    localStorage.setItem(APP_STORAGE_KEYS.onedriveRoot, JSON.stringify(payload));
+                } catch (error) {
+                    console.warn('Failed to persist OneDrive root folder:', error);
+                }
+            }
+            clearPersistedRootFolder() {
+                this.rootFolder = null;
+                try {
+                    localStorage.removeItem(APP_STORAGE_KEYS.onedriveRoot);
+                } catch (error) {
+                    console.warn('Failed to clear OneDrive root folder:', error);
+                }
+            }
+            async getDriveRootFolders(options = {}) {
+                const folders = [];
+                let nextLink = `${this.apiBase}/me/drive/root/children`;
+                while (nextLink) {
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: options.signal });
+                    const data = await response.json();
+                    const pageFolders = (data.value || [])
+                        .filter(item => item.folder)
+                        .map(item => ({
+                            id: item.id,
+                            name: item.name,
+                            type: 'folder',
+                            createdTime: item.createdDateTime,
+                            modifiedTime: item.lastModifiedDateTime,
+                            itemCount: item.folder?.childCount || 0,
+                            hasChildren: (item.folder?.childCount || 0) > 0,
+                            parentId: item.parentReference?.id || 'root'
+                        }));
+                    folders.push(...pageFolders);
+                    nextLink = data['@odata.nextLink'];
+                }
+                return folders;
+            }
+            async getDownloadsFolder(options = {}) {
+                const folders = await this.getDriveRootFolders(options);
+                const downloadsFolder = folders.find(item => ['downloads', 'download'].includes((item.name || '').toLowerCase()));
                 if (downloadsFolder) { return downloadsFolder; }
-                return { id: 'root', name: 'Root', folder: true };
+                return { id: 'root', name: 'Root', folder: true, parentId: null };
+            }
+            async getEffectiveRootFolder(options = {}) {
+                const defaultRoot = await this.getDownloadsFolder(options);
+                const storedRoot = this.rootFolder || this.loadStoredRootFolder();
+                if (!storedRoot?.id || storedRoot.id === defaultRoot.id) {
+                    this.rootFolder = defaultRoot;
+                    return defaultRoot;
+                }
+                try {
+                    const response = await this.makeApiCall(`/me/drive/items/${storedRoot.id}`, { signal: options.signal });
+                    const item = await response.json();
+                    if (!item?.folder) {
+                        this.clearPersistedRootFolder();
+                        this.rootFolder = defaultRoot;
+                        return defaultRoot;
+                    }
+                    const resolvedRoot = {
+                        id: item.id,
+                        name: item.name || storedRoot.name || 'Root',
+                        type: 'folder',
+                        createdTime: item.createdDateTime,
+                        modifiedTime: item.lastModifiedDateTime,
+                        itemCount: item.folder?.childCount || 0,
+                        hasChildren: (item.folder?.childCount || 0) > 0,
+                        parentId: item.parentReference?.id || 'root'
+                    };
+                    this.rootFolder = resolvedRoot;
+                    return resolvedRoot;
+                } catch (error) {
+                    console.warn('Falling back to default OneDrive root folder:', error);
+                    this.clearPersistedRootFolder();
+                    this.rootFolder = defaultRoot;
+                    return defaultRoot;
+                }
+            }
+            async getRootFolderOptions(options = {}) {
+                const rootFolders = await this.getDriveRootFolders(options);
+                const filteredFolders = await this.filterFoldersWithImages(rootFolders, { signal: options.signal || state.activeRequests?.signal });
+                return filteredFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            }
+            async setRootFolder(folder, options = {}) {
+                if (!folder?.id) {
+                    throw new Error('Choose a folder to save as the OneDrive root.');
+                }
+                const defaultRoot = await this.getDownloadsFolder(options);
+                const normalizedFolder = {
+                    ...folder,
+                    parentId: folder.parentId || folder.parentReference?.id || 'root'
+                };
+                if (normalizedFolder.id === defaultRoot.id) {
+                    this.clearPersistedRootFolder();
+                    this.rootFolder = defaultRoot;
+                    return defaultRoot;
+                }
+                this.persistRootFolder(normalizedFolder);
+                return normalizedFolder;
+            }
+            getRootFolderLabel() {
+                return this.rootFolder?.name || 'Downloads';
             }
             getFolderCacheContext(parentId = this.currentParentId) {
                 if (parentId) {
@@ -4643,11 +4765,11 @@
                 return this.getFolderCacheContext(parentFolder?.id);
             }
             async getFolders(options = {}) {
-                const downloadsFolder = await this.getDownloadsFolder();
-                const folders = await this.loadFoldersInParent(downloadsFolder.id, options);
-                this.currentParentId = downloadsFolder.id;
-                this.currentParentPath = downloadsFolder.name;
-                this.breadcrumb = [{ id: downloadsFolder.id, name: downloadsFolder.name }];
+                const rootFolder = await this.getEffectiveRootFolder(options);
+                const folders = await this.loadFoldersInParent(rootFolder.id, options);
+                this.currentParentId = rootFolder.id;
+                this.currentParentPath = rootFolder.name;
+                this.breadcrumb = [{ id: rootFolder.id, name: rootFolder.name }];
                 return folders;
             }
             async loadFoldersInParent(parentId, options = {}) {
@@ -5507,6 +5629,7 @@
                     // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
                     state.activeRequests = new AbortController();
                     this.resetViewState({ skipEmptyState: true });
+                    state.folderRootSelection = { active: false, providerType: null };
                     await Folders.load();
                 } catch (error) {
                     Utils.showToast(`Error returning to folders: ${error.message}`, 'error', true);
@@ -7767,7 +7890,7 @@
                                          <div class="folder-date">${metaInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         ${!state.folderRootSelection.active && folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                      </div>`;
                     fragment.appendChild(div);
                 });
@@ -7783,6 +7906,10 @@
                 }
                 if (!state.provider) {
                     Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
+                    return;
+                }
+                if (state.folderRootSelection.active) {
+                    this.applyRootSelection({ id: folderId, name: folderName || '' });
                     return;
                 }
                 App.initializeWithProvider(state.providerType, folderId, folderName || '', state.provider);
@@ -7995,6 +8122,63 @@
                 }
             },
 
+            async applyRootSelection(folder) {
+                if (!folder || !folder.id) return;
+                const provider = state.provider;
+                if (!provider || state.providerType !== 'onedrive' || typeof provider.setRootFolder !== 'function') {
+                    state.folderRootSelection = { active: false, providerType: null };
+                    return;
+                }
+                try {
+                    const savedRoot = await provider.setRootFolder(folder);
+                    state.folderRootSelection = { active: false, providerType: null };
+                    this.resetSearch();
+                    Utils.showToast(`OneDrive root set to ${savedRoot.name || folder.name || 'selected folder'}.`, 'success', true);
+                    await this.load({ forceRefresh: true });
+                } catch (error) {
+                    Utils.showToast(`Failed to set OneDrive root: ${error.message}`, 'error', true);
+                }
+            },
+
+            async startRootSelection() {
+                const provider = state.provider;
+                if (!provider || state.providerType !== 'onedrive' || typeof provider.getRootFolderOptions !== 'function') {
+                    Utils.showToast('Root selection is only available for OneDrive.', 'info');
+                    return;
+                }
+                state.folderRootSelection = { active: true, providerType: state.providerType };
+                this.updateNavigation();
+                this.renderFolderLoadingState();
+                try {
+                    const folders = await provider.getRootFolderOptions({ forceRefresh: true });
+                    this.clearFolderScanProgress();
+                    this.display(folders);
+                    this.updateNavigation();
+                    if (Utils.elements.folderSearchInput) {
+                        Utils.elements.folderSearchInput.focus();
+                    }
+                } catch (error) {
+                    state.folderRootSelection = { active: false, providerType: null };
+                    this.clearFolderScanProgress();
+                    this.updateNavigation();
+                    Utils.showToast(`Failed to load OneDrive root folders: ${error.message}`, 'error', true);
+                    await this.load({ forceRefresh: true });
+                }
+            },
+
+            async handleSetRootClick() {
+                if (state.providerType !== 'onedrive') {
+                    Utils.showToast('Set Root is only available for OneDrive.', 'info');
+                    return;
+                }
+                if (state.folderRootSelection.active) {
+                    state.folderRootSelection = { active: false, providerType: null };
+                    await this.load({ forceRefresh: true });
+                    return;
+                }
+                await this.startRootSelection();
+            },
+
             handleSearchSelection(folder) {
                 if (!folder || !folder.id) return;
                 this.resetSearch();
@@ -8057,9 +8241,10 @@
             },
 
             updateNavigation() {
-                const { folderSubtitle, folderRefreshButton } = Utils.elements;
+                const { folderSubtitle, folderRefreshButton, folderSetRootButton } = Utils.elements;
                 const provider = state.provider;
                 const scan = state.folderScanProgress;
+                const isRootSelectionActive = Boolean(state.folderRootSelection?.active && state.folderRootSelection.providerType === 'onedrive');
 
                 if (scan?.active) {
                     const total = Number(scan.total) > 0 ? scan.total : null;
@@ -8068,17 +8253,29 @@
                     const activeName = scan.currentFolderName ? ` • ${scan.currentFolderName}` : '';
                     folderSubtitle.textContent = `${scan.message || 'Loading folders...'} (${progressText})${activeName}`;
                     folderSubtitle.classList.remove('hidden');
+                } else if (isRootSelectionActive) {
+                    folderSubtitle.textContent = 'Search and pick a top-level OneDrive folder to use as the saved root.';
+                    folderSubtitle.classList.remove('hidden');
                 } else if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
-                    folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
+                    const rootLabel = state.providerType === 'onedrive' && typeof provider.getRootFolderLabel === 'function'
+                        ? ` • Root: ${provider.getRootFolderLabel()}`
+                        : '';
+                    folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}${rootLabel}`;
                     folderSubtitle.classList.remove('hidden');
                 } else {
                     folderSubtitle.classList.add('hidden');
                 }
 
-                if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
+                if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
                     folderRefreshButton.textContent = '← Go Up';
                 } else {
                     folderRefreshButton.textContent = 'Refresh';
+                }
+
+                if (folderSetRootButton) {
+                    const isOneDrive = state.providerType === 'onedrive';
+                    folderSetRootButton.style.display = isOneDrive ? 'inline-flex' : 'none';
+                    folderSetRootButton.textContent = isRootSelectionActive ? 'Cancel Root' : 'Set Root';
                 }
             },
 
@@ -8312,6 +8509,10 @@
                 Utils.elements.folderRefreshButton.addEventListener('click', async () => {
                     try {
                         const provider = state.provider;
+                        if (state.folderRootSelection.active) {
+                            await Folders.startRootSelection();
+                            return;
+                        }
                         if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
                             const parentContext = provider.getParentCacheContext?.() || 'root';
                             await Folders.loadWithCache({
@@ -8327,6 +8528,11 @@
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
                     }
                 });
+                if (Utils.elements.folderSetRootButton) {
+                    Utils.elements.folderSetRootButton.addEventListener('click', async () => {
+                        await Folders.handleSetRootClick();
+                    });
+                }
 
                 const { lastFolderLink } = Utils.elements;
                 if (lastFolderLink) {
