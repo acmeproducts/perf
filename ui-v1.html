@@ -1168,6 +1168,11 @@
             googleRefreshToken: `${APP_IDENTITY.storagePrefix}:google_refresh_token`,
             googleClientSecret: `${APP_IDENTITY.storagePrefix}:google_client_secret`
         };
+        const GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION = 1;
+        const createGoogleDriveFolderCacheEntry = () => ({
+            folderImageCountCache: new Map(),
+            folderHasImagesCache: new Map()
+        });
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
         const loadLastFolderFromStorage = () => {
@@ -1213,7 +1218,40 @@
             lastPickedFolder: loadLastFolderFromStorage(),
             folderSearchDataset: [],
             folderSearchTerm: '',
-            storageStatus: { available: true, reason: null }
+            storageStatus: { available: true, reason: null },
+            googleDriveFolderCacheStore: {
+                schemaVersion: GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION,
+                entries: new Map()
+            }
+        };
+        const GoogleDriveFolderCacheStore = {
+            ensureSchema() {
+                const store = state.googleDriveFolderCacheStore;
+                if (store.schemaVersion !== GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION) {
+                    store.schemaVersion = GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION;
+                    store.entries.clear();
+                }
+                return store;
+            },
+            buildCacheKey(providerType, accountIdentity) {
+                return `${providerType || 'unknown'}::${accountIdentity || 'anonymous'}`;
+            },
+            getOrCreateEntry(providerType, accountIdentity) {
+                const store = this.ensureSchema();
+                const key = this.buildCacheKey(providerType, accountIdentity);
+                if (!store.entries.has(key)) {
+                    store.entries.set(key, createGoogleDriveFolderCacheEntry());
+                }
+                return { key, entry: store.entries.get(key) };
+            },
+            clear(key) {
+                const store = this.ensureSchema();
+                if (key) {
+                    store.entries.delete(key);
+                    return;
+                }
+                store.entries.clear();
+            }
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -3749,9 +3787,11 @@
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
+                this.activeFolderCacheKey = null;
                 this.folderImageCountCache = new Map();
                 this.folderHasImagesCache = new Map();
                 this.loadStoredCredentials();
+                this.bindSharedFolderCaches();
             }
             normalizeDriveFileMetadata(file, options = {}) {
                 const target = options.target || file;
@@ -3814,6 +3854,29 @@
                 this.clientSecret = localStorage.getItem(APP_STORAGE_KEYS.googleClientSecret);
                 this.isAuthenticated = !!(this.accessToken && this.refreshToken && this.clientSecret);
             }
+            getCacheIdentity() {
+                if (this.refreshToken) return `refresh:${this.refreshToken}`;
+                if (this.accessToken) return `access:${this.accessToken}`;
+                return 'anonymous';
+            }
+            bindSharedFolderCaches(options = {}) {
+                const previousKey = options.previousKey ?? this.activeFolderCacheKey;
+                const { key, entry } = GoogleDriveFolderCacheStore.getOrCreateEntry(this.name, this.getCacheIdentity());
+                this.activeFolderCacheKey = key;
+                this.folderImageCountCache = entry.folderImageCountCache;
+                this.folderHasImagesCache = entry.folderHasImagesCache;
+                if (options.clearPrevious && previousKey && previousKey !== key) {
+                    GoogleDriveFolderCacheStore.clear(previousKey);
+                }
+                return entry;
+            }
+            invalidateSharedFolderCaches() {
+                if (!this.activeFolderCacheKey) return;
+                GoogleDriveFolderCacheStore.clear(this.activeFolderCacheKey);
+                this.activeFolderCacheKey = null;
+                this.folderImageCountCache = new Map();
+                this.folderHasImagesCache = new Map();
+            }
             storeCredentials() {
                 if (this.accessToken) localStorage.setItem(APP_STORAGE_KEYS.googleAccessToken, this.accessToken);
                 if (this.refreshToken) localStorage.setItem(APP_STORAGE_KEYS.googleRefreshToken, this.refreshToken);
@@ -3857,9 +3920,11 @@
                     body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, code: code, grant_type: 'authorization_code', redirect_uri: this.redirectUri })
                 });
                 if (!response.ok) { throw new Error('Token exchange failed'); }
+                const previousKey = this.activeFolderCacheKey;
                 const tokens = await response.json();
                 this.accessToken = tokens.access_token; this.refreshToken = tokens.refresh_token;
                 this.storeCredentials();
+                this.bindSharedFolderCaches({ previousKey, clearPrevious: true });
             }
             async refreshAccessToken() {
                 if (!this.refreshToken || !this.clientSecret) { throw new Error('No refresh token or client secret available'); }
@@ -4279,6 +4344,7 @@
                 return true;
             }
             async disconnect() {
+                this.invalidateSharedFolderCaches();
                 this.isAuthenticated = false; this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.clearStoredCredentials();
             }
