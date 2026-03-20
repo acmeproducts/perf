@@ -1252,9 +1252,32 @@
         const ALLOWED_VIDEO_MIME_TYPES = new Set([
             'video/mp4',
             'video/quicktime',
-            'video/x-msvideo'
+            'video/x-msvideo',
+            'video/avi',
+            'video/msvideo',
+            'video/vnd.avi',
+            'application/vnd.ms-video',
+            'application/x-msvideo'
         ]);
-        const isAllowedVideoMimeType = (mimeType) => ALLOWED_VIDEO_MIME_TYPES.has((mimeType || '').toLowerCase());
+        const BROWSER_PLAYABLE_VIDEO_MIME_TYPES = new Set([
+            'video/mp4',
+            'video/quicktime'
+        ]);
+        const getFileExtension = (name = '') => {
+            const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
+            return match ? match[1] : '';
+        };
+        const isAllowedVideoMimeType = (mimeType, fileName = '') => {
+            const normalized = (mimeType || '').toLowerCase();
+            if (ALLOWED_VIDEO_MIME_TYPES.has(normalized)) return true;
+            return getFileExtension(fileName) === '.avi';
+        };
+        const isBrowserPlayableVideo = (file = {}) => {
+            const mimeType = (file?.mimeType || '').toLowerCase();
+            if (BROWSER_PLAYABLE_VIDEO_MIME_TYPES.has(mimeType)) return true;
+            const extension = getFileExtension(file?.name || '');
+            return extension === '.mp4' || extension === '.mov' || extension === '.m4v';
+        };
         const GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION = 1;
         const createGoogleDriveFolderCacheEntry = () => ({
             folderImageCountCache: new Map(),
@@ -1832,6 +1855,10 @@
                         complete(true);
                         return;
                     }
+                    if (!isBrowserPlayableVideo(file)) {
+                        complete(false, 'This format is better opened in your provider or device viewer');
+                        return;
+                    }
                     video.pause();
                     video.removeAttribute('poster');
                     video.src = videoUrl || '';
@@ -1891,6 +1918,9 @@
                 if (total > 0) {
                     const percentage = (current / total) * 100;
                     this.elements.loadingProgressBar.style.width = `${percentage}%`;
+                } else {
+                    const pulse = current > 0 ? Math.min(88, 12 + ((current % 12) * 6)) : 8;
+                    this.elements.loadingProgressBar.style.width = `${pulse}%`;
                 }
             }
         };
@@ -4109,11 +4139,11 @@
                     this.folderHasImagesCache.set(folderId, hasImages);
                     return hasImages;
                 }
-                const query = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                const query = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'video/avi' or mimeType = 'video/msvideo' or mimeType = 'video/vnd.avi' or mimeType = 'application/vnd.ms-video' or mimeType = 'application/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
                 const url = `/files?q=${encodeURIComponent(query)}&fields=files(mimeType,shortcutDetails(targetMimeType))&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                 const response = await this.makeApiCall(url, { signal: options.signal });
                 const files = Array.isArray(response?.files) ? response.files : [];
-                const hasImages = files.some(file => isAllowedVideoMimeType(file?.mimeType) || (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file?.shortcutDetails?.targetMimeType)));
+                const hasImages = files.some(file => isAllowedVideoMimeType(file?.mimeType, file?.name || '') || (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file?.shortcutDetails?.targetMimeType)));
                 this.folderHasImagesCache.set(folderId, hasImages);
                 return hasImages;
             }
@@ -4155,7 +4185,7 @@
 
                 let count = 0;
                 let nextPageToken = null;
-                const baseQuery = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                const baseQuery = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'video/avi' or mimeType = 'video/msvideo' or mimeType = 'video/vnd.avi' or mimeType = 'application/vnd.ms-video' or mimeType = 'application/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
 
                 do {
                     let url = `/files?q=${encodeURIComponent(baseQuery)}&fields=files(mimeType,shortcutDetails(targetMimeType)),nextPageToken&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
@@ -4165,11 +4195,11 @@
                     const files = Array.isArray(response.files) ? response.files : [];
 
                     files.forEach(file => {
-                        if (isAllowedVideoMimeType(file?.mimeType)) {
+                        if (isAllowedVideoMimeType(file?.mimeType, file?.name || '')) {
                             count += 1;
                             return;
                         }
-                        if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType)) {
+                        if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType, file?.name || '')) {
                             count += 1;
                         }
                     });
@@ -4186,7 +4216,7 @@
                 const signal = state.activeRequests?.signal;
 
                 do {
-                    const query = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                    const query = `'${folderId}' in parents and trashed=false and (mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/x-msvideo' or mimeType = 'video/avi' or mimeType = 'video/msvideo' or mimeType = 'video/vnd.avi' or mimeType = 'application/vnd.ms-video' or mimeType = 'application/x-msvideo' or mimeType = 'application/vnd.google-apps.shortcut')`;
                     let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webContentLink,webViewLink,appProperties,parents,resourceKey,shortcutDetails(targetId,targetMimeType,targetResourceKey)),nextPageToken&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
@@ -4196,9 +4226,9 @@
                     const shortcutCandidates = [];
 
                     for (const file of files) {
-                        if (isAllowedVideoMimeType(file?.mimeType)) {
+                        if (isAllowedVideoMimeType(file?.mimeType, file?.name || '')) {
                             directImages.push(file);
-                        } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType)) {
+                        } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType, file?.name || '')) {
                             shortcutCandidates.push(file);
                         }
                     }
@@ -4217,7 +4247,7 @@
                             resolvedShortcuts = shortcutCandidates
                                 .map(shortcut => {
                                     const target = targetMap.get(shortcut.shortcutDetails?.targetId);
-                                    if (!target || !isAllowedVideoMimeType(target.mimeType)) { return null; }
+                                    if (!target || !isAllowedVideoMimeType(target.mimeType, target?.name || '')) { return null; }
                                     return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
                                 })
                                 .filter(Boolean);
@@ -4226,7 +4256,7 @@
 
                     allFiles.push(...normalized, ...resolvedShortcuts);
                     nextPageToken = response.nextPageToken;
-                    if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
+                    if (this.onProgressCallback) { this.onProgressCallback({ current: allFiles.length, total: 0, message: 'Fetching from cloud...' }); }
                 } while (nextPageToken);
 
                 return { folders: [], files: allFiles };
@@ -4358,9 +4388,9 @@
                 const shortcutCandidates = [];
 
                 for (const file of rawFiles) {
-                    if (isAllowedVideoMimeType(file?.mimeType)) {
+                    if (isAllowedVideoMimeType(file?.mimeType, file?.name || '')) {
                         directImages.push(file);
-                    } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType)) {
+                    } else if (file?.mimeType === 'application/vnd.google-apps.shortcut' && isAllowedVideoMimeType(file.shortcutDetails?.targetMimeType, file?.name || '')) {
                         shortcutCandidates.push(file);
                     }
                 }
@@ -4384,7 +4414,7 @@
                 const resolvedShortcuts = shortcutCandidates
                     .map(shortcut => {
                         const target = targetMap.get(shortcut.shortcutDetails?.targetId);
-                        if (!target || !isAllowedVideoMimeType(target.mimeType)) { return null; }
+                        if (!target || !isAllowedVideoMimeType(target.mimeType, target?.name || '')) { return null; }
                         return this.normalizeDriveFileMetadata(shortcut, { target, useShortcutId: true });
                     })
                     .filter(Boolean);
@@ -4441,6 +4471,7 @@
                 this.onProgressCallback = null;
                 this.folderImageCountCache = new Map();
                 this.folderHasImagesCache = new Map();
+                this.folderChildCandidateCache = new Map();
                 this.rootFolder = this.loadStoredRootFolder();
                 this.initMSAL();
 
@@ -4496,7 +4527,7 @@
                 while(nextLink) {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: state.activeRequests.signal });
                     const data = await response.json();
-                    const files = data.value.filter(item => item.file && item.file.mimeType && isAllowedVideoMimeType(item.file.mimeType))
+                    const files = data.value.filter(item => item.file && item.file.mimeType && isAllowedVideoMimeType(item.file.mimeType, item.name || ''))
                         .map(item => ({
                             id: item.id, name: item.name, type: 'file', mimeType: item.file.mimeType, size: item.size || 0,
                             createdTime: item.createdDateTime, modifiedTime: item.lastModifiedDateTime,
@@ -4506,7 +4537,7 @@
                         }));
                     allFiles.push(...files);
                     nextLink = data['@odata.nextLink'];
-                    if (this.onProgressCallback) { this.onProgressCallback(allFiles.length); }
+                    if (this.onProgressCallback) { this.onProgressCallback({ current: allFiles.length, total: 0, message: 'Fetching from cloud...' }); }
                 }
                 return { folders: [], files: allFiles };
             }
@@ -4725,7 +4756,7 @@
             }
             async getRootFolderOptions(options = {}) {
                 const rootFolders = await this.getDriveRootFolders(options);
-                const filteredFolders = await this.filterFoldersWithImages(rootFolders, { signal: options.signal || state.activeRequests?.signal });
+                const filteredFolders = await this.filterFoldersWithImages(rootFolders, { signal: options.signal || state.activeRequests?.signal, forceRefresh: options.forceRefresh });
                 return filteredFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             }
             async setRootFolder(folder, options = {}) {
@@ -4774,7 +4805,7 @@
             }
             async loadFoldersInParent(parentId, options = {}) {
                 const cacheKey = Folders.buildFolderCacheKey(this.name, this.getFolderCacheContext(parentId));
-                const cachedEntry = !options.forceRefresh ? Folders.getCachedFolders(cacheKey) : null;
+                const cachedEntry = !options.forceRefresh ? await Folders.getCachedFolders(cacheKey) : null;
                 const cacheIsFresh = cachedEntry && (Date.now() - cachedEntry.updatedAt) < FOLDER_LIST_CACHE_TTL_MS;
                 if (cacheIsFresh) {
                     return cachedEntry.folders;
@@ -4784,16 +4815,94 @@
                 let endpoint = parentId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${parentId}/children`;
                 let nextLink = `${this.apiBase}${endpoint}`;
                 do {
-                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''));
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: options.signal || state.activeRequests?.signal });
                     const data = await response.json();
-                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
+                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0, parentId: folder.parentReference?.id || parentId || 'root' }));
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
                 const sortedFolders = folders.sort((a, b) => a.name.localeCompare(b.name));
-                const filteredFolders = await this.filterFoldersWithImages(sortedFolders, { signal: options.signal || state.activeRequests?.signal });
-                Folders.setCachedFolders(cacheKey, filteredFolders);
+                const filteredFolders = await this.filterFoldersWithImages(sortedFolders, { signal: options.signal || state.activeRequests?.signal, forceRefresh: options.forceRefresh });
+                await Folders.setCachedFolders(cacheKey, filteredFolders);
                 return filteredFolders;
+            }
+            async folderHasDirectAssets(folderId, options = {}) {
+                if (!folderId) return false;
+                const forceRefresh = Boolean(options.forceRefresh);
+                if (!forceRefresh && this.folderImageCountCache.has(folderId)) {
+                    return (this.folderImageCountCache.get(folderId) || 0) > 0;
+                }
+                const signal = options.signal || state.activeRequests?.signal;
+                let count = 0;
+                let nextLink = `${this.apiBase}/me/drive/items/${folderId}/children`;
+                while (nextLink) {
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
+                    const data = await response.json();
+                    const items = Array.isArray(data?.value) ? data.value : [];
+                    for (const item of items) {
+                        if (item?.file && isAllowedVideoMimeType(item.file.mimeType, item.name || '')) {
+                            count += 1;
+                            this.folderImageCountCache.set(folderId, count);
+                            this.folderHasImagesCache.set(folderId, true);
+                            return true;
+                        }
+                    }
+                    nextLink = data['@odata.nextLink'];
+                }
+                this.folderImageCountCache.set(folderId, count);
+                this.folderHasImagesCache.set(folderId, false);
+                return false;
+            }
+            async inspectFolderLevel(folderId, options = {}) {
+                if (!folderId) {
+                    return { imageCount: 0, itemCount: 0, isSelectable: false, hasChildren: false, entryKind: 'empty' };
+                }
+                const forceRefresh = Boolean(options.forceRefresh);
+                if (!forceRefresh && this.folderImageCountCache.has(folderId) && this.folderHasImagesCache.has(folderId) && this.folderChildCandidateCache.has(folderId)) {
+                    const directCount = this.folderImageCountCache.get(folderId) || 0;
+                    const hasBrowsableChildren = Boolean(this.folderChildCandidateCache.get(folderId));
+                    return {
+                        imageCount: directCount,
+                        itemCount: directCount,
+                        isSelectable: directCount > 0,
+                        hasChildren: hasBrowsableChildren,
+                        entryKind: directCount > 0 && hasBrowsableChildren ? 'pseudo' : directCount > 0 ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
+                    };
+                }
+
+                const signal = options.signal || state.activeRequests?.signal;
+                let directCount = 0;
+                let hasBrowsableChildren = false;
+                let nextLink = `${this.apiBase}/me/drive/items/${folderId}/children`;
+                while (nextLink) {
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
+                    const data = await response.json();
+                    const items = Array.isArray(data?.value) ? data.value : [];
+                    const childChecks = [];
+                    for (const item of items) {
+                        if (item?.file && isAllowedVideoMimeType(item.file.mimeType, item.name || '')) {
+                            directCount += 1;
+                        } else if (item?.folder?.childCount > 0) {
+                            childChecks.push(this.folderHasDirectAssets(item.id, { signal, forceRefresh }));
+                        }
+                    }
+                    if (!hasBrowsableChildren && childChecks.length > 0) {
+                        const childResults = await Promise.allSettled(childChecks);
+                        hasBrowsableChildren = childResults.some(result => result.status === 'fulfilled' && result.value);
+                    }
+                    nextLink = data['@odata.nextLink'];
+                }
+
+                this.folderImageCountCache.set(folderId, directCount);
+                this.folderHasImagesCache.set(folderId, directCount > 0 || hasBrowsableChildren);
+                this.folderChildCandidateCache.set(folderId, hasBrowsableChildren);
+                return {
+                    imageCount: directCount,
+                    itemCount: directCount,
+                    isSelectable: directCount > 0,
+                    hasChildren: hasBrowsableChildren,
+                    entryKind: directCount > 0 && hasBrowsableChildren ? 'pseudo' : directCount > 0 ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
+                };
             }
             async filterFoldersWithImages(folders = [], options = {}) {
                 if (!Array.isArray(folders) || folders.length === 0) {
@@ -4805,7 +4914,7 @@
                 const signal = options.signal || state.activeRequests?.signal;
                 Folders.setFolderScanProgress({
                     active: true,
-                    message: 'Scanning folders for videos...',
+                    message: 'Evaluating folders for videos...',
                     current: 0,
                     total: folders.length,
                     currentFolderName: ''
@@ -4818,14 +4927,14 @@
                         try {
                             Folders.setFolderScanProgress({
                                 active: true,
-                                message: 'Scanning folders for videos...',
+                                message: 'Evaluating folders for videos...',
                                 current: processed,
                                 total: folders.length,
                                 currentFolderName: folder.name || ''
                             });
-                            const hasImages = await this.folderBranchHasImages(folder.id, { signal });
-                            if (hasImages) {
-                                results[currentIndex] = { ...folder };
+                            const eligibility = await this.inspectFolderLevel(folder.id, { signal, forceRefresh: options.forceRefresh });
+                            if (eligibility.isSelectable || eligibility.hasChildren) {
+                                results[currentIndex] = { ...folder, ...eligibility };
                             }
                         } catch (error) {
                             console.warn(`Failed OneDrive folder visibility check for ${folder?.id}:`, error);
@@ -4833,7 +4942,7 @@
                             processed += 1;
                             Folders.setFolderScanProgress({
                                 active: true,
-                                message: 'Scanning folders for videos...',
+                                message: 'Evaluating folders for videos...',
                                 current: processed,
                                 total: folders.length,
                                 currentFolderName: folder?.name || ''
@@ -4844,44 +4953,13 @@
                 await Promise.all(workers);
                 return results.filter(Boolean);
             }
-            async folderBranchHasImages(folderId, options = {}) {
-                if (!folderId) return false;
-                if (this.folderHasImagesCache.has(folderId)) {
-                    return this.folderHasImagesCache.get(folderId);
+            async refreshFolderCandidate(folder, options = {}) {
+                if (!folder?.id) return null;
+                const eligibility = await this.inspectFolderLevel(folder.id, { signal: options.signal || state.activeRequests?.signal, forceRefresh: true });
+                if (!eligibility.isSelectable && !eligibility.hasChildren) {
+                    return null;
                 }
-
-                const signal = options.signal || state.activeRequests?.signal;
-                const visited = new Set();
-                const queue = [folderId];
-
-                while (queue.length > 0) {
-                    const currentFolderId = queue.shift();
-                    if (!currentFolderId || visited.has(currentFolderId)) continue;
-                    visited.add(currentFolderId);
-
-                    let nextLink = `${this.apiBase}/me/drive/items/${currentFolderId}/children`;
-                    while (nextLink) {
-                        const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
-                        const data = await response.json();
-                        const items = Array.isArray(data?.value) ? data.value : [];
-
-                        for (const item of items) {
-                            if (isAllowedVideoMimeType(item?.file?.mimeType)) {
-                                this.folderHasImagesCache.set(folderId, true);
-                                this.folderHasImagesCache.set(currentFolderId, true);
-                                return true;
-                            }
-                            if (item?.folder?.childCount > 0) {
-                                queue.push(item.id);
-                            }
-                        }
-
-                        nextLink = data['@odata.nextLink'];
-                    }
-                }
-
-                this.folderHasImagesCache.set(folderId, false);
-                return false;
+                return { ...folder, ...eligibility };
             }
             async drillIntoFolder(folder, options = {}) {
                 const folders = await this.loadFoldersInParent(folder.id, options);
@@ -5076,6 +5154,10 @@
                 } catch (error) {
                     Utils.showToast(`Initialization failed: ${error.message}`, 'error', true);
                     this.returnToFolderSelection();
+                } finally {
+                    if (state.provider) {
+                        state.provider.onProgressCallback = null;
+                    }
                 }
             },
             async loadImages(options = {}) {
@@ -5281,6 +5363,15 @@
                 }
                 Utils.showScreen('loading-screen');
                 Utils.updateLoadingProgress(0, hadCached ? cachedFiles.length : 0, hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                if (state.provider) {
+                    state.provider.onProgressCallback = (progress) => {
+                        const normalized = typeof progress === 'number' ? { current: progress } : (progress || {});
+                        const current = Number(normalized.current || 0);
+                        const total = Number(normalized.total || 0);
+                        const message = normalized.message || (hadCached ? 'Syncing with cloud...' : 'Fetching from cloud...');
+                        Utils.updateLoadingProgress(current, total, message);
+                    };
+                }
 
                 try {
                     const result = await state.provider.getFilesAndMetadata(folderId);
@@ -5288,6 +5379,7 @@
                         return false;
                     }
                     const cloudFiles = result.files || [];
+                    Utils.updateLoadingProgress(cloudFiles.length, cloudFiles.length || (hadCached ? cachedFiles.length : 0), 'Comparing with local cache...');
                     const { mergedFiles, newIds, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(cloudFiles, cachedFiles);
 
                     if (mergedFiles.length === 0) {
@@ -6357,8 +6449,12 @@
                         div.appendChild(fallback);
                     };
                     img.src = Utils.getGridPreviewUrl(file);
-                    div.addEventListener('click', e => this.toggleSelection(e, file.id));
+                    div.addEventListener('click', async event => {
+                        event.preventDefault();
+                        await this.openViewerFromGrid(file.id);
+                    });
                     div.appendChild(img);
+                    div.appendChild(this.createSelectHandle(div, file.id));
                     div.appendChild(this.createDragHandle(div, file.id));
                     fragment.appendChild(div);
                 });
@@ -6371,6 +6467,42 @@
                     container.appendChild(sentinel);
                     if (lazyState.observer) { lazyState.observer.observe(sentinel); }
                 }
+            },
+
+            createSelectHandle(gridItem, fileId) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'grid-select-handle';
+                button.textContent = state.grid.selected.includes(fileId) ? '✓' : '+';
+                button.setAttribute('aria-label', 'Select video');
+                button.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.toggleSelection({ currentTarget: gridItem }, fileId);
+                    button.textContent = state.grid.selected.includes(fileId) ? '✓' : '+';
+                });
+                return button;
+            },
+
+            async openViewerFromGrid(fileId) {
+                if (!fileId) return;
+                const stackName = state.grid.stack || state.currentStack;
+                const stackArray = state.stacks[stackName] || [];
+                const selectedIndex = stackArray.findIndex(file => file.id === fileId);
+                if (selectedIndex === -1) return;
+                const file = stackArray[selectedIndex];
+                if (!isBrowserPlayableVideo(file)) {
+                    const links = Utils.getProviderLinks(file);
+                    const externalUrl = links.providerUrl || links.openUrl || links.downloadUrl;
+                    if (externalUrl && externalUrl !== '#') {
+                        window.open(externalUrl, '_blank', 'noopener');
+                    }
+                    return;
+                }
+                state.currentStack = stackName;
+                state.currentStackPosition = selectedIndex;
+                state.grid.skipReorderOnClose = true;
+                await this.close();
             },
 
             createDragHandle(gridItem, fileId) {
@@ -6675,6 +6807,12 @@
                                Utils.elements.deleteSelected, Utils.elements.folderSelected];
                 Utils.elements.selectionText.textContent = `${count} selected`;
                 buttons.forEach(btn => { if (btn) btn.disabled = (count === 0); });
+                document.querySelectorAll('#grid-container .grid-item').forEach(item => {
+                    const handle = item.querySelector('.grid-select-handle');
+                    if (handle) {
+                        handle.textContent = item.classList.contains('selected') ? '✓' : '+';
+                    }
+                });
             },
 
             selectAll() {
@@ -7862,6 +8000,57 @@
                 }
             },
 
+            findFolderById(folderId) {
+                return (state.folderSearchDataset || []).find(folder => folder?.id === folderId) || null;
+            },
+
+            async browseFolder(folder, options = {}) {
+                if (!folder?.id) return;
+                const contextKey = state.provider?.getFolderCacheContextForParent?.(folder.id) || `parent:${folder.id}`;
+                const cacheKey = this.buildFolderCacheKey(state.providerType, contextKey);
+                await this.loadWithCache({
+                    loader: () => state.provider.drillIntoFolder({ id: folder.id, name: folder.name }, options),
+                    cacheKey,
+                    forceRefresh: Boolean(options.forceRefresh),
+                    loadingMessage: `Loading ${folder.name || 'folder'}...`,
+                    errorMessage: 'Error browsing folder',
+                    retry: () => this.loadWithCache({
+                        loader: () => state.provider.drillIntoFolder({ id: folder.id, name: folder.name }, { forceRefresh: true }),
+                        cacheKey,
+                        forceRefresh: true,
+                        loadingMessage: `Loading ${folder.name || 'folder'}...`,
+                        errorMessage: 'Error browsing folder'
+                    })
+                });
+            },
+
+            async refreshFolderEntry(folderId, folderName = '') {
+                const provider = state.provider;
+                if (!folderId || !provider || typeof provider.refreshFolderCandidate !== 'function') {
+                    await this.load({ forceRefresh: true });
+                    return;
+                }
+                const cacheKey = this.getCurrentCacheKey();
+                const currentEntry = await this.getCachedFolders(cacheKey);
+                const folders = Array.isArray(currentEntry?.folders) ? currentEntry.folders.slice() : (state.folderSearchDataset || []).slice();
+                const index = folders.findIndex(folder => folder?.id === folderId);
+                if (index === -1) return;
+                const original = folders[index];
+                this.setFolderScanProgress({ active: true, message: `Refreshing ${folderName || original.name || 'folder'}...`, current: 0, total: 1, currentFolderName: folderName || original.name || '' });
+                try {
+                    const refreshed = await provider.refreshFolderCandidate(original, { signal: state.activeRequests?.signal });
+                    if (refreshed) {
+                        folders[index] = refreshed;
+                    } else {
+                        folders.splice(index, 1);
+                    }
+                    await this.setCachedFolders(cacheKey, folders);
+                    this.display(folders);
+                } finally {
+                    this.clearFolderScanProgress();
+                }
+            },
+
             display(folders) {
                 const { folderList } = Utils.elements;
                 this.setSearchDataset(folders);
@@ -7884,13 +8073,17 @@
 
                     const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
 
+                    const canBrowse = Boolean(folder.hasChildren);
+                    const canSelect = state.folderRootSelection.active ? true : folder.isSelectable !== false;
                     div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                                      <div class="folder-info">
                                          <div class="folder-name">${folder.name}</div>
                                          <div class="folder-date">${metaInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${!state.folderRootSelection.active && folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         ${canSelect ? `<button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">${state.folderRootSelection.active ? 'Choose' : 'Load'}</button>` : ''}
+                                         ${!state.folderRootSelection.active && canBrowse ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         <button class="folder-action-btn refresh-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">↻</button>
                                      </div>`;
                     fragment.appendChild(div);
                 });
@@ -7898,7 +8091,7 @@
                 this.handleSearchInput(state.folderSearchTerm || '');
             },
 
-            activateFolder(folderId, folderName = '') {
+            async activateFolder(folderId, folderName = '') {
                 if (!folderId) return;
                 if (state.folderMoveMode.active) {
                     this.handleFolderMoveSelection(folderId, folderName || '');
@@ -7908,34 +8101,32 @@
                     Utils.showToast('Provider not ready yet. Please try again.', 'error', true);
                     return;
                 }
+                const folder = this.findFolderById(folderId) || { id: folderId, name: folderName || '' };
                 if (state.folderRootSelection.active) {
                     this.applyRootSelection({ id: folderId, name: folderName || '' });
+                    return;
+                }
+                if (folder.isSelectable === false && folder.hasChildren) {
+                    await this.browseFolder(folder);
                     return;
                 }
                 App.initializeWithProvider(state.providerType, folderId, folderName || '', state.provider);
             },
 
             async handleFolderListClick(event) {
+                const refreshButton = event.target.closest('.refresh-btn');
+                if (refreshButton) {
+                    event.stopPropagation();
+                    await this.refreshFolderEntry(refreshButton.dataset.folderId || '', refreshButton.dataset.folderName || '');
+                    return;
+                }
+
                 const drillButton = event.target.closest('.drill-btn');
                 if (drillButton) {
                     event.stopPropagation();
                     try {
-                        const { folderId, folderName } = drillButton.dataset;
-                        const contextKey = state.provider?.getFolderCacheContextForParent?.(folderId) || `parent:${folderId}`;
-                        const cacheKey = this.buildFolderCacheKey(state.providerType, contextKey);
-                        await this.loadWithCache({
-                            loader: () => state.provider.drillIntoFolder({ id: folderId, name: folderName }),
-                            cacheKey,
-                            loadingMessage: `Loading ${folderName || 'folder'}...`,
-                            errorMessage: 'Error browsing folder',
-                            retry: () => this.loadWithCache({
-                                loader: () => state.provider.drillIntoFolder({ id: folderId, name: folderName }, { forceRefresh: true }),
-                                cacheKey,
-                                forceRefresh: true,
-                                loadingMessage: `Loading ${folderName || 'folder'}...`,
-                                errorMessage: 'Error browsing folder'
-                            })
-                        });
+                        const folder = this.findFolderById(drillButton.dataset.folderId || '') || { id: drillButton.dataset.folderId || '', name: drillButton.dataset.folderName || '' };
+                        await this.browseFolder(folder);
                     } catch (error) {
                         Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
                     }
@@ -7947,7 +8138,7 @@
                 const item = folderAction.closest('.folder-item');
                 const folderId = folderAction.dataset.folderId || item?.dataset.folderId || '';
                 const folderName = folderAction.dataset.folderName || item?.dataset.folderName || '';
-                this.activateFolder(folderId, folderName);
+                await this.activateFolder(folderId, folderName);
             },
 
             setSearchDataset(folders = []) {
@@ -8041,7 +8232,7 @@
                     const label = itemCount === 1 ? 'video' : 'videos';
                     parts.push(`${itemCount} ${label}`);
                 } else {
-                    parts.push('Images pending');
+                    parts.push(folder?.isSelectable === false ? 'Browse child folders' : 'Videos pending');
                 }
 
                 const timestamp = folder?.modifiedTime || folder?.createdTime || null;
@@ -8056,7 +8247,7 @@
                     parts.push('Contains subfolders');
                 }
 
-                return parts.length > 0 ? parts.join(' • ') : 'No recent activity';
+                return parts.length > 0 ? parts.join(' • ') : (folder?.isSelectable === false ? 'Browse child folders' : 'No recent activity');
             },
 
             renderFolderLoadingState() {
