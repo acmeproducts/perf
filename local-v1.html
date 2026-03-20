@@ -826,9 +826,10 @@
   <script>
     (() => {
       const DB_NAME = 'local-library-v1';
-      const DB_VERSION = 1;
+      const DB_VERSION = 2;
       const METADATA_STORE = 'metadata';
       const HANDLE_STORE = 'handles';
+      const SESSION_STORE = 'sessions';
       const SUPPORTED_KIND_ORDER = ['video', 'image', 'pdf', 'html'];
       const ICONS = { video: 'Video', image: 'Image', pdf: 'PDF', html: 'HTML' };
       const state = {
@@ -841,6 +842,7 @@
         savedHandlesSupported: false,
         savedHandlesAvailable: [],
         platform: detectPlatform(),
+        sessionSaveTimer: null,
       };
 
       const elements = {
@@ -920,6 +922,7 @@
         renderCapabilities();
         renderPlatformGuidance();
         await loadSavedHandles();
+        await restoreSessionState();
         bindEvents();
         renderAll();
       }
@@ -1245,6 +1248,7 @@
         if (!state.selectedId && state.items.length) {
           state.selectedId = state.items[0].id;
         }
+        queueSessionSave();
       }
 
       function setMode(mode) {
@@ -1260,13 +1264,14 @@
         elements.appView.classList.remove('hidden');
       }
 
-      function resetSession() {
+      async function resetSession() {
         cleanupPreview();
         state.items = [];
         state.selectedId = null;
         state.selectedIds.clear();
         state.mode = 'focus';
         renderAll();
+        await clearSessionState();
         setStatus(elements.runtimeStatus, 'Session reset. IndexedDB metadata remains local for future re-selection.', 'warning');
       }
 
@@ -1579,6 +1584,7 @@
           favorite: elements.favoriteInput.checked,
         });
         await setMetadata(item.id, item.metadata);
+        queueSessionSave();
         renderAll();
         setStatus(elements.runtimeStatus, `Saved local metadata for ${item.fileName}.`, 'success');
       }
@@ -1610,6 +1616,7 @@
 
         bulkFavoriteToggleState = false;
         elements.bulkFavoriteBtn.textContent = 'Toggle favorite';
+        queueSessionSave();
         setStatus(elements.runtimeStatus, `Applied bulk metadata to ${state.selectedIds.size} item${state.selectedIds.size === 1 ? '' : 's'}.`, 'success');
         renderAll();
       }
@@ -1625,6 +1632,7 @@
           state.selectedId = state.items[0]?.id || null;
         }
         state.selectedIds.clear();
+        queueSessionSave();
         renderAll();
         setStatus(elements.runtimeStatus, `Removed ${removed} item${removed === 1 ? '' : 's'} from the current session view. Files remain untouched on disk.`, 'warning');
       }
@@ -1637,6 +1645,7 @@
         state.selectedIds.delete(item.id);
         const nextIndex = Math.min(currentIndex, Math.max(state.items.length - 1, 0));
         state.selectedId = state.items[nextIndex]?.id || null;
+        queueSessionSave();
         renderAll();
         setStatus(elements.runtimeStatus, `${item.fileName} was removed from this app session only.`, 'warning');
       }
@@ -1724,6 +1733,9 @@
               if (!db.objectStoreNames.contains(HANDLE_STORE)) {
                 db.createObjectStore(HANDLE_STORE);
               }
+              if (!db.objectStoreNames.contains(SESSION_STORE)) {
+                db.createObjectStore(SESSION_STORE);
+              }
             };
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
@@ -1774,6 +1786,61 @@
 
       async function setMetadata(key, metadata) {
         return idbSet(METADATA_STORE, key, metadata);
+      }
+
+      function serializeSessionState() {
+        return {
+          items: state.items.map((item) => ({
+            ...item,
+            metadata: normalizeMetadata(item.metadata || {}),
+            app: { ...(item.app || {}) },
+          })),
+          selectedId: state.selectedId,
+          mode: state.mode,
+          selectedIds: Array.from(state.selectedIds),
+          updatedAt: Date.now(),
+        };
+      }
+
+      function queueSessionSave() {
+        if (state.sessionSaveTimer) {
+          clearTimeout(state.sessionSaveTimer);
+        }
+        state.sessionSaveTimer = setTimeout(() => {
+          state.sessionSaveTimer = null;
+          persistSessionState().catch((error) => console.warn('Failed to persist local session state', error));
+        }, 120);
+      }
+
+      async function persistSessionState() {
+        await idbSet(SESSION_STORE, 'current', serializeSessionState());
+      }
+
+      async function clearSessionState() {
+        await idbSet(SESSION_STORE, 'current', { items: [], selectedId: null, mode: 'focus', selectedIds: [], updatedAt: Date.now() });
+      }
+
+      async function restoreSessionState() {
+        try {
+          const session = await idbGet(SESSION_STORE, 'current');
+          if (!session || !Array.isArray(session.items) || !session.items.length) {
+            return;
+          }
+          state.items = session.items.map((item) => ({
+            ...item,
+            metadata: normalizeMetadata(item.metadata || {}),
+            app: { ...(item.app || {}) },
+          }));
+          state.selectedIds = new Set((session.selectedIds || []).filter((id) => state.items.some((item) => item.id === id)));
+          state.selectedId = state.items.some((item) => item.id === session.selectedId)
+            ? session.selectedId
+            : state.items[0]?.id || null;
+          state.mode = session.mode === 'grid' ? 'grid' : 'focus';
+          revealApp();
+          setStatus(activeStatusElement(), `Restored ${state.items.length} item${state.items.length === 1 ? '' : 's'} from the last local folder scan.`, 'success');
+        } catch (error) {
+          console.warn('Failed to restore persisted local session state', error);
+        }
       }
 
       async function saveHandleEntry(entry) {
