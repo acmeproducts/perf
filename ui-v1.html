@@ -273,6 +273,42 @@
         .folder-action-btn.drill-btn:hover { background: rgba(245, 158, 11, 0.2); }
         .folder-action-btn.select-btn { border-color: rgba(16, 185, 129, 0.4); color: #10b981; }
         .folder-action-btn.select-btn:hover { background: rgba(16, 185, 129, 0.2); }
+        .folder-loading-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 180px;
+            padding: 24px;
+        }
+        .folder-loading-card {
+            width: 100%;
+            max-width: 420px;
+            padding: 18px 20px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+        }
+        .folder-loading-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .folder-loading-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .folder-loading-detail {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.72);
+        }
+        .folder-loading-name {
+            font-size: 13px;
+            color: var(--accent);
+            margin-top: 10px;
+            word-break: break-word;
+        }
 
         .spinner {
             width: 20px; height: 20px; border: 2px solid rgba(245, 158, 11, 0.3);
@@ -1220,6 +1256,7 @@
             folderSearchDataset: [],
             folderSearchTerm: '',
             folderListCache: new Map(),
+            folderScanProgress: { active: false, message: '', current: 0, total: 0, currentFolderName: '' },
             storageStatus: { available: true, reason: null },
             googleDriveFolderCacheStore: {
                 schemaVersion: GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION,
@@ -3994,6 +4031,14 @@
                 const signal = options.signal || state?.activeRequests?.signal;
                 const results = new Array(folders.length);
                 let index = 0;
+                let processed = 0;
+                Folders.setFolderScanProgress({
+                    active: true,
+                    message: 'Scanning folders for images...',
+                    current: 0,
+                    total: folders.length,
+                    currentFolderName: ''
+                });
                 const maxConcurrency = Math.min(4, folders.length);
                 const workers = Array.from({ length: maxConcurrency }, () => (async () => {
                     while (index < folders.length) {
@@ -4001,6 +4046,13 @@
                         const folder = folders[currentIndex];
                         if (!folder) continue;
                         try {
+                            Folders.setFolderScanProgress({
+                                active: true,
+                                message: 'Scanning folders for images...',
+                                current: processed,
+                                total: folders.length,
+                                currentFolderName: folder.name || ''
+                            });
                             const hasImages = await this.folderHasImages(folder.id, { signal });
                             if (hasImages) {
                                 const cachedCount = this.folderImageCountCache.get(folder.id);
@@ -4012,6 +4064,15 @@
                             }
                         } catch (error) {
                             console.warn(`Failed folder visibility check for ${folder?.id}:`, error);
+                        } finally {
+                            processed += 1;
+                            Folders.setFolderScanProgress({
+                                active: true,
+                                message: 'Scanning folders for images...',
+                                current: processed,
+                                total: folders.length,
+                                currentFolderName: folder?.name || ''
+                            });
                         }
                     }
                 })());
@@ -4035,9 +4096,6 @@
                 const response = await this.makeApiCall(url, { signal: options.signal });
                 const files = Array.isArray(response?.files) ? response.files : [];
                 const hasImages = files.some(file => file?.mimeType?.startsWith('image/') || (file?.mimeType === 'application/vnd.google-apps.shortcut' && file?.shortcutDetails?.targetMimeType?.startsWith('image/')));
-                if (hasImages && typeof cachedCount !== 'number') {
-                    this.folderImageCountCache.set(folderId, 1);
-                }
                 this.folderHasImagesCache.set(folderId, hasImages);
                 return hasImages;
             }
@@ -4363,6 +4421,8 @@
                 this.currentParentPath = '';
                 this.breadcrumb = [];
                 this.onProgressCallback = null;
+                this.folderImageCountCache = new Map();
+                this.folderHasImagesCache = new Map();
                 this.initMSAL();
 
                 const accounts = this.msalInstance.getAllAccounts();
@@ -4593,8 +4653,97 @@
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
                 const sortedFolders = folders.sort((a, b) => a.name.localeCompare(b.name));
-                Folders.setCachedFolders(cacheKey, sortedFolders);
-                return sortedFolders;
+                const filteredFolders = await this.filterFoldersWithImages(sortedFolders, { signal: options.signal || state.activeRequests?.signal });
+                Folders.setCachedFolders(cacheKey, filteredFolders);
+                return filteredFolders;
+            }
+            async filterFoldersWithImages(folders = [], options = {}) {
+                if (!Array.isArray(folders) || folders.length === 0) {
+                    return Array.isArray(folders) ? folders.slice() : [];
+                }
+                const results = new Array(folders.length);
+                let index = 0;
+                let processed = 0;
+                const signal = options.signal || state.activeRequests?.signal;
+                Folders.setFolderScanProgress({
+                    active: true,
+                    message: 'Scanning folders for images...',
+                    current: 0,
+                    total: folders.length,
+                    currentFolderName: ''
+                });
+                const workers = Array.from({ length: Math.min(4, folders.length) }, () => (async () => {
+                    while (index < folders.length) {
+                        const currentIndex = index++;
+                        const folder = folders[currentIndex];
+                        if (!folder?.id) continue;
+                        try {
+                            Folders.setFolderScanProgress({
+                                active: true,
+                                message: 'Scanning folders for images...',
+                                current: processed,
+                                total: folders.length,
+                                currentFolderName: folder.name || ''
+                            });
+                            const hasImages = await this.folderBranchHasImages(folder.id, { signal });
+                            if (hasImages) {
+                                results[currentIndex] = { ...folder };
+                            }
+                        } catch (error) {
+                            console.warn(`Failed OneDrive folder visibility check for ${folder?.id}:`, error);
+                        } finally {
+                            processed += 1;
+                            Folders.setFolderScanProgress({
+                                active: true,
+                                message: 'Scanning folders for images...',
+                                current: processed,
+                                total: folders.length,
+                                currentFolderName: folder?.name || ''
+                            });
+                        }
+                    }
+                })());
+                await Promise.all(workers);
+                return results.filter(Boolean);
+            }
+            async folderBranchHasImages(folderId, options = {}) {
+                if (!folderId) return false;
+                if (this.folderHasImagesCache.has(folderId)) {
+                    return this.folderHasImagesCache.get(folderId);
+                }
+
+                const signal = options.signal || state.activeRequests?.signal;
+                const visited = new Set();
+                const queue = [folderId];
+
+                while (queue.length > 0) {
+                    const currentFolderId = queue.shift();
+                    if (!currentFolderId || visited.has(currentFolderId)) continue;
+                    visited.add(currentFolderId);
+
+                    let nextLink = `${this.apiBase}/me/drive/items/${currentFolderId}/children`;
+                    while (nextLink) {
+                        const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
+                        const data = await response.json();
+                        const items = Array.isArray(data?.value) ? data.value : [];
+
+                        for (const item of items) {
+                            if (item?.file?.mimeType?.startsWith('image/')) {
+                                this.folderHasImagesCache.set(folderId, true);
+                                this.folderHasImagesCache.set(currentFolderId, true);
+                                return true;
+                            }
+                            if (item?.folder?.childCount > 0) {
+                                queue.push(item.id);
+                            }
+                        }
+
+                        nextLink = data['@odata.nextLink'];
+                    }
+                }
+
+                this.folderHasImagesCache.set(folderId, false);
+                return false;
             }
             async drillIntoFolder(folder, options = {}) {
                 const folders = await this.loadFoldersInParent(folder.id, options);
@@ -5298,6 +5447,10 @@
                 } catch (error) {
                     console.warn('Failed to persist last folder:', error);
                 }
+                Folders.updateCachedFolderStats(state.providerType, state.currentFolder.id, {
+                    imageCount: fileCount,
+                    modifiedTime: payload.lastUpdated
+                });
                 Folders.updateLastFolderBanner();
             },
             isNavigationActive(token = null) {
@@ -7529,15 +7682,17 @@ this.updateImageCounters();
                 const { folderList } = Utils.elements;
                 const cachedEntry = this.getCachedFolders(cacheKey);
                 const cacheIsFresh = cachedEntry && (Date.now() - cachedEntry.updatedAt) < FOLDER_LIST_CACHE_TTL_MS;
+                this.setFolderScanProgress({ active: true, message: loadingMessage, current: 0, total: 0, currentFolderName: '' });
 
                 if (cachedEntry) {
                     this.display(cachedEntry.folders);
                     this.updateNavigation();
                 } else {
-                    folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>${loadingMessage}</span></div>`;
+                    this.renderFolderLoadingState();
                 }
 
                 if (cachedEntry && cacheIsFresh && !forceRefresh) {
+                    this.clearFolderScanProgress();
                     return cachedEntry.folders;
                 }
 
@@ -7548,8 +7703,10 @@ this.updateImageCounters();
                     }
                     this.setCachedFolders(cacheKey, folders);
                     this.updateNavigation();
+                    this.clearFolderScanProgress();
                     return folders;
                 } catch (error) {
+                    this.clearFolderScanProgress();
                     if (cachedEntry) {
                         Utils.showToast(`${errorMessage}: ${error.message}. Showing cached folders.`, 'info', true);
                         this.updateNavigation();
@@ -7580,7 +7737,7 @@ this.updateImageCounters();
                 this.resetSearch({ keepInput: false });
                 folderList.innerHTML = '';
                 if (!folders || folders.length === 0) {
-                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
+                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders with images found</span></div>`;
                     this.handleSearchInput('');
                     return;
                 }
@@ -7603,7 +7760,6 @@ this.updateImageCounters();
                                      </div>
                                      <div class="folder-actions">
                                          ${folder.hasChildren ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
-                                         <button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Select</button>
                                      </div>`;
                     fragment.appendChild(div);
                 });
@@ -7749,6 +7905,8 @@ this.updateImageCounters();
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     const label = itemCount === 1 ? 'image' : 'images';
                     parts.push(`${itemCount} ${label}`);
+                } else {
+                    parts.push('Images pending');
                 }
 
                 const timestamp = folder?.modifiedTime || folder?.createdTime || null;
@@ -7764,6 +7922,68 @@ this.updateImageCounters();
                 }
 
                 return parts.length > 0 ? parts.join(' • ') : 'No recent activity';
+            },
+
+            renderFolderLoadingState() {
+                const { folderList } = Utils.elements;
+                if (!folderList) return;
+                const scan = state.folderScanProgress || {};
+                const title = scan.message || 'Loading folders...';
+                const total = Number(scan.total) > 0 ? scan.total : null;
+                const current = Number(scan.current) > 0 ? scan.current : 0;
+                const detail = total ? `Reading folders ${Math.min(current, total)} of ${total}` : 'Reading folder tree…';
+                const currentName = scan.currentFolderName ? `<div class="folder-loading-name">Current: ${scan.currentFolderName}</div>` : '';
+                folderList.innerHTML = `<div class="folder-loading-state">
+                    <div class="folder-loading-card">
+                        <div class="folder-loading-header">
+                            <div class="spinner"></div>
+                            <div>
+                                <div class="folder-loading-title">${title}</div>
+                                <div class="folder-loading-detail">${detail}</div>
+                            </div>
+                        </div>
+                        ${currentName}
+                    </div>
+                </div>`;
+            },
+
+            setFolderScanProgress(progress = {}) {
+                state.folderScanProgress = {
+                    active: progress.active !== false,
+                    message: progress.message || state.folderScanProgress?.message || 'Loading folders...',
+                    current: Number(progress.current) || 0,
+                    total: Number(progress.total) || 0,
+                    currentFolderName: progress.currentFolderName || ''
+                };
+                if (!this.getCachedFolders(this.getCurrentCacheKey())) {
+                    this.renderFolderLoadingState();
+                }
+                this.updateNavigation();
+            },
+
+            clearFolderScanProgress() {
+                state.folderScanProgress = { active: false, message: '', current: 0, total: 0, currentFolderName: '' };
+                this.updateNavigation();
+            },
+
+            updateCachedFolderStats(providerType, folderId, stats = {}) {
+                if (!providerType || !folderId) return;
+                for (const [cacheKey, entry] of state.folderListCache.entries()) {
+                    if (!cacheKey.startsWith(`${providerType}::`) || !entry || !Array.isArray(entry.folders)) continue;
+                    let changed = false;
+                    entry.folders = entry.folders.map(folder => {
+                        if (folder?.id !== folderId) return folder;
+                        changed = true;
+                        return {
+                            ...folder,
+                            ...(typeof stats.imageCount === 'number' ? { imageCount: stats.imageCount, itemCount: stats.imageCount } : {}),
+                            ...(stats.modifiedTime ? { modifiedTime: stats.modifiedTime } : {})
+                        };
+                    });
+                    if (changed) {
+                        entry.updatedAt = Date.now();
+                    }
+                }
             },
 
             handleSearchSelection(folder) {
@@ -7830,8 +8050,16 @@ this.updateImageCounters();
             updateNavigation() {
                 const { folderSubtitle, folderRefreshButton } = Utils.elements;
                 const provider = state.provider;
+                const scan = state.folderScanProgress;
 
-                if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
+                if (scan?.active) {
+                    const total = Number(scan.total) > 0 ? scan.total : null;
+                    const current = Number(scan.current) > 0 ? scan.current : 0;
+                    const progressText = total ? `${Math.min(current, total)} of ${total}` : 'Scanning folders';
+                    const activeName = scan.currentFolderName ? ` • ${scan.currentFolderName}` : '';
+                    folderSubtitle.textContent = `${scan.message || 'Loading folders...'} (${progressText})${activeName}`;
+                    folderSubtitle.classList.remove('hidden');
+                } else if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
                     folderSubtitle.textContent = `Current: ${provider.getCurrentPath()}`;
                     folderSubtitle.classList.remove('hidden');
                 } else {
