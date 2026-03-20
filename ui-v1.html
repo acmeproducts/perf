@@ -1189,6 +1189,7 @@
             return null;
         };
         const OMNI_SEARCH_RESULT_LIMIT = 8;
+        const FOLDER_LIST_CACHE_TTL_MS = 60 * 1000;
         const createDefaultGridDragSession = () => ({
             active: false,
             pointerId: null,
@@ -1218,6 +1219,7 @@
             lastPickedFolder: loadLastFolderFromStorage(),
             folderSearchDataset: [],
             folderSearchTerm: '',
+            folderListCache: new Map(),
             storageStatus: { available: true, reason: null },
             googleDriveFolderCacheStore: {
                 schemaVersion: GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION,
@@ -4548,13 +4550,38 @@
                 if (downloadsFolder) { return downloadsFolder; }
                 return { id: 'root', name: 'Root', folder: true };
             }
-            async getFolders() {
-                const downloadsFolder = await this.getDownloadsFolder();
-                this.currentParentId = downloadsFolder.id; this.currentParentPath = downloadsFolder.name;
-                this.breadcrumb = [{ id: downloadsFolder.id, name: downloadsFolder.name }];
-                return await this.loadFoldersInParent(downloadsFolder.id);
+            getFolderCacheContext(parentId = this.currentParentId) {
+                if (parentId) {
+                    return `parent:${parentId}`;
+                }
+                return 'root';
             }
-            async loadFoldersInParent(parentId) {
+            getFolderCacheContextForParent(parentId) {
+                return this.getFolderCacheContext(parentId);
+            }
+            getParentCacheContext() {
+                if (this.breadcrumb.length <= 1) {
+                    return this.getFolderCacheContext();
+                }
+                const parentFolder = this.breadcrumb[this.breadcrumb.length - 2];
+                return this.getFolderCacheContext(parentFolder?.id);
+            }
+            async getFolders(options = {}) {
+                const downloadsFolder = await this.getDownloadsFolder();
+                const folders = await this.loadFoldersInParent(downloadsFolder.id, options);
+                this.currentParentId = downloadsFolder.id;
+                this.currentParentPath = downloadsFolder.name;
+                this.breadcrumb = [{ id: downloadsFolder.id, name: downloadsFolder.name }];
+                return folders;
+            }
+            async loadFoldersInParent(parentId, options = {}) {
+                const cacheKey = Folders.buildFolderCacheKey(this.name, this.getFolderCacheContext(parentId));
+                const cachedEntry = !options.forceRefresh ? Folders.getCachedFolders(cacheKey) : null;
+                const cacheIsFresh = cachedEntry && (Date.now() - cachedEntry.updatedAt) < FOLDER_LIST_CACHE_TTL_MS;
+                if (cacheIsFresh) {
+                    return cachedEntry.folders;
+                }
+
                 const folders = [];
                 let endpoint = parentId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${parentId}/children`;
                 let nextLink = `${this.apiBase}${endpoint}`;
@@ -4565,21 +4592,29 @@
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
-                return folders.sort((a, b) => a.name.localeCompare(b.name));
+                const sortedFolders = folders.sort((a, b) => a.name.localeCompare(b.name));
+                Folders.setCachedFolders(cacheKey, sortedFolders);
+                return sortedFolders;
             }
-            async drillIntoFolder(folder) {
-                this.breadcrumb.push({ id: folder.id, name: folder.name });
+            async drillIntoFolder(folder, options = {}) {
+                const folders = await this.loadFoldersInParent(folder.id, options);
+                const nextBreadcrumb = this.breadcrumb[this.breadcrumb.length - 1]?.id === folder.id
+                    ? [...this.breadcrumb]
+                    : [...this.breadcrumb, { id: folder.id, name: folder.name }];
+                this.breadcrumb = nextBreadcrumb;
                 this.currentParentId = folder.id;
-                this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
-                return await this.loadFoldersInParent(folder.id);
+                this.currentParentPath = nextBreadcrumb.map(b => b.name).join(' / ');
+                return folders;
             }
-            async navigateToParent() {
-                if (this.breadcrumb.length <= 1) { return await this.getFolders(); }
-                this.breadcrumb.pop();
-                const parentFolder = this.breadcrumb[this.breadcrumb.length - 1];
+            async navigateToParent(options = {}) {
+                if (this.breadcrumb.length <= 1) { return await this.getFolders(options); }
+                const nextBreadcrumb = this.breadcrumb.slice(0, -1);
+                const parentFolder = nextBreadcrumb[nextBreadcrumb.length - 1];
+                const folders = await this.loadFoldersInParent(parentFolder.id, options);
+                this.breadcrumb = nextBreadcrumb;
                 this.currentParentId = parentFolder.id;
-                this.currentParentPath = this.breadcrumb.map(b => b.name).join(' / ');
-                return await this.loadFoldersInParent(parentFolder.id);
+                this.currentParentPath = nextBreadcrumb.map(b => b.name).join(' / ');
+                return folders;
             }
             getCurrentPath() { return this.currentParentPath; }
             canGoUp() { return this.breadcrumb.length > 1; }
@@ -7423,24 +7458,119 @@ this.updateImageCounters();
             }
         };
         const Folders = {
-            async load() {
+            async load(options = {}) {
+                const { forceRefresh = false } = options;
                 const { folderList, folderTitle } = Utils.elements;
                 folderTitle.textContent = `${state.providerType === 'googledrive' ? 'Google Drive' : 'OneDrive'} - Select Folder`;
-                folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>Loading folders...</span></div>`;
                 this.updateLastFolderBanner();
                 this.resetSearch();
                 this.setSearchDataset([]);
-                try {
-                    const folders = await state.provider.getFolders();
-                    this.display(folders);
+                await this.loadWithCache({
+                    loader: () => state.provider.getFolders({ forceRefresh }),
+                    cacheKey: this.getCurrentCacheKey(),
+                    forceRefresh,
+                    loadingMessage: 'Loading folders...',
+                    errorMessage: 'Error loading folders',
+                    retry: () => this.load({ forceRefresh: true })
+                });
+            },
+
+            getCurrentCacheKey() {
+                const provider = state.provider;
+                const contextKey = provider && typeof provider.getFolderCacheContext === 'function'
+                    ? provider.getFolderCacheContext()
+                    : 'root';
+                return this.buildFolderCacheKey(state.providerType, contextKey);
+            },
+
+            buildFolderCacheKey(providerType, contextKey = 'root') {
+                return `${providerType || 'unknown'}::${contextKey || 'root'}`;
+            },
+
+            getCachedFolders(cacheKey) {
+                if (!cacheKey) return null;
+                const entry = state.folderListCache.get(cacheKey);
+                if (!entry || !Array.isArray(entry.folders)) return null;
+                return entry;
+            },
+
+            setCachedFolders(cacheKey, folders = []) {
+                if (!cacheKey) return;
+                state.folderListCache.set(cacheKey, {
+                    folders: Array.isArray(folders) ? folders.map(folder => ({ ...folder })) : [],
+                    updatedAt: Date.now()
+                });
+            },
+
+            foldersChanged(previousFolders = [], nextFolders = []) {
+                const normalize = (folders = []) => JSON.stringify(
+                    (Array.isArray(folders) ? folders : []).map(folder => ({
+                        id: folder?.id || '',
+                        name: folder?.name || '',
+                        createdTime: folder?.createdTime || '',
+                        modifiedTime: folder?.modifiedTime || '',
+                        imageCount: folder?.imageCount ?? null,
+                        itemCount: folder?.itemCount ?? null,
+                        hasChildren: Boolean(folder?.hasChildren)
+                    }))
+                );
+                return normalize(previousFolders) !== normalize(nextFolders);
+            },
+
+            async loadWithCache(options = {}) {
+                const {
+                    loader,
+                    cacheKey,
+                    forceRefresh = false,
+                    loadingMessage = 'Loading folders...',
+                    errorMessage = 'Error loading folders',
+                    retry = null
+                } = options;
+                const { folderList } = Utils.elements;
+                const cachedEntry = this.getCachedFolders(cacheKey);
+                const cacheIsFresh = cachedEntry && (Date.now() - cachedEntry.updatedAt) < FOLDER_LIST_CACHE_TTL_MS;
+
+                if (cachedEntry) {
+                    this.display(cachedEntry.folders);
                     this.updateNavigation();
+                } else {
+                    folderList.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><div class="spinner"></div><span>${loadingMessage}</span></div>`;
+                }
+
+                if (cachedEntry && cacheIsFresh && !forceRefresh) {
+                    return cachedEntry.folders;
+                }
+
+                try {
+                    const folders = await loader();
+                    if (!cachedEntry || this.foldersChanged(cachedEntry.folders, folders)) {
+                        this.display(folders);
+                    }
+                    this.setCachedFolders(cacheKey, folders);
+                    this.updateNavigation();
+                    return folders;
                 } catch (error) {
-                    Utils.showToast(`Error loading folders: ${error.message}`, 'error', true);
+                    if (cachedEntry) {
+                        Utils.showToast(`${errorMessage}: ${error.message}. Showing cached folders.`, 'info', true);
+                        this.updateNavigation();
+                        return cachedEntry.folders;
+                    }
+                    Utils.showToast(`${errorMessage}: ${error.message}`, 'error', true);
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">
                                                 <span>Failed to load folders.</span>
                                                 <button id="retry-folders" class="folder-action-btn" style="margin-top: 15px;">Retry</button>
                                             </div>`;
-                    document.getElementById('retry-folders').addEventListener('click', () => this.load());
+                    const retryButton = document.getElementById('retry-folders');
+                    if (retryButton) {
+                        retryButton.addEventListener('click', () => {
+                            if (typeof retry === 'function') {
+                                retry();
+                            } else {
+                                this.load({ forceRefresh: true });
+                            }
+                        });
+                    }
+                    return [];
                 }
             },
 
@@ -7500,9 +7630,21 @@ this.updateImageCounters();
                     event.stopPropagation();
                     try {
                         const { folderId, folderName } = drillButton.dataset;
-                        const subfolders = await state.provider.drillIntoFolder({ id: folderId, name: folderName });
-                        this.display(subfolders);
-                        this.updateNavigation();
+                        const contextKey = state.provider?.getFolderCacheContextForParent?.(folderId) || `parent:${folderId}`;
+                        const cacheKey = this.buildFolderCacheKey(state.providerType, contextKey);
+                        await this.loadWithCache({
+                            loader: () => state.provider.drillIntoFolder({ id: folderId, name: folderName }),
+                            cacheKey,
+                            loadingMessage: `Loading ${folderName || 'folder'}...`,
+                            errorMessage: 'Error browsing folder',
+                            retry: () => this.loadWithCache({
+                                loader: () => state.provider.drillIntoFolder({ id: folderId, name: folderName }, { forceRefresh: true }),
+                                cacheKey,
+                                forceRefresh: true,
+                                loadingMessage: `Loading ${folderName || 'folder'}...`,
+                                errorMessage: 'Error browsing folder'
+                            })
+                        });
                     } catch (error) {
                         Utils.showToast(`Error browsing folder: ${error.message}`, 'error', true);
                     }
@@ -7934,11 +8076,15 @@ this.updateImageCounters();
                     try {
                         const provider = state.provider;
                         if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
-                            const folders = await provider.navigateToParent();
-                            Folders.display(folders);
-                            Folders.updateNavigation();
+                            const parentContext = provider.getParentCacheContext?.() || 'root';
+                            await Folders.loadWithCache({
+                                loader: () => provider.navigateToParent(),
+                                cacheKey: Folders.buildFolderCacheKey(state.providerType, parentContext),
+                                loadingMessage: 'Loading parent folders...',
+                                errorMessage: 'Folder navigation failed'
+                            });
                         } else {
-                            await Folders.load();
+                            await Folders.load({ forceRefresh: true });
                         }
                     } catch (error) {
                         Utils.showToast(`Folder navigation failed: ${error.message}`, 'error', true);
