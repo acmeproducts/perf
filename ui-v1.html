@@ -980,7 +980,7 @@
             <div class="folder-root-filter hidden" id="folder-root-filter">
                 <label class="folder-root-filter-label" for="folder-root-parent-select">Level 1 folder</label>
                 <select class="input folder-root-filter-select" id="folder-root-parent-select" aria-label="Filter by OneDrive level 1 folder">
-                    <option value="">Choose a level 1 folder…</option>
+                    <option value="">Choose a level 1 folder or OneDrive root…</option>
                 </select>
             </div>
             <div class="folder-sort-controls">
@@ -4879,16 +4879,47 @@
                 }
                 return folders;
             }
+            async getDriveRootFolder(options = {}) {
+                const response = await this.makeApiCall('/me/drive/root', { signal: options.signal });
+                const item = await response.json();
+                return {
+                    id: 'root',
+                    name: item?.name || 'Drive root',
+                    type: 'folder',
+                    createdTime: item?.createdDateTime || null,
+                    modifiedTime: item?.lastModifiedDateTime || null,
+                    itemCount: item?.folder?.childCount || 0,
+                    hasChildren: (item?.folder?.childCount || 0) > 0,
+                    parentId: null,
+                    isDriveRootOption: true
+                };
+            }
             async getDownloadsFolder(options = {}) {
                 const folders = await this.getDriveRootFolders(options);
                 const downloadsFolder = folders.find(item => ['downloads', 'download'].includes((item.name || '').toLowerCase()));
                 if (downloadsFolder) { return downloadsFolder; }
-                return { id: 'root', name: 'Root', folder: true, parentId: null };
+                return await this.getDriveRootFolder(options);
             }
             async getEffectiveRootFolder(options = {}) {
                 const defaultRoot = await this.getDownloadsFolder(options);
                 const storedRoot = this.rootFolder || this.loadStoredRootFolder();
-                if (!storedRoot?.id || storedRoot.id === defaultRoot.id) {
+                if (!storedRoot?.id) {
+                    this.rootFolder = defaultRoot;
+                    return defaultRoot;
+                }
+                if (storedRoot.id === 'root') {
+                    try {
+                        const driveRoot = await this.getDriveRootFolder(options);
+                        this.rootFolder = driveRoot;
+                        return driveRoot;
+                    } catch (error) {
+                        console.warn('Falling back to default OneDrive root folder:', error);
+                        this.clearPersistedRootFolder();
+                        this.rootFolder = defaultRoot;
+                        return defaultRoot;
+                    }
+                }
+                if (storedRoot.id === defaultRoot.id) {
                     this.rootFolder = defaultRoot;
                     return defaultRoot;
                 }
@@ -4902,7 +4933,7 @@
                     }
                     const resolvedRoot = {
                         id: item.id,
-                        name: item.name || storedRoot.name || 'Root',
+                        name: item.name || storedRoot.name || 'Drive root',
                         type: 'folder',
                         createdTime: item.createdDateTime,
                         modifiedTime: item.lastModifiedDateTime,
@@ -4920,8 +4951,9 @@
                 }
             }
             async getRootFolderOptions(options = {}) {
+                const driveRoot = await this.getDriveRootFolder(options);
                 const rootFolders = await this.getDriveRootFolders(options);
-                return rootFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                return [driveRoot, ...rootFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''))];
             }
             async getSecondLevelFolderOptions(parentFolder, options = {}) {
                 if (!parentFolder?.id) return [];
@@ -4950,14 +4982,16 @@
                 const defaultRoot = await this.getDownloadsFolder(options);
                 const normalizedFolder = {
                     ...folder,
-                    parentId: folder.parentId || folder.parentReference?.id || 'root'
+                    name: folder.name || (folder.id === 'root' ? 'Drive root' : 'Root'),
+                    parentId: folder.parentId || folder.parentReference?.id || (folder.id === 'root' ? null : 'root')
                 };
-                if (normalizedFolder.id === defaultRoot.id) {
+                if (normalizedFolder.id === defaultRoot.id && normalizedFolder.id !== 'root') {
                     this.clearPersistedRootFolder();
                     this.rootFolder = defaultRoot;
                     return defaultRoot;
                 }
                 this.persistRootFolder(normalizedFolder);
+                this.rootFolder = normalizedFolder;
                 return normalizedFolder;
             }
             getRootFolderLabel() {
@@ -8314,7 +8348,7 @@ this.updateImageCounters();
                 const { folderRootFilter, folderRootParentSelect } = Utils.elements;
                 if (!folderRootFilter || !folderRootParentSelect) return;
                 const options = Array.isArray(folders) ? folders.slice().sort((a, b) => (a?.name || '').localeCompare(b?.name || '')) : [];
-                folderRootParentSelect.innerHTML = '<option value="">Choose a level 1 folder…</option>' ;
+                folderRootParentSelect.innerHTML = '<option value="">Choose a level 1 folder or OneDrive root…</option>' ;
                 options.forEach(folder => {
                     if (!folder?.id) return;
                     const option = document.createElement('option');
@@ -8336,7 +8370,7 @@ this.updateImageCounters();
                 this.setSearchDataset([]);
                 this.resetSearch();
                 if (!folderList) return;
-                folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.72);"><span>Select a level 1 OneDrive folder to list its level 2 folders.</span></div>`;
+                folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.72);"><span>Select a level 1 OneDrive folder to list its level 2 folders, or choose OneDrive root to use the full drive.</span></div>`;
             },
 
             async handleRootParentSelection(parentId, options = {}) {
@@ -8347,6 +8381,10 @@ this.updateImageCounters();
                     state.folderRootSelection = { ...selection, stage: 'level1', selectedL1: null };
                     this.renderRootSelectionPrompt();
                     this.updateNavigation();
+                    return;
+                }
+                if (parentFolder.isDriveRootOption || parentFolder.id === 'root') {
+                    await this.applyRootSelection(parentFolder);
                     return;
                 }
                 await this.loadRootSelectionLevelTwo(parentFolder, options);
@@ -8652,8 +8690,10 @@ this.updateImageCounters();
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
                     parts.push(`${itemCount} image${itemCount === 1 ? '' : 's'}`);
+                } else if (folder?.isDriveRootOption) {
+                    parts.push('Use entire OneDrive root');
                 } else if (state.folderRootSelection?.active) {
-                    parts.push(state.folderRootSelection.stage === 'level2' ? 'Level 2 folder ready' : 'Select a level 1 folder');
+                    parts.push(state.folderRootSelection.stage === 'level2' ? 'Level 2 folder ready' : 'Select a level 1 folder or OneDrive root');
                 } else {
                     parts.push(folder?.isSelectable === false ? 'Browse child folders' : 'Ready to scan');
                 }
@@ -8932,7 +8972,7 @@ this.updateImageCounters();
                     if (rootSelection.stage === 'level2' && rootSelection.selectedL1?.name) {
                         folderSubtitle.textContent = `Level 1 filter: ${rootSelection.selectedL1.name}. All level 2 folders are listed without media filtering.`;
                     } else {
-                        folderSubtitle.textContent = 'Choose a level 1 OneDrive folder from the dropdown to list all level 2 folders without media filtering.';
+                        folderSubtitle.textContent = 'Choose a level 1 OneDrive folder from the dropdown to list all level 2 folders without media filtering, or select OneDrive root to use the full drive.';
                     }
                     folderSubtitle.classList.remove('hidden');
                 } else if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
