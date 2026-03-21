@@ -779,6 +779,9 @@
             z-index: 3;
             pointer-events: none;
         }
+        .gesture-layer.embed-review-capture {
+            pointer-events: auto;
+        }
         .gesture-layer .stage {
             position: absolute;
             inset: 0;
@@ -1287,7 +1290,7 @@
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
-            isFocusMode: false, stacks: { in: [], out: [], priority: [], trash: [] },
+            isFocusMode: false, isEmbeddedPreviewActive: false, stacks: { in: [], out: [], priority: [], trash: [] },
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
@@ -1758,8 +1761,16 @@
                     embedUrl: null
                 };
             },
+            updateEmbeddedGestureCapture(isActive) {
+                state.isEmbeddedPreviewActive = !!isActive;
+                const gestureLayer = this.elements.gestureLayer;
+                if (!gestureLayer) return;
+                gestureLayer.classList.toggle('embed-review-capture', state.isEmbeddedPreviewActive);
+                gestureLayer.setAttribute('aria-hidden', state.isEmbeddedPreviewActive ? 'false' : 'true');
+            },
             hideEmbeddedPreview() {
                 const embed = this.elements.centerEmbed;
+                this.updateEmbeddedGestureCapture(false);
                 if (!embed) return;
                 embed.classList.add('hidden');
                 if (embed.src) {
@@ -1778,6 +1789,7 @@
                 }
                 embed.src = url;
                 embed.classList.remove('hidden');
+                this.updateEmbeddedGestureCapture(true);
                 return true;
             },
             hideVideoFallback() {
@@ -7196,10 +7208,14 @@
                 this.initGestureOverlay();
             },
             setupEventListeners() {
-                Utils.elements.imageViewport.addEventListener('mousedown', this.handleStart.bind(this));
+                const startHandler = this.handleStart.bind(this);
+                [Utils.elements.imageViewport, Utils.elements.gestureLayer].forEach(surface => {
+                    if (!surface) return;
+                    surface.addEventListener('mousedown', startHandler);
+                    surface.addEventListener('touchstart', startHandler, { passive: false });
+                });
                 document.addEventListener('mousemove', this.handleMove.bind(this));
                 document.addEventListener('mouseup', this.handleEnd.bind(this));
-                Utils.elements.imageViewport.addEventListener('touchstart', this.handleStart.bind(this), { passive: false });
                 document.addEventListener('touchmove', this.handleMove.bind(this), { passive: false });
                 document.addEventListener('touchend', this.handleEnd.bind(this), { passive: false });
                 document.addEventListener('touchcancel', this.handleEnd.bind(this), { passive: false });
@@ -7395,8 +7411,13 @@
                 } else if (this.ignoreMouseEvents) {
                     return;
                 }
-                if (e.target && e.target.closest && e.target.closest('video')) {
-                    return;
+                if (e.target && e.target.closest) {
+                    if (e.target.closest('video')) {
+                        return;
+                    }
+                    if (e.target.closest('a, button, input, textarea, select, label')) {
+                        return;
+                    }
                 }
                 this.tapHandled = false;
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
