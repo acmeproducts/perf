@@ -7024,7 +7024,11 @@ this.updateImageCounters();
 
             syncWithStack(stackName, options = {}) {
                 if (!stackName) return;
-                const { removedIds = [], preselectFirst = true } = options;
+                const {
+                    removedIds = [],
+                    preselectFirst = true,
+                    selectedId = null
+                } = options;
 
                 if (removedIds.length > 0) {
                     state.grid.selected = state.grid.selected.filter(id => !removedIds.includes(id));
@@ -7039,7 +7043,10 @@ this.updateImageCounters();
                     ? state.grid.filtered
                     : (state.stacks[stackName] || []);
 
-                if (preselectFirst) {
+                if (selectedId) {
+                    const selectedFile = activeFiles.find(file => file.id === selectedId);
+                    state.grid.selected = selectedFile ? [selectedFile.id] : [];
+                } else if (preselectFirst) {
                     const currentFileId = state.stacks[stackName]?.[state.currentStackPosition]?.id;
                     const preferredFile = currentFileId
                         ? activeFiles.find(file => file.id === currentFileId)
@@ -7517,6 +7524,19 @@ this.updateImageCounters();
 
                 try {
                     const affectedIds = [...state.grid.selected];
+                    const visibleFiles = state.grid.filtered.length > 0
+                        ? [...state.grid.filtered]
+                        : [...(state.stacks[state.grid.stack] || [])];
+                    const firstAffectedIndex = visibleFiles.findIndex(file => affectedIds.includes(file.id));
+                    let nextSelectedId = null;
+                    if (firstAffectedIndex !== -1) {
+                        const remainingVisibleFiles = visibleFiles.filter(file => !affectedIds.includes(file.id));
+                        if (remainingVisibleFiles.length > 0) {
+                            const preferredIndex = Math.min(firstAffectedIndex, remainingVisibleFiles.length - 1);
+                            nextSelectedId = remainingVisibleFiles[preferredIndex]?.id || null;
+                        }
+                    }
+
                     const promises = affectedIds.map(fileId => action(fileId));
                     await Promise.all(promises);
 
@@ -7526,7 +7546,11 @@ this.updateImageCounters();
                     await Core.displayCurrentImage();
 
                     if (updateGridOnSuccess && state.grid.stack) {
-                        Grid.syncWithStack(state.grid.stack, { removedIds: affectedIds, preselectFirst: true });
+                        Grid.syncWithStack(state.grid.stack, {
+                            removedIds: affectedIds,
+                            selectedId: nextSelectedId,
+                            preselectFirst: !nextSelectedId
+                        });
                     } else if (updateGridOnSuccess) {
                         Grid.deselectAll();
                     } else {
