@@ -2917,25 +2917,41 @@
                 if (!this.db || !record) return;
                 const folderKey = this.resolveFolderKey(record);
                 if (!folderKey) return;
-                const payload = {
-                    folderKey,
-                    provider: record.providerType || record.provider || null,
-                    folderId: record.folderId,
-                    localVersion: record.localVersion ?? 0,
-                    cloudVersion: record.cloudVersion ?? 0,
-                    lastLocalMutation: record.lastLocalMutation || null,
-                    lastCloudAck: record.lastCloudAck || null,
-                    imageCount: record.imageCount ?? null,
-                    fileCount: record.fileCount ?? null,
-                    lastUpdated: record.lastUpdated || null,
-                    updatedAt: Date.now()
-                };
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('folderState', 'readwrite');
                     const store = transaction.objectStore('folderState');
-                    const request = store.put(payload);
-                    request.onsuccess = () => resolve(payload);
-                    request.onerror = () => reject(request.error);
+                    const getRequest = store.get(folderKey);
+                    getRequest.onsuccess = () => {
+                        const existing = getRequest.result || {};
+                        const payload = {
+                            ...existing,
+                            folderKey,
+                            provider: record.providerType ?? record.provider ?? existing.provider ?? null,
+                            folderId: record.folderId ?? existing.folderId ?? null,
+                            localVersion: record.localVersion ?? existing.localVersion ?? 0,
+                            cloudVersion: record.cloudVersion ?? existing.cloudVersion ?? 0,
+                            lastLocalMutation: Object.prototype.hasOwnProperty.call(record, 'lastLocalMutation')
+                                ? record.lastLocalMutation
+                                : (existing.lastLocalMutation ?? null),
+                            lastCloudAck: Object.prototype.hasOwnProperty.call(record, 'lastCloudAck')
+                                ? record.lastCloudAck
+                                : (existing.lastCloudAck ?? null),
+                            imageCount: Object.prototype.hasOwnProperty.call(record, 'imageCount')
+                                ? record.imageCount
+                                : (existing.imageCount ?? null),
+                            fileCount: Object.prototype.hasOwnProperty.call(record, 'fileCount')
+                                ? record.fileCount
+                                : (existing.fileCount ?? null),
+                            lastUpdated: Object.prototype.hasOwnProperty.call(record, 'lastUpdated')
+                                ? record.lastUpdated
+                                : (existing.lastUpdated ?? null),
+                            updatedAt: Date.now()
+                        };
+                        const putRequest = store.put(payload);
+                        putRequest.onsuccess = () => resolve(payload);
+                        putRequest.onerror = () => reject(putRequest.error);
+                    };
+                    getRequest.onerror = () => reject(getRequest.error);
                 });
             }
             async deleteFolderState(context) {
