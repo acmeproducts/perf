@@ -1336,7 +1336,7 @@
                 schemaVersion: GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION,
                 entries: new Map()
             },
-            folderRootSelection: { active: false, providerType: null }
+            folderRootSelection: { active: false, providerType: null, stage: null, selectedL1: null }
         };
         const GoogleDriveFolderCacheStore = {
             ensureSchema() {
@@ -4756,8 +4756,32 @@
             }
             async getRootFolderOptions(options = {}) {
                 const rootFolders = await this.getDriveRootFolders(options);
-                const filteredFolders = await this.filterFoldersWithImages(rootFolders, { signal: options.signal || state.activeRequests?.signal, forceRefresh: options.forceRefresh });
-                return filteredFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                return rootFolders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            }
+            async getSecondLevelFolderOptions(parentFolder, options = {}) {
+                if (!parentFolder?.id) return [];
+                const folders = [];
+                let endpoint = `/me/drive/items/${parentFolder.id}/children`;
+                let nextLink = `${this.apiBase}${endpoint}`;
+                while (nextLink) {
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: options.signal || state.activeRequests?.signal });
+                    const data = await response.json();
+                    const pageFolders = (data.value || [])
+                        .filter(item => item.folder)
+                        .map(item => ({
+                            id: item.id,
+                            name: item.name,
+                            type: 'folder',
+                            createdTime: item.createdDateTime,
+                            modifiedTime: item.lastModifiedDateTime,
+                            itemCount: item.folder?.childCount || 0,
+                            hasChildren: (item.folder?.childCount || 0) > 0,
+                            parentId: item.parentReference?.id || parentFolder.id
+                        }));
+                    folders.push(...pageFolders);
+                    nextLink = data['@odata.nextLink'];
+                }
+                return folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             }
             async setRootFolder(folder, options = {}) {
                 if (!folder?.id) {
@@ -4833,7 +4857,6 @@
                     return (this.folderImageCountCache.get(folderId) || 0) > 0;
                 }
                 const signal = options.signal || state.activeRequests?.signal;
-                let count = 0;
                 let nextLink = `${this.apiBase}/me/drive/items/${folderId}/children`;
                 while (nextLink) {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
@@ -4841,49 +4864,51 @@
                     const items = Array.isArray(data?.value) ? data.value : [];
                     for (const item of items) {
                         if (item?.file && isAllowedVideoMimeType(item.file.mimeType, item.name || '')) {
-                            count += 1;
-                            this.folderImageCountCache.set(folderId, count);
+                            this.folderImageCountCache.set(folderId, 1);
                             this.folderHasImagesCache.set(folderId, true);
                             return true;
                         }
                     }
                     nextLink = data['@odata.nextLink'];
                 }
-                this.folderImageCountCache.set(folderId, count);
+                this.folderImageCountCache.set(folderId, 0);
                 this.folderHasImagesCache.set(folderId, false);
                 return false;
             }
             async inspectFolderLevel(folderId, options = {}) {
                 if (!folderId) {
-                    return { imageCount: 0, itemCount: 0, isSelectable: false, hasChildren: false, entryKind: 'empty' };
+                    return { imageCount: null, itemCount: null, isSelectable: false, hasChildren: false, entryKind: 'empty' };
                 }
                 const forceRefresh = Boolean(options.forceRefresh);
                 if (!forceRefresh && this.folderImageCountCache.has(folderId) && this.folderHasImagesCache.has(folderId) && this.folderChildCandidateCache.has(folderId)) {
-                    const directCount = this.folderImageCountCache.get(folderId) || 0;
+                    const directMatchFound = (this.folderImageCountCache.get(folderId) || 0) > 0;
                     const hasBrowsableChildren = Boolean(this.folderChildCandidateCache.get(folderId));
                     return {
-                        imageCount: directCount,
-                        itemCount: directCount,
-                        isSelectable: directCount > 0,
+                        imageCount: directMatchFound ? 1 : null,
+                        itemCount: directMatchFound ? 1 : null,
+                        isSelectable: directMatchFound,
                         hasChildren: hasBrowsableChildren,
-                        entryKind: directCount > 0 && hasBrowsableChildren ? 'pseudo' : directCount > 0 ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
+                        entryKind: directMatchFound && hasBrowsableChildren ? 'pseudo' : directMatchFound ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
                     };
                 }
 
                 const signal = options.signal || state.activeRequests?.signal;
-                let directCount = 0;
+                let directMatchFound = false;
                 let hasBrowsableChildren = false;
                 let nextLink = `${this.apiBase}/me/drive/items/${folderId}/children`;
-                while (nextLink) {
+                while (nextLink && (!directMatchFound || !hasBrowsableChildren)) {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal });
                     const data = await response.json();
                     const items = Array.isArray(data?.value) ? data.value : [];
                     const childChecks = [];
                     for (const item of items) {
-                        if (item?.file && isAllowedVideoMimeType(item.file.mimeType, item.name || '')) {
-                            directCount += 1;
-                        } else if (item?.folder?.childCount > 0) {
+                        if (!directMatchFound && item?.file && isAllowedVideoMimeType(item.file.mimeType, item.name || '')) {
+                            directMatchFound = true;
+                        } else if (!hasBrowsableChildren && item?.folder?.childCount > 0) {
                             childChecks.push(this.folderHasDirectAssets(item.id, { signal, forceRefresh }));
+                        }
+                        if (directMatchFound && hasBrowsableChildren) {
+                            break;
                         }
                     }
                     if (!hasBrowsableChildren && childChecks.length > 0) {
@@ -4893,15 +4918,15 @@
                     nextLink = data['@odata.nextLink'];
                 }
 
-                this.folderImageCountCache.set(folderId, directCount);
-                this.folderHasImagesCache.set(folderId, directCount > 0 || hasBrowsableChildren);
+                this.folderImageCountCache.set(folderId, directMatchFound ? 1 : 0);
+                this.folderHasImagesCache.set(folderId, directMatchFound || hasBrowsableChildren);
                 this.folderChildCandidateCache.set(folderId, hasBrowsableChildren);
                 return {
-                    imageCount: directCount,
-                    itemCount: directCount,
-                    isSelectable: directCount > 0,
+                    imageCount: directMatchFound ? 1 : null,
+                    itemCount: directMatchFound ? 1 : null,
+                    isSelectable: directMatchFound,
                     hasChildren: hasBrowsableChildren,
-                    entryKind: directCount > 0 && hasBrowsableChildren ? 'pseudo' : directCount > 0 ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
+                    entryKind: directMatchFound && hasBrowsableChildren ? 'pseudo' : directMatchFound ? 'loadable' : hasBrowsableChildren ? 'browse' : 'empty'
                 };
             }
             async filterFoldersWithImages(folders = [], options = {}) {
@@ -8074,15 +8099,18 @@
                     const iconColor = folder.hasChildren ? 'var(--accent)' : 'rgba(255, 255, 255, 0.6)';
 
                     const canBrowse = Boolean(folder.hasChildren);
-                    const canSelect = state.folderRootSelection.active ? true : folder.isSelectable !== false;
+                    const rootSelection = state.folderRootSelection || {};
+                    const inRootSelection = Boolean(rootSelection.active);
+                    const canSelect = inRootSelection ? true : folder.isSelectable !== false;
+                    const selectLabel = inRootSelection ? (rootSelection.stage === 'level2' ? 'Use as Root' : 'Choose') : 'Load';
                     div.innerHTML = `<svg class="folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: ${iconColor};"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                                      <div class="folder-info">
                                          <div class="folder-name">${folder.name}</div>
                                          <div class="folder-date">${metaInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${canSelect ? `<button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">${state.folderRootSelection.active ? 'Choose' : 'Load'}</button>` : ''}
-                                         ${!state.folderRootSelection.active && canBrowse ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
+                                         ${canSelect ? `<button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">${selectLabel}</button>` : ''}
+                                         ${!inRootSelection && canBrowse ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn refresh-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">↻</button>
                                      </div>`;
                     fragment.appendChild(div);
@@ -8229,10 +8257,11 @@
                 const itemCountRaw = folder?.imageCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
-                    const label = itemCount === 1 ? 'video' : 'videos';
-                    parts.push(`${itemCount} ${label}`);
+                    parts.push(itemCount > 0 ? 'Direct media detected' : 'No direct media detected');
+                } else if (state.folderRootSelection?.active) {
+                    parts.push(state.folderRootSelection.stage === 'level2' ? 'Choose as saved root' : 'Choose to view level 2 folders');
                 } else {
-                    parts.push(folder?.isSelectable === false ? 'Browse child folders' : 'Videos pending');
+                    parts.push(folder?.isSelectable === false ? 'Browse child folders' : 'Ready to scan');
                 }
 
                 const timestamp = folder?.modifiedTime || folder?.createdTime || null;
@@ -8317,12 +8346,19 @@
                 if (!folder || !folder.id) return;
                 const provider = state.provider;
                 if (!provider || state.providerType !== 'onedrive' || typeof provider.setRootFolder !== 'function') {
-                    state.folderRootSelection = { active: false, providerType: null };
+                    state.folderRootSelection = { active: false, providerType: null, stage: null, selectedL1: null };
                     return;
                 }
+
+                const selection = state.folderRootSelection || {};
+                if (selection.stage !== 'level2') {
+                    await this.loadRootSelectionLevelTwo(folder);
+                    return;
+                }
+
                 try {
                     const savedRoot = await provider.setRootFolder(folder);
-                    state.folderRootSelection = { active: false, providerType: null };
+                    state.folderRootSelection = { active: false, providerType: null, stage: null, selectedL1: null };
                     this.resetSearch();
                     Utils.showToast(`OneDrive root set to ${savedRoot.name || folder.name || 'selected folder'}.`, 'success', true);
                     await this.load({ forceRefresh: true });
@@ -8331,29 +8367,44 @@
                 }
             },
 
-            async startRootSelection() {
+            async loadRootSelectionLevelTwo(folder, options = {}) {
+                const provider = state.provider;
+                if (!provider || typeof provider.getSecondLevelFolderOptions !== 'function') {
+                    throw new Error('OneDrive level 2 folder lookup is unavailable.');
+                }
+                state.folderRootSelection = {
+                    active: true,
+                    providerType: state.providerType,
+                    stage: 'level2',
+                    selectedL1: { id: folder.id, name: folder.name || 'Untitled folder' }
+                };
+                const cacheKey = this.buildFolderCacheKey(state.providerType, `root-selection:${folder.id}`);
+                await this.loadWithCache({
+                    loader: () => provider.getSecondLevelFolderOptions(folder, options),
+                    cacheKey,
+                    forceRefresh: Boolean(options.forceRefresh),
+                    loadingMessage: `Loading folders in ${folder.name || 'selected folder'}...`,
+                    errorMessage: 'Failed to load level 2 folders'
+                });
+            },
+
+            async startRootSelection(options = {}) {
                 const provider = state.provider;
                 if (!provider || state.providerType !== 'onedrive' || typeof provider.getRootFolderOptions !== 'function') {
                     Utils.showToast('Root selection is only available for OneDrive.', 'info');
                     return;
                 }
-                state.folderRootSelection = { active: true, providerType: state.providerType };
+                state.folderRootSelection = { active: true, providerType: state.providerType, stage: 'level1', selectedL1: null };
                 this.updateNavigation();
-                this.renderFolderLoadingState();
-                try {
-                    const folders = await provider.getRootFolderOptions({ forceRefresh: true });
-                    this.clearFolderScanProgress();
-                    this.display(folders);
-                    this.updateNavigation();
-                    if (Utils.elements.folderSearchInput) {
-                        Utils.elements.folderSearchInput.focus();
-                    }
-                } catch (error) {
-                    state.folderRootSelection = { active: false, providerType: null };
-                    this.clearFolderScanProgress();
-                    this.updateNavigation();
-                    Utils.showToast(`Failed to load OneDrive root folders: ${error.message}`, 'error', true);
-                    await this.load({ forceRefresh: true });
+                await this.loadWithCache({
+                    loader: () => provider.getRootFolderOptions(options),
+                    cacheKey: this.buildFolderCacheKey(state.providerType, 'root-selection:l1'),
+                    forceRefresh: Boolean(options.forceRefresh),
+                    loadingMessage: 'Loading top-level OneDrive folders...',
+                    errorMessage: 'Failed to load OneDrive root folders'
+                });
+                if (Utils.elements.folderSearchInput) {
+                    Utils.elements.folderSearchInput.focus();
                 }
             },
 
@@ -8363,11 +8414,11 @@
                     return;
                 }
                 if (state.folderRootSelection.active) {
-                    state.folderRootSelection = { active: false, providerType: null };
+                    state.folderRootSelection = { active: false, providerType: null, stage: null, selectedL1: null };
                     await this.load({ forceRefresh: true });
                     return;
                 }
-                await this.startRootSelection();
+                await this.startRootSelection({ forceRefresh: true });
             },
 
             handleSearchSelection(folder) {
@@ -8435,7 +8486,8 @@
                 const { folderSubtitle, folderRefreshButton, folderSetRootButton } = Utils.elements;
                 const provider = state.provider;
                 const scan = state.folderScanProgress;
-                const isRootSelectionActive = Boolean(state.folderRootSelection?.active && state.folderRootSelection.providerType === 'onedrive');
+                const rootSelection = state.folderRootSelection || {};
+                const isRootSelectionActive = Boolean(rootSelection?.active && rootSelection.providerType === 'onedrive');
 
                 if (scan?.active) {
                     const total = Number(scan.total) > 0 ? scan.total : null;
@@ -8445,7 +8497,11 @@
                     folderSubtitle.textContent = `${scan.message || 'Loading folders...'} (${progressText})${activeName}`;
                     folderSubtitle.classList.remove('hidden');
                 } else if (isRootSelectionActive) {
-                    folderSubtitle.textContent = 'Search and pick a top-level OneDrive folder to use as the saved root.';
+                    if (rootSelection.stage === 'level2' && rootSelection.selectedL1?.name) {
+                        folderSubtitle.textContent = `Pick the level 2 folder inside ${rootSelection.selectedL1.name} to use as the saved root.`;
+                    } else {
+                        folderSubtitle.textContent = 'Pick a level 1 OneDrive folder, then choose its level 2 folder as the saved root.';
+                    }
                     folderSubtitle.classList.remove('hidden');
                 } else if (typeof provider.getCurrentPath === 'function' && provider.getCurrentPath()) {
                     const rootLabel = state.providerType === 'onedrive' && typeof provider.getRootFolderLabel === 'function'
@@ -8457,7 +8513,9 @@
                     folderSubtitle.classList.add('hidden');
                 }
 
-                if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
+                if (isRootSelectionActive && rootSelection.stage === 'level2') {
+                    folderRefreshButton.textContent = '← L1 Folders';
+                } else if (typeof provider?.canGoUp === 'function' && provider.canGoUp()) {
                     folderRefreshButton.textContent = '← Go Up';
                 } else {
                     folderRefreshButton.textContent = 'Refresh';
@@ -8701,7 +8759,7 @@
                     try {
                         const provider = state.provider;
                         if (state.folderRootSelection.active) {
-                            await Folders.startRootSelection();
+                            await Folders.startRootSelection({ forceRefresh: state.folderRootSelection.stage !== 'level2' });
                             return;
                         }
                         if (typeof provider.canGoUp === 'function' && provider.canGoUp()) {
