@@ -3040,6 +3040,8 @@
                     videoCount: record.videoCount ?? null,
                     fileCount: record.fileCount ?? null,
                     lastUpdated: record.lastUpdated || null,
+                    sourceModifiedTime: record.sourceModifiedTime || null,
+                    scanCompletedAt: record.scanCompletedAt || null,
                     updatedAt: Date.now()
                 };
                 return new Promise((resolve, reject) => {
@@ -3912,6 +3914,9 @@
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
                 this.activeFolderCacheKey = null;
+                this.currentParentId = 'root';
+                this.currentParentPath = 'My Drive';
+                this.breadcrumb = [{ id: 'root', name: 'My Drive' }];
                 this.folderImageCountCache = new Map();
                 this.folderHasImagesCache = new Map();
                 this.loadStoredCredentials();
@@ -4083,12 +4088,13 @@
                 if (isJson) { return await response.json(); }
                 return response;
             }
-            async getFolders() {
+            async loadFoldersInParent(parentId = 'root') {
                 const allFolders = [];
                 let nextPageToken = null;
+                const query = `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
 
                 do {
-                    let url = '/files?q=mimeType%3D%27application/vnd.google-apps.folder%27&fields=files(id,name,createdTime,modifiedTime),nextPageToken&pageSize=100&orderBy=modifiedTime%20desc&supportsAllDrives=true&includeItemsFromAllDrives=true';
+                    let url = `/files?q=${encodeURIComponent(query)}&fields=files(id,name,createdTime,modifiedTime),nextPageToken&pageSize=100&orderBy=name&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                     if (nextPageToken) { url += `&pageToken=${nextPageToken}`; }
 
                     const response = await this.makeApiCall(url);
@@ -4097,16 +4103,20 @@
                     nextPageToken = response.nextPageToken;
                 } while (nextPageToken);
 
-                const normalized = allFolders.map(folder => ({
+                return allFolders.map(folder => ({
                     id: folder.id,
                     name: folder.name,
                     type: 'folder',
                     createdTime: folder.createdTime,
                     modifiedTime: folder.modifiedTime,
-                    hasChildren: false
+                    hasChildren: true
                 }));
-
-                return await this.filterFoldersWithImages(normalized);
+            }
+            async getFolders() {
+                this.currentParentId = 'root';
+                this.currentParentPath = 'My Drive';
+                this.breadcrumb = [{ id: 'root', name: 'My Drive' }];
+                return await this.loadFoldersInParent('root');
             }
             async filterFoldersWithImages(folders = [], options = {}) {
                 if (!Array.isArray(folders) || folders.length === 0) {
@@ -4458,14 +4468,39 @@
 
                 return [...normalized, ...resolvedShortcuts];
             }
+            getFolderCacheContext(parentId = this.currentParentId) {
+                return parentId || 'root';
+            }
+            getFolderCacheContextForParent(parentId) {
+                return this.getFolderCacheContext(parentId);
+            }
+            getParentCacheContext() {
+                if (this.breadcrumb.length <= 1) {
+                    return this.getFolderCacheContext();
+                }
+                const parentFolder = this.breadcrumb[this.breadcrumb.length - 2];
+                return this.getFolderCacheContext(parentFolder?.id);
+            }
             async drillIntoFolder(folder) {
-                // Not applicable for Google Drive's flat folder structure, but fulfills the interface.
-                return Promise.resolve([]);
+                const nextBreadcrumb = this.breadcrumb[this.breadcrumb.length - 1]?.id === folder.id
+                    ? [...this.breadcrumb]
+                    : [...this.breadcrumb, { id: folder.id, name: folder.name }];
+                this.breadcrumb = nextBreadcrumb;
+                this.currentParentId = folder.id;
+                this.currentParentPath = nextBreadcrumb.map(entry => entry.name).join(' / ');
+                return await this.loadFoldersInParent(folder.id);
             }
             async navigateToParent() {
-                // Not applicable for Google Drive's flat folder structure, returns the root list.
-                return this.getFolders();
+                if (this.breadcrumb.length <= 1) { return await this.getFolders(); }
+                const nextBreadcrumb = this.breadcrumb.slice(0, -1);
+                const parentFolder = nextBreadcrumb[nextBreadcrumb.length - 1] || { id: 'root', name: 'My Drive' };
+                this.breadcrumb = nextBreadcrumb;
+                this.currentParentId = parentFolder.id;
+                this.currentParentPath = nextBreadcrumb.map(entry => entry.name).join(' / ');
+                return await this.loadFoldersInParent(parentFolder.id);
             }
+            getCurrentPath() { return this.currentParentPath; }
+            canGoUp() { return this.breadcrumb.length > 1; }
             async moveFileToFolder(fileId, targetFolderId) {
                 const file = await this.makeApiCall(`/files/${fileId}?fields=parents`);
                 const previousParents = file.parents.join(',');
@@ -4874,16 +4909,7 @@
                     folders.push(...pageFolders);
                     nextLink = data['@odata.nextLink'];
                 }
-                const sortedFolders = folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                const entries = [];
-                for (const folder of sortedFolders) {
-                    entries.push(folder);
-                    const stats = await this.getDirectMediaStats(folder.id, options);
-                    if ((stats.imageCount || 0) > 0) {
-                        entries.push(this.buildVirtualRootFolderEntry(folder, stats));
-                    }
-                }
-                return entries;
+                return folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             }
             async setRootFolder(folder, options = {}) {
                 if (!folder?.id) {
@@ -4948,9 +4974,8 @@
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
                 const sortedFolders = folders.sort((a, b) => a.name.localeCompare(b.name));
-                const filteredFolders = await this.filterFoldersWithImages(sortedFolders, { signal: options.signal || state.activeRequests?.signal, forceRefresh: options.forceRefresh });
-                await Folders.setCachedFolders(cacheKey, filteredFolders);
-                return filteredFolders;
+                await Folders.setCachedFolders(cacheKey, sortedFolders);
+                return sortedFolders;
             }
             async folderHasDirectAssets(folderId, options = {}) {
                 if (!folderId) return false;
@@ -5803,12 +5828,15 @@
                 if (latestTimestamp == null) {
                     latestTimestamp = Date.now();
                 }
+                const scanCompletedAt = new Date().toISOString();
                 const payload = {
                     providerType: state.providerType,
                     folderId: state.currentFolder.id,
                     folderName: state.currentFolder.name || '',
                     fileCount,
-                    lastUpdated: new Date(latestTimestamp).toISOString()
+                    lastUpdated: new Date(latestTimestamp).toISOString(),
+                    sourceModifiedTime: new Date(latestTimestamp).toISOString(),
+                    scanCompletedAt
                 };
                 state.lastPickedFolder = payload;
                 try {
@@ -5818,7 +5846,10 @@
                 }
                 Folders.updateCachedFolderStats(state.providerType, state.currentFolder.id, {
                     imageCount: fileCount,
-                    modifiedTime: payload.lastUpdated
+                    fileCount,
+                    modifiedTime: payload.lastUpdated,
+                    sourceModifiedTime: payload.sourceModifiedTime,
+                    scanCompletedAt: payload.scanCompletedAt
                 });
                 if (state.dbManager) {
                     state.dbManager.saveFolderState({
@@ -5826,7 +5857,9 @@
                         folderId: state.currentFolder.id,
                         videoCount: fileCount,
                         fileCount,
-                        lastUpdated: payload.lastUpdated
+                        lastUpdated: payload.lastUpdated,
+                        sourceModifiedTime: payload.sourceModifiedTime,
+                        scanCompletedAt: payload.scanCompletedAt
                     }).catch(error => console.warn('Failed to persist folder stats:', error));
                 }
                 Folders.updateLastFolderBanner();
@@ -8087,6 +8120,32 @@
                 return normalize(previousFolders) !== normalize(nextFolders);
             },
 
+
+            async hydrateFoldersWithPersistedStats(folders = []) {
+                if (!Array.isArray(folders) || folders.length === 0 || !state.dbManager || !state.providerType) {
+                    return Array.isArray(folders) ? folders : [];
+                }
+                const hydrated = await Promise.all(folders.map(async folder => {
+                    if (!folder?.id) return folder;
+                    try {
+                        const record = await state.dbManager.getFolderState({ providerType: state.providerType, folderId: folder.id });
+                        if (!record) return folder;
+                        const persistedCount = record.videoCount ?? record.fileCount ?? record.imageCount;
+                        return {
+                            ...folder,
+                            ...(typeof persistedCount === 'number' ? { imageCount: persistedCount, itemCount: persistedCount, fileCount: record.fileCount ?? persistedCount, videoCount: record.videoCount ?? persistedCount } : {}),
+                            ...(record.sourceModifiedTime ? { sourceModifiedTime: record.sourceModifiedTime } : {}),
+                            ...(record.scanCompletedAt ? { scanCompletedAt: record.scanCompletedAt } : {}),
+                            ...(record.lastUpdated ? { lastUpdated: record.lastUpdated } : {})
+                        };
+                    } catch (error) {
+                        console.warn('Failed to hydrate persisted folder stats:', error);
+                        return folder;
+                    }
+                }));
+                return hydrated;
+            },
+
             async loadWithCache(options = {}) {
                 const {
                     loader,
@@ -8102,7 +8161,8 @@
                 this.setFolderScanProgress({ active: true, message: loadingMessage, current: 0, total: 0, currentFolderName: '' });
 
                 if (cachedEntry) {
-                    this.display(cachedEntry.folders);
+                    const hydratedCachedFolders = await this.hydrateFoldersWithPersistedStats(cachedEntry.folders);
+                    this.display(hydratedCachedFolders);
                     this.updateNavigation();
                 } else {
                     this.renderFolderLoadingState();
@@ -8115,13 +8175,14 @@
 
                 try {
                     const folders = await loader();
-                    if (!cachedEntry || this.foldersChanged(cachedEntry.folders, folders)) {
-                        this.display(folders);
+                    const hydratedFolders = await this.hydrateFoldersWithPersistedStats(folders);
+                    if (!cachedEntry || this.foldersChanged(cachedEntry.folders, hydratedFolders)) {
+                        this.display(hydratedFolders);
                     }
-                    await this.setCachedFolders(cacheKey, folders);
+                    await this.setCachedFolders(cacheKey, hydratedFolders);
                     this.updateNavigation();
                     this.clearFolderScanProgress();
-                    return folders;
+                    return hydratedFolders;
                 } catch (error) {
                     this.clearFolderScanProgress();
                     if (cachedEntry) {
@@ -8247,7 +8308,7 @@
                 this.resetSearch({ keepInput: false });
                 folderList.innerHTML = '';
                 if (!folders || folders.length === 0) {
-                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders with videos found</span></div>`;
+                    folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
                     this.handleSearchInput('');
                     return;
                 }
@@ -8442,31 +8503,45 @@
                 folderSearchResults.classList.remove('hidden');
             },
 
+            formatRelativeAge(timestamp, label) {
+                if (!timestamp) return null;
+                const parsed = Date.parse(timestamp);
+                if (Number.isNaN(parsed)) return null;
+                const diffMs = Math.max(0, Date.now() - parsed);
+                const minutes = Math.floor(diffMs / 60000);
+                if (minutes < 1) return `${label} just now`;
+                if (minutes < 60) return `${label} ${minutes}m ago`;
+                const hours = Math.floor(minutes / 60);
+                if (hours < 24) return `${label} ${hours}h ago`;
+                const days = Math.floor(hours / 24);
+                return `${label} ${days}d ago`;
+            },
+
             formatFolderMeta(folder) {
                 const parts = [];
-                const itemCountRaw = folder?.imageCount;
+                const itemCountRaw = folder?.fileCount ?? folder?.videoCount ?? folder?.imageCount ?? folder?.itemCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
-                    parts.push(folder?.isVirtualRoot ? `${itemCount} video${itemCount === 1 ? '' : 's'} at L2 root` : itemCount > 0 ? 'Direct media detected' : 'No direct media detected');
+                    parts.push(`${itemCount} video${itemCount === 1 ? '' : 's'}`);
                 } else if (state.folderRootSelection?.active) {
                     parts.push(state.folderRootSelection.stage === 'level2' ? 'Level 2 folder ready' : 'Select a level 1 folder');
                 } else {
                     parts.push(folder?.isSelectable === false ? 'Browse child folders' : 'Ready to scan');
                 }
 
-                const timestamp = folder?.modifiedTime || folder?.createdTime || null;
-                if (timestamp) {
-                    const parsed = Date.parse(timestamp);
-                    if (!Number.isNaN(parsed)) {
-                        parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
-                    }
+                const contentAge = this.formatRelativeAge(folder?.sourceModifiedTime || folder?.lastUpdated || folder?.modifiedTime || folder?.createdTime || null, 'Content');
+                if (contentAge) {
+                    parts.push(contentAge);
                 }
-
+                const scanAge = this.formatRelativeAge(folder?.scanCompletedAt || null, 'Scanned');
+                if (scanAge) {
+                    parts.push(scanAge);
+                }
                 if (folder?.hasChildren) {
                     parts.push('Contains subfolders');
                 }
 
-                return parts.length > 0 ? parts.join(' • ') : (folder?.isSelectable === false ? 'Browse child folders' : 'No recent activity');
+                return parts.length > 0 ? parts.join(' • ') : 'No recent activity';
             },
 
             renderFolderLoadingState() {
@@ -8522,13 +8597,27 @@
                         return {
                             ...folder,
                             ...(typeof stats.imageCount === 'number' ? { imageCount: stats.imageCount, itemCount: stats.imageCount } : {}),
-                            ...(stats.modifiedTime ? { modifiedTime: stats.modifiedTime } : {})
+                            ...(typeof stats.fileCount === 'number' ? { fileCount: stats.fileCount, videoCount: stats.fileCount } : {}),
+                            ...(stats.modifiedTime ? { modifiedTime: stats.modifiedTime } : {}),
+                            ...(stats.sourceModifiedTime ? { sourceModifiedTime: stats.sourceModifiedTime } : {}),
+                            ...(stats.scanCompletedAt ? { scanCompletedAt: stats.scanCompletedAt } : {})
                         };
                     });
                     if (changed) {
                         entry.updatedAt = Date.now();
                     }
                     this.setCachedFolders(cacheKey, entry.folders);
+                }
+                if (state.dbManager && (typeof stats.imageCount === 'number' || typeof stats.fileCount === 'number' || stats.sourceModifiedTime || stats.scanCompletedAt)) {
+                    state.dbManager.saveFolderState({
+                        providerType,
+                        folderId,
+                        videoCount: stats.fileCount ?? stats.imageCount ?? null,
+                        fileCount: stats.fileCount ?? stats.imageCount ?? null,
+                        lastUpdated: stats.modifiedTime || stats.sourceModifiedTime || null,
+                        sourceModifiedTime: stats.sourceModifiedTime || stats.modifiedTime || null,
+                        scanCompletedAt: stats.scanCompletedAt || null
+                    }).catch(error => console.warn('Failed to persist cached folder stats:', error));
                 }
             },
 
@@ -8684,11 +8773,13 @@
                         const label = count === 1 ? 'video' : 'videos';
                         parts.push(`${count} ${label}`);
                     }
-                    if (data.lastUpdated) {
-                        const parsed = Date.parse(data.lastUpdated);
-                        if (!Number.isNaN(parsed)) {
-                            parts.push(`Updated ${new Date(parsed).toLocaleDateString()}`);
-                        }
+                    const contentAge = this.formatRelativeAge(data.sourceModifiedTime || data.lastUpdated || null, 'Content');
+                    if (contentAge) {
+                        parts.push(contentAge);
+                    }
+                    const scanAge = this.formatRelativeAge(data.scanCompletedAt || null, 'Scanned');
+                    if (scanAge) {
+                        parts.push(scanAge);
                     }
                     lastFolderMeta.textContent = parts.join(' • ');
                 }
