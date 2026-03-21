@@ -3037,6 +3037,9 @@
                     cloudVersion: record.cloudVersion ?? 0,
                     lastLocalMutation: record.lastLocalMutation || null,
                     lastCloudAck: record.lastCloudAck || null,
+                    videoCount: record.videoCount ?? null,
+                    fileCount: record.fileCount ?? null,
+                    lastUpdated: record.lastUpdated || null,
                     updatedAt: Date.now()
                 };
                 return new Promise((resolve, reject) => {
@@ -3354,7 +3357,10 @@
                     localVersion: updates.localVersion ?? existing.localVersion ?? 0,
                     cloudVersion: updates.cloudVersion ?? existing.cloudVersion ?? 0,
                     lastLocalMutation: updates.lastLocalMutation ?? existing.lastLocalMutation ?? null,
-                    lastCloudAck: updates.lastCloudAck ?? existing.lastCloudAck ?? null
+                    lastCloudAck: updates.lastCloudAck ?? existing.lastCloudAck ?? null,
+                    videoCount: updates.videoCount ?? existing.videoCount ?? null,
+                    fileCount: updates.fileCount ?? existing.fileCount ?? null,
+                    lastUpdated: updates.lastUpdated ?? existing.lastUpdated ?? null
                 };
                 return await this.dbManager.saveFolderState(payload);
             }
@@ -4551,9 +4557,79 @@
                 if (!response.ok) { const errorText = await response.text(); throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`); }
                 return response;
             }
+            getVirtualRootFolderId(folderId) {
+                return folderId ? `virtual-root--${folderId}` : '';
+            }
+            parseVirtualRootFolderId(folderId) {
+                if (typeof folderId !== 'string' || !folderId.startsWith('virtual-root--')) {
+                    return null;
+                }
+                return {
+                    sourceFolderId: folderId.slice('virtual-root--'.length)
+                };
+            }
+            isDirectMediaItem(item) {
+                return Boolean(item?.file?.mimeType && isAllowedVideoMimeType(item.file.mimeType, item.name || ''));
+            }
+            buildFolderItem(folder, parentId) {
+                return {
+                    id: folder.id,
+                    name: folder.name,
+                    type: 'folder',
+                    createdTime: folder.createdDateTime,
+                    modifiedTime: folder.lastModifiedDateTime,
+                    itemCount: folder.folder?.childCount || 0,
+                    hasChildren: (folder.folder?.childCount || 0) > 0,
+                    parentId: folder.parentReference?.id || parentId || 'root'
+                };
+            }
+            async getDirectMediaStats(folderId, options = {}) {
+                if (!folderId) {
+                    return { imageCount: 0, itemCount: 0, modifiedTime: null };
+                }
+                let imageCount = 0;
+                let latestModifiedTime = null;
+                let nextLink = `${this.apiBase}/me/drive/items/${folderId}/children`;
+                while (nextLink) {
+                    const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: options.signal || state.activeRequests?.signal });
+                    const data = await response.json();
+                    const items = Array.isArray(data?.value) ? data.value : [];
+                    for (const item of items) {
+                        if (!this.isDirectMediaItem(item)) continue;
+                        imageCount += 1;
+                        const candidate = item.lastModifiedDateTime || item.createdDateTime || null;
+                        if (candidate && (!latestModifiedTime || Date.parse(candidate) > Date.parse(latestModifiedTime))) {
+                            latestModifiedTime = candidate;
+                        }
+                    }
+                    nextLink = data['@odata.nextLink'];
+                }
+                this.folderImageCountCache.set(folderId, imageCount);
+                this.folderHasImagesCache.set(folderId, imageCount > 0);
+                return { imageCount, itemCount: imageCount, modifiedTime: latestModifiedTime };
+            }
+            buildVirtualRootFolderEntry(folder, stats = {}) {
+                const imageCount = typeof stats.imageCount === 'number' ? stats.imageCount : 0;
+                return {
+                    id: this.getVirtualRootFolderId(folder.id),
+                    sourceFolderId: folder.id,
+                    name: `${folder.name} / Videos at root`,
+                    type: 'folder',
+                    createdTime: folder.createdTime,
+                    modifiedTime: stats.modifiedTime || folder.modifiedTime || folder.createdTime || null,
+                    imageCount,
+                    itemCount: imageCount,
+                    hasChildren: false,
+                    isSelectable: true,
+                    isVirtualRoot: true,
+                    parentId: folder.id,
+                    rootSelectionLevel: 2
+                };
+            }
             async getFilesAndMetadata(folderId = 'root') {
+                const resolvedFolderId = this.parseVirtualRootFolderId(folderId)?.sourceFolderId || folderId;
                 const allFiles = [];
-                let endpoint = folderId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${folderId}/children`;
+                let endpoint = resolvedFolderId === 'root' ? '/me/drive/root/children' : `/me/drive/items/${resolvedFolderId}/children`;
                 let nextLink = `${this.apiBase}${endpoint}`;
                 while(nextLink) {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: state.activeRequests.signal });
@@ -4730,16 +4806,7 @@
                     const data = await response.json();
                     const pageFolders = (data.value || [])
                         .filter(item => item.folder)
-                        .map(item => ({
-                            id: item.id,
-                            name: item.name,
-                            type: 'folder',
-                            createdTime: item.createdDateTime,
-                            modifiedTime: item.lastModifiedDateTime,
-                            itemCount: item.folder?.childCount || 0,
-                            hasChildren: (item.folder?.childCount || 0) > 0,
-                            parentId: item.parentReference?.id || 'root'
-                        }));
+                        .map(item => this.buildFolderItem(item, 'root'));
                     folders.push(...pageFolders);
                     nextLink = data['@odata.nextLink'];
                 }
@@ -4800,19 +4867,23 @@
                     const pageFolders = (data.value || [])
                         .filter(item => item.folder)
                         .map(item => ({
-                            id: item.id,
-                            name: item.name,
-                            type: 'folder',
-                            createdTime: item.createdDateTime,
-                            modifiedTime: item.lastModifiedDateTime,
-                            itemCount: item.folder?.childCount || 0,
-                            hasChildren: (item.folder?.childCount || 0) > 0,
-                            parentId: item.parentReference?.id || parentFolder.id
+                            ...this.buildFolderItem(item, parentFolder.id),
+                            isSelectable: false,
+                            rootSelectionLevel: 2
                         }));
                     folders.push(...pageFolders);
                     nextLink = data['@odata.nextLink'];
                 }
-                return folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                const sortedFolders = folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                const entries = [];
+                for (const folder of sortedFolders) {
+                    entries.push(folder);
+                    const stats = await this.getDirectMediaStats(folder.id, options);
+                    if ((stats.imageCount || 0) > 0) {
+                        entries.push(this.buildVirtualRootFolderEntry(folder, stats));
+                    }
+                }
+                return entries;
             }
             async setRootFolder(folder, options = {}) {
                 if (!folder?.id) {
@@ -4872,7 +4943,7 @@
                 do {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''), { signal: options.signal || state.activeRequests?.signal });
                     const data = await response.json();
-                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0, parentId: folder.parentReference?.id || parentId || 'root' }));
+                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => this.buildFolderItem(folder, parentId || 'root'));
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
@@ -5011,6 +5082,18 @@
             }
             async refreshFolderCandidate(folder, options = {}) {
                 if (!folder?.id) return null;
+                if (folder.isVirtualRoot) {
+                    const sourceFolderId = folder.sourceFolderId || this.parseVirtualRootFolderId(folder.id)?.sourceFolderId;
+                    if (!sourceFolderId) return null;
+                    const stats = await this.getDirectMediaStats(sourceFolderId, { signal: options.signal || state.activeRequests?.signal, forceRefresh: true });
+                    if ((stats.imageCount || 0) <= 0) {
+                        return null;
+                    }
+                    return this.buildVirtualRootFolderEntry({ ...folder, id: sourceFolderId, name: folder.name.replace(/\s*\/ Videos at root$/, '') || folder.name, createdTime: folder.createdTime, modifiedTime: folder.modifiedTime }, stats);
+                }
+                if (folder.rootSelectionLevel === 2) {
+                    return { ...folder, isSelectable: false };
+                }
                 const eligibility = await this.inspectFolderLevel(folder.id, { signal: options.signal || state.activeRequests?.signal, forceRefresh: true });
                 if (!eligibility.isSelectable && !eligibility.hasChildren) {
                     return null;
@@ -5737,6 +5820,15 @@
                     imageCount: fileCount,
                     modifiedTime: payload.lastUpdated
                 });
+                if (state.dbManager) {
+                    state.dbManager.saveFolderState({
+                        providerType: state.providerType,
+                        folderId: state.currentFolder.id,
+                        videoCount: fileCount,
+                        fileCount,
+                        lastUpdated: payload.lastUpdated
+                    }).catch(error => console.warn('Failed to persist folder stats:', error));
+                }
                 Folders.updateLastFolderBanner();
             },
             isNavigationActive(token = null) {
@@ -8183,7 +8275,7 @@
                                          <div class="folder-date">${metaInfo}</div>
                                      </div>
                                      <div class="folder-actions">
-                                         ${showRootAction ? `<button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Use as Root</button>` : ''}
+                                         ${showRootAction && !folder.isVirtualRoot ? `<button class="folder-action-btn select-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Use as Root</button>` : ''}
                                          ${canLoad ? `<button class="folder-action-btn load-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Load</button>` : ''}
                                          ${showBrowseAction ? `<button class="folder-action-btn drill-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">Browse →</button>` : ''}
                                          <button class="folder-action-btn refresh-btn" data-folder-id="${folder.id}" data-folder-name="${folder.name}">↻</button>
@@ -8194,9 +8286,10 @@
                 this.handleSearchInput(state.folderSearchTerm || '');
             },
 
-            async loadFolder(folderId, folderName = '') {
+            async loadFolder(folderId, folderName = '', folder = null) {
                 if (!folderId || !state.provider) return;
-                App.initializeWithProvider(state.providerType, folderId, folderName || '', state.provider);
+                const targetFolder = folder || this.findFolderById(folderId) || { id: folderId, name: folderName || '' };
+                App.initializeWithProvider(state.providerType, targetFolder.id || folderId, targetFolder.name || folderName || '', state.provider);
             },
 
             async activateFolder(folderId, folderName = '') {
@@ -8213,7 +8306,7 @@
                 if (state.folderRootSelection.active) {
                     const selection = state.folderRootSelection || {};
                     if (selection.stage === 'level2') {
-                        await this.loadFolder(folderId, folderName || '');
+                        await this.loadFolder(folder.id, folder.name || folderName || '', folder);
                     }
                     return;
                 }
@@ -8221,7 +8314,7 @@
                     await this.browseFolder(folder);
                     return;
                 }
-                await this.loadFolder(folderId, folderName || '');
+                await this.loadFolder(folder.id, folder.name || folderName || '', folder);
             },
 
             async handleFolderListClick(event) {
@@ -8247,7 +8340,8 @@
                 const loadButton = event.target.closest('.load-btn');
                 if (loadButton) {
                     event.stopPropagation();
-                    await this.loadFolder(loadButton.dataset.folderId || '', loadButton.dataset.folderName || '');
+                    const folder = this.findFolderById(loadButton.dataset.folderId || '') || { id: loadButton.dataset.folderId || '', name: loadButton.dataset.folderName || '' };
+                    await this.loadFolder(folder.id, folder.name || '', folder);
                     return;
                 }
 
@@ -8353,7 +8447,7 @@
                 const itemCountRaw = folder?.imageCount;
                 const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
                 if (!Number.isNaN(itemCount) && Number.isFinite(itemCount) && itemCount >= 0) {
-                    parts.push(itemCount > 0 ? 'Direct media detected' : 'No direct media detected');
+                    parts.push(folder?.isVirtualRoot ? `${itemCount} video${itemCount === 1 ? '' : 's'} at L2 root` : itemCount > 0 ? 'Direct media detected' : 'No direct media detected');
                 } else if (state.folderRootSelection?.active) {
                     parts.push(state.folderRootSelection.stage === 'level2' ? 'Level 2 folder ready' : 'Select a level 1 folder');
                 } else {
