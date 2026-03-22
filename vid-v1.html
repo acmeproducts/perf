@@ -1047,13 +1047,13 @@
             </div>
             <div class="stream-status hidden" id="stream-status">
                 <div class="stream-status-title" id="stream-status-title">Preparing stream…</div>
-                <div class="stream-status-copy" id="stream-status-copy">Buffering the first 30 seconds while a background worker downloads the rest of the file.</div>
+                <div class="stream-status-copy" id="stream-status-copy">Waiting for the browser to buffer enough of the OneDrive stream before starting playback.</div>
                 <div class="stream-status-bar">
                     <div class="stream-status-bar-fill" id="stream-status-bar-fill"></div>
                 </div>
                 <div class="stream-status-meta">
                     <span id="stream-status-buffer">Buffer target: 0 / 30 seconds</span>
-                    <span id="stream-status-download">Background download: 0%</span>
+                    <span id="stream-status-download">Playback readiness: 0%</span>
                 </div>
             </div>
         </div>
@@ -1879,10 +1879,15 @@
             resetStreamingVideoSession() {
                 const session = state.streamingVideoSession;
                 if (!session) return;
-                try { session.worker?.postMessage({ type: 'abort' }); } catch (error) { console.warn('Failed to abort worker:', error); }
-                session.worker?.terminate?.();
-                if (session.objectUrl) {
-                    URL.revokeObjectURL(session.objectUrl);
+                if (Array.isArray(session.timeoutIds)) {
+                    session.timeoutIds.forEach(timeoutId => clearTimeout(timeoutId));
+                }
+                if (typeof session.cleanup === 'function') {
+                    try {
+                        session.cleanup();
+                    } catch (error) {
+                        console.warn('Failed to clean up AVI session:', error);
+                    }
                 }
                 state.streamingVideoSession = null;
             },
@@ -1894,10 +1899,11 @@
             updateStreamStatus({
                 visible = true,
                 title = 'Preparing stream…',
-                copy = 'Buffering the first 30 seconds while a background worker downloads the rest of the file.',
+                copy = 'Waiting for the browser to buffer enough of the stream before starting playback.',
                 bufferSeconds = 0,
                 targetSeconds = 30,
-                downloadPercent = 0
+                downloadPercent = 0,
+                downloadLabel = null
             } = {}) {
                 const status = this.elements.streamStatus;
                 if (!status) return;
@@ -1913,7 +1919,7 @@
                     this.elements.streamStatusBuffer.textContent = `Buffer target: ${Math.max(0, bufferSeconds).toFixed(1)} / ${targetSeconds} seconds`;
                 }
                 if (this.elements.streamStatusDownload) {
-                    this.elements.streamStatusDownload.textContent = `Background download: ${Math.round(Math.max(0, downloadPercent))}%`;
+                    this.elements.streamStatusDownload.textContent = downloadLabel || `Playback readiness: ${Math.round(Math.max(0, downloadPercent))}%`;
                 }
                 if (this.elements.streamStatusBarFill) {
                     this.elements.streamStatusBarFill.style.width = `${Math.max(0, Math.min(100, downloadPercent))}%`;
@@ -1940,63 +1946,21 @@
                     el.style.opacity = href ? '1' : '0.5';
                 });
             },
-            startOneDriveBufferedAviSession(video, file, videoUrl, loadId) {
-                const worker = new Worker(new URL('./workers/onedrive-video-worker.js', window.location.href), { type: 'module' });
+            async playBufferedOneDriveAvi(video, file, videoUrl, loadId) {
+                const targetSeconds = 30;
+                const startTimeoutMs = 12000;
+                const decodeTimeoutMs = 15000;
                 const session = {
                     fileId: file.id,
                     loadId,
-                    worker,
-                    chunks: [],
-                    downloadedBytes: 0,
-                    totalBytes: Number(file.size || 0),
-                    objectUrl: null,
-                    mimeType: file.mimeType || 'video/x-msvideo'
+                    timeoutIds: [],
+                    cleanup: null
                 };
                 state.streamingVideoSession = session;
-
-                worker.onmessage = (event) => {
-                    if (state.streamingVideoSession !== session || state.currentImageLoadId !== loadId) return;
-                    const message = event.data || {};
-                    if (message.type === 'meta') {
-                        session.totalBytes = Number(message.totalBytes || session.totalBytes || 0);
-                        return;
-                    }
-                    if (message.type === 'chunk' && message.chunk) {
-                        session.downloadedBytes = Number(message.downloadedBytes || session.downloadedBytes);
-                        session.totalBytes = Number(message.totalBytes || session.totalBytes || 0);
-                        session.chunks.push(message.chunk);
-                        return;
-                    }
-                    if (message.type === 'done') {
-                        session.downloadedBytes = Number(message.downloadedBytes || session.downloadedBytes);
-                        session.totalBytes = Number(message.totalBytes || session.totalBytes || session.downloadedBytes);
-                        try {
-                            const blob = new Blob(session.chunks, { type: session.mimeType });
-                            session.objectUrl = URL.createObjectURL(blob);
-                        } catch (error) {
-                            console.warn('Failed to build cached AVI blob:', error);
-                        }
-                        return;
-                    }
-                    if (message.type === 'error') {
-                        console.warn('AVI background download failed:', message.message);
-                    }
-                };
-                worker.postMessage({
-                    type: 'start',
-                    url: videoUrl,
-                    mimeType: session.mimeType,
-                    fileName: file.name || 'video.avi'
-                });
-                return session;
-            },
-            async playBufferedOneDriveAvi(video, file, videoUrl, loadId) {
-                const targetSeconds = 30;
-                const session = this.startOneDriveBufferedAviSession(video, file, videoUrl, loadId);
                 this.updateStreamStatus({
                     visible: true,
                     title: 'Buffering AVI stream…',
-                    copy: 'Holding playback until about 30 seconds are buffered while a worker keeps downloading the full OneDrive file.',
+                    copy: 'Waiting for the browser to buffer about 30 seconds of the native OneDrive stream before starting playback.',
                     bufferSeconds: 0,
                     targetSeconds,
                     downloadPercent: 0
@@ -2010,92 +1974,134 @@
                 return new Promise((resolve, reject) => {
                     let settled = false;
                     let playbackStarted = false;
-                    const clearListeners = () => {
-                        video.onloadedmetadata = null;
-                        video.oncanplay = null;
-                        video.onerror = null;
-                        video.onprogress = null;
-                        video.oncanplaythrough = null;
+                    let metadataSeen = false;
+                    let progressSeen = false;
+                    const listeners = [];
+                    const addListener = (eventName, handler) => {
+                        video.addEventListener(eventName, handler);
+                        listeners.push([eventName, handler]);
                     };
-                    const getBufferedSeconds = () => {
+                    const clearListeners = () => {
+                        listeners.forEach(([eventName, handler]) => video.removeEventListener(eventName, handler));
+                        listeners.length = 0;
+                    };
+                    const getBufferedRangeEnd = () => {
                         try {
                             if (!video.buffered || video.buffered.length === 0) return 0;
-                            return Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime);
+                            const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+                            for (let index = 0; index < video.buffered.length; index += 1) {
+                                const start = video.buffered.start(index);
+                                const end = video.buffered.end(index);
+                                if (currentTime >= start && currentTime <= end) {
+                                    return end;
+                                }
+                            }
+                            return video.buffered.end(video.buffered.length - 1);
                         } catch (error) {
                             return 0;
                         }
                     };
-                    const getDownloadPercent = () => {
-                        const totalBytes = Number(session.totalBytes || file.size || 0);
-                        const downloadedBytes = Number(session.downloadedBytes || 0);
-                        if (!totalBytes || !downloadedBytes) return 0;
-                        return (downloadedBytes / totalBytes) * 100;
+                    const getBufferedSeconds = () => {
+                        const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+                        return Math.max(0, getBufferedRangeEnd() - currentTime);
                     };
-                    const refresh = (title = 'Buffering AVI stream…', copy = 'Holding playback until about 30 seconds are buffered while a worker keeps downloading the full OneDrive file.') => {
+                    const refresh = (title = 'Buffering AVI stream…', copy = 'Waiting for the browser to buffer about 30 seconds of the native OneDrive stream before starting playback.') => {
                         const bufferedSeconds = getBufferedSeconds();
-                        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                        const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
                         const effectiveTarget = duration > 0 ? Math.min(targetSeconds, duration) : targetSeconds;
+                        const readinessPercent = effectiveTarget > 0 ? (Math.min(bufferedSeconds, effectiveTarget) / effectiveTarget) * 100 : 0;
                         Utils.updateStreamStatus({
                             visible: true,
                             title,
                             copy,
                             bufferSeconds: Math.min(bufferedSeconds, effectiveTarget),
                             targetSeconds: effectiveTarget,
-                            downloadPercent: getDownloadPercent()
+                            downloadPercent: readinessPercent,
+                            downloadLabel: `Playback readiness: ${Math.round(readinessPercent)}%`
                         });
-                        return { bufferedSeconds, effectiveTarget };
+                        return { bufferedSeconds, effectiveTarget, duration };
                     };
                     const finish = (ok, reason = '') => {
                         if (settled || state.currentImageLoadId !== loadId) return;
                         settled = true;
                         clearListeners();
+                        if (state.streamingVideoSession === session) {
+                            state.streamingVideoSession = null;
+                        }
                         if (!ok) {
                             reject(new Error(reason || 'Playback is unsupported or the stream could not be loaded'));
                             return;
                         }
-                        refresh('Streaming AVI from OneDrive', playbackStarted
-                            ? 'Playback started after the initial 30-second buffer. The worker continues downloading the remaining bytes.'
-                            : 'The initial buffer is ready. If autoplay is blocked, press play to continue while the worker downloads the rest.');
+                        const title = playbackStarted ? 'Streaming AVI from OneDrive' : 'AVI ready to play';
+                        const copy = playbackStarted
+                            ? 'Playback is using the native OneDrive download stream and will continue as the browser buffers more media.'
+                            : 'The native OneDrive stream is buffered enough to begin playback. Press play if autoplay is blocked.';
+                        refresh(title, copy);
                         resolve();
                     };
                     const maybeStartPlayback = async (force = false) => {
-                        if (state.currentImageLoadId !== loadId || playbackStarted) return;
-                        const { bufferedSeconds, effectiveTarget } = refresh();
+                        if (state.currentImageLoadId !== loadId || settled || playbackStarted) return;
+                        const { bufferedSeconds, effectiveTarget, duration } = refresh();
                         const hasTargetBuffer = bufferedSeconds >= Math.max(1, effectiveTarget - 0.5);
-                        const readyForShortFile = Number.isFinite(video.duration) && video.duration > 0 && video.duration <= targetSeconds && bufferedSeconds >= Math.max(1, video.duration - 0.5);
+                        const readyForShortFile = duration > 0 && duration <= targetSeconds && bufferedSeconds >= Math.max(1, duration - 0.5);
+                        const timedOutWithBuffer = force && (bufferedSeconds > 0 || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA || metadataSeen || progressSeen);
                         if (!force && !hasTargetBuffer && !readyForShortFile) {
                             return;
                         }
-                        playbackStarted = true;
+                        if (force && !hasTargetBuffer && !readyForShortFile && !timedOutWithBuffer) {
+                            finish(false, 'This browser could not buffer the AVI stream');
+                            return;
+                        }
                         try {
                             await video.play();
+                            playbackStarted = true;
+                            finish(true);
                         } catch (error) {
-                            console.warn('Autoplay blocked for AVI stream:', error);
+                            if (error?.name === 'NotAllowedError') {
+                                finish(true);
+                                return;
+                            }
+                            finish(false, error?.message || 'Playback is unsupported or the stream could not be loaded');
                         }
-                        finish(true);
                     };
-                    video.onloadedmetadata = () => {
+                    addListener('loadedmetadata', () => {
+                        metadataSeen = true;
                         refresh();
                         maybeStartPlayback(false);
-                    };
-                    video.oncanplay = () => {
+                    });
+                    addListener('durationchange', () => {
+                        metadataSeen = true;
                         refresh();
                         maybeStartPlayback(false);
-                    };
-                    video.onprogress = () => {
+                    });
+                    addListener('progress', () => {
+                        progressSeen = true;
                         refresh(playbackStarted ? 'Streaming AVI from OneDrive' : 'Buffering AVI stream…');
                         maybeStartPlayback(false);
-                    };
-                    video.oncanplaythrough = () => {
-                        refresh('Streaming AVI from OneDrive', 'The browser reported enough data to continue playback while the worker finishes the download.');
+                    });
+                    addListener('canplay', () => {
+                        refresh();
+                        maybeStartPlayback(false);
+                    });
+                    addListener('canplaythrough', () => {
+                        refresh('Streaming AVI from OneDrive', 'The browser reports enough buffered media to continue playback from the native OneDrive stream.');
                         maybeStartPlayback(true);
-                    };
-                    video.onerror = () => finish(false, 'Playback is unsupported or the stream could not be loaded');
-                    setTimeout(() => {
+                    });
+                    addListener('error', () => {
+                        const mediaError = video.error;
+                        finish(false, mediaError?.message || 'Playback is unsupported or the stream could not be loaded');
+                    });
+                    session.cleanup = clearListeners;
+                    session.timeoutIds.push(setTimeout(() => {
                         if (!settled && state.currentImageLoadId === loadId) {
                             maybeStartPlayback(true);
                         }
-                    }, 12000);
+                    }, startTimeoutMs));
+                    session.timeoutIds.push(setTimeout(() => {
+                        if (!settled && !metadataSeen && !progressSeen && state.currentImageLoadId === loadId) {
+                            finish(false, 'This browser could not decode the AVI stream');
+                        }
+                    }, decodeTimeoutMs));
                 });
             },
             async setCenterStageVideo(video, file) {
