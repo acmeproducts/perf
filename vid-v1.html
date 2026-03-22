@@ -1315,6 +1315,14 @@
             'video/mp4',
             'video/quicktime'
         ]);
+        const AVI_VIDEO_MIME_TYPES = [
+            'video/x-msvideo',
+            'video/avi',
+            'video/msvideo',
+            'video/vnd.avi',
+            'application/vnd.ms-video',
+            'application/x-msvideo'
+        ];
         const getFileExtension = (name = '') => {
             const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
             return match ? match[1] : '';
@@ -1333,6 +1341,21 @@
         const isAviFile = (file = {}) => getFileExtension(file?.name || '') === '.avi'
             || String(file?.mimeType || '').toLowerCase().includes('avi')
             || String(file?.mimeType || '').toLowerCase().includes('msvideo');
+        const canPlayAviInline = (video, file = {}) => {
+            if (!video || typeof video.canPlayType !== 'function') return false;
+            const mimeTypes = new Set(AVI_VIDEO_MIME_TYPES);
+            const fileMimeType = String(file?.mimeType || '').toLowerCase();
+            if (fileMimeType && (fileMimeType.includes('avi') || fileMimeType.includes('msvideo'))) {
+                mimeTypes.add(fileMimeType);
+            }
+            for (const mimeType of mimeTypes) {
+                const support = String(video.canPlayType(mimeType) || '').trim().toLowerCase();
+                if (support === 'probably' || support === 'maybe') {
+                    return true;
+                }
+            }
+            return false;
+        };
         const GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION = 1;
         const createGoogleDriveFolderCacheEntry = () => ({
             folderImageCountCache: new Map(),
@@ -2133,6 +2156,10 @@
                         return;
                     }
                     if (state.providerType === 'onedrive' && isAviFile(file) && videoUrl) {
+                        if (!canPlayAviInline(video, file)) {
+                            complete(false, 'This browser cannot preview AVI inline. Open or download it from OneDrive instead');
+                            return;
+                        }
                         this.playBufferedOneDriveAvi(video, file, videoUrl, loadId)
                             .then(() => complete(true))
                             .catch((error) => {
