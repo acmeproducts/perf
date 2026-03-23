@@ -1367,23 +1367,23 @@
             const extension = getFileExtension(file?.name || '');
             return extension === '.mp4' || extension === '.mov' || extension === '.m4v';
         };
-        const isAviFile = (file = {}) => getFileExtension(file?.name || '') === '.avi'
-            || String(file?.mimeType || '').toLowerCase().includes('avi')
-            || String(file?.mimeType || '').toLowerCase().includes('msvideo');
-        const canPlayAviInline = (video, file = {}) => {
-            if (!video || typeof video.canPlayType !== 'function') return false;
-            const mimeTypes = new Set(AVI_VIDEO_MIME_TYPES);
+        const canBrowserPlayVideoInline = (video, file = {}) => {
+            if (!video || typeof video.canPlayType !== 'function') return isBrowserPlayableVideo(file);
+            const mimeTypes = new Set();
             const fileMimeType = String(file?.mimeType || '').toLowerCase();
-            if (fileMimeType && (fileMimeType.includes('avi') || fileMimeType.includes('msvideo'))) {
-                mimeTypes.add(fileMimeType);
-            }
+            if (fileMimeType) mimeTypes.add(fileMimeType);
+            const extension = getFileExtension(file?.name || '');
+            if (extension === '.mp4' || extension === '.m4v') mimeTypes.add('video/mp4');
+            if (extension === '.mov') mimeTypes.add('video/quicktime');
+            if (extension === '.avi') AVI_VIDEO_MIME_TYPES.forEach(mimeType => mimeTypes.add(mimeType));
             for (const mimeType of mimeTypes) {
                 const support = String(video.canPlayType(mimeType) || '').trim().toLowerCase();
                 if (support === 'probably' || support === 'maybe') {
                     return true;
                 }
             }
-            return false;
+            if (mimeTypes.size > 0) return false;
+            return isBrowserPlayableVideo(file);
         };
 // ── PATCH: Tier 1 — refresh OneDrive download URL before playback ──────
 // Gets a fresh @microsoft.graph.downloadUrl token via Graph API.
@@ -2073,6 +2073,13 @@ const ALL_PHASE_CSS_CLASSES = Object.keys(STREAM_PHASE_META).map(p => `phase-${p
                 if (!fallback) return;
                 this.hideStreamStatus();
                 this.resetStreamingVideoSession();
+                const video = this.elements.centerImage;
+                if (video) {
+                    video.pause?.();
+                    video.removeAttribute('src');
+                    video.load?.();
+                    video.classList.add('hidden');
+                }
                 const links = this.getProviderLinks(file);
                 fallback.classList.remove('hidden');
                 if (this.elements.videoFallbackTitle) {
