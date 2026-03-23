@@ -388,10 +388,35 @@
             backdrop-filter: blur(18px); color: white; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
         }
         .stream-status.hidden { display: none; }
-        .stream-status-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+        /* ── PATCH: Tier 1+2 stream status phase system ── */
+        .stream-status { --ss-color: rgba(245, 158, 11, 0.9); transition: border-color 0.3s ease; }
+        .stream-status.phase-fetching   { --ss-color: rgba(99,  102, 241, 0.9); border-color: rgba(99,  102, 241, 0.40); }
+        .stream-status.phase-connecting { --ss-color: rgba(59,  130, 246, 0.9); border-color: rgba(59,  130, 246, 0.40); }
+        .stream-status.phase-buffering  { --ss-color: rgba(245, 158, 11, 0.9);  border-color: rgba(245, 158, 11, 0.40); }
+        .stream-status.phase-ready      { --ss-color: rgba(16,  185, 129, 0.9); border-color: rgba(16,  185, 129, 0.40); }
+        .stream-status.phase-playing    { --ss-color: rgba(16,  185, 129, 0.9); border-color: rgba(16,  185, 129, 0.25); opacity: 0.75; }
+        .stream-status.phase-stalled    { --ss-color: rgba(251, 191, 36,  1.0); border-color: rgba(251, 191, 36,  0.55); }
+        .stream-status.phase-error      { --ss-color: rgba(239, 68,  68,  0.9); border-color: rgba(239, 68,  68,  0.40); }
+        .stream-status-header { display: flex; align-items: center; margin-bottom: 4px; }
+        .stream-status-icon {
+            font-size: 16px; line-height: 1; margin-right: 8px; flex-shrink: 0;
+            color: var(--ss-color, #f59e0b); transition: color 0.3s ease; display: inline-block;
+        }
+        .stream-status-title { color: var(--ss-color, #f59e0b); transition: color 0.3s ease; flex: 1; font-size: 14px; font-weight: 700; }
+        .stream-status-bar-fill {
+            background: linear-gradient(90deg, var(--ss-color, #f59e0b) 0%, rgba(251,191,36,0.7) 100%);
+            transition: width 0.25s ease, background 0.3s ease;
+        }
+        .stream-status-size-hint { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 6px; font-variant-numeric: tabular-nums; }
+        @keyframes ssStallPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes ssSpinIcon { to { transform: rotate(360deg); } }
+        .phase-stalled .stream-status-bar-fill { animation: ssStallPulse 1.1s ease-in-out infinite; }
+        .phase-stalled .stream-status-icon     { animation: ssStallPulse 1.1s ease-in-out infinite; }
+        .phase-fetching .stream-status-icon,
+        .phase-connecting .stream-status-icon  { animation: ssSpinIcon 0.9s linear infinite; }
         .stream-status-copy { font-size: 12px; color: rgba(255, 255, 255, 0.75); margin-bottom: 10px; line-height: 1.4; }
         .stream-status-bar { width: 100%; height: 6px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, 0.12); }
-        .stream-status-bar-fill { width: 0%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #f59e0b 0%, #fb7185 100%); transition: width 0.2s ease; }
+        .stream-status-bar-fill { width: 0%; height: 100%; border-radius: inherit; }
         .stream-status-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; font-size: 12px; color: rgba(255, 255, 255, 0.82); }
         .edge-glow { position: absolute; opacity: 0; transition: opacity 0.2s ease; z-index: 2; pointer-events: none; }
         .edge-glow.top { top: 0; left: 0; right: 0; height: 8px; background: linear-gradient(180deg, rgba(245, 158, 11, var(--glow)) 0%, transparent 100%); }
@@ -1046,15 +1071,19 @@
                 </div>
             </div>
             <div class="stream-status hidden" id="stream-status">
-                <div class="stream-status-title" id="stream-status-title">Preparing stream…</div>
-                <div class="stream-status-copy" id="stream-status-copy">Waiting for the browser to buffer enough of the OneDrive stream before starting playback.</div>
+                <div class="stream-status-header">
+                    <span class="stream-status-icon" id="stream-status-icon">▶</span>
+                    <div class="stream-status-title" id="stream-status-title">Preparing stream…</div>
+                </div>
+                <div class="stream-status-copy" id="stream-status-copy">Waiting for the browser to buffer the stream before starting playback.</div>
                 <div class="stream-status-bar">
                     <div class="stream-status-bar-fill" id="stream-status-bar-fill"></div>
                 </div>
                 <div class="stream-status-meta">
-                    <span id="stream-status-buffer">Buffer target: 0 / 30 seconds</span>
-                    <span id="stream-status-download">Playback readiness: 0%</span>
+                    <span id="stream-status-buffer">Buffer: 0 / 30s</span>
+                    <span id="stream-status-download">Readiness: 0%</span>
                 </div>
+                <div class="stream-status-size-hint" id="stream-status-size-hint"></div>
             </div>
         </div>
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
@@ -1338,24 +1367,90 @@
             const extension = getFileExtension(file?.name || '');
             return extension === '.mp4' || extension === '.mov' || extension === '.m4v';
         };
-        const isAviFile = (file = {}) => getFileExtension(file?.name || '') === '.avi'
-            || String(file?.mimeType || '').toLowerCase().includes('avi')
-            || String(file?.mimeType || '').toLowerCase().includes('msvideo');
-        const canPlayAviInline = (video, file = {}) => {
-            if (!video || typeof video.canPlayType !== 'function') return false;
-            const mimeTypes = new Set(AVI_VIDEO_MIME_TYPES);
+        const canBrowserPlayVideoInline = (video, file = {}) => {
+            if (!video || typeof video.canPlayType !== 'function') return isBrowserPlayableVideo(file);
+            const mimeTypes = new Set();
             const fileMimeType = String(file?.mimeType || '').toLowerCase();
-            if (fileMimeType && (fileMimeType.includes('avi') || fileMimeType.includes('msvideo'))) {
-                mimeTypes.add(fileMimeType);
-            }
+            if (fileMimeType) mimeTypes.add(fileMimeType);
+            const extension = getFileExtension(file?.name || '');
+            if (extension === '.mp4' || extension === '.m4v') mimeTypes.add('video/mp4');
+            if (extension === '.mov') mimeTypes.add('video/quicktime');
+            if (extension === '.avi') AVI_VIDEO_MIME_TYPES.forEach(mimeType => mimeTypes.add(mimeType));
             for (const mimeType of mimeTypes) {
                 const support = String(video.canPlayType(mimeType) || '').trim().toLowerCase();
                 if (support === 'probably' || support === 'maybe') {
                     return true;
                 }
             }
-            return false;
+            if (mimeTypes.size > 0) return false;
+            return isBrowserPlayableVideo(file);
         };
+// ── PATCH: Tier 1 — refresh OneDrive download URL before playback ──────
+// Gets a fresh @microsoft.graph.downloadUrl token via Graph API.
+// Updates file.downloadUrl in-memory. Falls back to existing URL on failure.
+async function refreshOneDriveDownloadUrl(file) {
+    const provider = state.provider;
+    if (!provider || typeof provider.getAccessToken !== 'function') {
+        return file.downloadUrl || null;
+    }
+    try {
+        const token = await provider.getAccessToken();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const response = await fetch(
+            `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}` +
+            `?select=id,name,%40microsoft.graph.downloadUrl`,
+            { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal }
+        );
+        clearTimeout(timeoutId);
+        if (!response.ok) throw new Error(`Graph ${response.status}`);
+        const data = await response.json();
+        const freshUrl = data['@microsoft.graph.downloadUrl'] || null;
+        if (freshUrl) file.downloadUrl = freshUrl;
+        return freshUrl || file.downloadUrl || null;
+    } catch (err) {
+        console.warn('[refreshOneDriveDownloadUrl] failed, using cached URL:', err.message);
+        return file.downloadUrl || null;
+    }
+}
+
+// ── PATCH: Tier 2 — human-readable file size + ETA hint ───────────────
+// Uses Network Information API where available for speed estimate.
+function formatStreamMeta(file) {
+    if (!file || !file.size) return null;
+    const bytes = file.size;
+    const mb = bytes / (1024 * 1024);
+    const gb = mb / 1024;
+    const sizeStr = gb >= 1
+        ? `${gb.toFixed(1)} GB`
+        : mb >= 1 ? `${Math.round(mb)} MB`
+        : `${Math.round(bytes / 1024)} KB`;
+    let etaStr = null;
+    try {
+        const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (conn && conn.downlink && conn.downlink > 0) {
+            const speedBps = conn.downlink * 125000; // Mbps → bytes/s
+            const seconds = Math.round(bytes / speedBps);
+            etaStr = seconds < 5  ? 'fast connection'
+                   : seconds < 60 ? `~${seconds}s on your connection`
+                   : `~${Math.round(seconds / 60)}m on your connection`;
+        }
+    } catch (_) {}
+    return etaStr ? `${sizeStr} · ${etaStr}` : sizeStr;
+}
+
+// ── PATCH: Tier 2 — stream status phase system ────────────────────────
+const STREAM_PHASE_META = {
+    fetching:   { icon: '↻', label: 'Fetching stream URL…' },
+    connecting: { icon: '↻', label: 'Connecting…' },
+    buffering:  { icon: '▶', label: 'Buffering…' },
+    ready:      { icon: '✓', label: 'Ready to play' },
+    playing:    { icon: '▶', label: 'Streaming' },
+    stalled:    { icon: '⏸', label: 'Rebuffering…' },
+    error:      { icon: '✕', label: 'Playback error' }
+};
+const ALL_PHASE_CSS_CLASSES = Object.keys(STREAM_PHASE_META).map(p => `phase-${p}`);
+
         const GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION = 1;
         const createGoogleDriveFolderCacheEntry = () => ({
             folderImageCountCache: new Map(),
@@ -1784,6 +1879,8 @@
                     videoProviderLink: document.getElementById('video-provider-link'),
                     streamStatus: document.getElementById('stream-status'),
                     streamStatusTitle: document.getElementById('stream-status-title'),
+                    streamStatusIcon: document.getElementById('stream-status-icon'),
+                    streamStatusSizeHint: document.getElementById('stream-status-size-hint'),
                     streamStatusCopy: document.getElementById('stream-status-copy'),
                     streamStatusBarFill: document.getElementById('stream-status-bar-fill'),
                     streamStatusBuffer: document.getElementById('stream-status-buffer'),
@@ -1918,34 +2015,57 @@
                 const status = this.elements.streamStatus;
                 if (!status) return;
                 status.classList.add('hidden');
+                status.classList.remove(...ALL_PHASE_CSS_CLASSES);
             },
             updateStreamStatus({
+                phase = 'buffering',
                 visible = true,
-                title = 'Preparing stream…',
-                copy = 'Waiting for the browser to buffer enough of the stream before starting playback.',
+                title = null,
+                copy = null,
                 bufferSeconds = 0,
                 targetSeconds = 30,
                 downloadPercent = 0,
-                downloadLabel = null
+                downloadLabel = null,
+                sizeHint = null
             } = {}) {
                 const status = this.elements.streamStatus;
                 if (!status) return;
                 status.classList.toggle('hidden', !visible);
                 if (!visible) return;
-                if (this.elements.streamStatusTitle) {
-                    this.elements.streamStatusTitle.textContent = title;
+
+                // Apply phase class
+                status.classList.remove(...ALL_PHASE_CSS_CLASSES);
+                if (phase && STREAM_PHASE_META[phase]) {
+                    status.classList.add(`phase-${phase}`);
                 }
-                if (this.elements.streamStatusCopy) {
+
+                const meta = STREAM_PHASE_META[phase] || STREAM_PHASE_META.buffering;
+                if (this.elements.streamStatusIcon) {
+                    this.elements.streamStatusIcon.textContent = meta.icon;
+                }
+                if (this.elements.streamStatusTitle) {
+                    this.elements.streamStatusTitle.textContent = title || meta.label;
+                }
+                if (this.elements.streamStatusCopy && copy !== null) {
                     this.elements.streamStatusCopy.textContent = copy;
                 }
                 if (this.elements.streamStatusBuffer) {
-                    this.elements.streamStatusBuffer.textContent = `Buffer target: ${Math.max(0, bufferSeconds).toFixed(1)} / ${targetSeconds} seconds`;
+                    const safeBuf = Math.max(0, bufferSeconds);
+                    this.elements.streamStatusBuffer.textContent =
+                        (phase === 'fetching' || phase === 'connecting')
+                            ? 'Awaiting stream…'
+                            : `Buffer: ${safeBuf.toFixed(1)}s / ${targetSeconds}s`;
                 }
                 if (this.elements.streamStatusDownload) {
-                    this.elements.streamStatusDownload.textContent = downloadLabel || `Playback readiness: ${Math.round(Math.max(0, downloadPercent))}%`;
+                    this.elements.streamStatusDownload.textContent =
+                        downloadLabel || `Readiness: ${Math.round(Math.max(0, downloadPercent))}%`;
                 }
                 if (this.elements.streamStatusBarFill) {
-                    this.elements.streamStatusBarFill.style.width = `${Math.max(0, Math.min(100, downloadPercent))}%`;
+                    this.elements.streamStatusBarFill.style.width =
+                        `${Math.max(0, Math.min(100, downloadPercent))}%`;
+                }
+                if (this.elements.streamStatusSizeHint) {
+                    this.elements.streamStatusSizeHint.textContent = sizeHint || '';
                 }
             },
             showVideoFallback(file, reason = 'Preview unavailable') {
@@ -1953,6 +2073,13 @@
                 if (!fallback) return;
                 this.hideStreamStatus();
                 this.resetStreamingVideoSession();
+                const video = this.elements.centerImage;
+                if (video) {
+                    video.pause?.();
+                    video.removeAttribute('src');
+                    video.load?.();
+                    video.classList.add('hidden');
+                }
                 const links = this.getProviderLinks(file);
                 fallback.classList.remove('hidden');
                 if (this.elements.videoFallbackTitle) {
@@ -1969,25 +2096,26 @@
                     el.style.opacity = href ? '1' : '0.5';
                 });
             },
-            async playBufferedOneDriveAvi(video, file, videoUrl, loadId) {
+            // ── PATCH: Tier 1+2 — unified OneDrive buffering for all formats ──
+            // Unified buffering path with no codec-gated inline branch.
+            // Handles MP4, MOV, AVI, and any other OneDrive format uniformly.
+            async playBufferedOneDriveVideo(video, file, videoUrl, loadId) {
                 const targetSeconds = 30;
-                const startTimeoutMs = 12000;
-                const decodeTimeoutMs = 15000;
-                const session = {
-                    fileId: file.id,
-                    loadId,
-                    timeoutIds: [],
-                    cleanup: null
-                };
+                const startTimeoutMs = 14000;
+                const decodeTimeoutMs = 18000;
+                const sizeHint = formatStreamMeta(file);
+
+                const session = { fileId: file.id, loadId, timeoutIds: [], cleanup: null };
                 state.streamingVideoSession = session;
+
                 this.updateStreamStatus({
+                    phase: 'connecting',
                     visible: true,
-                    title: 'Buffering AVI stream…',
-                    copy: 'Waiting for the browser to buffer about 30 seconds of the native OneDrive stream before starting playback.',
-                    bufferSeconds: 0,
-                    targetSeconds,
-                    downloadPercent: 0
+                    copy: `Setting up stream for ${file.name || 'this video'}…`,
+                    downloadPercent: 0,
+                    sizeHint
                 });
+
                 video.preload = 'auto';
                 video.pause();
                 video.removeAttribute('poster');
@@ -2000,129 +2128,125 @@
                     let metadataSeen = false;
                     let progressSeen = false;
                     const listeners = [];
-                    const addListener = (eventName, handler) => {
-                        video.addEventListener(eventName, handler);
-                        listeners.push([eventName, handler]);
+                    const addListener = (name, handler) => {
+                        video.addEventListener(name, handler);
+                        listeners.push([name, handler]);
                     };
                     const clearListeners = () => {
-                        listeners.forEach(([eventName, handler]) => video.removeEventListener(eventName, handler));
+                        listeners.forEach(([n, h]) => video.removeEventListener(n, h));
                         listeners.length = 0;
                     };
-                    const getBufferedRangeEnd = () => {
+                    const getBufferedSeconds = () => {
                         try {
                             if (!video.buffered || video.buffered.length === 0) return 0;
-                            const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-                            for (let index = 0; index < video.buffered.length; index += 1) {
-                                const start = video.buffered.start(index);
-                                const end = video.buffered.end(index);
-                                if (currentTime >= start && currentTime <= end) {
-                                    return end;
+                            const ct = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+                            for (let i = 0; i < video.buffered.length; i++) {
+                                if (ct >= video.buffered.start(i) && ct <= video.buffered.end(i)) {
+                                    return Math.max(0, video.buffered.end(i) - ct);
                                 }
                             }
-                            return video.buffered.end(video.buffered.length - 1);
-                        } catch (error) {
-                            return 0;
-                        }
+                            return Math.max(0, video.buffered.end(video.buffered.length - 1) - ct);
+                        } catch (_) { return 0; }
                     };
-                    const getBufferedSeconds = () => {
-                        const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-                        return Math.max(0, getBufferedRangeEnd() - currentTime);
-                    };
-                    const refresh = (title = 'Buffering AVI stream…', copy = 'Waiting for the browser to buffer about 30 seconds of the native OneDrive stream before starting playback.') => {
+                    const refreshUI = (overridePhase = null) => {
                         const bufferedSeconds = getBufferedSeconds();
                         const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
                         const effectiveTarget = duration > 0 ? Math.min(targetSeconds, duration) : targetSeconds;
-                        const readinessPercent = effectiveTarget > 0 ? (Math.min(bufferedSeconds, effectiveTarget) / effectiveTarget) * 100 : 0;
-                        Utils.updateStreamStatus({
+                        const readiness = effectiveTarget > 0
+                            ? (Math.min(bufferedSeconds, effectiveTarget) / effectiveTarget) * 100
+                            : 0;
+                        const phase = overridePhase || (
+                            playbackStarted ? 'playing'
+                            : (bufferedSeconds > 0 || progressSeen ? 'buffering' : 'connecting')
+                        );
+                        this.updateStreamStatus({
+                            phase,
                             visible: true,
-                            title,
-                            copy,
+                            copy: playbackStarted
+                                ? `Streaming ${file.name || 'video'} from OneDrive.`
+                                : `Buffering — ${Math.round(readiness)}% ready.${sizeHint ? ' File: ' + sizeHint : ''}`,
                             bufferSeconds: Math.min(bufferedSeconds, effectiveTarget),
                             targetSeconds: effectiveTarget,
-                            downloadPercent: readinessPercent,
-                            downloadLabel: `Playback readiness: ${Math.round(readinessPercent)}%`
+                            downloadPercent: readiness,
+                            sizeHint
                         });
-                        return { bufferedSeconds, effectiveTarget, duration };
+                        return { bufferedSeconds, effectiveTarget, duration, readiness };
                     };
                     const finish = (ok, reason = '') => {
                         if (settled || state.currentImageLoadId !== loadId) return;
                         settled = true;
                         clearListeners();
-                        if (state.streamingVideoSession === session) {
-                            state.streamingVideoSession = null;
-                        }
-                        if (!ok) {
-                            reject(new Error(reason || 'Playback is unsupported or the stream could not be loaded'));
-                            return;
-                        }
-                        const title = playbackStarted ? 'Streaming AVI from OneDrive' : 'AVI ready to play';
-                        const copy = playbackStarted
-                            ? 'Playback is using the native OneDrive download stream and will continue as the browser buffers more media.'
-                            : 'The native OneDrive stream is buffered enough to begin playback. Press play if autoplay is blocked.';
-                        refresh(title, copy);
+                        if (state.streamingVideoSession === session) state.streamingVideoSession = null;
+                        if (!ok) { reject(new Error(reason || 'Stream could not be loaded')); return; }
+                        refreshUI(playbackStarted ? 'playing' : 'ready');
+                        // Auto-hide after stream is confirmed playing
+                        setTimeout(() => {
+                            if (state.currentImageLoadId === loadId) {
+                                this.updateStreamStatus({ phase: 'playing', visible: true, downloadPercent: 100, sizeHint, copy: `Streaming ${file.name || 'video'} from OneDrive.` });
+                                setTimeout(() => { if (state.currentImageLoadId === loadId) this.hideStreamStatus(); }, 3000);
+                            }
+                        }, 1200);
                         resolve();
                     };
                     const maybeStartPlayback = async (force = false) => {
                         if (state.currentImageLoadId !== loadId || settled || playbackStarted) return;
-                        const { bufferedSeconds, effectiveTarget, duration } = refresh();
+                        const { bufferedSeconds, effectiveTarget, duration } = refreshUI();
                         const hasTargetBuffer = bufferedSeconds >= Math.max(1, effectiveTarget - 0.5);
-                        const readyForShortFile = duration > 0 && duration <= targetSeconds && bufferedSeconds >= Math.max(1, duration - 0.5);
-                        const timedOutWithBuffer = force && (bufferedSeconds > 0 || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA || metadataSeen || progressSeen);
-                        if (!force && !hasTargetBuffer && !readyForShortFile) {
-                            return;
-                        }
-                        if (force && !hasTargetBuffer && !readyForShortFile && !timedOutWithBuffer) {
-                            finish(false, 'This browser could not buffer the AVI stream');
-                            return;
+                        const shortFileReady = duration > 0 && duration <= targetSeconds && bufferedSeconds >= Math.max(1, duration - 0.5);
+                        const forcedWithSomething = force && (bufferedSeconds > 0 || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA || metadataSeen || progressSeen);
+                        if (!force && !hasTargetBuffer && !shortFileReady) return;
+                        if (force && !hasTargetBuffer && !shortFileReady && !forcedWithSomething) {
+                            finish(false, 'Browser could not buffer this stream in time'); return;
                         }
                         try {
                             await video.play();
                             playbackStarted = true;
                             finish(true);
-                        } catch (error) {
-                            if (error?.name === 'NotAllowedError') {
-                                finish(true);
-                                return;
-                            }
-                            finish(false, error?.message || 'Playback is unsupported or the stream could not be loaded');
+                        } catch (err) {
+                            if (err?.name === 'NotAllowedError') { finish(true); return; }
+                            finish(false, err?.message || 'Playback failed');
                         }
                     };
-                    addListener('loadedmetadata', () => {
-                        metadataSeen = true;
-                        refresh();
-                        maybeStartPlayback(false);
+
+                    addListener('loadedmetadata', () => { metadataSeen = true; refreshUI(); maybeStartPlayback(false); });
+                    addListener('durationchange',  () => { metadataSeen = true; refreshUI(); maybeStartPlayback(false); });
+                    addListener('progress',        () => { progressSeen = true; refreshUI(); maybeStartPlayback(false); });
+                    addListener('canplay',         () => { refreshUI(); maybeStartPlayback(false); });
+                    addListener('canplaythrough',  () => { refreshUI(); maybeStartPlayback(true); });
+
+                    addListener('waiting', () => {
+                        if (settled || state.currentImageLoadId !== loadId) return;
+                        this.updateStreamStatus({
+                            phase: 'stalled',
+                            visible: true,
+                            copy: `Rebuffering — ${file.name || 'video'} paused to load more data.`,
+                            downloadPercent: 0,
+                            sizeHint
+                        });
                     });
-                    addListener('durationchange', () => {
-                        metadataSeen = true;
-                        refresh();
-                        maybeStartPlayback(false);
-                    });
-                    addListener('progress', () => {
-                        progressSeen = true;
-                        refresh(playbackStarted ? 'Streaming AVI from OneDrive' : 'Buffering AVI stream…');
-                        maybeStartPlayback(false);
-                    });
-                    addListener('canplay', () => {
-                        refresh();
-                        maybeStartPlayback(false);
-                    });
-                    addListener('canplaythrough', () => {
-                        refresh('Streaming AVI from OneDrive', 'The browser reports enough buffered media to continue playback from the native OneDrive stream.');
-                        maybeStartPlayback(true);
+                    addListener('playing', () => {
+                        if (settled || state.currentImageLoadId !== loadId) return;
+                        playbackStarted = true;
+                        refreshUI('playing');
+                        setTimeout(() => { if (state.currentImageLoadId === loadId) this.hideStreamStatus(); }, 2500);
                     });
                     addListener('error', () => {
-                        const mediaError = video.error;
-                        finish(false, mediaError?.message || 'Playback is unsupported or the stream could not be loaded');
+                        const mediaErr = video.error;
+                        const codeMap = { 1: 'Fetch aborted', 2: 'Network error', 3: 'Decode error — format may be unsupported', 4: 'Format not supported by this browser' };
+                        const reason = mediaErr
+                            ? (codeMap[mediaErr.code] || mediaErr.message || 'Media error')
+                            : 'Unknown playback error';
+                        this.updateStreamStatus({ phase: 'error', visible: true, copy: `${reason} — ${file.name || 'video'}`, downloadPercent: 0, sizeHint });
+                        setTimeout(() => finish(false, reason), 1200);
                     });
+
                     session.cleanup = clearListeners;
                     session.timeoutIds.push(setTimeout(() => {
-                        if (!settled && state.currentImageLoadId === loadId) {
-                            maybeStartPlayback(true);
-                        }
+                        if (!settled && state.currentImageLoadId === loadId) maybeStartPlayback(true);
                     }, startTimeoutMs));
                     session.timeoutIds.push(setTimeout(() => {
                         if (!settled && !metadataSeen && !progressSeen && state.currentImageLoadId === loadId) {
-                            finish(false, 'This browser could not decode the AVI stream');
+                            finish(false, 'Browser could not decode this stream — try opening it externally');
                         }
                     }, decodeTimeoutMs));
                 });
@@ -2131,43 +2255,69 @@
                 const loadId = `${file.id}_${Date.now()}`;
                 state.currentImageLoadId = loadId;
                 this.resetStreamingVideoSession();
-                const links = this.getProviderLinks(file);
-                const videoUrl = links.openUrl;
+
                 this.hideVideoFallback();
                 this.hideEmbeddedPreview();
                 video.classList.remove('hidden');
+
                 return new Promise((resolve) => {
                     const complete = (ok, reason = '') => {
                         if (state.currentImageLoadId !== loadId) return;
                         video.onloadedmetadata = null;
                         video.onerror = null;
                         video.oncanplay = null;
-                        video.onprogress = null;
-                        video.oncanplaythrough = null;
-                        if (!ok) {
-                            this.showVideoFallback(file, reason || 'This browser could not decode the selected video');
-                        }
+                        if (!ok) this.showVideoFallback(file, reason || 'This browser could not play this video');
                         resolve();
                     };
-                    if (state.providerType === 'googledrive' && links.embedUrl) {
-                        this.hideStreamStatus();
-                        this.showEmbeddedPreview(links.embedUrl);
-                        complete(true);
-                        return;
-                    }
-                    if (state.providerType === 'onedrive' && isAviFile(file) && videoUrl) {
-                        if (!canPlayAviInline(video, file)) {
-                            complete(false, 'This browser cannot preview AVI inline. Open or download it from OneDrive instead');
+
+                    if (state.providerType === 'googledrive') {
+                        const links = this.getProviderLinks(file);
+                        if (links.embedUrl) {
+                            this.hideStreamStatus();
+                            this.showEmbeddedPreview(links.embedUrl);
+                            complete(true);
                             return;
                         }
-                        this.playBufferedOneDriveAvi(video, file, videoUrl, loadId)
-                            .then(() => complete(true))
-                            .catch((error) => {
-                                console.warn('Failed to initialize AVI stream:', error);
-                                complete(false, error.message || 'The AVI stream could not be prepared');
-                            });
+                        complete(false, 'No embeddable URL available for this Google Drive file');
                         return;
                     }
+
+                    if (state.providerType === 'onedrive') {
+                        const sizeHint = formatStreamMeta(file);
+
+                        if (!canBrowserPlayVideoInline(video, file)) {
+                            complete(false, 'This browser cannot preview this video inline. Open or download it from OneDrive instead');
+                            return;
+                        }
+
+                        this.updateStreamStatus({
+                            phase: 'fetching',
+                            visible: true,
+                            copy: `Fetching a fresh stream URL for ${file.name || 'this video'}…`,
+                            downloadPercent: 0,
+                            sizeHint
+                        });
+
+                        refreshOneDriveDownloadUrl(file).then(freshUrl => {
+                            if (state.currentImageLoadId !== loadId) { resolve(); return; }
+                            if (!freshUrl) {
+                                complete(false, 'Could not obtain a playable stream URL from OneDrive');
+                                return;
+                            }
+                            this.playBufferedOneDriveVideo(video, file, freshUrl, loadId)
+                                .then(() => complete(true))
+                                .catch(err => {
+                                    if (state.currentImageLoadId !== loadId) { resolve(); return; }
+                                    complete(false, err.message || 'Stream could not be loaded');
+                                });
+                        }).catch(err => {
+                            if (state.currentImageLoadId !== loadId) { resolve(); return; }
+                            complete(false, `URL fetch failed: ${err.message}`);
+                        });
+                        return;
+                    }
+
+                    const links = this.getProviderLinks(file);
                     if (!isBrowserPlayableVideo(file)) {
                         complete(false, 'This format is better opened in your provider or device viewer');
                         return;
@@ -2175,14 +2325,12 @@
                     this.hideStreamStatus();
                     video.pause();
                     video.removeAttribute('poster');
-                    video.src = videoUrl || '';
+                    video.src = links.openUrl || '';
                     video.load();
                     video.onloadedmetadata = () => complete(true);
                     video.oncanplay = () => complete(true);
                     video.onerror = () => complete(false, 'Playback is unsupported or the stream could not be loaded');
-                    if (!videoUrl) {
-                        complete(false, 'No playable video URL was available');
-                    }
+                    if (!links.openUrl) complete(false, 'No playable video URL was available');
                 });
             },
             getGridPreviewUrl(file) {
