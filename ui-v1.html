@@ -189,6 +189,74 @@
         .folder-card .omni-search-container {
             margin-bottom: 12px;
         }
+        .folder-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .folder-toolbar .omni-search-container {
+            flex: 1;
+            margin-bottom: 0;
+        }
+        .folder-sort-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .folder-sort-select {
+            appearance: none;
+            -webkit-appearance: none;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.72);
+            font-size: 12px;
+            line-height: 1.2;
+            padding: 8px 28px 8px 10px;
+            cursor: pointer;
+            min-width: 108px;
+            backdrop-filter: blur(10px);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            background-size: 12px;
+        }
+        .folder-sort-select:hover,
+        .folder-sort-toggle:hover {
+            border-color: rgba(156, 163, 175, 0.42);
+            background-color: rgba(255, 255, 255, 0.08);
+        }
+        .folder-sort-select:focus,
+        .folder-sort-toggle:focus {
+            outline: none;
+            border-color: rgba(156, 163, 175, 0.55);
+            box-shadow: 0 0 0 2px rgba(156, 163, 175, 0.12);
+        }
+        .folder-sort-select option {
+            color: #111827;
+        }
+        .folder-sort-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #9ca3af;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(10px);
+        }
+        .folder-sort-toggle svg {
+            width: 16px;
+            height: 16px;
+            stroke: currentColor;
+        }
         .folder-card .folder-list {
             flex: 1;
             overflow-y: auto;
@@ -917,9 +985,23 @@
                 </div>
                 <span class="last-folder-meta" id="last-folder-meta"></span>
             </div>
-            <div class="omni-search-container hidden" id="folder-search-container">
-                <input type="text" class="input omni-search-input" id="folder-search-input" placeholder="Search folders..." autocomplete="off">
-                <div class="omni-search-results hidden" id="folder-search-results" role="listbox"></div>
+            <div class="folder-toolbar">
+                <div class="omni-search-container hidden" id="folder-search-container">
+                    <input type="text" class="input omni-search-input" id="folder-search-input" placeholder="Search folders..." autocomplete="off">
+                    <div class="omni-search-results hidden" id="folder-search-results" role="listbox"></div>
+                </div>
+                <div class="folder-sort-controls" id="folder-sort-controls">
+                    <select class="folder-sort-select" id="folder-sort-select" aria-label="Sort folders">
+                        <option value="date">Date</option>
+                        <option value="name">Name</option>
+                        <option value="size">Size</option>
+                    </select>
+                    <button class="folder-sort-toggle" id="folder-sort-direction" type="button" aria-label="Sort descending" title="Sort descending">
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m0 0 5-5m-5 5-5-5"></path>
+                        </svg>
+                    </button>
+                </div>
             </div>
             <div class="folder-list" id="folder-list"></div>
             <div class="folder-controls">
@@ -1257,6 +1339,7 @@
             lastPickedFolder: loadLastFolderFromStorage(),
             folderSearchDataset: [],
             folderSearchTerm: '',
+            folderSort: { field: 'date', direction: 'desc' },
             folderListCache: new Map(),
             folderScanProgress: { active: false, message: '', current: 0, total: 0, currentFolderName: '' },
             storageStatus: { available: true, reason: null },
@@ -1515,6 +1598,9 @@
                     folderSearchContainer: document.getElementById('folder-search-container'),
                     folderSearchInput: document.getElementById('folder-search-input'),
                     folderSearchResults: document.getElementById('folder-search-results'),
+                    folderSortControls: document.getElementById('folder-sort-controls'),
+                    folderSortSelect: document.getElementById('folder-sort-select'),
+                    folderSortDirection: document.getElementById('folder-sort-direction'),
                     folderList: document.getElementById('folder-list'),
                     folderRefreshButton: document.getElementById('folder-refresh-button'),
                     folderBackButton: document.getElementById('folder-back-button'),
@@ -8264,19 +8350,93 @@ this.updateImageCounters();
                 }
             },
 
-            display(folders) {
+            getFolderTimestamp(folder) {
+                const candidates = [
+                    folder?.sourceModifiedTime,
+                    folder?.lastUpdated,
+                    folder?.modifiedTime,
+                    folder?.createdTime
+                ];
+                for (const value of candidates) {
+                    const parsed = Date.parse(value);
+                    if (!Number.isNaN(parsed)) {
+                        return parsed;
+                    }
+                }
+                return 0;
+            },
+
+            getFolderImageCount(folder) {
+                const itemCountRaw = folder?.fileCount ?? folder?.imageCount ?? folder?.itemCount;
+                const itemCount = typeof itemCountRaw === 'number' ? itemCountRaw : parseInt(itemCountRaw, 10);
+                return Number.isFinite(itemCount) && itemCount >= 0 ? itemCount : -1;
+            },
+
+            getSortedFolders(folders = []) {
+                const field = state.folderSort?.field || 'date';
+                const direction = state.folderSort?.direction === 'asc' ? 'asc' : 'desc';
+                const multiplier = direction === 'asc' ? 1 : -1;
+                return (Array.isArray(folders) ? folders : []).slice().sort((a, b) => {
+                    if (field === 'name') {
+                        const nameCompare = (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base', numeric: true });
+                        if (nameCompare !== 0) return nameCompare * multiplier;
+                    } else if (field === 'size') {
+                        const countCompare = this.getFolderImageCount(a) - this.getFolderImageCount(b);
+                        if (countCompare !== 0) return countCompare * multiplier;
+                    } else {
+                        const timeCompare = this.getFolderTimestamp(a) - this.getFolderTimestamp(b);
+                        if (timeCompare !== 0) return timeCompare * multiplier;
+                    }
+
+                    const fallbackTimeCompare = this.getFolderTimestamp(b) - this.getFolderTimestamp(a);
+                    if (fallbackTimeCompare !== 0) return fallbackTimeCompare;
+                    return (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base', numeric: true });
+                });
+            },
+
+            updateSortControls() {
+                const { folderSortSelect, folderSortDirection, folderSortControls } = Utils.elements;
+                if (!folderSortControls) return;
+                const hasFolders = Array.isArray(state.folderSearchDataset) && state.folderSearchDataset.length > 0;
+                folderSortControls.classList.toggle('hidden', !hasFolders);
+                if (folderSortSelect) {
+                    folderSortSelect.value = state.folderSort?.field || 'date';
+                }
+                if (folderSortDirection) {
+                    const isAsc = state.folderSort?.direction === 'asc';
+                    folderSortDirection.setAttribute('aria-label', `Sort ${isAsc ? 'ascending' : 'descending'}`);
+                    folderSortDirection.setAttribute('title', `Sort ${isAsc ? 'ascending' : 'descending'}`);
+                    folderSortDirection.innerHTML = isAsc
+                        ? `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5m0 0 5 5m-5-5-5 5"></path></svg>`
+                        : `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m0 0 5-5m-5 5-5-5"></path></svg>`;
+                }
+            },
+
+            updateSort(field = state.folderSort?.field || 'date', direction = state.folderSort?.direction || 'desc') {
+                state.folderSort = {
+                    field: ['name', 'date', 'size'].includes(field) ? field : 'date',
+                    direction: direction === 'asc' ? 'asc' : 'desc'
+                };
+                this.updateSortControls();
+                this.display(state.folderSearchDataset, { preserveSearch: true });
+            },
+
+            display(folders, options = {}) {
+                const { preserveSearch = false } = options;
                 const { folderList } = Utils.elements;
-                this.setSearchDataset(folders);
-                this.resetSearch({ keepInput: false });
+                const sortedFolders = this.getSortedFolders(folders);
+                this.setSearchDataset(sortedFolders);
+                this.resetSearch({ keepInput: preserveSearch });
                 folderList.innerHTML = '';
-                if (!folders || folders.length === 0) {
+                if (!sortedFolders || sortedFolders.length === 0) {
                     folderList.innerHTML = `<div style="text-align: center; padding: 40px; color: rgba(255, 255, 255, 0.7);"><span>No folders found</span></div>`;
+                    this.updateSortControls();
                     this.handleSearchInput('');
                     return;
                 }
 
                 const fragment = document.createDocumentFragment();
-                folders.forEach(folder => {
+                sortedFolders.forEach(folder => {
                     const div = document.createElement('div');
                     div.className = 'folder-item';
                     div.dataset.folderId = folder.id || '';
@@ -8299,6 +8459,7 @@ this.updateImageCounters();
 
                 folderList.appendChild(fragment);
 
+                this.updateSortControls();
                 this.addEventListeners();
                 this.handleSearchInput(state.folderSearchTerm || '');
             },
@@ -8346,6 +8507,7 @@ this.updateImageCounters();
             setSearchDataset(folders = []) {
                 state.folderSearchDataset = Array.isArray(folders) ? folders.slice() : [];
                 this.refreshSearchVisibility();
+                this.updateSortControls();
             },
 
             refreshSearchVisibility() {
@@ -8876,7 +9038,7 @@ this.updateImageCounters();
                 }
             },
             setupFolderSearch() {
-                const { folderSearchInput, folderSearchResults, folderSearchContainer } = Utils.elements;
+                const { folderSearchInput, folderSearchResults, folderSearchContainer, folderSortSelect, folderSortDirection } = Utils.elements;
                 if (folderSearchInput) {
                     folderSearchInput.addEventListener('input', (event) => {
                         Folders.handleSearchInput(event.target.value);
@@ -8907,6 +9069,17 @@ this.updateImageCounters();
                         if (!folderSearchContainer.contains(event.target)) {
                             folderSearchResults.classList.add('hidden');
                         }
+                    });
+                }
+                if (folderSortSelect) {
+                    folderSortSelect.addEventListener('change', (event) => {
+                        Folders.updateSort(event.target.value, state.folderSort?.direction || 'desc');
+                    });
+                }
+                if (folderSortDirection) {
+                    folderSortDirection.addEventListener('click', () => {
+                        const nextDirection = state.folderSort?.direction === 'asc' ? 'desc' : 'asc';
+                        Folders.updateSort(state.folderSort?.field || 'date', nextDirection);
                     });
                 }
             },
