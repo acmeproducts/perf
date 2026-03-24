@@ -6,7 +6,7 @@ import { PROVIDERS } from './pic-v1-providers.js';
 
 const state = createState();
 const auth = createAuthModule();
-const browser = createBrowserModule();
+const browser = createBrowserModule({ getSession: auth.getSession });
 
 const elements = {
   providerGrid: document.getElementById('provider-grid'),
@@ -25,7 +25,9 @@ const elements = {
   gridView: document.getElementById('grid-view'),
   crumbs: document.getElementById('crumbs'),
   selectionCount: document.getElementById('selection-count'),
-  selectionPreview: document.getElementById('selection-preview')
+  selectionPreview: document.getElementById('selection-preview'),
+  googleConfigRow: document.getElementById('google-config-row'),
+  googleClientId: document.getElementById('google-client-id')
 };
 
 const getSelectedItems = () => state.items.filter((item) => state.selectedIds.has(item.id));
@@ -77,6 +79,9 @@ const ui = createUi(elements, {
     state.breadcrumbs = [];
     ui.renderProviderCards(providerId);
 
+    const isGoogle = providerId === 'google-drive';
+    elements.googleConfigRow.classList.toggle('hidden', !isGoogle);
+
     if (!state.provider) {
       ui.setProviderStatus('Select a provider.');
       return;
@@ -84,8 +89,8 @@ const ui = createUi(elements, {
 
     ui.setProviderStatus(`Selected ${state.provider.label}.`);
     ui.setAuthStatus(auth.isConfigured(providerId)
-      ? 'Ready to connect.'
-      : 'Placeholder provider: not configured for real auth yet.');
+      ? `Ready to connect to ${state.provider.label}.`
+      : 'Placeholder provider for future approved OAuth configuration.');
     ui.setBrowserStatus('Not connected.');
     ui.setHandoffStatus('');
     refreshVisibleItems();
@@ -97,13 +102,22 @@ const ui = createUi(elements, {
       ui.setAuthStatus('Choose a provider first.');
       return;
     }
-    if (!auth.isConfigured(state.provider.id)) {
-      ui.setAuthStatus(`${state.provider.label} is a placeholder. Select Google Drive or OneDrive for live demo flow.`);
-      return;
+
+    try {
+      if (!auth.isConfigured(state.provider.id)) {
+        ui.setAuthStatus(`${state.provider.label} is a placeholder and not live yet.`);
+        return;
+      }
+
+      const options = {
+        googleClientId: elements.googleClientId.value.trim() || undefined
+      };
+      state.session = await auth.connect(state.provider.id, options);
+      ui.setAuthStatus(`Connected to ${state.provider.label}.`);
+      await loadFolder(null, false);
+    } catch (error) {
+      ui.setAuthStatus(`Connection failed: ${error.message}`);
     }
-    state.session = await auth.connect(state.provider.id);
-    ui.setAuthStatus(`Connected to ${state.provider.label}.`);
-    await loadFolder(null, false);
   },
 
   onDisconnect: async () => {
@@ -111,33 +125,42 @@ const ui = createUi(elements, {
       ui.setAuthStatus('No provider selected.');
       return;
     }
-    await auth.disconnect(state.provider.id);
-    state.session = null;
-    state.items = [];
-    state.visibleItems = [];
-    state.selectedIds.clear();
-    state.breadcrumbs = [];
-    ui.setAuthStatus(`Disconnected from ${state.provider.label}.`);
-    ui.setBrowserStatus('Connect to browse.');
-    ui.setHandoffStatus('');
-    ui.renderBreadcrumbs([{ id: '', name: 'Root' }]);
-    refreshVisibleItems();
+
+    try {
+      await auth.disconnect(state.provider.id);
+      state.session = null;
+      state.items = [];
+      state.visibleItems = [];
+      state.selectedIds.clear();
+      state.breadcrumbs = [];
+      ui.setAuthStatus(`Disconnected from ${state.provider.label}.`);
+      ui.setBrowserStatus('Connect to browse.');
+      ui.setHandoffStatus('');
+      ui.renderBreadcrumbs([{ id: '', name: 'Root' }]);
+      refreshVisibleItems();
+    } catch (error) {
+      ui.setAuthStatus(`Disconnect failed: ${error.message}`);
+    }
   },
 
   onSearch: async (term) => {
     state.searchTerm = term;
     if (!state.provider || !state.session) return;
 
-    if (term.trim().length >= 2) {
-      state.items = await browser.searchFolders(state.provider.id, term);
-      ui.setBrowserStatus(`Search results: ${state.items.length}`);
-    } else {
-      state.items = state.currentFolderId
-        ? await browser.listFolder(state.provider.id, state.currentFolderId)
-        : await browser.listRoots(state.provider.id);
-      ui.setBrowserStatus(`${state.items.length} entries loaded.`);
+    try {
+      if (term.trim().length >= 2) {
+        state.items = await browser.searchFolders(state.provider.id, term);
+        ui.setBrowserStatus(`Search results: ${state.items.length}`);
+      } else {
+        state.items = state.currentFolderId
+          ? await browser.listFolder(state.provider.id, state.currentFolderId)
+          : await browser.listRoots(state.provider.id);
+        ui.setBrowserStatus(`${state.items.length} entries loaded.`);
+      }
+      refreshVisibleItems();
+    } catch (error) {
+      ui.setBrowserStatus(`Search failed: ${error.message}`);
     }
-    refreshVisibleItems();
   },
 
   onSort: (sortValue) => {
@@ -157,30 +180,38 @@ const ui = createUi(elements, {
       return;
     }
 
-    const current = await browser.getFolder(state.provider.id, state.currentFolderId);
-    const parentId = current?.parentId || null;
+    try {
+      const current = await browser.getFolder(state.provider.id, state.currentFolderId);
+      const parentId = current?.parentId || null;
 
-    if (state.breadcrumbs.length > 0) {
-      state.breadcrumbs.pop();
-      if (parentId && state.breadcrumbs[state.breadcrumbs.length - 1] !== parentId) {
+      if (state.breadcrumbs.length > 0) {
         state.breadcrumbs.pop();
+        if (parentId && state.breadcrumbs[state.breadcrumbs.length - 1] !== parentId) {
+          state.breadcrumbs.pop();
+        }
       }
-    }
 
-    await loadFolder(parentId, false);
+      await loadFolder(parentId, false);
+    } catch (error) {
+      ui.setBrowserStatus(`Navigation failed: ${error.message}`);
+    }
   },
 
   onNavigateToCrumb: async (crumbId) => {
     if (!state.session) return;
-    const idx = state.breadcrumbs.indexOf(crumbId);
-    if (!crumbId) {
-      state.breadcrumbs = [];
-      await loadFolder(null, false);
-      return;
-    }
-    if (idx >= 0) {
-      state.breadcrumbs = state.breadcrumbs.slice(0, idx + 1);
-      await loadFolder(crumbId, false);
+    try {
+      const idx = state.breadcrumbs.indexOf(crumbId);
+      if (!crumbId) {
+        state.breadcrumbs = [];
+        await loadFolder(null, false);
+        return;
+      }
+      if (idx >= 0) {
+        state.breadcrumbs = state.breadcrumbs.slice(0, idx + 1);
+        await loadFolder(crumbId, false);
+      }
+    } catch (error) {
+      ui.setBrowserStatus(`Breadcrumb navigation failed: ${error.message}`);
     }
   },
 
@@ -196,6 +227,7 @@ const ui = createUi(elements, {
   onOpenNode: async (itemId) => {
     const node = state.items.find((item) => item.id === itemId);
     if (!node) return;
+
     if (node.kind !== 'folder') {
       ui.setBrowserStatus(`Selected item: ${node.name}`);
       if (!state.selectedIds.has(node.id)) {
@@ -205,7 +237,11 @@ const ui = createUi(elements, {
       return;
     }
 
-    await loadFolder(node.id, true);
+    try {
+      await loadFolder(node.id, true);
+    } catch (error) {
+      ui.setBrowserStatus(`Failed to open folder: ${error.message}`);
+    }
   },
 
   onHandoff: () => {

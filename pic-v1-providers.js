@@ -1,85 +1,142 @@
-const nowIso = () => new Date().toISOString();
+const GOOGLE_API_BASE = 'https://www.googleapis.com/drive/v3';
+const ONEDRIVE_API_BASE = 'https://graph.microsoft.com/v1.0';
 
-const createNode = ({ id, provider, name, kind, parentId = null, size = 0, path = '/' }) => ({
-  id,
-  provider,
-  name,
-  kind,
+const normalizeGoogleNode = (node, parentId = null) => ({
+  id: node.id,
+  provider: 'google-drive',
+  name: node.name || 'Untitled',
+  kind: node.mimeType === 'application/vnd.google-apps.folder' ? 'folder' : 'item',
   parentId,
-  size,
-  modifiedAt: nowIso(),
-  createdAt: nowIso(),
-  path
+  size: Number(node.size || 0),
+  modifiedAt: node.modifiedTime || null,
+  createdAt: node.createdTime || null,
+  path: node.name || ''
 });
 
-const googleTree = {
-  root: [
-    createNode({ id: 'g-folders', provider: 'google-drive', name: 'Campaigns', kind: 'folder', path: '/Campaigns' }),
-    createNode({ id: 'g-assets', provider: 'google-drive', name: 'Assets', kind: 'folder', path: '/Assets' }),
-    createNode({ id: 'g-hero', provider: 'google-drive', name: 'hero.jpg', kind: 'item', size: 1945000, path: '/hero.jpg' })
-  ],
-  'g-folders': [
-    createNode({ id: 'g-q1', provider: 'google-drive', name: 'Q1 Launch', kind: 'folder', parentId: 'g-folders', path: '/Campaigns/Q1 Launch' }),
-    createNode({ id: 'g-q2', provider: 'google-drive', name: 'Q2 Concept', kind: 'folder', parentId: 'g-folders', path: '/Campaigns/Q2 Concept' })
-  ],
-  'g-assets': [
-    createNode({ id: 'g-brand', provider: 'google-drive', name: 'brand-guide.pdf', kind: 'item', parentId: 'g-assets', size: 3400000, path: '/Assets/brand-guide.pdf' }),
-    createNode({ id: 'g-logo', provider: 'google-drive', name: 'logo.svg', kind: 'item', parentId: 'g-assets', size: 180000, path: '/Assets/logo.svg' })
-  ],
-  'g-q1': [
-    createNode({ id: 'g-shoot', provider: 'google-drive', name: 'Shoot Day', kind: 'folder', parentId: 'g-q1', path: '/Campaigns/Q1 Launch/Shoot Day' }),
-    createNode({ id: 'g-brief', provider: 'google-drive', name: 'brief.docx', kind: 'item', parentId: 'g-q1', size: 56000, path: '/Campaigns/Q1 Launch/brief.docx' })
-  ]
+const normalizeOneDriveNode = (node, parentId = null) => ({
+  id: node.id,
+  provider: 'onedrive',
+  name: node.name || 'Untitled',
+  kind: node.folder ? 'folder' : 'item',
+  parentId,
+  size: Number(node.size || 0),
+  modifiedAt: node.lastModifiedDateTime || null,
+  createdAt: node.createdDateTime || null,
+  path: node.parentReference?.path ? `${node.parentReference.path}/${node.name}` : node.name || ''
+});
+
+const googleFetch = async (session, endpoint) => {
+  if (!session?.accessToken) {
+    throw new Error('Google session is missing an access token');
+  }
+
+  const response = await fetch(`${GOOGLE_API_BASE}${endpoint}`, {
+    headers: { Authorization: `Bearer ${session.accessToken}` }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Google API request failed (${response.status}): ${text}`);
+  }
+
+  return response.json();
 };
 
-const oneDriveTree = {
-  root: [
-    createNode({ id: 'o-creative', provider: 'onedrive', name: 'Creative', kind: 'folder', path: '/Creative' }),
-    createNode({ id: 'o-archive', provider: 'onedrive', name: 'Archive', kind: 'folder', path: '/Archive' }),
-    createNode({ id: 'o-mood', provider: 'onedrive', name: 'moodboard.png', kind: 'item', size: 890000, path: '/moodboard.png' })
-  ],
-  'o-creative': [
-    createNode({ id: 'o-social', provider: 'onedrive', name: 'Social', kind: 'folder', parentId: 'o-creative', path: '/Creative/Social' }),
-    createNode({ id: 'o-web', provider: 'onedrive', name: 'Web', kind: 'folder', parentId: 'o-creative', path: '/Creative/Web' })
-  ],
-  'o-social': [
-    createNode({ id: 'o-reel', provider: 'onedrive', name: 'reel-cut.mp4', kind: 'item', parentId: 'o-social', size: 154002300, path: '/Creative/Social/reel-cut.mp4' }),
-    createNode({ id: 'o-post', provider: 'onedrive', name: 'post-copy.txt', kind: 'item', parentId: 'o-social', size: 8000, path: '/Creative/Social/post-copy.txt' })
-  ]
+const oneDriveFetch = async (session, endpoint) => {
+  if (!session?.accessToken) {
+    throw new Error('OneDrive session is missing an access token');
+  }
+
+  const response = await fetch(`${ONEDRIVE_API_BASE}${endpoint}`, {
+    headers: { Authorization: `Bearer ${session.accessToken}` }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OneDrive API request failed (${response.status}): ${text}`);
+  }
+
+  return response.json();
 };
 
-const flattenTree = (tree) => Object.values(tree).flat();
+const buildGoogleAdapter = (getSession) => ({
+  providerId: 'google-drive',
 
-const createAdapter = (providerId, tree) => {
-  const flattened = flattenTree(tree);
+  async listRoots() {
+    const session = getSession('google-drive');
+    const params = new URLSearchParams({
+      q: "'root' in parents and trashed=false",
+      fields: 'files(id,name,mimeType,size,createdTime,modifiedTime)',
+      pageSize: '200',
+      orderBy: 'folder,name'
+    });
+    const data = await googleFetch(session, `/files?${params.toString()}`);
+    return (data.files || []).map((node) => normalizeGoogleNode(node, null));
+  },
 
-  return {
-    async listRoots() {
-      return tree.root || [];
-    },
+  async listFolder(folderId) {
+    const session = getSession('google-drive');
+    const params = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'files(id,name,mimeType,size,createdTime,modifiedTime)',
+      pageSize: '200',
+      orderBy: 'folder,name'
+    });
+    const data = await googleFetch(session, `/files?${params.toString()}`);
+    return (data.files || []).map((node) => normalizeGoogleNode(node, folderId));
+  },
 
-    async listFolder(folderId) {
-      return tree[folderId || 'root'] || [];
-    },
+  async searchFolders(query) {
+    const session = getSession('google-drive');
+    const escapedQuery = String(query || '').replace(/'/g, "\\'");
+    const params = new URLSearchParams({
+      q: `name contains '${escapedQuery}' and trashed=false`,
+      fields: 'files(id,name,mimeType,size,createdTime,modifiedTime,parents)',
+      pageSize: '100',
+      orderBy: 'folder,name'
+    });
+    const data = await googleFetch(session, `/files?${params.toString()}`);
+    return (data.files || []).map((node) => normalizeGoogleNode(node, node.parents?.[0] || null));
+  },
 
-    async searchFolders(query) {
-      const q = String(query || '').trim().toLowerCase();
-      if (!q) return [];
-      return flattened.filter((node) => node.name.toLowerCase().includes(q));
-    },
+  async getFolder(folderId) {
+    const session = getSession('google-drive');
+    const fields = 'id,name,mimeType,size,createdTime,modifiedTime,parents';
+    const node = await googleFetch(session, `/files/${folderId}?fields=${encodeURIComponent(fields)}`);
+    return normalizeGoogleNode(node, node.parents?.[0] || null);
+  }
+});
 
-    async getFolder(folderId) {
-      return flattened.find((node) => node.id === folderId) || null;
-    },
+const buildOneDriveAdapter = (getSession) => ({
+  providerId: 'onedrive',
 
-    providerId
-  };
-};
+  async listRoots() {
+    const session = getSession('onedrive');
+    const data = await oneDriveFetch(session, '/me/drive/root/children?$top=200');
+    return (data.value || []).map((node) => normalizeOneDriveNode(node, null));
+  },
 
-const googleAdapter = createAdapter('google-drive', googleTree);
-const oneDriveAdapter = createAdapter('onedrive', oneDriveTree);
+  async listFolder(folderId) {
+    const session = getSession('onedrive');
+    const data = await oneDriveFetch(session, `/me/drive/items/${folderId}/children?$top=200`);
+    return (data.value || []).map((node) => normalizeOneDriveNode(node, folderId));
+  },
 
-const placeholderAdapter = (providerId) => ({
+  async searchFolders(query) {
+    const session = getSession('onedrive');
+    const encoded = encodeURIComponent(String(query || '').trim());
+    const data = await oneDriveFetch(session, `/me/drive/root/search(q='${encoded}')?$top=100`);
+    return (data.value || []).map((node) => normalizeOneDriveNode(node, node.parentReference?.id || null));
+  },
+
+  async getFolder(folderId) {
+    const session = getSession('onedrive');
+    const node = await oneDriveFetch(session, `/me/drive/items/${folderId}`);
+    return normalizeOneDriveNode(node, node.parentReference?.id || null);
+  }
+});
+
+const buildPlaceholderAdapter = (providerId) => ({
   providerId,
   async listRoots() { return []; },
   async listFolder() { return []; },
@@ -88,14 +145,16 @@ const placeholderAdapter = (providerId) => ({
 });
 
 export const PROVIDERS = [
-  { id: 'google-drive', label: 'Google Drive', description: 'Drive folders and files', tier: 'Live' },
-  { id: 'onedrive', label: 'OneDrive', description: 'Microsoft cloud storage', tier: 'Live' },
-  { id: 'google-oauth-placeholder', label: 'Google OAuth App', description: 'Approved app configuration placeholder', tier: 'Placeholder' },
-  { id: 'microsoft-oauth-placeholder', label: 'Microsoft OAuth App', description: 'Approved app configuration placeholder', tier: 'Placeholder' }
+  { id: 'google-drive', label: 'Google Drive', description: 'Live OAuth + Drive API', tier: 'Live' },
+  { id: 'onedrive', label: 'OneDrive', description: 'Live MSAL + Graph API', tier: 'Live' },
+  { id: 'google-oauth-placeholder', label: 'Google OAuth App', description: 'Future approved app configuration', tier: 'Placeholder' },
+  { id: 'microsoft-oauth-placeholder', label: 'Microsoft OAuth App', description: 'Future approved app configuration', tier: 'Placeholder' }
 ];
 
-export const getProviderAdapter = (providerId) => {
-  if (providerId === 'google-drive') return googleAdapter;
-  if (providerId === 'onedrive') return oneDriveAdapter;
-  return placeholderAdapter(providerId);
-};
+export const createProviderRegistry = (getSession) => ({
+  getProviderAdapter(providerId) {
+    if (providerId === 'google-drive') return buildGoogleAdapter(getSession);
+    if (providerId === 'onedrive') return buildOneDriveAdapter(getSession);
+    return buildPlaceholderAdapter(providerId);
+  }
+});
