@@ -1,264 +1,395 @@
-import { createState, applySearchAndSort, setSort, buildHandoffPayload, persistHandoffPayload, getHandoffStorageKey } from './pic-v1-state.js';
-import { createAuthModule } from './pic-v1-auth.js';
-import { createBrowserModule } from './pic-v1-browser.js';
-import { createUi } from './pic-v1-ui.js';
-import { PROVIDERS } from './pic-v1-providers.js';
+// pic-v1-app.js — bootstrap, event wiring, downstream handoff
 
-const state = createState();
-const auth = createAuthModule();
-const browser = createBrowserModule({ getSession: auth.getSession });
+import { state, persistSession, clearSession }      from './pic-v1-state.js';
+import { createProvider }                            from './pic-v1-providers.js';
+import { loadRoots, loadFolder, navigateUp,
+         searchProvider, setSort, toggleSortDir,
+         invalidateAll }                             from './pic-v1-browser.js';
+import { showScreen, toast, renderAuthScreen,
+         setAuthStatus, setAuthBusy, renderFolders,
+         renderLoading, renderBrowserHeader,
+         updateSelectionBar, setViewMode,
+         renderLastSessionBanner, renderDetailPanel,
+         refreshSortDirBtn }                         from './pic-v1-ui.js';
 
-const elements = {
-  providerGrid: document.getElementById('provider-grid'),
-  providerStatus: document.getElementById('provider-status'),
-  authStatus: document.getElementById('auth-status'),
-  browserStatus: document.getElementById('browser-status'),
-  handoffStatus: document.getElementById('handoff-status'),
-  connectBtn: document.getElementById('connect-btn'),
-  disconnectBtn: document.getElementById('disconnect-btn'),
-  searchInput: document.getElementById('search-input'),
-  sortSelect: document.getElementById('sort-select'),
-  viewToggleBtn: document.getElementById('view-toggle-btn'),
-  upBtn: document.getElementById('up-btn'),
-  handoffBtn: document.getElementById('handoff-btn'),
-  listView: document.getElementById('list-view'),
-  gridView: document.getElementById('grid-view'),
-  crumbs: document.getElementById('crumbs'),
-  selectionCount: document.getElementById('selection-count'),
-  selectionPreview: document.getElementById('selection-preview'),
-  googleConfigRow: document.getElementById('google-config-row'),
-  googleClientId: document.getElementById('google-client-id')
-};
+// ─── Handoff hook ─────────────────────────────────────────────────────────────
+// This is the explicit boundary between the browser experience and the
+// downstream curation workflow (ui-v1 or equivalent).
+// Replace the body of this function to integrate with the real curation flow.
 
-const getSelectedItems = () => state.items.filter((item) => state.selectedIds.has(item.id));
+function handOffToCuration(payload) {
+  // payload shape:
+  // {
+  //   providerType:  'googledrive' | 'onedrive',
+  //   provider:      <provider instance>,
+  //   folders:       [{ id, provider, name, kind, parentId, size, modifiedAt, createdAt, path, hasChildren, imageCount }, …],
+  //   primaryFolder: { same shape } | null,   // first / only selected folder
+  //   session:       { accessToken?, account? }
+  // }
+  //
+  // Stub: log payload and show confirmation toast.
+  // Real integration: postMessage to ui-v1 frame, redirect with query params,
+  // write to shared localStorage, or call ui-v1's initializeWithProvider() directly.
 
-const refreshVisibleItems = () => {
-  applySearchAndSort(state);
-  ui.renderRows(state.visibleItems, state.selectedIds);
-  ui.renderCards(state.visibleItems, state.selectedIds);
-  ui.renderSelection(getSelectedItems(), getHandoffStorageKey());
-};
+  console.info('[pic-v1] handoff payload:', payload);
 
-const buildCrumbs = async () => {
-  const crumbs = [{ id: '', name: 'Root' }];
-  for (const crumbId of state.breadcrumbs) {
-    const node = await browser.getFolder(state.provider.id, crumbId);
-    if (node) crumbs.push({ id: node.id, name: node.name });
-  }
-  ui.renderBreadcrumbs(crumbs);
-};
+  // ── Example redirect integration (uncomment + adjust as needed) ─────────────
+  // const params = new URLSearchParams({
+  //   provider:  payload.providerType,
+  //   folderId:  payload.primaryFolder?.id,
+  //   folderName: payload.primaryFolder?.name,
+  // });
+  // window.location.href = `ui-v1.html?${params}`;
 
-const loadFolder = async (folderId = null, addBreadcrumb = true) => {
-  if (!state.provider || !state.session) {
-    ui.setBrowserStatus('Connect a provider first.');
+  // ── Example postMessage to parent frame ─────────────────────────────────────
+  // if (window.parent !== window) {
+  //   window.parent.postMessage({ type: 'PIC_V1_HANDOFF', payload }, '*');
+  // }
+
+  toast(`Ready: ${payload.folders.length} folder${payload.folders.length === 1 ? '' : 's'} handed off to curation`, 'success', 4000);
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
+
+let _currentRawFolders = [];
+let _searchDebounce    = null;
+let _detailFolder      = null;
+
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
+
+export async function init() {
+  // Handle Google OAuth redirect code in popup window
+  if (window.opener && (location.search.includes('code=') || location.search.includes('error='))) {
+    const p = new URLSearchParams(location.search);
+    const code  = p.get('code');
+    const error = p.get('error');
+    if (error) window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error }, location.origin);
+    else if (code) window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS', code }, location.origin);
+    window.close();
     return;
   }
 
-  state.currentFolderId = folderId;
-  if (!folderId) state.breadcrumbs = [];
-  if (addBreadcrumb && folderId && state.breadcrumbs[state.breadcrumbs.length - 1] !== folderId) {
-    state.breadcrumbs.push(folderId);
+  wireProviderScreen();
+  wireAuthScreen();
+  wireBrowserScreen();
+
+  showScreen('screen-provider');
+}
+
+// ─── Provider screen ──────────────────────────────────────────────────────────
+
+function wireProviderScreen() {
+  document.getElementById('btn-google-drive')?.addEventListener('click', () => selectProvider('googledrive'));
+  document.getElementById('btn-onedrive')?.addEventListener('click',     () => selectProvider('onedrive'));
+}
+
+async function selectProvider(type) {
+  state.providerType = type;
+  state.provider     = createProvider(type);
+
+  // If already authenticated, skip auth screen
+  if (state.provider.getSession()) {
+    await enterBrowser();
+    return;
   }
 
-  state.items = folderId
-    ? await browser.listFolder(state.provider.id, folderId)
-    : await browser.listRoots(state.provider.id);
+  renderAuthScreen(type);
+  showScreen('screen-auth');
+}
 
-  ui.setBrowserStatus(`${state.items.length} entries loaded from ${state.provider.label}.`);
-  await buildCrumbs();
-  refreshVisibleItems();
-};
+// ─── Auth screen ──────────────────────────────────────────────────────────────
 
-const ui = createUi(elements, {
-  onSelectProvider: (providerId) => {
-    state.provider = PROVIDERS.find((provider) => provider.id === providerId) || null;
-    state.session = null;
-    state.items = [];
-    state.visibleItems = [];
-    state.selectedIds.clear();
-    state.breadcrumbs = [];
-    ui.renderProviderCards(providerId);
+function wireAuthScreen() {
+  document.getElementById('auth-back-btn')?.addEventListener('click', () => {
+    showScreen('screen-provider');
+  });
 
-    const isGoogle = providerId === 'google-drive';
-    elements.googleConfigRow.classList.toggle('hidden', !isGoogle);
+  document.getElementById('auth-connect-btn')?.addEventListener('click', doConnect);
+  document.getElementById('auth-secret-input')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') doConnect();
+  });
+}
 
-    if (!state.provider) {
-      ui.setProviderStatus('Select a provider.');
-      return;
-    }
+async function doConnect() {
+  const isGoogle = state.providerType === 'googledrive';
+  const secret   = isGoogle ? document.getElementById('auth-secret-input')?.value.trim() : null;
 
-    ui.setProviderStatus(`Selected ${state.provider.label}.`);
-    ui.setAuthStatus(auth.isConfigured(providerId)
-      ? `Ready to connect to ${state.provider.label}.`
-      : 'Placeholder provider for future approved OAuth configuration.');
-    ui.setBrowserStatus('Not connected.');
-    ui.setHandoffStatus('');
-    refreshVisibleItems();
-    ui.renderBreadcrumbs([{ id: '', name: 'Root' }]);
-  },
+  if (isGoogle && !secret) {
+    setAuthStatus('Please enter your OAuth client secret.', 'error');
+    return;
+  }
 
-  onConnect: async () => {
-    if (!state.provider) {
-      ui.setAuthStatus('Choose a provider first.');
-      return;
-    }
+  setAuthBusy(true);
+  setAuthStatus('Connecting…', 'info');
 
+  try {
+    await state.provider.connect(secret || undefined);
+    setAuthStatus('Connected!', 'success');
+    await new Promise(r => setTimeout(r, 700));
+    await enterBrowser();
+  } catch (err) {
+    setAuthStatus(`Connection failed: ${err.message}`, 'error');
+  } finally {
+    setAuthBusy(false);
+  }
+}
+
+// ─── Browser screen ───────────────────────────────────────────────────────────
+
+async function enterBrowser() {
+  state.selectedItems.clear();
+  _currentRawFolders = [];
+  _detailFolder      = null;
+
+  renderDetailPanel(null);
+  renderLastSessionBanner();
+  showScreen('screen-browser');
+  await loadAndRender();
+}
+
+function wireBrowserScreen() {
+  // Back to providers
+  document.getElementById('browser-back-btn')?.addEventListener('click', async () => {
+    showScreen('screen-provider');
+  });
+
+  // Disconnect
+  document.getElementById('browser-disconnect-btn')?.addEventListener('click', async () => {
+    await state.provider?.disconnect?.();
+    clearSession();
+    invalidateAll();
+    showScreen('screen-provider');
+  });
+
+  // Navigate up
+  document.getElementById('browser-up-btn')?.addEventListener('click', async () => {
+    if (!state.provider?.canGoUp?.()) return;
+    renderLoading({ message: 'Going up…' });
     try {
-      if (!auth.isConfigured(state.provider.id)) {
-        ui.setAuthStatus(`${state.provider.label} is a placeholder and not live yet.`);
-        return;
-      }
+      const folders = await navigateUp(p => renderLoading(p));
+      _currentRawFolders = folders;
+      renderFolders(folders);
+    } catch (err) { toast(`Error: ${err.message}`, 'error'); }
+  });
 
-      const options = {
-        googleClientId: elements.googleClientId.value.trim() || undefined
-      };
-      state.session = await auth.connect(state.provider.id, options);
-      ui.setAuthStatus(`Connected to ${state.provider.label}.`);
-      await loadFolder(null, false);
-    } catch (error) {
-      ui.setAuthStatus(`Connection failed: ${error.message}`);
-    }
-  },
+  // Refresh
+  document.getElementById('browser-refresh-btn')?.addEventListener('click', async () => {
+    invalidateAll();
+    await loadAndRender();
+  });
 
-  onDisconnect: async () => {
-    if (!state.provider) {
-      ui.setAuthStatus('No provider selected.');
-      return;
-    }
-
-    try {
-      await auth.disconnect(state.provider.id);
-      state.session = null;
-      state.items = [];
-      state.visibleItems = [];
-      state.selectedIds.clear();
-      state.breadcrumbs = [];
-      ui.setAuthStatus(`Disconnected from ${state.provider.label}.`);
-      ui.setBrowserStatus('Connect to browse.');
-      ui.setHandoffStatus('');
-      ui.renderBreadcrumbs([{ id: '', name: 'Root' }]);
-      refreshVisibleItems();
-    } catch (error) {
-      ui.setAuthStatus(`Disconnect failed: ${error.message}`);
-    }
-  },
-
-  onSearch: async (term) => {
-    state.searchTerm = term;
-    if (!state.provider || !state.session) return;
-
-    try {
-      if (term.trim().length >= 2) {
-        state.items = await browser.searchFolders(state.provider.id, term);
-        ui.setBrowserStatus(`Search results: ${state.items.length}`);
-      } else {
-        state.items = state.currentFolderId
-          ? await browser.listFolder(state.provider.id, state.currentFolderId)
-          : await browser.listRoots(state.provider.id);
-        ui.setBrowserStatus(`${state.items.length} entries loaded.`);
-      }
-      refreshVisibleItems();
-    } catch (error) {
-      ui.setBrowserStatus(`Search failed: ${error.message}`);
-    }
-  },
-
-  onSort: (sortValue) => {
-    setSort(state, sortValue);
-    refreshVisibleItems();
-  },
-
-  onToggleView: () => {
-    state.viewMode = state.viewMode === 'list' ? 'grid' : 'list';
-    ui.setViewMode(state.viewMode);
-  },
-
-  onNavigateUp: async () => {
-    if (!state.session) return;
-    if (!state.currentFolderId) {
-      ui.setBrowserStatus('Already at root.');
-      return;
-    }
-
-    try {
-      const current = await browser.getFolder(state.provider.id, state.currentFolderId);
-      const parentId = current?.parentId || null;
-
-      if (state.breadcrumbs.length > 0) {
-        state.breadcrumbs.pop();
-        if (parentId && state.breadcrumbs[state.breadcrumbs.length - 1] !== parentId) {
-          state.breadcrumbs.pop();
-        }
-      }
-
-      await loadFolder(parentId, false);
-    } catch (error) {
-      ui.setBrowserStatus(`Navigation failed: ${error.message}`);
-    }
-  },
-
-  onNavigateToCrumb: async (crumbId) => {
-    if (!state.session) return;
-    try {
-      const idx = state.breadcrumbs.indexOf(crumbId);
-      if (!crumbId) {
-        state.breadcrumbs = [];
-        await loadFolder(null, false);
-        return;
-      }
-      if (idx >= 0) {
-        state.breadcrumbs = state.breadcrumbs.slice(0, idx + 1);
-        await loadFolder(crumbId, false);
-      }
-    } catch (error) {
-      ui.setBrowserStatus(`Breadcrumb navigation failed: ${error.message}`);
-    }
-  },
-
-  onToggleSelect: (itemId) => {
-    if (state.selectedIds.has(itemId)) {
-      state.selectedIds.delete(itemId);
+  // Search
+  document.getElementById('browser-search')?.addEventListener('input', e => {
+    state.searchQuery = e.target.value;
+    clearTimeout(_searchDebounce);
+    if (e.target.value.trim().length >= 2) {
+      _searchDebounce = setTimeout(async () => {
+        try {
+          const results = await searchProvider(e.target.value);
+          _currentRawFolders = results;
+          renderFolders(results);
+        } catch (err) { toast(`Search failed: ${err.message}`, 'error'); }
+      }, 380);
     } else {
-      state.selectedIds.add(itemId);
+      renderFolders(_currentRawFolders);
     }
-    refreshVisibleItems();
-  },
+  });
 
-  onOpenNode: async (itemId) => {
-    const node = state.items.find((item) => item.id === itemId);
-    if (!node) return;
+  // Clear search
+  document.getElementById('browser-search-clear')?.addEventListener('click', () => {
+    const input = document.getElementById('browser-search');
+    if (input) input.value = '';
+    state.searchQuery = '';
+    renderFolders(_currentRawFolders);
+  });
 
-    if (node.kind !== 'folder') {
-      ui.setBrowserStatus(`Selected item: ${node.name}`);
-      if (!state.selectedIds.has(node.id)) {
-        state.selectedIds.add(node.id);
-      }
-      refreshVisibleItems();
+  // Sort field
+  document.getElementById('sort-field')?.addEventListener('change', e => {
+    setSort(e.target.value, state.sortDir);
+    renderFolders(_currentRawFolders);
+  });
+
+  // Sort direction toggle
+  document.getElementById('sort-dir-btn')?.addEventListener('click', () => {
+    toggleSortDir();
+    refreshSortDirBtn();
+    renderFolders(_currentRawFolders);
+  });
+
+  // View mode
+  document.getElementById('btn-view-list')?.addEventListener('click', () => {
+    setViewMode('list');
+    renderFolders(_currentRawFolders);
+  });
+  document.getElementById('btn-view-grid')?.addEventListener('click', () => {
+    setViewMode('grid');
+    renderFolders(_currentRawFolders);
+  });
+
+  // Folder content — delegated events
+  document.getElementById('folder-content')?.addEventListener('click', e => {
+    const drillBtn   = e.target.closest('.btn-drill');
+    const selectBtn  = e.target.closest('.btn-select-folder');
+    const detailCta  = e.target.closest('.detail-cta');
+    const row        = e.target.closest('[data-folder-id]');
+    const chk        = e.target.closest('.folder-check');
+
+    if (drillBtn) {
+      e.stopPropagation();
+      drillInto({ id: drillBtn.dataset.folderId, name: drillBtn.dataset.folderName });
       return;
     }
-
-    try {
-      await loadFolder(node.id, true);
-    } catch (error) {
-      ui.setBrowserStatus(`Failed to open folder: ${error.message}`);
+    if (selectBtn || detailCta) {
+      e.stopPropagation();
+      const id   = (selectBtn || detailCta).dataset.folderId;
+      const name = (selectBtn || detailCta).dataset.folderName;
+      initiateHandoff([{ id, name }]);
+      return;
     }
-  },
+    if (chk) {
+      e.stopPropagation();
+      toggleSelection(chk.dataset.id);
+      return;
+    }
+    if (row) {
+      const folder = _currentRawFolders.find(f => f.id === row.dataset.folderId);
+      if (folder) {
+        _detailFolder = folder;
+        renderDetailPanel(folder);
+        highlightRow(row.dataset.folderId);
+      }
+    }
+  });
 
-  onHandoff: () => {
-    const payload = buildHandoffPayload(state);
-    persistHandoffPayload(payload);
+  // Detail panel CTA
+  document.getElementById('detail-panel-inner')?.addEventListener('click', e => {
+    const cta = e.target.closest('.detail-cta');
+    if (cta) initiateHandoff([{ id: cta.dataset.folderId, name: cta.dataset.folderName }]);
+  });
 
-    window.dispatchEvent(new CustomEvent('pic-v1-handoff', { detail: payload }));
-    const previewUrl = `./ui-v1.html?source=pic-v1&provider=${encodeURIComponent(payload.provider || '')}&selected=${payload.selectedCount}`;
-    ui.setHandoffStatus(`Handoff ready (${payload.selectedCount} items). Open ${previewUrl} to continue.`);
+  // Selection bar — continue CTA
+  document.getElementById('selection-cta-btn')?.addEventListener('click', () => {
+    const items = [...state.selectedItems].map(id => {
+      const f = _currentRawFolders.find(x => x.id === id);
+      return f || { id, name: id };
+    });
+    initiateHandoff(items);
+  });
+
+  // Selection bar — clear
+  document.getElementById('selection-clear-btn')?.addEventListener('click', () => {
+    state.selectedItems.clear();
+    renderFolders(_currentRawFolders);
+  });
+
+  // Last session banner
+  document.getElementById('last-session-link')?.addEventListener('click', e => {
+    e.preventDefault();
+    const data = state.lastSession;
+    if (data?.folderId) initiateHandoff([{ id: data.folderId, name: data.folderName || '' }]);
+  });
+
+  // Breadcrumb navigation
+  document.getElementById('browser-breadcrumb')?.addEventListener('click', async e => {
+    const seg = e.target.closest('.breadcrumb-seg--link');
+    if (!seg) return;
+    const targetId = seg.dataset.id;
+    if (!targetId) return;
+    // Pop breadcrumb back to this segment
+    const bc = state.provider.getBreadcrumb();
+    const idx = bc.findIndex(b => b.id === targetId);
+    if (idx < 0) return;
+    // Navigate up until we reach this segment
+    while (state.provider.getBreadcrumb().length > idx + 1 && state.provider.canGoUp()) {
+      await navigateUp();
+    }
+    await loadAndRender();
+  });
+}
+
+// ─── Drill into folder ────────────────────────────────────────────────────────
+
+async function drillInto(folder) {
+  renderLoading({ message: `Opening ${folder.name}…` });
+  try {
+    const folders = await loadFolder(folder, p => renderLoading(p));
+    _currentRawFolders = folders;
+    state.selectedItems.clear();
+    _detailFolder = null;
+    renderDetailPanel(null);
+    renderFolders(folders);
+  } catch (err) {
+    toast(`Could not open folder: ${err.message}`, 'error');
+    renderFolders(_currentRawFolders);
   }
-});
+}
 
-ui.bind();
-ui.renderProviderCards(null);
-ui.setViewMode(state.viewMode);
-ui.setProviderStatus('Select your cloud storage provider.');
-ui.setAuthStatus('Waiting for provider selection.');
-ui.setBrowserStatus('Connect to load folders/items.');
-ui.renderBreadcrumbs([{ id: '', name: 'Root' }]);
-refreshVisibleItems();
+// ─── Selection ────────────────────────────────────────────────────────────────
+
+function toggleSelection(id) {
+  if (state.selectedItems.has(id)) state.selectedItems.delete(id);
+  else state.selectedItems.add(id);
+
+  // Update visual
+  const row  = document.querySelector(`[data-folder-id="${id}"]`);
+  if (row) row.classList.toggle('folder-row--selected',  state.selectedItems.has(id));
+  if (row) row.classList.toggle('folder-card--selected', state.selectedItems.has(id));
+
+  const chk = document.querySelector(`.folder-check[data-id="${id}"]`);
+  if (chk) chk.checked = state.selectedItems.has(id);
+
+  updateSelectionBar();
+}
+
+function highlightRow(id) {
+  document.querySelectorAll('[data-folder-id]').forEach(el => el.classList.remove('folder-row--active'));
+  document.querySelector(`[data-folder-id="${id}"]`)?.classList.add('folder-row--active');
+}
+
+// ─── Load and render ──────────────────────────────────────────────────────────
+
+async function loadAndRender() {
+  renderLoading({ message: 'Loading folders…' });
+  try {
+    const folders = await loadRoots(p => renderLoading(p));
+    _currentRawFolders = folders;
+    renderFolders(folders);
+    renderLastSessionBanner();
+  } catch (err) {
+    toast(`Failed to load folders: ${err.message}`, 'error');
+    renderFolders([]);
+  }
+}
+
+// ─── Handoff ──────────────────────────────────────────────────────────────────
+
+function initiateHandoff(items) {
+  if (!items || items.length === 0) {
+    toast('No folder selected', 'error');
+    return;
+  }
+
+  const resolved = items.map(item => {
+    const full = _currentRawFolders.find(f => f.id === item.id);
+    return full || { id: item.id, provider: state.providerType, name: item.name, kind: 'folder', parentId: null, size: null, modifiedAt: null, createdAt: null, path: null, hasChildren: false, imageCount: null };
+  });
+
+  const primary = resolved[0];
+
+  // Persist this selection as last session
+  persistSession({
+    providerType: state.providerType,
+    folderId:     primary.id,
+    folderName:   primary.name,
+    fileCount:    primary.imageCount ?? null,
+    accessedAt:   new Date().toISOString(),
+  });
+
+  handOffToCuration({
+    providerType:  state.providerType,
+    provider:      state.provider,
+    folders:       resolved,
+    primaryFolder: primary,
+    session:       state.provider.getSession(),
+  });
+}
