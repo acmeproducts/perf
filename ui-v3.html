@@ -1740,13 +1740,8 @@
             },
             getPreferredImageUrl(file) {
                 if (state.providerType === 'googledrive') {
-                    return file?.permanentImageUrl
-                        || file?.permanentThumbnailUrl
-                        || file?.thumbnailLink
-                        || file?.downloadUrl
-                        || file?.viewUrl
-                        || file?.permanentViewUrl
-                        || '';
+                    const driveUrls = DriveLinkHelper.resolveAssetUrls(file);
+                    return driveUrls.thumbnailUrl || driveUrls.imageUrl;
                 } else { // OneDrive
                     if (file.thumbnails && file.thumbnails.large) {
                         return file.thumbnails.large.url;
@@ -1757,14 +1752,8 @@
 
             getFallbackImageUrl(file) {
                 if (state.providerType === 'googledrive') {
-                    return file?.permanentThumbnailUrlSmall
-                        || file?.permanentThumbnailUrl
-                        || file?.thumbnailLink
-                        || file?.thumbnail?.url
-                        || file?.downloadUrl
-                        || file?.viewUrl
-                        || file?.permanentViewUrl
-                        || '';
+                    const driveUrls = DriveLinkHelper.resolveAssetUrls(file);
+                    return driveUrls.thumbnailUrlSmall || driveUrls.thumbnailUrl || driveUrls.imageUrl;
                 } else { // OneDrive
                     return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
                 }
@@ -3760,12 +3749,13 @@
                 const targetId = target?.id || null;
                 const fallbackId = targetId || file?.id || null;
                 const effectiveId = options.useShortcutId ? file.id : fallbackId;
-                const resourceKey = target?.resourceKey || file?.resourceKey || target?.shortcutDetails?.targetResourceKey || file?.shortcutDetails?.targetResourceKey || null;
-                const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId, resourceKey) || '';
-                const apiDownloadUrl = fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId, resourceKey) : null;
-                const downloadUrl = target?.webContentLink || apiDownloadUrl;
-                const permanentThumbnailUrl = target?.thumbnailLink || file?.thumbnailLink || null;
-                const permanentThumbnailUrlSmall = target?.thumbnailLink || file?.thumbnailLink || null;
+                const resolvedUrls = DriveLinkHelper.resolveFileUrls(file, { target, fileId: fallbackId });
+                const resourceKey = resolvedUrls.resourceKey;
+                const viewUrl = resolvedUrls.viewUrl;
+                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId, resourceKey) : null);
+                const downloadUrl = resolvedUrls.directUrl || apiDownloadUrl;
+                const permanentThumbnailUrl = resolvedUrls.thumbnailUrl;
+                const permanentThumbnailUrlSmall = resolvedUrls.thumbnailUrlSmall;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
 
                 const normalized = {
@@ -3776,7 +3766,7 @@
                     size: Number.isFinite(sizeValue) ? sizeValue : 0,
                     createdTime: target?.createdTime || file?.createdTime,
                     modifiedTime: target?.modifiedTime || file?.modifiedTime,
-                    thumbnailLink: target?.thumbnailLink || file?.thumbnailLink || null,
+                    thumbnailLink: DriveLinkHelper.normalizeToAssetUrl(target?.thumbnailLink || file?.thumbnailLink, fallbackId, resourceKey) || target?.thumbnailLink || file?.thumbnailLink,
                     downloadUrl,
                     permanentImageUrl: downloadUrl,
                     viewUrl,
@@ -4593,8 +4583,7 @@
             }
             getDirectImageURL(image) {
                 if (state.providerType === 'googledrive') {
-                    const fileId = image?.targetFileId || image?.id;
-                    return DriveLinkHelper.buildShareUrl(fileId) || '';
+                    return DriveLinkHelper.resolveAssetUrls(image).exportUrl || '';
                 } else if (state.providerType === 'onedrive') {
                     return image.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${image.id}/content`;
                 }
