@@ -476,7 +476,8 @@
         <div>
           <div class="field">
             <label for="tokenInput">GitHub personal access token</label>
-            <input id="tokenInput" type="text" autocomplete="off" placeholder="ghp_…" />
+            <input id="tokenInput" type="text" autocomplete="off" list="tokenHistoryList" placeholder="ghp_…" />
+            <datalist id="tokenHistoryList"></datalist>
           </div>
           <div class="button-row">
             <button id="saveTokenBtn" type="button">Save token</button>
@@ -605,6 +606,7 @@
   <script src="codex-storage.js"></script>
   <script>
     const TOKEN_KEY = 'codexrecall.workspace.token';
+    const TOKEN_HISTORY_KEY = 'codexrecall.workspace.tokenHistory';
     const SETTINGS_KEY = 'codexrecall.workspace.settings';
 
     function resolveStorage() {
@@ -643,6 +645,7 @@
 
     const tokenInput = document.getElementById('tokenInput');
     const tokenStatus = document.getElementById('tokenStatus');
+    const tokenHistoryList = document.getElementById('tokenHistoryList');
     const saveTokenBtn = document.getElementById('saveTokenBtn');
     const clearTokenBtn = document.getElementById('clearTokenBtn');
 
@@ -742,6 +745,46 @@
         : 'Storage: browser localStorage';
     }
 
+    function readTokenHistory() {
+      const raw = storage.getItem(TOKEN_HISTORY_KEY);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch (error) {
+        console.warn('Failed to parse token history', error);
+        return [];
+      }
+    }
+
+    function writeTokenHistory(items) {
+      storage.setItem(TOKEN_HISTORY_KEY, JSON.stringify(items.slice(0, 10)));
+    }
+
+    function renderTokenHistory() {
+      if (!tokenHistoryList) return;
+      const tokens = readTokenHistory();
+      tokenHistoryList.innerHTML = '';
+      for (const token of tokens) {
+        const option = document.createElement('option');
+        option.value = token;
+        tokenHistoryList.appendChild(option);
+      }
+    }
+
+    function persistToken(token, { showStatus = true } = {}) {
+      if (!token) return false;
+      storage.setItem(TOKEN_KEY, token);
+      state.token = token;
+      const next = [token, ...readTokenHistory().filter(existing => existing !== token)];
+      writeTokenHistory(next);
+      renderTokenHistory();
+      if (showStatus) {
+        setStatus(tokenStatus, 'Token saved locally for this browser.', { tone: 'success' });
+      }
+      return true;
+    }
+
     function persistSettings() {
       const payload = {
         owner: ownerInput.value.trim(),
@@ -752,6 +795,7 @@
     }
 
     function hydrateSettings() {
+      renderTokenHistory();
       const storedToken = storage.getItem(TOKEN_KEY);
       if (storedToken) {
         state.token = storedToken;
@@ -828,6 +872,10 @@
     }
 
     async function loadRepositoryFiles() {
+      const pendingToken = tokenInput.value.trim();
+      if (pendingToken && pendingToken !== state.token) {
+        persistToken(pendingToken, { showStatus: false });
+      }
       const owner = ownerInput.value.trim();
       const repo = repoInput.value.trim();
       const branch = branchInput.value.trim();
@@ -1196,9 +1244,7 @@
         setStatus(tokenStatus, 'Enter a personal access token.', { tone: 'error' });
         return;
       }
-      storage.setItem(TOKEN_KEY, token);
-      state.token = token;
-      setStatus(tokenStatus, 'Token saved locally for this browser.', { tone: 'success' });
+      persistToken(token);
     });
 
     clearTokenBtn.addEventListener('click', () => {
@@ -1206,6 +1252,19 @@
       state.token = null;
       tokenInput.value = '';
       setStatus(tokenStatus, 'Token removed. API requests will fail until you add one again.', { tone: 'error' });
+    });
+
+    tokenInput.addEventListener('change', () => {
+      const token = tokenInput.value.trim();
+      if (token) {
+        persistToken(token, { showStatus: false });
+      }
+    });
+
+    tokenInput.addEventListener('click', () => {
+      if (typeof tokenInput.showPicker === 'function') {
+        tokenInput.showPicker();
+      }
     });
 
     resetSettingsBtn.addEventListener('click', () => {
@@ -1285,8 +1344,11 @@
       state.branch = params.get('branch');
     }
     if (params.has('token')) {
-      tokenInput.value = params.get('token');
-      saveTokenBtn.click();
+      const tokenFromQuery = (params.get('token') || '').trim();
+      if (tokenFromQuery) {
+        tokenInput.value = tokenFromQuery;
+        persistToken(tokenFromQuery);
+      }
     }
 
     if (state.owner && state.repo) {

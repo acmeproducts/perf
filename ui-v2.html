@@ -1178,6 +1178,7 @@
         const SHARE_URL_TEMPLATE = "https://drive.google.com/file/d/${fileId}/view?usp=sharing";
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
         const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const VIEW_CONTEXT_STORAGE_KEY = 'orbital8_view_context';
         const loadLastFolderFromStorage = () => {
             if (typeof localStorage === 'undefined') {
                 return null;
@@ -1201,6 +1202,19 @@
             selectedIds: [],
             dragElements: []
         });
+        const loadViewContextFromStorage = () => {
+            try {
+                const raw = localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.folderId && parsed.providerType) {
+                    return parsed;
+                }
+            } catch (error) {
+                console.warn('Failed to load view context from storage:', error);
+            }
+            return null;
+        };
         const OMNI_SEARCH_RESULT_LIMIT = 8;
         const IMAGE_CACHE_LIMIT = 40;
         const state = {
@@ -1226,7 +1240,8 @@
             folderSearchTerm: '',
             folderTimestamps: new Map(),
             imageUrlCache: new Map(),
-            lastPickedFolder: loadLastFolderFromStorage()
+            lastPickedFolder: loadLastFolderFromStorage(),
+            lastViewContext: loadViewContextFromStorage()
         };
         const DriveLinkHelper = {
             extractFileId(input) {
@@ -1818,6 +1833,9 @@
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
                     const resourceKey = this.resolveDriveResourceKey(file);
+                    if (file?.permanentImageUrl) {
+                        return file.permanentImageUrl;
+                    }
                     if (file?.permanentThumbnailUrl) {
                         return file.permanentThumbnailUrl;
                     }
@@ -1840,8 +1858,8 @@
                 if (state.providerType === 'googledrive') {
                     const effectiveId = file?.targetFileId || file?.id;
                     const resourceKey = this.resolveDriveResourceKey(file);
-                    if (file?.permanentThumbnailUrlSmall || file?.permanentThumbnailUrl) {
-                        return file.permanentThumbnailUrlSmall || file.permanentThumbnailUrl;
+                    if (file?.permanentThumbnailUrlSmall || file?.permanentThumbnailUrl || file?.permanentImageUrl) {
+                        return file.permanentThumbnailUrlSmall || file.permanentThumbnailUrl || file.permanentImageUrl;
                     }
                     if (file.thumbnailLink) {
                         return this.adjustDriveThumbnailUrl(file.thumbnailLink, 800, resourceKey);
@@ -3289,7 +3307,84 @@
             }
         }
         class MetadataExtractor {
-            constructor() { this.abortController = null; }
+            constructor() {
+                this.abortController = null;
+                this.requestId = 0;
+                this.pendingRequests = new Map();
+                this.worker = this.createWorker();
+            }
+            createWorker() {
+                const workerSource = `
+                    const extract = (buffer) => {
+                        if (!buffer) return {};
+                        const metadata = {};
+                        const view = new DataView(buffer);
+                        if (buffer.byteLength < 8) return {};
+                        let pos = 8;
+                        while (pos < buffer.byteLength - 12) {
+                            const chunkLength = view.getUint32(pos, false);
+                            pos += 4;
+                            let chunkType = '';
+                            for (let i = 0; i < 4; i++) { chunkType += String.fromCharCode(view.getUint8(pos + i)); }
+                            pos += 4;
+                            if (chunkType === 'tEXt') {
+                                let keyword = '';
+                                let value = '';
+                                let nullFound = false;
+                                for (let i = 0; i < chunkLength; i++) {
+                                    const byte = view.getUint8(pos + i);
+                                    if (!nullFound) {
+                                        if (byte === 0) { nullFound = true; } else { keyword += String.fromCharCode(byte); }
+                                    } else { value += String.fromCharCode(byte); }
+                                }
+                                metadata[keyword] = value;
+                            } else if (chunkType === 'IHDR') {
+                                const width = view.getUint32(pos, false);
+                                const height = view.getUint32(pos + 4, false);
+                                metadata._dimensions = { width, height };
+                            } else if (chunkType === 'IEND') { break; }
+                            pos += chunkLength + 4;
+                            if (chunkLength > buffer.byteLength || pos > buffer.byteLength) { break; }
+                        }
+                        return metadata;
+                    };
+                    self.onmessage = (event) => {
+                        const { id, buffer } = event.data || {};
+                        try {
+                            self.postMessage({ id, metadata: extract(buffer) });
+                        } catch (error) {
+                            self.postMessage({ id, error: error?.message || 'Worker parsing error' });
+                        }
+                    };
+                `;
+                const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' })));
+                worker.onmessage = (event) => {
+                    const { id, metadata, error } = event.data || {};
+                    const pending = this.pendingRequests.get(id);
+                    if (!pending) return;
+                    this.pendingRequests.delete(id);
+                    if (error) pending.reject(new Error(error));
+                    else pending.resolve(metadata || {});
+                };
+                worker.onerror = (error) => {
+                    this.pendingRequests.forEach(({ reject }) => reject(error));
+                    this.pendingRequests.clear();
+                };
+                return worker;
+            }
+            async parseInWorker(buffer) {
+                if (!this.worker) return this.extract(buffer);
+                return new Promise((resolve, reject) => {
+                    const id = ++this.requestId;
+                    this.pendingRequests.set(id, { resolve, reject });
+                    try {
+                        this.worker.postMessage({ id, buffer }, [buffer]);
+                    } catch (error) {
+                        this.pendingRequests.delete(id);
+                        reject(error);
+                    }
+                });
+            }
             abort() {
                 if (this.abortController) {
                     this.abortController.abort();
@@ -3350,7 +3445,7 @@
                     }
                     if (!response.ok) { throw new Error(`HTTP ${response.status} ${response.statusText}`); }
                     const buffer = await response.arrayBuffer();
-                    return await this.extract(buffer);
+                    return await this.parseInWorker(buffer);
                 } catch (error) {
                     if (error.name === 'AbortError') { return { error: 'Operation cancelled' }; }
                     return { error: error.message };
@@ -3388,6 +3483,8 @@
                 this.apiBase = 'https://www.googleapis.com/drive/v3';
                 this.accessToken = null; this.refreshToken = null; this.clientSecret = null;
                 this.isAuthenticated = false; this.onProgressCallback = null;
+                this.folderImageCountCache = new Map();
+                this.folderHasImagesCache = new Map();
                 this.loadStoredCredentials();
             }
             normalizeDriveFileMetadata(file, options = {}) {
@@ -3398,7 +3495,7 @@
                 const targetResourceKey = target?.resourceKey || file?.shortcutDetails?.targetResourceKey || null;
                 const resourceKey = targetResourceKey ?? file?.resourceKey ?? null;
                 const viewUrl = target?.webViewLink || DriveLinkHelper.buildShareUrl(fallbackId, resourceKey) || '';
-                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId) : null);
+                const apiDownloadUrl = target?.webContentLink || (fallbackId ? DriveLinkHelper.buildApiDownloadUrl(fallbackId, resourceKey) : null);
                 const downloadUrl = (fallbackId ? DriveLinkHelper.buildUcDownloadUrl(fallbackId, resourceKey) : null) || apiDownloadUrl;
                 const sizeValue = target?.size != null ? Number(target.size) : null;
 
@@ -3568,7 +3665,7 @@
                     nextPageToken = response?.nextPageToken || null;
                 } while (nextPageToken);
 
-                return this.normalizeFolderList(results);
+                return await this.filterFoldersWithImages(this.normalizeFolderList(results));
             }
             normalizeFolderList(folders = []) {
                 const normalized = Array.isArray(folders) ? folders.map(folder => ({
@@ -3582,6 +3679,59 @@
                 })) : [];
                 return normalized.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
             }
+            async filterFoldersWithImages(folders = [], options = {}) {
+                if (!Array.isArray(folders) || folders.length === 0) {
+                    return Array.isArray(folders) ? folders.slice() : [];
+                }
+                const signal = options.signal || state?.activeRequests?.signal;
+                const results = new Array(folders.length);
+                let index = 0;
+                const maxConcurrency = Math.min(4, folders.length);
+                const workers = Array.from({ length: maxConcurrency }, () => (async () => {
+                    while (index < folders.length) {
+                        const currentIndex = index++;
+                        const folder = folders[currentIndex];
+                        if (!folder) continue;
+                        try {
+                            const hasImages = await this.folderHasImages(folder.id, { signal });
+                            if (hasImages) {
+                                const cachedCount = this.folderImageCountCache.get(folder.id);
+                                const merged = { ...folder };
+                                if (typeof cachedCount === 'number') {
+                                    merged.imageCount = cachedCount;
+                                }
+                                results[currentIndex] = merged;
+                            }
+                        } catch (error) {
+                            console.warn(`Failed folder visibility check for ${folder?.id}:`, error);
+                        }
+                    }
+                })());
+                await Promise.all(workers);
+                return results.filter(Boolean);
+            }
+            async folderHasImages(folderId, options = {}) {
+                if (!folderId) return false;
+                if (this.folderHasImagesCache.has(folderId)) {
+                    return this.folderHasImagesCache.get(folderId);
+                }
+                const cachedCount = this.folderImageCountCache.get(folderId);
+                if (typeof cachedCount === 'number') {
+                    const hasImages = cachedCount > 0;
+                    this.folderHasImagesCache.set(folderId, hasImages);
+                    return hasImages;
+                }
+                const query = `'${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.shortcut')`;
+                const url = `/files?q=${encodeURIComponent(query)}&fields=files(mimeType,shortcutDetails(targetMimeType))&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+                const response = await this.makeApiCall(url, { signal: options.signal });
+                const files = Array.isArray(response?.files) ? response.files : [];
+                const hasImages = files.some(file => file?.mimeType?.startsWith('image/') || (file?.mimeType === 'application/vnd.google-apps.shortcut' && file?.shortcutDetails?.targetMimeType?.startsWith('image/')));
+                if (hasImages && typeof cachedCount !== 'number') {
+                    this.folderImageCountCache.set(folderId, 1);
+                }
+                this.folderHasImagesCache.set(folderId, hasImages);
+                return hasImages;
+            }
             async drillIntoFolder() { return []; }
             async navigateToParent() { return this.getFolders(); }
             getCurrentPath() { return ''; }
@@ -3594,7 +3744,7 @@
                 const url = `/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=name&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`;
                 const response = await this.makeApiCall(url);
                 const folders = Array.isArray(response?.files) ? response.files : [];
-                return this.normalizeFolderList(folders);
+                return await this.filterFoldersWithImages(this.normalizeFolderList(folders));
             }
             async getFilesAndMetadata(folderId = 'root') {
                 const allFiles = [];
@@ -3970,7 +4120,7 @@
                 do {
                     const response = await this.makeApiCall(nextLink.replace(this.apiBase, ''));
                     const data = await response.json();
-                    const folderItems = data.value.filter(item => item.folder).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
+                    const folderItems = data.value.filter(item => item.folder && (item.folder.childCount || 0) > 0).map(folder => ({ id: folder.id, name: folder.name, type: 'folder', createdTime: folder.createdDateTime, modifiedTime: folder.lastModifiedDateTime, itemCount: folder.folder.childCount || 0, hasChildren: (folder.folder.childCount || 0) > 0 }));
                     folders.push(...folderItems);
                     nextLink = data['@odata.nextLink'];
                 } while (nextLink);
@@ -4599,6 +4749,8 @@
             switchToCommonUI() {
                 Utils.showScreen('app-container');
                 this.persistLastPickedFolder();
+                this.persistViewContext();
+                this.restoreViewContext({ force: true });
             },
             persistLastPickedFolder() {
                 if (!state.currentFolder?.id || !state.providerType) {
@@ -4665,6 +4817,92 @@
                 }
 
                 Folders.updateLastFolderBanner();
+            },
+            persistViewContext() {
+                if (!state.currentFolder?.id || !state.providerType) {
+                    return;
+                }
+                const currentStackArray = state.stacks[state.currentStack] || [];
+                const currentFile = currentStackArray[state.currentStackPosition] || null;
+                const payload = {
+                    providerType: state.providerType,
+                    folderId: state.currentFolder.id,
+                    folderName: state.currentFolder.name || '',
+                    stack: state.currentStack || 'in',
+                    position: Number.isFinite(state.currentStackPosition) ? state.currentStackPosition : 0,
+                    fileId: currentFile?.id || null,
+                    isFocusMode: Boolean(state.isFocusMode),
+                    savedAt: new Date().toISOString()
+                };
+                state.lastViewContext = payload;
+                try {
+                    localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(payload));
+                } catch (error) {
+                    console.warn('Failed to persist view context:', error);
+                }
+            },
+            async restoreViewContext(options = {}) {
+                const { force = false } = options;
+                const persisted = state.lastViewContext || loadViewContextFromStorage();
+                if (!persisted) return false;
+                if (!state.currentFolder?.id || !state.providerType) return false;
+                if (persisted.providerType !== state.providerType || persisted.folderId !== state.currentFolder.id) return false;
+
+                const targetStack = STACKS.includes(persisted.stack) ? persisted.stack : state.currentStack;
+                const stackArray = state.stacks[targetStack] || [];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) return false;
+
+                let targetIndex = -1;
+                if (persisted.fileId) {
+                    targetIndex = stackArray.findIndex(file => file.id === persisted.fileId);
+                }
+                if (targetIndex === -1) {
+                    const fallback = Number.isFinite(persisted.position) ? persisted.position : 0;
+                    targetIndex = Math.max(0, Math.min(fallback, stackArray.length - 1));
+                }
+
+                const stackChanged = state.currentStack !== targetStack;
+                const indexChanged = state.currentStackPosition !== targetIndex;
+                if (!force && !stackChanged && !indexChanged) {
+                    return true;
+                }
+
+                state.currentStack = targetStack;
+                state.currentStackPosition = targetIndex;
+
+                try {
+                    await Core.displayCurrentImage();
+                    Core.updateImageCounters();
+                    Core.updateStackCounts();
+                } catch (error) {
+                    console.warn('Failed to restore persisted view context:', error);
+                    return false;
+                }
+                return true;
+            },
+            registerViewPersistenceLifecycle() {
+                if (this._viewPersistenceLifecycleRegistered) {
+                    return;
+                }
+                const persist = () => this.persistViewContext();
+                const restore = () => {
+                    if (document.visibilityState === 'visible') {
+                        this.restoreViewContext({ force: true });
+                    }
+                };
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'hidden') {
+                        persist();
+                        return;
+                    }
+                    restore();
+                });
+                window.addEventListener('focus', restore);
+                window.addEventListener('blur', persist);
+                window.addEventListener('pagehide', persist);
+                window.addEventListener('beforeunload', persist);
+                this._viewPersistenceLifecycleRegistered = true;
             },
             isNavigationActive(token = null) {
                 if (state.isReturningToFolders) {
@@ -8098,6 +8336,7 @@ this.updateImageCounters();
                 Events.init();
                 Gestures.init();
                 Core.updateActiveProxTab();
+                App.registerViewPersistenceLifecycle();
             } catch (error) {
                 console.error("Fatal initialization error:", error);
                 const body = document.body;
