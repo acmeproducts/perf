@@ -1181,6 +1181,7 @@
         const STACKS = ['in', 'out', 'priority', 'trash'];
         const STACK_NAMES = { 'in': 'Inbox', 'out': 'Maybe', 'priority': 'Keep', 'trash': 'Recycle' };
         const LAST_FOLDER_STORAGE_KEY = 'orbital8_last_folder';
+        const VIEW_CONTEXT_STORAGE_KEY = 'orbital8_view_context';
         const loadLastFolderFromStorage = () => {
             try {
                 const raw = localStorage.getItem(LAST_FOLDER_STORAGE_KEY);
@@ -1191,6 +1192,19 @@
                 }
             } catch (error) {
                 console.warn('Failed to load last folder from storage:', error);
+            }
+            return null;
+        };
+        const loadViewContextFromStorage = () => {
+            try {
+                const raw = localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.folderId && parsed.providerType) {
+                    return parsed;
+                }
+            } catch (error) {
+                console.warn('Failed to load view context from storage:', error);
             }
             return null;
         };
@@ -1223,6 +1237,7 @@
             isImageTransitioning: false,
             showDebugToasts: true,
             lastPickedFolder: loadLastFolderFromStorage(),
+            lastViewContext: loadViewContextFromStorage(),
             folderSearchDataset: [],
             folderSearchTerm: ''
         };
@@ -5144,6 +5159,8 @@
             switchToCommonUI() {
                 Utils.showScreen('app-container');
                 this.persistLastPickedFolder();
+                this.persistViewContext();
+                this.restoreViewContext({ force: true });
             },
             persistLastPickedFolder() {
                 if (!state.currentFolder?.id || !state.providerType) {
@@ -5182,6 +5199,92 @@
                     console.warn('Failed to persist last folder:', error);
                 }
                 Folders.updateLastFolderBanner();
+            },
+            persistViewContext() {
+                if (!state.currentFolder?.id || !state.providerType) {
+                    return;
+                }
+                const currentStackArray = state.stacks[state.currentStack] || [];
+                const currentFile = currentStackArray[state.currentStackPosition] || null;
+                const payload = {
+                    providerType: state.providerType,
+                    folderId: state.currentFolder.id,
+                    folderName: state.currentFolder.name || '',
+                    stack: state.currentStack || 'in',
+                    position: Number.isFinite(state.currentStackPosition) ? state.currentStackPosition : 0,
+                    fileId: currentFile?.id || null,
+                    isFocusMode: Boolean(state.isFocusMode),
+                    savedAt: new Date().toISOString()
+                };
+                state.lastViewContext = payload;
+                try {
+                    localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(payload));
+                } catch (error) {
+                    console.warn('Failed to persist view context:', error);
+                }
+            },
+            async restoreViewContext(options = {}) {
+                const { force = false } = options;
+                const persisted = state.lastViewContext || loadViewContextFromStorage();
+                if (!persisted) return false;
+                if (!state.currentFolder?.id || !state.providerType) return false;
+                if (persisted.providerType !== state.providerType || persisted.folderId !== state.currentFolder.id) return false;
+
+                const targetStack = STACKS.includes(persisted.stack) ? persisted.stack : state.currentStack;
+                const stackArray = state.stacks[targetStack] || [];
+                if (!Array.isArray(stackArray) || stackArray.length === 0) return false;
+
+                let targetIndex = -1;
+                if (persisted.fileId) {
+                    targetIndex = stackArray.findIndex(file => file.id === persisted.fileId);
+                }
+                if (targetIndex === -1) {
+                    const fallback = Number.isFinite(persisted.position) ? persisted.position : 0;
+                    targetIndex = Math.max(0, Math.min(fallback, stackArray.length - 1));
+                }
+
+                const stackChanged = state.currentStack !== targetStack;
+                const indexChanged = state.currentStackPosition !== targetIndex;
+                if (!force && !stackChanged && !indexChanged) {
+                    return true;
+                }
+
+                state.currentStack = targetStack;
+                state.currentStackPosition = targetIndex;
+
+                try {
+                    await Core.displayCurrentImage();
+                    Core.updateImageCounters();
+                    Core.updateStackCounts();
+                } catch (error) {
+                    console.warn('Failed to restore persisted view context:', error);
+                    return false;
+                }
+                return true;
+            },
+            registerViewPersistenceLifecycle() {
+                if (this._viewPersistenceLifecycleRegistered) {
+                    return;
+                }
+                const persist = () => this.persistViewContext();
+                const restore = () => {
+                    if (document.visibilityState === 'visible') {
+                        this.restoreViewContext({ force: true });
+                    }
+                };
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'hidden') {
+                        persist();
+                        return;
+                    }
+                    restore();
+                });
+                window.addEventListener('focus', restore);
+                window.addEventListener('blur', persist);
+                window.addEventListener('pagehide', persist);
+                window.addEventListener('beforeunload', persist);
+                this._viewPersistenceLifecycleRegistered = true;
             },
             isNavigationActive(token = null) {
                 if (state.isReturningToFolders) {
@@ -8257,6 +8360,7 @@ this.updateImageCounters();
                 Events.init();
                 Gestures.init();
                 Core.updateActiveProxTab();
+                App.registerViewPersistenceLifecycle();
             } catch (error) {
                 console.error("Fatal initialization error:", error);
                 const body = document.body;
