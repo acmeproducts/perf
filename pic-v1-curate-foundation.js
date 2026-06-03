@@ -37,7 +37,7 @@ const state = {
     grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
         dragSession: createDefaultGridDragSession(), skipReorderOnClose: false,
         lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
-    tags: new Set(), loadingProgress: { current: 0, total: 0 },
+    tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
     folderMoveMode: { active: false, files: [] },
     isReturningToFolders: false, navigationToken: null, activeRequests: new AbortController(),
     sessionVisitedFolders: new Set(), isImageTransitioning: false, showDebugToasts: true,
@@ -129,7 +129,7 @@ const Utils = {
             toast: document.getElementById('toast'), centerTrashBtn: document.getElementById('center-trash-btn'),
             focusStackName: document.getElementById('focus-stack-name'), focusImageCount: document.getElementById('focus-image-count'), normalImageCount: document.getElementById('normal-image-count'),
             focusDeleteBtn: document.getElementById('focus-delete-btn'), focusFavoriteBtn: document.getElementById('focus-favorite-btn'), focusFavoriteIcon: document.getElementById('focus-favorite-icon'),
-            loadingCounter: document.getElementById('loading-counter'), loadingMessage: document.getElementById('loading-message'), loadingProgressBar: document.getElementById('loading-progress-bar'), cancelLoading: document.getElementById('cancel-loading'),
+            loadingCounter: document.getElementById('loading-counter'), loadingPhase: document.getElementById('loading-phase'), loadingMessage: document.getElementById('loading-message'), loadingProgressBar: document.getElementById('loading-progress-bar'), backgroundActivity: document.getElementById('background-activity'), backgroundActivityLabel: document.getElementById('background-activity-label'), cancelLoading: document.getElementById('cancel-loading'),
             edgeTop: document.getElementById('edge-top'), edgeBottom: document.getElementById('edge-bottom'), edgeLeft: document.getElementById('edge-left'), edgeRight: document.getElementById('edge-right'),
             gestureLayer: document.getElementById('gesture-layer'), gestureScreenA: document.getElementById('gesture-screen-a'), gestureScreenB: document.getElementById('gesture-screen-b'),
             gestureTriUp: document.getElementById('gesture-tri-up'), gestureTriRight: document.getElementById('gesture-tri-right'), gestureTriDown: document.getElementById('gesture-tri-down'), gestureTriLeft: document.getElementById('gesture-tri-left'),
@@ -151,7 +151,7 @@ const Utils = {
             qualityRating: document.getElementById('quality-rating'), contentRating: document.getElementById('content-rating'), metadataTable: document.getElementById('metadata-table')
         };
     },
-    showScreen(screenId) { ['provider-screen','auth-screen','folder-screen','loading-screen','app-container'].forEach(id => { const s = document.getElementById(id); if (s) s.classList.toggle('hidden', id !== screenId); }); },
+    showScreen(screenId) { if (screenId === 'loading-screen' && state.currentScreen !== 'loading-screen') state.loadingProgress = { current: 0, total: 0, offset: 0, phase: '', displayCurrent: 0, displayTotal: 0 }; state.currentScreen = screenId; ['provider-screen','auth-screen','folder-screen','loading-screen','app-container'].forEach(id => { const s = document.getElementById(id); if (s) s.classList.toggle('hidden', id !== screenId); }); },
     showModal(id) { document.getElementById(id).classList.remove('hidden'); },
     hideModal(id) { document.getElementById(id).classList.add('hidden'); },
     showToast(message, type = 'success', important = false) {
@@ -177,11 +177,20 @@ const Utils = {
     getFallbackImageUrl(file) { if (state.providerType === 'googledrive') { const u = DriveLinkHelper.resolveAssetUrls(file); return u.thumbnailUrlSmall || u.thumbnailUrl || u.imageUrl; } else { return file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`; } },
     defer(callback, options = {}) { const { priority = 'normal', timeout = 120 } = options; const run = () => { try { const r = callback(); if (r && typeof r.then === 'function') r.catch(e => console.error('Deferred task failed', e)); } catch(e) { console.error('Deferred task failed', e); } }; if (priority === 'animation' && typeof requestAnimationFrame === 'function') { requestAnimationFrame(run); return; } if (typeof requestIdleCallback === 'function') { requestIdleCallback(run, { timeout: priority === 'high' ? Math.min(timeout,48) : timeout }); } else { setTimeout(run, priority === 'high' ? 0 : priority === 'animation' ? 16 : 32); } },
     formatFileSize(bytes) { if (bytes === 0) return '0 Bytes'; const k = 1024; const sizes = ['Bytes','KB','MB','GB']; const i = Math.floor(Math.log(bytes)/Math.log(k)); return parseFloat((bytes/Math.pow(k,i)).toFixed(2)) + ' ' + sizes[i]; },
+    beginBackgroundActivity(label = 'Background processing') { state.backgroundActivityCount = (state.backgroundActivityCount || 0) + 1; this.updateBackgroundActivity(label); },
+    endBackgroundActivity(label = 'Background processing') { state.backgroundActivityCount = Math.max(0, (state.backgroundActivityCount || 0) - 1); this.updateBackgroundActivity(label); },
+    updateBackgroundActivity(label = 'Background processing') { const el = this.elements?.backgroundActivity; if (!el) return; const active = (state.backgroundActivityCount || 0) > 0; el.classList.toggle('hidden', !active); if (this.elements.backgroundActivityLabel) this.elements.backgroundActivityLabel.textContent = active && state.backgroundActivityCount > 1 ? `${label} (${state.backgroundActivityCount})` : label; },
     updateLoadingProgress(current, total, message = '') {
-        state.loadingProgress = { current, total };
-        this.elements.loadingCounter.textContent = current;
-        this.elements.loadingMessage.textContent = message || (total ? `Processing ${current} of ${total} items...` : `Found ${current} items`);
-        if (total > 0) { this.elements.loadingProgressBar.style.width = `${(current/total)*100}%`; }
-        else { this.elements.loadingProgressBar.style.width = `${current > 0 ? Math.min(88, 12+((current%12)*6)) : 8}%`; }
+        const normalizedCurrent = Number(current) || 0; const normalizedTotal = Number(total) || 0;
+        const phase = /process|metadata/i.test(message) ? 'Loading metadata...' : /compar|ready|almost/i.test(message) ? 'Almost ready...' : 'Discovering files...';
+        const previous = state.loadingProgress || { current: 0, total: 0, offset: 0, phase: '', displayCurrent: 0 };
+        let offset = previous.offset || 0;
+        if (previous.phase && phase !== previous.phase && normalizedCurrent < (previous.current || 0)) offset = previous.displayCurrent || previous.current || 0;
+        const displayCurrent = normalizedCurrent + offset; const displayTotal = normalizedTotal > 0 ? Math.max(normalizedTotal + offset, displayCurrent) : 0;
+        state.loadingProgress = { current: normalizedCurrent, total: normalizedTotal, offset, phase, displayCurrent, displayTotal };
+        this.elements.loadingCounter.textContent = displayCurrent; if (this.elements.loadingPhase) this.elements.loadingPhase.textContent = phase;
+        this.elements.loadingMessage.textContent = message || (displayTotal ? `Processing ${displayCurrent} of ${displayTotal} items...` : `Found ${displayCurrent} items`);
+        if (displayTotal > 0) { this.elements.loadingProgressBar.style.width = `${(displayCurrent/displayTotal)*100}%`; }
+        else { this.elements.loadingProgressBar.style.width = `${displayCurrent > 0 ? Math.min(88, 12+((displayCurrent%12)*6)) : 8}%`; }
     }
 };
