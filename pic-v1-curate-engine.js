@@ -113,7 +113,7 @@ const App = {
                 this.switchToCommonUI(); Core.initializeStacks(); Core.showEmptyState(); Core.updateStackCounts();
                 Utils.showToast('No images found in this folder', 'info', true); return true;
             }
-            for (const uid of updatedIds) { const uf = mergedFiles.find(f => f.id === uid); if (uf) await state.dbManager.saveMetadata(uid, uf, { folderId, providerType: state.providerType }); }
+            for (const uid of updatedIds) { const uf = mergedFiles.find(f => f.id === uid); if (uf) { const existing = await state.dbManager.getMetadata(uid); if (existing) ['extractedMetadata','metadataStatus','prompt','negativePrompt','model','seed','steps','cfgScale','sampler','stack','tags','notes','qualityRating','contentRating','favorite','stackSequence','lastUpdated','localUpdatedAt'].forEach(field => { if (existing[field] !== undefined) uf[field] = existing[field]; }); await state.dbManager.saveMetadata(uid, uf, { folderId, providerType: state.providerType }); } }
             if (removedIds.length > 0) await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
             state.imageFiles = mergedFiles;
             const remaining = await this.prepareFolderForFirstPaint(state.imageFiles, { navigationToken });
@@ -126,13 +126,14 @@ const App = {
         } catch(e) { if (e.name !== 'AbortError') Utils.showToast(`Error loading images: ${e.message}`, 'error', true); this.returnToFolderSelection(); }
     },
     async refreshFolderInBackground() {
+        Utils.beginBackgroundActivity('Refreshing folder');
         try {
             const navigationToken = state.navigationToken; const folderId = state.currentFolder.id;
             const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
             const result = await state.provider.getFilesAndMetadata(folderId);
             const { mergedFiles, updatedIds, removedIds, hasChanges } = this.mergeCloudWithCache(result.files || [], cachedFiles);
             if (!hasChanges) return;
-            for (const uid of updatedIds) { const uf = mergedFiles.find(f => f.id === uid); if (uf) await state.dbManager.saveMetadata(uid, uf, { folderId, providerType: state.providerType }); }
+            for (const uid of updatedIds) { const uf = mergedFiles.find(f => f.id === uid); if (uf) { const existing = await state.dbManager.getMetadata(uid); if (existing) ['extractedMetadata','metadataStatus','prompt','negativePrompt','model','seed','steps','cfgScale','sampler','stack','tags','notes','qualityRating','contentRating','favorite','stackSequence','lastUpdated','localUpdatedAt'].forEach(field => { if (existing[field] !== undefined) uf[field] = existing[field]; }); await state.dbManager.saveMetadata(uid, uf, { folderId, providerType: state.providerType }); } }
             if (removedIds.length > 0) await Promise.all(removedIds.map(id => state.dbManager.deleteMetadata(id)));
             await this.processAllMetadata(mergedFiles, false, { navigationToken });
             if (!this.isNavigationActive(navigationToken)) return;
@@ -141,17 +142,24 @@ const App = {
             if (state.imageFiles.length > 0) Core.displayCurrentImage(); else Core.showEmptyState();
             Utils.showToast('Folder updated in background', 'info');
         } catch(e) { console.warn('Background refresh failed:', e.message); }
+        finally { Utils.endBackgroundActivity('Refreshing folder'); }
     },
     async processAllMetadata(files, isFirstLoad = false, options = {}) {
         const { navigationToken = null } = options;
         if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
-        for (let i = 0; i < files.length; i++) {
-            if (navigationToken && !this.isNavigationActive(navigationToken)) return;
-            const file = files[i];
-            try { const metadata = await state.dbManager.getMetadata(file.id); if (metadata) Object.assign(file, metadata); else { const dm = this.generateDefaultMetadata(file, { index: i, total: files.length }); Object.assign(file, dm); await state.dbManager.saveMetadata(file.id, dm, { folderId: state.currentFolder.id, providerType: state.providerType }); } } catch(e) { console.error(`Failed to process metadata for ${file.name}:`, e); }
-            if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+        const showBackgroundIndicator = !isFirstLoad && files.length > 0;
+        if (showBackgroundIndicator) Utils.beginBackgroundActivity('Loading file records');
+        try {
+            for (let i = 0; i < files.length; i++) {
+                if (navigationToken && !this.isNavigationActive(navigationToken)) return;
+                const file = files[i];
+                try { const metadata = await state.dbManager.getMetadata(file.id); if (metadata) Object.assign(file, metadata); else { const dm = this.generateDefaultMetadata(file, { index: i, total: files.length }); Object.assign(file, dm); await state.dbManager.saveMetadata(file.id, dm, { folderId: state.currentFolder.id, providerType: state.providerType }); } } catch(e) { console.error(`Failed to process metadata for ${file.name}:`, e); }
+                if (isFirstLoad) Utils.updateLoadingProgress(i + 1, files.length);
+            }
+            if (!navigationToken || this.isNavigationActive(navigationToken)) this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
+        } finally {
+            if (showBackgroundIndicator) Utils.endBackgroundActivity('Loading file records');
         }
-        if (!navigationToken || this.isNavigationActive(navigationToken)) this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
     },
     generateDefaultMetadata(file, context = {}) {
         const bm = { stack: 'in', tags: [], qualityRating: 0, contentRating: 0, notes: '', stackSequence: 0, favorite: false, extractedMetadata: {}, metadataStatus: 'pending' };
@@ -223,7 +231,7 @@ const App = {
         try { const cf = await state.dbManager.getFolderCache(folderId) || []; await state.dbManager.clearFolderData({ providerType: state.providerType, folderId }, cf.map(f => f.id)); await state.folderSyncCoordinator?.markRequiresFullResync(folderId, 'user-reset'); state.sessionVisitedFolders.delete(`${state.providerType||'unknown'}::${folderId}`); Utils.showToast('Folder cache cleared. Resyncing...', 'info'); const nt = Symbol('navigation'); state.navigationToken = nt; await this.loadImages({ forceFullResync: true, navigationToken: nt }); }
         catch(e) { Utils.showToast(`Reset failed: ${e.message}`, 'error', true); }
     },
-    async extractMetadataInBackground(pngFiles) { const BS = 5; for (let i = 0; i < pngFiles.length; i += BS) { if (state.activeRequests.signal.aborted) return; await Promise.allSettled(pngFiles.slice(i, i+BS).map(f => (f.metadataStatus === 'pending' || f.metadataStatus === 'queued') ? this.processFileMetadata(f) : Promise.resolve())); } },
+    async extractMetadataInBackground(pngFiles) { const pending = pngFiles.filter(f => f.metadataStatus === 'pending' || f.metadataStatus === 'queued'); if (pending.length === 0) return; const BS = 5; let completed = false; Utils.beginBackgroundActivity('Extracting metadata'); try { for (let i = 0; i < pending.length; i += BS) { if (state.activeRequests.signal.aborted) return; await Promise.allSettled(pending.slice(i, i+BS).map(f => this.processFileMetadata(f))); } completed = true; } finally { if (completed && state.currentFolder?.id && Array.isArray(state.imageFiles)) state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'normal' }); Utils.endBackgroundActivity('Extracting metadata'); } },
     async processFileMetadata(file) {
         if (['loaded','loading','error'].includes(file.metadataStatus)) return;
         file.metadataStatus = 'loading';

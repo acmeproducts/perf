@@ -386,11 +386,16 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         .loading-counter { color: var(--accent); font-size: 48px; font-weight: 700; margin: 20px 0; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8); }
+        .loading-phase { color: var(--accent); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
         .loading-message { color: rgba(255, 255, 255, 0.7); font-size: 16px; margin-bottom: 20px; }
         .loading-progress { width: 100%; height: 6px; background: rgba(255, 255, 255, 0.2); border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
         .loading-progress-bar { height: 100%; background: linear-gradient(45deg, var(--accent), #d97706); border-radius: 3px; transition: width 0.3s ease; width: 0%; }
 
         .app-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); overflow: hidden; }
+        .background-activity { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: rgba(17, 24, 39, 0.82); color: rgba(255, 255, 255, 0.86); font-size: 12px; border: 1px solid rgba(245, 158, 11, 0.35); pointer-events: none; transition: opacity 0.2s ease; }
+        .background-activity.hidden { display: none; }
+        .background-activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: backgroundPulse 1.2s ease-in-out infinite; }
+        @keyframes backgroundPulse { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.15); } }
 
         .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; }
         .center-image {
@@ -1020,6 +1025,7 @@
         <div class="card">
             <h2 class="title">Loading Images</h2>
             <div class="loading-counter" id="loading-counter">0</div>
+            <div class="loading-phase" id="loading-phase">Discovering files...</div>
             <div class="loading-message" id="loading-message">Processing files...</div>
             <div class="loading-progress">
                 <div class="loading-progress-bar" id="loading-progress-bar"></div>
@@ -1033,6 +1039,7 @@
 
     <!-- Main App Container -->
     <div class="app-container hidden" id="app-container">
+        <div class="background-activity hidden" id="background-activity"><span class="background-activity-dot"></span><span id="background-activity-label">Background processing</span></div>
         <button class="ui-button" id="back-button">
             <span id="back-button-spinner" class="spinner" style="display: none; width: 14px; height: 14px; margin-right: 6px;"></span>
             Folders
@@ -1342,7 +1349,7 @@
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false,
                 dragSession: createDefaultGridDragSession(), skipReorderOnClose: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
-            tags: new Set(), loadingProgress: { current: 0, total: 0 },
+            tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
             folderMoveMode: { active: false, files: [] },
             isReturningToFolders: false,
             navigationToken: null,
@@ -1640,8 +1647,11 @@
                     focusFavoriteIcon: document.getElementById('focus-favorite-icon'),
 
                     loadingCounter: document.getElementById('loading-counter'),
+                    loadingPhase: document.getElementById('loading-phase'),
                     loadingMessage: document.getElementById('loading-message'),
                     loadingProgressBar: document.getElementById('loading-progress-bar'),
+                    backgroundActivity: document.getElementById('background-activity'),
+                    backgroundActivityLabel: document.getElementById('background-activity-label'),
                     cancelLoading: document.getElementById('cancel-loading'),
 
                     edgeTop: document.getElementById('edge-top'),
@@ -1713,6 +1723,10 @@
             },
 
             showScreen(screenId) {
+                if (screenId === 'loading-screen' && state.currentScreen !== 'loading-screen') {
+                    state.loadingProgress = { current: 0, total: 0, offset: 0, phase: '', displayCurrent: 0, displayTotal: 0 };
+                }
+                state.currentScreen = screenId;
                 const screens = ['provider-screen', 'auth-screen', 'folder-screen', 'loading-screen', 'app-container'];
                 screens.forEach(id => {
                     const screen = document.getElementById(id);
@@ -1850,17 +1864,56 @@
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             },
 
+            beginBackgroundActivity(label = 'Background processing') {
+                state.backgroundActivityCount = (state.backgroundActivityCount || 0) + 1;
+                this.updateBackgroundActivity(label);
+            },
+
+            endBackgroundActivity(label = 'Background processing') {
+                state.backgroundActivityCount = Math.max(0, (state.backgroundActivityCount || 0) - 1);
+                this.updateBackgroundActivity(label);
+            },
+
+            updateBackgroundActivity(label = 'Background processing') {
+                const indicator = this.elements?.backgroundActivity;
+                if (!indicator) return;
+                const active = (state.backgroundActivityCount || 0) > 0;
+                indicator.classList.toggle('hidden', !active);
+                if (this.elements.backgroundActivityLabel) {
+                    this.elements.backgroundActivityLabel.textContent = active && state.backgroundActivityCount > 1
+                        ? `${label} (${state.backgroundActivityCount})`
+                        : label;
+                }
+            },
+
             updateLoadingProgress(current, total, message = '') {
-                state.loadingProgress = { current, total };
-                this.elements.loadingCounter.textContent = current;
-                this.elements.loadingMessage.textContent = message || (total ?
-                    `Processing ${current} of ${total} items...` :
-                    `Found ${current} items`);
-                if (total > 0) {
-                    const percentage = (current / total) * 100;
+                const normalizedCurrent = Number(current) || 0;
+                const normalizedTotal = Number(total) || 0;
+                const phase = /process|metadata/i.test(message)
+                    ? 'Loading metadata...'
+                    : /compar|ready|almost/i.test(message)
+                        ? 'Almost ready...'
+                        : 'Discovering files...';
+                const previous = state.loadingProgress || { current: 0, total: 0, offset: 0, phase: '', displayCurrent: 0 };
+                let offset = previous.offset || 0;
+                if (previous.phase && phase !== previous.phase && normalizedCurrent < (previous.current || 0)) {
+                    offset = previous.displayCurrent || previous.current || 0;
+                }
+                const displayCurrent = normalizedCurrent + offset;
+                const displayTotal = normalizedTotal > 0 ? Math.max(normalizedTotal + offset, displayCurrent) : 0;
+                state.loadingProgress = { current: normalizedCurrent, total: normalizedTotal, offset, phase, displayCurrent, displayTotal };
+                this.elements.loadingCounter.textContent = displayCurrent;
+                if (this.elements.loadingPhase) {
+                    this.elements.loadingPhase.textContent = phase;
+                }
+                this.elements.loadingMessage.textContent = message || (displayTotal ?
+                    `Processing ${displayCurrent} of ${displayTotal} items...` :
+                    `Found ${displayCurrent} items`);
+                if (displayTotal > 0) {
+                    const percentage = (displayCurrent / displayTotal) * 100;
                     this.elements.loadingProgressBar.style.width = `${percentage}%`;
                 } else {
-                    const pulse = current > 0 ? Math.min(88, 12 + ((current % 12) * 6)) : 8;
+                    const pulse = displayCurrent > 0 ? Math.min(88, 12 + ((displayCurrent % 12) * 6)) : 8;
                     this.elements.loadingProgressBar.style.width = `${pulse}%`;
                 }
             }
@@ -4113,11 +4166,25 @@
             }
             async refreshAccessToken() {
                 if (!this.refreshToken || !this.clientSecret) { throw new Error('No refresh token or client secret available'); }
-                const response = await fetch('https://oauth2.googleapis.com/token', {
-                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, refresh_token: this.refreshToken, grant_type: 'refresh_token' })
-                });
-                if (!response.ok) { throw new Error('Failed to refresh access token'); }
+                let response;
+                try {
+                    response = await fetch('https://oauth2.googleapis.com/token', {
+                        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, refresh_token: this.refreshToken, grant_type: 'refresh_token' })
+                    });
+                } catch (fetchError) {
+                    fetchError.networkError = true;
+                    throw fetchError;
+                }
+                if (!response.ok) {
+                    const error = new Error('Failed to refresh access token');
+                    if (response.status === 400 || response.status === 401) {
+                        error.tokenRevoked = true;
+                    } else if (response.status >= 500) {
+                        error.networkError = true;
+                    }
+                    throw error;
+                }
                 const tokens = await response.json(); this.accessToken = tokens.access_token; this.storeCredentials(); return this.accessToken;
             }
             async makeApiCall(endpoint, options = {}, isJson = true) {
@@ -4138,7 +4205,16 @@
                         await this.refreshAccessToken();
                         headers['Authorization'] = `Bearer ${this.accessToken}`;
                         response = await fetch(url, { ...options, headers });
-                    } catch (refreshError) { this.isAuthenticated = false; this.clearStoredCredentials(); throw new Error('Authentication expired. Please reconnect.'); }
+                    } catch (refreshError) {
+                        if (refreshError?.tokenRevoked) {
+                            this.isAuthenticated = false;
+                            this.clearStoredCredentials();
+                            throw new Error('Authentication expired. Please reconnect.');
+                        }
+                        const error = new Error('Network error during token refresh. Please try again.');
+                        error.networkError = Boolean(refreshError?.networkError);
+                        throw error;
+                    }
                 }
                 if (!response.ok) { const errorText = await response.text(); throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`); }
                 if (isJson) { return await response.json(); }
@@ -5450,7 +5526,7 @@
                         options.forceFullResync
                     );
 
-                    const mustRefreshFromCloud = true; // Always refresh to capture latest cloud changes per folder load.
+                    const mustRefreshFromCloud = isFirstSessionVisit || Boolean(options.forceFullResync);
                     const canUseCache = !mustRefreshFromCloud && !shouldFullSync && (preparation?.mode === 'cache' || !coordinator);
 
                     if (!canUseCache) {
@@ -5679,6 +5755,20 @@
                     for (const updatedId of updatedIds) {
                         const updatedFile = mergedFiles.find(file => file.id === updatedId);
                         if (updatedFile) {
+                            const existingMetadata = await state.dbManager.getMetadata(updatedId);
+                            if (existingMetadata) {
+                                const preservedFields = [
+                                    'extractedMetadata', 'metadataStatus', 'prompt', 'negativePrompt',
+                                    'model', 'seed', 'steps', 'cfgScale', 'sampler', 'stack', 'tags',
+                                    'notes', 'qualityRating', 'contentRating', 'favorite', 'stackSequence',
+                                    'lastUpdated', 'localUpdatedAt'
+                                ];
+                                for (const field of preservedFields) {
+                                    if (existingMetadata[field] !== undefined) {
+                                        updatedFile[field] = existingMetadata[field];
+                                    }
+                                }
+                            }
                             await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
                         }
                     }
@@ -5791,6 +5881,7 @@
                 }
             },
             async refreshFolderInBackground() {
+                Utils.beginBackgroundActivity('Refreshing folder');
                 try {
                     const navigationToken = state.navigationToken;
                     const folderId = state.currentFolder.id;
@@ -5806,7 +5897,21 @@
                     for (const updatedId of updatedIds) {
                         const updatedFile = mergedFiles.find(file => file.id === updatedId);
                         if (updatedFile) {
-                        await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
+                            const existingMetadata = await state.dbManager.getMetadata(updatedId);
+                            if (existingMetadata) {
+                                const preservedFields = [
+                                    'extractedMetadata', 'metadataStatus', 'prompt', 'negativePrompt',
+                                    'model', 'seed', 'steps', 'cfgScale', 'sampler', 'stack', 'tags',
+                                    'notes', 'qualityRating', 'contentRating', 'favorite', 'stackSequence',
+                                    'lastUpdated', 'localUpdatedAt'
+                                ];
+                                for (const field of preservedFields) {
+                                    if (existingMetadata[field] !== undefined) {
+                                        updatedFile[field] = existingMetadata[field];
+                                    }
+                                }
+                            }
+                            await state.dbManager.saveMetadata(updatedId, updatedFile, { folderId, providerType: state.providerType });
                         }
                     }
                     if (removedIds.length > 0) {
@@ -5826,11 +5931,16 @@
                     Utils.showToast('Folder updated in background', 'info');
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
+                } finally {
+                    Utils.endBackgroundActivity('Refreshing folder');
                 }
             },
             async processAllMetadata(files, isFirstLoad = false, options = {}) {
                  const { navigationToken = null } = options;
                  if (isFirstLoad) Utils.updateLoadingProgress(0, files.length, 'Processing files...');
+                 const showBackgroundIndicator = !isFirstLoad && files.length > 0;
+                 if (showBackgroundIndicator) Utils.beginBackgroundActivity('Loading file records');
+                 try {
                  for (let i = 0; i < files.length; i++) {
                     if (navigationToken && !this.isNavigationActive(navigationToken)) {
                         return;
@@ -5856,6 +5966,9 @@
                 if (!navigationToken || this.isNavigationActive(navigationToken)) {
                     this.extractMetadataInBackground(files.filter(f => f.mimeType === 'image/png'));
                 }
+                 } finally {
+                    if (showBackgroundIndicator) Utils.endBackgroundActivity('Loading file records');
+                 }
             },
             generateDefaultMetadata(file, context = {}) {
                  const baseMetadata = {
@@ -6304,17 +6417,24 @@
                 }
             },
             async extractMetadataInBackground(pngFiles) {
+                const pendingFiles = pngFiles.filter(file => file.metadataStatus === 'pending' || file.metadataStatus === 'queued');
+                if (pendingFiles.length === 0) return;
                 const BATCH_SIZE = 5;
-                for (let i = 0; i < pngFiles.length; i += BATCH_SIZE) {
-                    if (state.activeRequests.signal.aborted) return;
-                    const batch = pngFiles.slice(i, i + BATCH_SIZE);
-                    const promises = batch.map(file => {
-                        if (file.metadataStatus === 'pending' || file.metadataStatus === 'queued') {
-                            return this.processFileMetadata(file);
-                        }
-                        return Promise.resolve();
-                    });
-                    await Promise.allSettled(promises);
+                let completed = false;
+                Utils.beginBackgroundActivity('Extracting metadata');
+                try {
+                    for (let i = 0; i < pendingFiles.length; i += BATCH_SIZE) {
+                        if (state.activeRequests.signal.aborted) return;
+                        const batch = pendingFiles.slice(i, i + BATCH_SIZE);
+                        const promises = batch.map(file => this.processFileMetadata(file));
+                        await Promise.allSettled(promises);
+                    }
+                    completed = true;
+                } finally {
+                    if (completed && state.currentFolder?.id && Array.isArray(state.imageFiles)) {
+                        state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'normal' });
+                    }
+                    Utils.endBackgroundActivity('Extracting metadata');
                 }
             },
             async processFileMetadata(file) {

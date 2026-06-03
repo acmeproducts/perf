@@ -94,13 +94,20 @@ class GoogleDriveProvider extends BaseProvider {
         this.accessToken = tokens.access_token; this.refreshToken = tokens.refresh_token; this.storeCredentials();
         this.bindSharedFolderCaches({ previousKey: prev, clearPrevious: true });
     }
-    async refreshAccessToken() { if (!this.refreshToken || !this.clientSecret) throw new Error('No refresh token'); const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, refresh_token: this.refreshToken, grant_type: 'refresh_token' }) }); if (!r.ok) throw new Error('Failed to refresh token'); const t = await r.json(); this.accessToken = t.access_token; this.storeCredentials(); return this.accessToken; }
+    async refreshAccessToken() {
+        if (!this.refreshToken || !this.clientSecret) throw new Error('No refresh token');
+        let r;
+        try { r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, refresh_token: this.refreshToken, grant_type: 'refresh_token' }) }); }
+        catch (e) { e.networkError = true; throw e; }
+        if (!r.ok) { const e = new Error('Failed to refresh token'); if (r.status === 400 || r.status === 401) e.tokenRevoked = true; else if (r.status >= 500) e.networkError = true; throw e; }
+        const t = await r.json(); this.accessToken = t.access_token; this.storeCredentials(); return this.accessToken;
+    }
     async makeApiCall(endpoint, options = {}, isJson = true) {
         if (!this.accessToken) throw new Error('Not authenticated');
         let url; if (endpoint.startsWith('https://')) url = endpoint; else if (endpoint.startsWith('/upload/drive/')) url = `https://www.googleapis.com${endpoint}`; else url = `${this.apiBase}${endpoint}`;
         const headers = { 'Authorization': `Bearer ${this.accessToken}`, ...options.headers }; if (isJson) headers['Content-Type'] = 'application/json';
         let response = await fetch(url, { ...options, headers });
-        if (response.status === 401 && this.refreshToken && this.clientSecret) { try { await this.refreshAccessToken(); headers['Authorization'] = `Bearer ${this.accessToken}`; response = await fetch(url, { ...options, headers }); } catch(e) { this.isAuthenticated = false; this.clearStoredCredentials(); throw new Error('Authentication expired.'); } }
+        if (response.status === 401 && this.refreshToken && this.clientSecret) { try { await this.refreshAccessToken(); headers['Authorization'] = `Bearer ${this.accessToken}`; response = await fetch(url, { ...options, headers }); } catch(e) { if (e?.tokenRevoked) { this.isAuthenticated = false; this.clearStoredCredentials(); throw new Error('Authentication expired.'); } const err = new Error('Network error during token refresh. Please try again.'); err.networkError = Boolean(e?.networkError); throw err; } }
         if (!response.ok) { const t = await response.text(); throw new Error(`API call failed: ${response.status} ${response.statusText} - ${t}`); }
         if (isJson) return await response.json(); return response;
     }
