@@ -4709,6 +4709,41 @@
         }
 
         const App = {
+            async attemptAutoResume() {
+                const lastFolder = state.lastPickedFolder;
+                if (!lastFolder?.providerType || !lastFolder?.folderId) {
+                    return false;
+                }
+                const providerType = lastFolder.providerType;
+                if (providerType !== 'googledrive' && providerType !== 'onedrive') {
+                    return false;
+                }
+                const provider = providerType === 'googledrive' ? new GoogleDriveProvider() : new OneDriveProvider();
+                if (!provider.isAuthenticated) {
+                    return false;
+                }
+                const probeEndpoint = providerType === 'googledrive'
+                    ? '/files?pageSize=1&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true'
+                    : '/me/drive';
+                try {
+                    await provider.makeApiCall(probeEndpoint);
+                } catch (probeError) {
+                    if (providerType !== 'googledrive' || typeof provider.refreshAccessToken !== 'function' || probeError?.networkError || probeError?.tokenRevoked) {
+                        state.syncLog?.log({ event: 'startup:auto_resume:probe_failed', level: 'warn', details: probeError?.message || 'Provider probe failed.' });
+                        return false;
+                    }
+                    try {
+                        await provider.refreshAccessToken();
+                        await provider.makeApiCall(probeEndpoint);
+                    } catch (refreshError) {
+                        state.syncLog?.log({ event: 'startup:auto_resume:refresh_failed', level: refreshError?.tokenRevoked ? 'warn' : 'info', details: refreshError?.message || 'Silent refresh failed.' });
+                        return false;
+                    }
+                }
+                state.syncLog?.log({ event: 'startup:auto_resume:success', level: 'info', details: `Auto-resuming ${lastFolder.folderName || 'last folder'} from ${providerType}.` });
+                await this.initializeWithProvider(providerType, lastFolder.folderId, lastFolder.folderName || '', provider);
+                return true;
+            },
             selectProvider(type) {
                 state.providerType = type;
                 const isGoogle = type === 'googledrive';
@@ -8479,7 +8514,10 @@ this.updateImageCounters();
                 window.__orbitalSyncManager = state.syncManager;
                 state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
-                Utils.showScreen('provider-screen');
+                const didAutoResume = await App.attemptAutoResume();
+                if (!didAutoResume) {
+                    Utils.showScreen('provider-screen');
+                }
                 Events.init();
                 Gestures.init();
                 Core.updateActiveProxTab();
