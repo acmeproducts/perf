@@ -352,7 +352,10 @@ async function initApp() {
         });
         state.syncManager.start();
         state.metadataExtractor = new MetadataExtractor();
-        Utils.showScreen('provider-screen');
+        const didAutoResume = await App.attemptAutoResume();
+        if (!didAutoResume) {
+            Utils.showScreen('provider-screen');
+        }
         Events.init();
         Gestures.init();
         Core.updateActiveProxTab();
