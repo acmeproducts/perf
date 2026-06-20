@@ -1199,8 +1199,231 @@
             selectedIds: [],
             dragElements: []
         });
+
+        const FOLDER_INTELLIGENCE_CONTRACT_V1 = Object.freeze({
+            schemaVersion: 1,
+            artifactTypes: Object.freeze({
+                marker: 'orbital8.folderIndexMarker',
+                index: 'orbital8.folderIndex',
+                delta: 'orbital8.folderDelta',
+                pngReuse: 'orbital8.pngMetadataReuseIndex',
+                uiPatch: 'orbital8.uiStatePatch'
+            }),
+            storageModes: Object.freeze({ perRoot: 'perRoot', accountWideProjection: 'accountWideProjection' }),
+            deltaModes: Object.freeze({ none: 'none', synthetic: 'synthetic', providerCursor: 'providerCursor' }),
+            pngStatuses: Object.freeze(['notStarted', 'queued', 'loaded', 'error', 'grouped', 'unsupported']),
+            uiStacks: Object.freeze(STACKS.slice())
+        });
+        class FolderIntelligenceAdapter {
+            constructor({ provider = null, providerType = null, logger = null } = {}) {
+                this.provider = provider;
+                this.providerType = providerType;
+                this.logger = logger;
+                this.contract = FOLDER_INTELLIGENCE_CONTRACT_V1;
+            }
+            setProviderContext({ provider = null, providerType = null } = {}) {
+                this.provider = provider;
+                this.providerType = providerType;
+            }
+            getContract() { return this.contract; }
+            getCapabilities() {
+                return {
+                    deltas: this.contract.deltaModes.none,
+                    providerCursor: false,
+                    recursiveHash: false,
+                    pngReuse: false
+                };
+            }
+            buildAccountKey() { return this.providerType || 'unknown'; }
+            buildProviderStorage(overrides = {}) {
+                return {
+                    kind: overrides.kind || 'other',
+                    artifactPath: overrides.artifactPath || null,
+                    artifactId: overrides.artifactId || null,
+                    etag: overrides.etag || null,
+                    modifiedTime: overrides.modifiedTime || null
+                };
+            }
+            buildCompat() {
+                return {
+                    legacyIntelVersion: null,
+                    legacyProvider: this.providerType || null,
+                    sourceRecordShape: 'ui-series FolderIntelligenceAdapter scaffold'
+                };
+            }
+            buildMarker(rootFolderId, overrides = {}) {
+                const now = new Date().toISOString();
+                return {
+                    schemaVersion: this.contract.schemaVersion,
+                    artifactType: this.contract.artifactTypes.marker,
+                    provider: this.providerType || overrides.provider || 'unknown',
+                    accountKey: overrides.accountKey || this.buildAccountKey(),
+                    rootFolderId,
+                    rootFolderName: overrides.rootFolderName || '',
+                    folderVersion: Number(overrides.folderVersion || 0),
+                    directHash: overrides.directHash || null,
+                    recursiveHash: overrides.recursiveHash || null,
+                    entryCount: Number(overrides.entryCount || 0),
+                    folderCount: Number(overrides.folderCount || 0),
+                    deletedCount: Number(overrides.deletedCount || 0),
+                    pngEntryCount: Number(overrides.pngEntryCount || 0),
+                    pngReuseGroupCount: Number(overrides.pngReuseGroupCount || 0),
+                    providerStorage: this.buildProviderStorage(overrides.providerStorage || {}),
+                    capabilities: { ...this.getCapabilities(), ...(overrides.capabilities || {}) },
+                    compat: { ...this.buildCompat(), ...(overrides.compat || {}) },
+                    updatedAt: overrides.updatedAt || now,
+                    lastWriter: {
+                        app: 'ui',
+                        appVersion: overrides.appVersion || 'ui-series',
+                        deviceId: overrides.deviceId || null,
+                        writtenAt: overrides.writtenAt || now
+                    }
+                };
+            }
+            normalizeUiMetadata(file = {}, overrides = {}) {
+                return {
+                    stack: overrides.stack || file.stack || 'in',
+                    legacyStack: overrides.legacyStack || null,
+                    stackSequence: Number(overrides.stackSequence ?? file.stackSequence ?? 0) || 0,
+                    tags: Array.isArray(overrides.tags) ? overrides.tags : (Array.isArray(file.tags) ? file.tags : []),
+                    notes: overrides.notes ?? file.notes ?? '',
+                    qualityRating: Number(overrides.qualityRating ?? file.qualityRating ?? 0) || 0,
+                    contentRating: Number(overrides.contentRating ?? file.contentRating ?? 0) || 0,
+                    favorite: Boolean(overrides.favorite ?? file.favorite ?? false),
+                    uiUpdatedAt: overrides.uiUpdatedAt || (file.localUpdatedAt ? new Date(file.localUpdatedAt).toISOString() : null),
+                    uiUpdatedBy: overrides.uiUpdatedBy || 'ui'
+                };
+            }
+            normalizePngMetadata(file = {}, overrides = {}) {
+                const hasMetadata = file.extractedMetadata && Object.keys(file.extractedMetadata).length > 0;
+                return {
+                    status: overrides.status || file.metadataStatus || (hasMetadata ? 'loaded' : 'notStarted'),
+                    groupKey: overrides.groupKey || null,
+                    source: overrides.source || (hasMetadata ? 'direct' : 'none'),
+                    extractedAt: overrides.extractedAt || null,
+                    extractorVersion: overrides.extractorVersion || null,
+                    summary: overrides.summary || file.extractedMetadata || {},
+                    raw: overrides.raw || null,
+                    error: overrides.error || null
+                };
+            }
+            normalizeFolder(folder = {}, overrides = {}) {
+                return {
+                    id: folder.id || overrides.id || null,
+                    parentId: overrides.parentId || folder.parentId || null,
+                    name: folder.name || overrides.name || '',
+                    pathHint: overrides.pathHint || null,
+                    depth: Number(overrides.depth ?? folder.depth ?? 0) || 0,
+                    childFolderIds: overrides.childFolderIds || folder.childFolderIds || folder.children || [],
+                    isEnrolled: Boolean(overrides.isEnrolled ?? folder.isEnrolled ?? true),
+                    firstIndexedAt: overrides.firstIndexedAt || folder.firstIndexed || folder.firstIndexedAt || null,
+                    lastVerifiedAt: overrides.lastVerifiedAt || folder.lastVerified || folder.lastVerifiedAt || null,
+                    folderVersion: Number(overrides.folderVersion || 0),
+                    directHash: overrides.directHash || folder.directHash || folder.hash || null,
+                    recursiveHash: overrides.recursiveHash || folder.recursiveHash || null,
+                    status: overrides.status || folder.status || 'current',
+                    stats: overrides.stats || folder.stats || {},
+                    curation: overrides.curation || folder.curation || {}
+                };
+            }
+            normalizeEntry(file = {}, overrides = {}) {
+                return {
+                    id: file.id || overrides.id || null,
+                    folderId: overrides.folderId || file.folderId || state.currentFolder?.id || null,
+                    name: file.name || '',
+                    mimeType: file.mimeType || '',
+                    class: overrides.class || (file.mimeType?.split('/')[0] || 'other'),
+                    size: Number(file.size || 0),
+                    providerCreatedTime: file.createdTime || null,
+                    providerModifiedTime: file.modifiedTime || null,
+                    effectiveDate: overrides.effectiveDate || file.modifiedTime || file.createdTime || null,
+                    providerRevision: overrides.providerRevision || file.version || file.eTag || null,
+                    contentHash: overrides.contentHash || file.md5Checksum || file.sha1Hash || file.quickXorHash || null,
+                    entryHash: overrides.entryHash || null,
+                    thumbnailUrl: overrides.thumbnailUrl || file.thumbnailLink || file.permanentThumbnailUrl || file.thumbnails?.large?.url || null,
+                    deleted: Boolean(overrides.deleted || false),
+                    recycled: Boolean(overrides.recycled || file.stack === 'trash'),
+                    ui: this.normalizeUiMetadata(file, overrides.ui || {}),
+                    media: {
+                        width: overrides.media?.width ?? file.imageMediaMetadata?.width ?? file.width ?? null,
+                        height: overrides.media?.height ?? file.imageMediaMetadata?.height ?? file.height ?? null,
+                        durationSeconds: overrides.media?.durationSeconds ?? (file.videoMediaMetadata?.durationMillis ? Number(file.videoMediaMetadata.durationMillis) / 1000 : null),
+                        cameraMake: overrides.media?.cameraMake ?? file.imageMediaMetadata?.cameraMake ?? null,
+                        cameraModel: overrides.media?.cameraModel ?? file.imageMediaMetadata?.cameraModel ?? null,
+                        gps: overrides.media?.gps ?? null
+                    },
+                    pngMetadata: this.normalizePngMetadata(file, overrides.pngMetadata || {}),
+                    providerFlags: {
+                        shared: Boolean(overrides.providerFlags?.shared ?? file.shared ?? false),
+                        canEdit: Boolean(overrides.providerFlags?.canEdit ?? file.canEdit ?? true)
+                    },
+                    providerDiagnostics: {
+                        providerAppProperties: overrides.providerDiagnostics?.providerAppProperties || file.appProperties || null,
+                        providerMetadataRaw: overrides.providerDiagnostics?.providerMetadataRaw || null
+                    }
+                };
+            }
+            buildIndex(rootFolderId, { rootFolderName = '', folders = {}, entries = {}, pngReuse = null, marker = null, overrides = {} } = {}) {
+                const builtMarker = marker || this.buildMarker(rootFolderId, {
+                    rootFolderName,
+                    entryCount: Object.keys(entries || {}).length,
+                    folderCount: Object.keys(folders || {}).length,
+                    ...(overrides.marker || {})
+                });
+                return {
+                    schemaVersion: this.contract.schemaVersion,
+                    artifactType: this.contract.artifactTypes.index,
+                    provider: builtMarker.provider,
+                    accountKey: builtMarker.accountKey,
+                    rootFolderId,
+                    rootFolderName,
+                    folderVersion: builtMarker.folderVersion,
+                    indexedAt: overrides.indexedAt || builtMarker.updatedAt,
+                    verifiedAt: overrides.verifiedAt || builtMarker.updatedAt,
+                    storageMode: overrides.storageMode || this.contract.storageModes.accountWideProjection,
+                    providerStorage: builtMarker.providerStorage,
+                    freshness: {
+                        directHash: builtMarker.directHash,
+                        recursiveHash: builtMarker.recursiveHash,
+                        entryCount: builtMarker.entryCount,
+                        folderCount: builtMarker.folderCount,
+                        deletedCount: builtMarker.deletedCount,
+                        providerCursor: overrides.providerCursor || null
+                    },
+                    capabilities: builtMarker.capabilities,
+                    compat: builtMarker.compat,
+                    folders,
+                    entries,
+                    pngReuse: pngReuse || { groups: {}, fileMap: {} }
+                };
+            }
+            async getIndexMarker(rootFolderId) {
+                if (this.provider && typeof this.provider.getIndexMarker === 'function') {
+                    return this.provider.getIndexMarker(rootFolderId);
+                }
+                return null;
+            }
+            async loadFolderIndex(rootFolderId) {
+                if (this.provider && typeof this.provider.loadFolderIndex === 'function') {
+                    return this.provider.loadFolderIndex(rootFolderId);
+                }
+                return null;
+            }
+            async saveFolderIndex(rootFolderId, index) {
+                if (this.provider && typeof this.provider.saveFolderIndex === 'function') {
+                    return this.provider.saveFolderIndex(rootFolderId, index);
+                }
+                this.logger?.log?.({ event: 'folder-intel:save-unsupported', level: 'warn', details: `Provider has no folder intelligence save adapter for ${rootFolderId}.` });
+                return { supported: false };
+            }
+            async loadFolderDelta() { return null; }
+            async saveFolderDelta() { return { supported: false }; }
+            async loadPngMetadataReuseIndex() { return null; }
+            async savePngMetadataReuseIndex() { return { supported: false }; }
+        }
         const state = {
             provider: null, providerType: null, dbManager: null, metadataExtractor: null,
+            folderIntelligenceAdapter: null,
             syncManager: null, syncLog: null, visualCues: null, haptic: null, export: null, folderSyncCoordinator: null,
             currentFolder: { id: null, name: '' },
             imageFiles: [], currentImageLoadId: null, currentStack: 'in', currentStackPosition: 0,
@@ -4611,6 +4834,7 @@
                 state.provider = isGoogle ? new GoogleDriveProvider() : new OneDriveProvider();
                 state.syncManager?.setProviderContext({ provider: state.provider, providerType: state.providerType });
                 state.folderSyncCoordinator?.setProviderContext({ provider: state.provider, providerType: state.providerType });
+                state.folderIntelligenceAdapter?.setProviderContext({ provider: state.provider, providerType: state.providerType });
 
                 if (state.provider.isAuthenticated) {
                     Utils.showScreen('folder-screen');
@@ -8300,6 +8524,9 @@ this.updateImageCounters();
                     state.syncLog?.log({ event: 'storage:indexeddb_ready', level: 'info', details: 'IndexedDB initialized successfully.' });
                 }
                 state.folderSyncCoordinator = new FolderSyncCoordinator({ dbManager: state.dbManager, logger: state.syncLog });
+                state.folderIntelligenceAdapter = new FolderIntelligenceAdapter({ provider: state.provider, providerType: state.providerType, logger: state.syncLog });
+                window.__orbitalFolderIntelligenceContract = FOLDER_INTELLIGENCE_CONTRACT_V1;
+                window.__orbitalFolderIntelligenceAdapter = state.folderIntelligenceAdapter;
                 state.syncManager = new SyncManager({ dbManager: state.dbManager, logger: state.syncLog });
                 window.__orbitalAppState = state;
                 window.__orbitalFolderSyncCoordinator = state.folderSyncCoordinator;
