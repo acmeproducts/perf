@@ -915,6 +915,7 @@
 
         /* Explore sphere: an isolated, read-only spatial view of the active stack. */
         #explore-button { top: 20px; right: 104px; }
+        #explore-button.active, #explore-button[aria-pressed="true"] { border-color: rgba(96,165,250,.9); background: rgba(37,99,235,.58); color: #fff; }
         .spatial-gallery {
             position: fixed; inset: 0; z-index: 12000; overflow: hidden;
             color: #f8fafc; background:
@@ -943,7 +944,8 @@
         .spatial-gallery__actions { display: flex; gap: 8px; pointer-events: auto; }
         .spatial-gallery__button { min-height: 44px; padding: 10px 14px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(15,23,42,.72); backdrop-filter: blur(12px); cursor: pointer; }
         .spatial-gallery__button:hover, .spatial-gallery__button:focus-visible { background: rgba(51,65,85,.9); outline: 2px solid #93c5fd; outline-offset: 2px; }
-        .spatial-gallery__controls { left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); pointer-events: auto; padding: 6px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; background: rgba(15,23,42,.72); backdrop-filter: blur(12px); }
+        .spatial-gallery__controls { left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); pointer-events: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; background: rgba(15,23,42,.62); backdrop-filter: blur(12px); cursor: grab; }
+        .spatial-gallery__controls.dragging { cursor: grabbing; }
         .spatial-gallery__control-label { color: #cbd5e1; font: 700 11px/1 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
         .spatial-gallery__value { min-width: 32px; text-align: center; font: 700 13px/1 system-ui, sans-serif; }
         .spatial-gallery__destination { position: absolute; z-index: 2; padding: 7px 12px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(15,23,42,.66); backdrop-filter: blur(10px); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .09em; pointer-events: none; transition: background 120ms ease, transform 120ms ease, border-color 120ms ease; }
@@ -1169,7 +1171,6 @@
         <div class="spatial-gallery__chrome spatial-gallery__header">
             <div><div id="spatial-gallery-title" class="spatial-gallery__title">Explore</div><div id="spatial-gallery-count" aria-live="polite"></div></div>
             <div class="spatial-gallery__actions">
-                <button id="spatial-gallery-open" class="spatial-gallery__button" type="button">Open selected</button>
                 <button id="spatial-gallery-close" class="spatial-gallery__button" type="button">Close</button>
             </div>
         </div>
@@ -1177,15 +1178,11 @@
         <div class="spatial-gallery__destination trash">TRASH · ↓</div>
         <div class="spatial-gallery__destination inbox">← · INBOX</div>
         <div class="spatial-gallery__destination maybe">MAYBE · →</div>
-        <div class="spatial-gallery__chrome spatial-gallery__controls" aria-label="Explore sphere controls">
-            <span class="spatial-gallery__control-label">Density</span>
-            <button id="spatial-gallery-looser" class="spatial-gallery__button" type="button" aria-label="Make sphere looser">−</button>
+        <div class="spatial-gallery__chrome spatial-gallery__controls" aria-label="Explore sphere controls" title="Drag to reposition">
+            <span class="spatial-gallery__control-label">Zoom</span>
             <span id="spatial-gallery-density" class="spatial-gallery__value" aria-live="polite">100%</span>
-            <button id="spatial-gallery-denser" class="spatial-gallery__button" type="button" aria-label="Make sphere denser">+</button>
             <span class="spatial-gallery__control-label">Images</span>
-            <button id="spatial-gallery-fewer" class="spatial-gallery__button" type="button" aria-label="Show fewer images">−</button>
             <span id="spatial-gallery-limit" class="spatial-gallery__value" aria-live="polite">90</span>
-            <button id="spatial-gallery-more" class="spatial-gallery__button" type="button" aria-label="Show more images">+</button>
         </div>
         <div class="spatial-gallery__chrome spatial-gallery__hint">Drag to rotate · Press photo, flick to Keep/Trash/Inbox/Maybe · Pinch to resize</div>
     </section>
@@ -9486,6 +9483,7 @@ this.updateImageCounters();
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0,
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             armedCard: null, pressedCard: null, armedIndex: -1, holdTimer: null, activeDestination: null, pinchStartDistance: 0, pinchStartScale: 1,
+            controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null,
 
             init() {
@@ -9493,20 +9491,16 @@ this.updateImageCounters();
                 this.elements.scene = document.getElementById('spatial-gallery-scene');
                 this.elements.count = document.getElementById('spatial-gallery-count');
                 this.elements.close = document.getElementById('spatial-gallery-close');
-                this.elements.open = document.getElementById('spatial-gallery-open');
+                this.elements.controls = this.elements.root.querySelector('.spatial-gallery__controls');
+                this.elements.exploreButton = document.getElementById('explore-button');
                 this.elements.density = document.getElementById('spatial-gallery-density');
                 this.elements.limit = document.getElementById('spatial-gallery-limit');
-                this.elements.looser = document.getElementById('spatial-gallery-looser');
-                this.elements.denser = document.getElementById('spatial-gallery-denser');
-                this.elements.fewer = document.getElementById('spatial-gallery-fewer');
-                this.elements.more = document.getElementById('spatial-gallery-more');
-                document.getElementById('explore-button')?.addEventListener('click', () => this.open());
+                this.elements.exploreButton?.addEventListener('click', () => this.elements.root.hidden ? this.open() : this.close());
                 this.elements.close?.addEventListener('click', () => this.close());
-                this.elements.open?.addEventListener('click', () => this.openSelected());
-                this.elements.looser?.addEventListener('click', () => this.adjustDensity(0.1));
-                this.elements.denser?.addEventListener('click', () => this.adjustDensity(-0.1));
-                this.elements.fewer?.addEventListener('click', () => this.adjustLimit(-25));
-                this.elements.more?.addEventListener('click', () => this.adjustLimit(25));
+                this.elements.controls?.addEventListener('pointerdown', event => this.onControlsPointerDown(event));
+                this.elements.controls?.addEventListener('pointermove', event => this.onControlsPointerMove(event));
+                this.elements.controls?.addEventListener('pointerup', event => this.onControlsPointerUp(event));
+                this.elements.controls?.addEventListener('pointercancel', event => this.onControlsPointerUp(event));
                 const scene = this.elements.scene;
                 scene?.addEventListener('pointerdown', event => this.onPointerDown(event));
                 scene?.addEventListener('pointermove', event => this.onPointerMove(event));
@@ -9522,6 +9516,7 @@ this.updateImageCounters();
 
             open() {
                 const stack = state.stacks[state.currentStack] || [];
+                this.updateImageLimit();
                 this.files = stack.slice(0, this.imageLimit);
                 if (!this.files.length) {
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
@@ -9529,10 +9524,13 @@ this.updateImageCounters();
                 }
                 this.previousFocus = document.activeElement;
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === stack[state.currentStackPosition]?.id));
-                this.rotationX = 0; this.rotationY = 0; this.velocityX = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 0.0015; this.velocityY = 0; this.cardScale = 1;
+                this.rotationX = 0; this.rotationY = 0; this.velocityX = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 0.0015; this.velocityY = 0;
                 this.buildCards();
                 this.elements.root.hidden = false;
+                this.elements.exploreButton?.classList.add('active');
+                this.elements.exploreButton?.setAttribute('aria-pressed', 'true');
                 document.body.style.overflow = 'hidden';
+                this.restoreControlsPosition();
                 this.updateControlLabels();
                 this.elements.count.textContent = `${this.files.length}/${stack.length} image${this.files.length === 1 ? '' : 's'} · ${STACK_NAMES[state.currentStack] || state.currentStack}`;
                 this.elements.close.focus();
@@ -9543,6 +9541,8 @@ this.updateImageCounters();
             close() {
                 if (this.elements.root.hidden) return;
                 this.elements.root.hidden = true;
+                this.elements.exploreButton?.classList.remove('active');
+                this.elements.exploreButton?.setAttribute('aria-pressed', 'false');
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
@@ -9579,14 +9579,7 @@ this.updateImageCounters();
 
             select(index) {
                 this.selectedIndex = index;
-                const stackIndex = (state.stacks[state.currentStack] || []).findIndex(file => file.id === this.files[index]?.id);
-                if (stackIndex >= 0) state.currentStackPosition = stackIndex;
                 this.cards.forEach((card, cardIndex) => card.element.classList.toggle('selected', cardIndex === index));
-                const vector = this.cards[index]?.vector;
-                if (vector) {
-                    this.velocityX += -Math.atan2(vector.x, vector.z) * 0.018;
-                    this.velocityY += Math.asin(Math.max(-1, Math.min(1, vector.y))) * 0.012;
-                }
                 this.requestFrame();
             },
 
@@ -9621,10 +9614,14 @@ this.updateImageCounters();
                 const totalDx = event.clientX - this.startX, totalDy = event.clientY - this.startY;
                 if (Math.abs(dx) + Math.abs(dy) > 3) this.pressedCard?.setAttribute('data-moved', 'true');
                 if (!this.armedCard && Math.hypot(totalDx, totalDy) > 18) clearTimeout(this.holdTimer);
-                if (this.armedCard) this.highlightDestination(totalDx, totalDy);
+                if (this.armedCard) {
+                    this.highlightDestination(totalDx, totalDy);
+                    this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = now;
+                    return;
+                }
                 const elapsed = Math.max(8, now - this.lastTime);
-                this.rotationX -= dx * 0.006; this.rotationY -= dy * 0.006;
-                this.velocityX = -dx * 0.006 / elapsed * 16; this.velocityY = -dy * 0.006 / elapsed * 16;
+                this.rotationX += dx * 0.006; this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY - dy * 0.006));
+                this.velocityX = dx * 0.006 / elapsed * 16; this.velocityY = -dy * 0.006 / elapsed * 16;
                 this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = now;
                 this.requestFrame();
             },
@@ -9644,12 +9641,14 @@ this.updateImageCounters();
             onWheel(event) {
                 event.preventDefault();
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.cardScale * Math.exp(-event.deltaY * 0.001)));
+                this.refreshForScale();
                 this.requestFrame();
             },
 
             onTouchStart(event) {
                 if (this.elements.root.hidden || event.touches.length !== 2) return;
                 event.preventDefault();
+                this.dragging = false; this.pointerId = null; this.elements.scene.classList.remove('dragging');
                 clearTimeout(this.holdTimer);
                 const [a, b] = event.touches;
                 this.pinchStartDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -9662,27 +9661,71 @@ this.updateImageCounters();
                 const [a, b] = event.touches;
                 const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.pinchStartScale * (distance / this.pinchStartDistance)));
+                this.refreshForScale();
                 this.requestFrame();
             },
 
-            adjustDensity(delta) {
-                this.density = Math.max(0.7, Math.min(1.45, this.density + delta));
-                this.updateControlLabels(); this.requestFrame();
+            updateImageLimit() {
+                this.imageLimit = Math.max(25, Math.min(150, Math.round(90 / Math.pow(this.cardScale, 1.35))));
             },
 
-            adjustLimit(delta) {
+            refreshForScale() {
                 const stack = state.stacks[state.currentStack] || [];
-                this.imageLimit = Math.max(25, Math.min(150, this.imageLimit + delta));
-                this.files = stack.slice(0, this.imageLimit);
-                this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === stack[state.currentStackPosition]?.id));
-                this.buildCards(); this.updateControlLabels();
-                this.elements.count.textContent = `${this.files.length}/${stack.length} image${this.files.length === 1 ? '' : 's'} · ${STACK_NAMES[state.currentStack] || state.currentStack}`;
-                this.requestFrame();
+                const selected = this.files[this.selectedIndex];
+                const previousLimit = this.imageLimit;
+                this.updateImageLimit();
+                if (this.imageLimit !== previousLimit) {
+                    this.files = stack.slice(0, this.imageLimit);
+                    this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === selected?.id));
+                    this.buildCards();
+                    this.elements.count.textContent = `${this.files.length}/${stack.length} image${this.files.length === 1 ? '' : 's'} · ${STACK_NAMES[state.currentStack] || state.currentStack}`;
+                }
+                this.updateControlLabels();
             },
 
             updateControlLabels() {
-                if (this.elements.density) this.elements.density.textContent = `${Math.round(100 / this.density)}%`;
-                if (this.elements.limit) this.elements.limit.textContent = String(this.imageLimit);
+                if (this.elements.density) this.elements.density.textContent = `${Math.round(this.cardScale * 100)}%`;
+                if (this.elements.limit) this.elements.limit.textContent = String(this.files.length || this.imageLimit);
+            },
+
+
+            restoreControlsPosition() {
+                const controls = this.elements.controls;
+                if (!controls) return;
+                const raw = localStorage.getItem(`${APP_IDENTITY.storagePrefix}:explore_controls_position`);
+                if (!raw) return;
+                const position = JSON.parse(raw);
+                if (typeof position?.x !== 'number' || typeof position?.y !== 'number') return;
+                controls.style.left = `${Math.max(8, Math.min(innerWidth - controls.offsetWidth - 8, position.x))}px`;
+                controls.style.top = `${Math.max(8, Math.min(innerHeight - controls.offsetHeight - 8, position.y))}px`;
+                controls.style.bottom = 'auto';
+                controls.style.transform = 'none';
+            },
+
+            onControlsPointerDown(event) {
+                const rect = this.elements.controls.getBoundingClientRect();
+                this.controlsDragging = true; this.controlsPointerId = event.pointerId;
+                this.controlsOffsetX = event.clientX - rect.left; this.controlsOffsetY = event.clientY - rect.top;
+                this.elements.controls.classList.add('dragging');
+                this.elements.controls.setPointerCapture?.(event.pointerId);
+                event.preventDefault(); event.stopPropagation();
+            },
+
+            onControlsPointerMove(event) {
+                if (!this.controlsDragging || event.pointerId !== this.controlsPointerId) return;
+                const controls = this.elements.controls;
+                const x = Math.max(8, Math.min(innerWidth - controls.offsetWidth - 8, event.clientX - this.controlsOffsetX));
+                const y = Math.max(8, Math.min(innerHeight - controls.offsetHeight - 8, event.clientY - this.controlsOffsetY));
+                controls.style.left = `${x}px`; controls.style.top = `${y}px`; controls.style.bottom = 'auto'; controls.style.transform = 'none';
+                event.preventDefault(); event.stopPropagation();
+            },
+
+            onControlsPointerUp(event) {
+                if (event.pointerId !== this.controlsPointerId) return;
+                this.controlsDragging = false; this.controlsPointerId = null;
+                this.elements.controls.classList.remove('dragging');
+                localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_controls_position`, JSON.stringify({ x: this.elements.controls.offsetLeft, y: this.elements.controls.offsetTop }));
+                event.preventDefault(); event.stopPropagation();
             },
 
             destinationFor(dx, dy) {
@@ -9707,7 +9750,7 @@ this.updateImageCounters();
                 state.currentStackPosition = stackIndex;
                 await Core.moveToStack(targetStack, { source: 'explore:flick' });
                 this.files = (state.stacks[state.currentStack] || []).slice(0, this.imageLimit);
-                this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.files.length - 1));
+                this.selectedIndex = Math.min(index, Math.max(0, this.files.length - 1));
                 if (!this.files.length) { this.close(); return; }
                 this.buildCards(); this.updateControlLabels();
                 const currentStack = state.stacks[state.currentStack] || [];
@@ -9724,7 +9767,7 @@ this.updateImageCounters();
                 this.lastFrameTime = time;
                 if (!this.dragging) {
                     this.rotationX += this.velocityX * dt / 16;
-                    this.rotationY += this.velocityY * dt / 16;
+                    this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY + this.velocityY * dt / 16));
                     const damping = Math.pow(0.94, dt / 16);
                     this.velocityX *= damping; this.velocityY *= damping;
                 }
