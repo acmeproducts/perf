@@ -937,18 +937,23 @@
         }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
+        .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
         .spatial-gallery__card.armed { border-color: #fbbf24; box-shadow: 0 0 0 4px rgba(251,191,36,.28), 0 22px 48px rgba(0,0,0,.56); }
         .spatial-gallery__chrome { position: absolute; z-index: 3; display: flex; align-items: center; gap: 10px; }
         .spatial-gallery__header { top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); right: max(18px, env(safe-area-inset-right)); justify-content: space-between; pointer-events: none; }
         .spatial-gallery__title { font: 700 16px/1.2 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; text-shadow: 0 2px 8px #000; }
         .spatial-gallery__actions { display: flex; gap: 8px; pointer-events: auto; }
         .spatial-gallery__button { min-height: 44px; padding: 10px 14px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(15,23,42,.72); backdrop-filter: blur(12px); cursor: pointer; }
+        .spatial-gallery__button[aria-pressed="true"] { border-color: #93c5fd; background: rgba(37,99,235,.78); box-shadow: 0 0 18px rgba(96,165,250,.48); }
         .spatial-gallery__button:hover, .spatial-gallery__button:focus-visible { background: rgba(51,65,85,.9); outline: 2px solid #93c5fd; outline-offset: 2px; }
-        .spatial-gallery__controls { left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); pointer-events: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; background: rgba(15,23,42,.62); backdrop-filter: blur(12px); cursor: grab; }
+        .spatial-gallery__controls { right: max(18px, env(safe-area-inset-right)); top: max(76px, calc(env(safe-area-inset-top) + 64px)); pointer-events: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 18px; background: rgba(15,23,42,.72); backdrop-filter: blur(12px); cursor: grab; }
         .spatial-gallery__controls.dragging { cursor: grabbing; }
         .spatial-gallery__control-label { color: #cbd5e1; font: 700 11px/1 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
-        .spatial-gallery__value { min-width: 32px; text-align: center; font: 700 13px/1 system-ui, sans-serif; }
-        .spatial-gallery__destination { position: absolute; z-index: 2; padding: 7px 12px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(15,23,42,.66); backdrop-filter: blur(10px); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .09em; pointer-events: none; transition: background 120ms ease, transform 120ms ease, border-color 120ms ease; }
+        .spatial-gallery__stepper { position: relative; display: grid; place-items: center; min-width: 48px; }
+        .spatial-gallery__value { min-width: 42px; min-height: 36px; padding: 0 5px; border: 0; color: #fff; background: transparent; text-align: center; font: 700 13px/1 system-ui, sans-serif; cursor: pointer; }
+        .spatial-gallery__adjust { display: none; width: 34px; height: 30px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(30,41,59,.95); font: 700 20px/1 system-ui; cursor: pointer; }
+        .spatial-gallery__stepper.expanded .spatial-gallery__adjust { display: block; }
+        .spatial-gallery__destination { position: absolute; z-index: 2; padding: 10px 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; color: #fff; background: rgba(15,23,42,.66); backdrop-filter: blur(10px); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .09em; cursor: pointer; transition: background 120ms ease, transform 120ms ease, border-color 120ms ease; }
         .spatial-gallery__destination.active { background: rgba(59,130,246,.82); border-color: rgba(191,219,254,.9); }
         .spatial-gallery__destination.keep { top: max(72px, calc(env(safe-area-inset-top) + 60px)); left: 50%; transform: translateX(-50%); }
         .spatial-gallery__destination.trash { bottom: max(24px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); }
@@ -969,6 +974,7 @@
         @media (prefers-reduced-motion: reduce) {
             .spatial-gallery__card { transition: none; }
         }
+        #details-modal { z-index: 13000; }
 
     </style>
 </head>
@@ -1171,18 +1177,19 @@
         <div class="spatial-gallery__chrome spatial-gallery__header">
             <div><div id="spatial-gallery-title" class="spatial-gallery__title">Explore</div><div id="spatial-gallery-count" aria-live="polite"></div></div>
             <div class="spatial-gallery__actions">
-                <button id="spatial-gallery-close" class="spatial-gallery__button" type="button">Close</button>
+                <button id="spatial-gallery-details" class="spatial-gallery__button" type="button">Details</button>
+                <button id="spatial-gallery-close" class="spatial-gallery__button" type="button" aria-pressed="true">Explore</button>
             </div>
         </div>
-        <div class="spatial-gallery__destination keep">KEEP · ↑</div>
-        <div class="spatial-gallery__destination trash">TRASH · ↓</div>
-        <div class="spatial-gallery__destination inbox">← · INBOX</div>
-        <div class="spatial-gallery__destination maybe">MAYBE · →</div>
+        <button type="button" data-stack="priority" class="spatial-gallery__destination keep">KEEP · ↑</button>
+        <button type="button" data-stack="trash" class="spatial-gallery__destination trash">TRASH · ↓</button>
+        <button type="button" data-stack="in" class="spatial-gallery__destination inbox">← · INBOX</button>
+        <button type="button" data-stack="out" class="spatial-gallery__destination maybe">MAYBE · →</button>
         <div class="spatial-gallery__chrome spatial-gallery__controls" aria-label="Explore sphere controls" title="Drag to reposition">
             <span class="spatial-gallery__control-label">Zoom</span>
-            <span id="spatial-gallery-density" class="spatial-gallery__value" aria-live="polite">100%</span>
+            <span class="spatial-gallery__stepper" data-control="scale"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="spatial-gallery-density" class="spatial-gallery__value" type="button" aria-live="polite">100%</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
             <span class="spatial-gallery__control-label">Images</span>
-            <span id="spatial-gallery-limit" class="spatial-gallery__value" aria-live="polite">90</span>
+            <span class="spatial-gallery__stepper" data-control="limit"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="spatial-gallery-limit" class="spatial-gallery__value" type="button" aria-live="polite">90</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
         </div>
         <div class="spatial-gallery__chrome spatial-gallery__hint">Drag to rotate · Press photo, flick to Keep/Trash/Inbox/Maybe · Pinch to resize</div>
     </section>
@@ -9477,6 +9484,39 @@ this.updateImageCounters();
             },
         };
 
+        const ExploreThumbnailCache = {
+            name: `${APP_IDENTITY.storagePrefix}:explore-thumbnails:v1`, maxEntries: 320,
+            indexKey: `${APP_IDENTITY.storagePrefix}:explore_thumbnail_lru`, objectUrls: new Map(),
+            async load(img, url) {
+                if (!url) return;
+                const existing = this.objectUrls.get(url);
+                if (existing) { existing.used = Date.now(); img.src = existing.src; return; }
+                img.src = url;
+                if (!('caches' in window)) return;
+                try {
+                    const cache = await caches.open(this.name);
+                    let response = await cache.match(url);
+                    if (!response) {
+                        response = await fetch(url, { credentials: 'same-origin' });
+                        if (!response.ok) return;
+                        await cache.put(url, response.clone());
+                    }
+                    const src = URL.createObjectURL(await response.blob());
+                    this.objectUrls.set(url, { src, used: Date.now() });
+                    if (img.isConnected) img.src = src;
+                    await this.touch(url, cache);
+                } catch (_) { /* The normal browser image cache remains the safe fallback. */ }
+            },
+            async touch(url, cache) {
+                let index = [];
+                try { index = JSON.parse(localStorage.getItem(this.indexKey) || '[]'); } catch (_) {}
+                index = [url, ...index.filter(item => item !== url)];
+                const expired = index.splice(this.maxEntries);
+                localStorage.setItem(this.indexKey, JSON.stringify(index));
+                await Promise.all(expired.map(item => cache.delete(item)));
+                expired.forEach(item => { const value = this.objectUrls.get(item); if (value) URL.revokeObjectURL(value.src); this.objectUrls.delete(item); });
+            }
+        };
 
         const SpatialGallery = {
             elements: {}, cards: [], files: [], selectedIndex: 0, imageLimit: 90, density: 1, cardScale: 1,
@@ -9484,19 +9524,28 @@ this.updateImageCounters();
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             armedCard: null, pressedCard: null, armedIndex: -1, holdTimer: null, activeDestination: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
-            frameId: null, lastFrameTime: 0, previousFocus: null,
+            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, manualLimit: true,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
                 this.elements.scene = document.getElementById('spatial-gallery-scene');
                 this.elements.count = document.getElementById('spatial-gallery-count');
                 this.elements.close = document.getElementById('spatial-gallery-close');
+                this.elements.details = document.getElementById('spatial-gallery-details');
                 this.elements.controls = this.elements.root.querySelector('.spatial-gallery__controls');
                 this.elements.exploreButton = document.getElementById('explore-button');
                 this.elements.density = document.getElementById('spatial-gallery-density');
                 this.elements.limit = document.getElementById('spatial-gallery-limit');
                 this.elements.exploreButton?.addEventListener('click', () => this.elements.root.hidden ? this.open() : this.close());
                 this.elements.close?.addEventListener('click', () => this.close());
+                this.elements.details?.addEventListener('click', () => this.showFocusedDetails());
+                this.elements.root.querySelectorAll('.spatial-gallery__destination').forEach(button => button.addEventListener('click', () => this.dealFocusedCard(button.dataset.stack)));
+                this.elements.controls?.querySelectorAll('.spatial-gallery__value').forEach(button => button.addEventListener('click', event => {
+                    event.stopPropagation(); button.closest('.spatial-gallery__stepper').classList.toggle('expanded');
+                }));
+                this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
+                    event.stopPropagation(); this.adjustControl(button.closest('.spatial-gallery__stepper').dataset.control, Number(button.dataset.delta));
+                }));
                 this.elements.controls?.addEventListener('pointerdown', event => this.onControlsPointerDown(event));
                 this.elements.controls?.addEventListener('pointermove', event => this.onControlsPointerMove(event));
                 this.elements.controls?.addEventListener('pointerup', event => this.onControlsPointerUp(event));
@@ -9516,7 +9565,7 @@ this.updateImageCounters();
 
             open() {
                 const stack = state.stacks[state.currentStack] || [];
-                this.updateImageLimit();
+                this.restoreSettings();
                 this.files = stack.slice(0, this.imageLimit);
                 if (!this.files.length) {
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
@@ -9561,7 +9610,7 @@ this.updateImageCounters();
                     img.loading = index < 18 ? 'eager' : 'lazy';
                     img.decoding = 'async';
                     img.draggable = false;
-                    img.src = Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '';
+                    ExploreThumbnailCache.load(img, Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '');
                     card.appendChild(img);
                     card.addEventListener('click', event => {
                         if (card.dataset.moved === 'true') return;
@@ -9641,7 +9690,7 @@ this.updateImageCounters();
             onWheel(event) {
                 event.preventDefault();
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.cardScale * Math.exp(-event.deltaY * 0.001)));
-                this.refreshForScale();
+                this.refreshForScale(true, 'wheel');
                 this.requestFrame();
             },
 
@@ -9661,18 +9710,19 @@ this.updateImageCounters();
                 const [a, b] = event.touches;
                 const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.pinchStartScale * (distance / this.pinchStartDistance)));
-                this.refreshForScale();
+                this.refreshForScale(true, 'pinch');
                 this.requestFrame();
             },
 
             updateImageLimit() {
-                this.imageLimit = Math.max(25, Math.min(150, Math.round(90 / Math.pow(this.cardScale, 1.35))));
+                this.imageLimit = Math.max(10, Math.min(500, Math.round(this.imageLimit)));
             },
 
-            refreshForScale() {
+            refreshForScale(autoLimit = false, source = 'control') {
                 const stack = state.stacks[state.currentStack] || [];
                 const selected = this.files[this.selectedIndex];
                 const previousLimit = this.imageLimit;
+                if (autoLimit) this.imageLimit = Math.round(90 / Math.pow(this.cardScale, 1.35));
                 this.updateImageLimit();
                 if (this.imageLimit !== previousLimit) {
                     this.files = stack.slice(0, this.imageLimit);
@@ -9681,6 +9731,33 @@ this.updateImageCounters();
                     this.elements.count.textContent = `${this.files.length}/${stack.length} image${this.files.length === 1 ? '' : 's'} · ${STACK_NAMES[state.currentStack] || state.currentStack}`;
                 }
                 this.updateControlLabels();
+                this.persistSettings();
+                this.logLayout(source);
+            },
+
+            adjustControl(control, delta) {
+                if (control === 'scale') this.cardScale = Math.max(0.4, Math.min(2, this.cardScale + delta / 100));
+                else this.imageLimit = Math.max(10, Math.min(500, this.imageLimit + delta));
+                this.refreshForScale(false, `control:${control}`);
+                this.requestFrame();
+            },
+
+            restoreSettings() {
+                try {
+                    const saved = JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:explore_settings`) || '{}');
+                    if (Number.isFinite(saved.scale)) this.cardScale = Math.max(.4, Math.min(2, saved.scale));
+                    if (Number.isFinite(saved.limit)) this.imageLimit = Math.max(10, Math.min(500, saved.limit));
+                } catch (_) {}
+            },
+
+            persistSettings() {
+                localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_settings`, JSON.stringify({ scale: this.cardScale, limit: this.imageLimit }));
+            },
+
+            logLayout(source) {
+                const cardWidth = (innerWidth <= 640 ? 82 : 112) * this.cardScale;
+                const radius = Math.max(Math.min(innerWidth, innerHeight) * .34, cardWidth * Math.sqrt(this.files.length) * .72);
+                state.syncLog?.log({ event: 'explore:layout', level: 'info', details: `Explore ${source}: ${this.files.length} images at ${Math.round(this.cardScale * 100)}%, sphere radius ${Math.round(radius)}px.`, data: { source, scale: this.cardScale, limit: this.imageLimit, radius } });
             },
 
             updateControlLabels() {
@@ -9703,6 +9780,7 @@ this.updateImageCounters();
             },
 
             onControlsPointerDown(event) {
+                if (event.target.closest('button')) return;
                 const rect = this.elements.controls.getBoundingClientRect();
                 this.controlsDragging = true; this.controlsPointerId = event.pointerId;
                 this.controlsOffsetX = event.clientX - rect.left; this.controlsOffsetY = event.clientY - rect.top;
@@ -9757,6 +9835,21 @@ this.updateImageCounters();
                 this.elements.count.textContent = `${this.files.length}/${currentStack.length} image${this.files.length === 1 ? '' : 's'} · ${STACK_NAMES[state.currentStack] || state.currentStack}`;
             },
 
+            async dealFocusedCard(targetStack) {
+                const index = this.focusedIndex >= 0 ? this.focusedIndex : this.selectedIndex;
+                this.select(index);
+                await this.dealCard(index, targetStack);
+            },
+
+            showFocusedDetails() {
+                const selected = this.files[this.focusedIndex >= 0 ? this.focusedIndex : this.selectedIndex];
+                const stack = state.stacks[state.currentStack] || [];
+                const index = stack.findIndex(file => file.id === selected?.id);
+                if (index < 0) return;
+                state.currentStackPosition = index;
+                Details.show();
+            },
+
             requestFrame() {
                 if (!this.frameId && !this.elements.root.hidden) this.frameId = requestAnimationFrame(time => this.render(time));
             },
@@ -9773,8 +9866,10 @@ this.updateImageCounters();
                 }
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
-                const sphereRadius = Math.min(innerWidth, innerHeight) * 0.34 * this.density;
-                this.cards.forEach(card => {
+                const baseCardWidth = innerWidth <= 640 ? 82 : 112;
+                const sphereRadius = Math.max(Math.min(innerWidth, innerHeight) * 0.34, baseCardWidth * this.cardScale * Math.sqrt(this.cards.length) * .72) * this.density;
+                let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
+                this.cards.forEach((card, index) => {
                     const v = card.vector;
                     const x1 = v.x * cosX + v.z * sinX;
                     const z1 = -v.x * sinX + v.z * cosX;
@@ -9789,7 +9884,14 @@ this.updateImageCounters();
                     card.element.style.opacity = String(Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)));
                     card.element.style.filter = `blur(${((1 - depth) * 1.4).toFixed(2)}px) brightness(${(0.58 + depth * 0.52).toFixed(2)}) contrast(${(0.82 + depth * 0.22).toFixed(2)})`;
                     card.element.style.zIndex = String(Math.round(depth * 1000));
+                    const centerDistance = Math.hypot(x, y);
+                    if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                 });
+                if (nearestIndex !== this.focusedIndex) {
+                    this.focusedIndex = nearestIndex;
+                    this.cards.forEach((card, index) => card.element.classList.toggle('focused', index === nearestIndex));
+                    if (nearestIndex >= 0) this.select(nearestIndex);
+                }
                 if (this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015) this.requestFrame();
             }
         };
