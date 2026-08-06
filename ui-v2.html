@@ -1189,7 +1189,7 @@
             <span class="spatial-gallery__control-label">Zoom</span>
             <span class="spatial-gallery__stepper" data-control="scale"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="spatial-gallery-density" class="spatial-gallery__value" type="button" aria-live="polite">100%</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
             <span class="spatial-gallery__control-label">Images</span>
-            <span class="spatial-gallery__stepper" data-control="limit"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="spatial-gallery-limit" class="spatial-gallery__value" type="button" aria-live="polite">90</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
+            <span class="spatial-gallery__stepper" data-control="limit"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="spatial-gallery-limit" class="spatial-gallery__value" type="button" aria-live="polite">30</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
         </div>
         <div class="spatial-gallery__chrome spatial-gallery__hint">Drag to rotate · Press photo, flick to Keep/Trash/Inbox/Maybe · Pinch to resize</div>
     </section>
@@ -9485,46 +9485,84 @@ this.updateImageCounters();
         };
 
         const ExploreThumbnailCache = {
-            name: `${APP_IDENTITY.storagePrefix}:explore-thumbnails:v1`, maxEntries: 320,
-            indexKey: `${APP_IDENTITY.storagePrefix}:explore_thumbnail_lru`, objectUrls: new Map(),
+            dbName: `${APP_IDENTITY.storagePrefix}:explore-thumbnails:v1`, storeName: 'thumbnails', maxEntries: 320,
+            objectUrls: new Map(), dbPromise: null,
+            open() {
+                if (!('indexedDB' in window)) return Promise.resolve(null);
+                if (!this.dbPromise) this.dbPromise = new Promise(resolve => {
+                    const request = indexedDB.open(this.dbName, 1);
+                    request.onupgradeneeded = () => {
+                        const store = request.result.createObjectStore(this.storeName, { keyPath: 'url' });
+                        store.createIndex('used', 'used');
+                    };
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => resolve(null);
+                });
+                return this.dbPromise;
+            },
+            request(db, mode, action) {
+                return new Promise(resolve => {
+                    const transaction = db.transaction(this.storeName, mode);
+                    const request = action(transaction.objectStore(this.storeName));
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => resolve(null);
+                });
+            },
             async load(img, url) {
                 if (!url) return;
                 const existing = this.objectUrls.get(url);
-                if (existing) { existing.used = Date.now(); img.src = existing.src; return; }
+                if (existing) {
+                    existing.used = Date.now(); img.src = existing.src;
+                    this.open().then(db => db && this.request(db, 'readonly', store => store.get(url)).then(record => {
+                        if (record) { record.used = Date.now(); this.request(db, 'readwrite', store => store.put(record)); }
+                    }));
+                    return;
+                }
                 img.src = url;
-                if (!('caches' in window)) return;
                 try {
-                    const cache = await caches.open(this.name);
-                    let response = await cache.match(url);
-                    if (!response) {
-                        response = await fetch(url, { credentials: 'same-origin' });
+                    const db = await this.open();
+                    let record = db && await this.request(db, 'readonly', store => store.get(url));
+                    if (!record) {
+                        const response = await fetch(url, { credentials: 'same-origin' });
                         if (!response.ok) return;
-                        await cache.put(url, response.clone());
+                        record = { url, blob: await response.blob(), used: Date.now() };
+                        if (db) this.request(db, 'readwrite', store => store.put(record)).then(() => this.evict(db));
+                    } else {
+                        record.used = Date.now();
+                        this.request(db, 'readwrite', store => store.put(record));
                     }
-                    const src = URL.createObjectURL(await response.blob());
+                    if (!img.isConnected) return;
+                    const src = URL.createObjectURL(record.blob);
                     this.objectUrls.set(url, { src, used: Date.now() });
-                    if (img.isConnected) img.src = src;
-                    await this.touch(url, cache);
+                    img.src = src;
                 } catch (_) { /* The normal browser image cache remains the safe fallback. */ }
             },
-            async touch(url, cache) {
-                let index = [];
-                try { index = JSON.parse(localStorage.getItem(this.indexKey) || '[]'); } catch (_) {}
-                index = [url, ...index.filter(item => item !== url)];
-                const expired = index.splice(this.maxEntries);
-                localStorage.setItem(this.indexKey, JSON.stringify(index));
-                await Promise.all(expired.map(item => cache.delete(item)));
-                expired.forEach(item => { const value = this.objectUrls.get(item); if (value) URL.revokeObjectURL(value.src); this.objectUrls.delete(item); });
+            async evict(db) {
+                const records = await this.request(db, 'readonly', store => store.getAll());
+                if (!records || records.length <= this.maxEntries) return;
+                const expired = records.sort((a, b) => a.used - b.used).slice(0, records.length - this.maxEntries);
+                expired.forEach(record => {
+                    this.request(db, 'readwrite', store => store.delete(record.url));
+                    const value = this.objectUrls.get(record.url);
+                    if (value) URL.revokeObjectURL(value.src);
+                    this.objectUrls.delete(record.url);
+                });
+            },
+            releaseUnused(activeUrls) {
+                this.objectUrls.forEach((value, url) => {
+                    if (!activeUrls.has(url)) { URL.revokeObjectURL(value.src); this.objectUrls.delete(url); }
+                });
             }
         };
 
         const SpatialGallery = {
-            elements: {}, cards: [], files: [], selectedIndex: 0, imageLimit: 90, density: 1, cardScale: 1,
+            elements: {}, cards: [], files: [], selectedIndex: 0, imageLimit: 30, density: 1, cardScale: 1,
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0,
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             armedCard: null, pressedCard: null, armedIndex: -1, holdTimer: null, activeDestination: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
-            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, manualLimit: true,
+            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
+            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -9566,7 +9604,7 @@ this.updateImageCounters();
             open() {
                 const stack = state.stacks[state.currentStack] || [];
                 this.restoreSettings();
-                this.files = stack.slice(0, this.imageLimit);
+                this.files = stack.slice(0, Math.min(this.imageLimit, stack.length));
                 if (!this.files.length) {
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
@@ -9585,6 +9623,7 @@ this.updateImageCounters();
                 this.elements.close.focus();
                 this.lastFrameTime = performance.now();
                 this.requestFrame();
+                this.scheduleNextPage();
             },
 
             close() {
@@ -9595,12 +9634,22 @@ this.updateImageCounters();
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
+                clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
+                ExploreThumbnailCache.releaseUnused(new Set());
                 this.previousFocus?.focus?.();
             },
 
             buildCards() {
                 this.elements.scene.replaceChildren();
-                this.cards = this.files.map((file, index) => {
+                ExploreThumbnailCache.releaseUnused(new Set(this.files.slice(0, this.pageSize).map(file => Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '')));
+                this.cards = [];
+                this.appendPage();
+            },
+
+            appendPage() {
+                const start = this.cards.length, end = Math.min(this.files.length, start + this.pageSize);
+                for (let index = start; index < end; index++) {
+                    const file = this.files[index];
                     const card = document.createElement('button');
                     card.type = 'button';
                     card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`;
@@ -9614,16 +9663,43 @@ this.updateImageCounters();
                     card.appendChild(img);
                     card.addEventListener('click', event => {
                         if (card.dataset.moved === 'true') return;
-                        this.select(index);
+                        clearTimeout(this.tapTimer);
+                        if (event.detail > 1) return;
+                        this.tapTimer = setTimeout(() => this.center(index), 220);
                     });
-                    card.addEventListener('dblclick', () => { this.select(index); this.openSelected(); });
+                    card.addEventListener('dblclick', event => { event.preventDefault(); clearTimeout(this.tapTimer); this.select(index); this.openSelected(); });
                     this.elements.scene.appendChild(card);
+                    this.cards.push({ element: card, vector: null });
+                }
+                this.updateVectors();
+                this.requestFrame();
+                this.scheduleNextPage();
+            },
+
+            scheduleNextPage() {
+                clearTimeout(this.pageTimer);
+                if (this.elements.root.hidden || this.cards.length >= this.files.length) return;
+                this.pageTimer = setTimeout(() => this.appendPage(), 80);
+            },
+
+            updateVectors() {
+                this.cards.forEach((card, index) => {
                     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
                     const y = 1 - (index / Math.max(1, this.files.length - 1)) * 2;
                     const radius = Math.sqrt(Math.max(0, 1 - y * y));
                     const theta = goldenAngle * index;
-                    return { element: card, vector: { x: Math.cos(theta) * radius, y, z: Math.sin(theta) * radius } };
+                    card.vector = { x: Math.cos(theta) * radius, y, z: Math.sin(theta) * radius };
                 });
+            },
+
+            center(index) {
+                const vector = this.cards[index]?.vector;
+                if (!vector) return;
+                this.velocityX = 0; this.velocityY = 0;
+                this.rotationX = Math.atan2(-vector.x, vector.z);
+                const z = Math.hypot(vector.x, vector.z);
+                this.rotationY = Math.atan2(vector.y, z);
+                this.select(index);
             },
 
             select(index) {
@@ -9638,6 +9714,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack] || [];
                 const index = stack.findIndex(file => file.id === selected.id);
                 if (index >= 0) state.currentStackPosition = index;
+                if (state.isFocusMode) Gestures.toggleFocusMode();
                 this.close();
                 Core.displayCurrentImage();
             },
@@ -9690,7 +9767,7 @@ this.updateImageCounters();
             onWheel(event) {
                 event.preventDefault();
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.cardScale * Math.exp(-event.deltaY * 0.001)));
-                this.refreshForScale(true, 'wheel');
+                this.refreshForScale('wheel');
                 this.requestFrame();
             },
 
@@ -9710,21 +9787,20 @@ this.updateImageCounters();
                 const [a, b] = event.touches;
                 const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 this.cardScale = Math.max(0.62, Math.min(1.65, this.pinchStartScale * (distance / this.pinchStartDistance)));
-                this.refreshForScale(true, 'pinch');
+                this.refreshForScale('pinch');
                 this.requestFrame();
             },
 
             updateImageLimit() {
-                this.imageLimit = Math.max(10, Math.min(500, Math.round(this.imageLimit)));
+                this.imageLimit = Math.max(3, Math.min(500, Math.round(this.imageLimit)));
             },
 
-            refreshForScale(autoLimit = false, source = 'control') {
+            refreshForScale(source = 'control') {
                 const stack = state.stacks[state.currentStack] || [];
                 const selected = this.files[this.selectedIndex];
-                const previousLimit = this.imageLimit;
-                if (autoLimit) this.imageLimit = Math.round(90 / Math.pow(this.cardScale, 1.35));
                 this.updateImageLimit();
-                if (this.imageLimit !== previousLimit) {
+                const effectiveCount = Math.min(this.imageLimit, stack.length);
+                if (effectiveCount !== this.files.length) {
                     this.files = stack.slice(0, this.imageLimit);
                     this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === selected?.id));
                     this.buildCards();
@@ -9737,8 +9813,8 @@ this.updateImageCounters();
 
             adjustControl(control, delta) {
                 if (control === 'scale') this.cardScale = Math.max(0.4, Math.min(2, this.cardScale + delta / 100));
-                else this.imageLimit = Math.max(10, Math.min(500, this.imageLimit + delta));
-                this.refreshForScale(false, `control:${control}`);
+                else this.imageLimit = Math.max(3, Math.min(500, this.imageLimit + (delta < 0 && this.imageLimit < 13 ? -Math.min(10, this.imageLimit - 3) : delta)));
+                this.refreshForScale(`control:${control}`);
                 this.requestFrame();
             },
 
@@ -9746,23 +9822,32 @@ this.updateImageCounters();
                 try {
                     const saved = JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:explore_settings`) || '{}');
                     if (Number.isFinite(saved.scale)) this.cardScale = Math.max(.4, Math.min(2, saved.scale));
-                    if (Number.isFinite(saved.limit)) this.imageLimit = Math.max(10, Math.min(500, saved.limit));
+                    if (Number.isFinite(saved.limit)) this.imageLimit = Math.max(3, Math.min(500, saved.limit));
                 } catch (_) {}
             },
 
             persistSettings() {
-                localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_settings`, JSON.stringify({ scale: this.cardScale, limit: this.imageLimit }));
+                clearTimeout(this.persistTimer);
+                this.persistTimer = setTimeout(() => localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_settings`, JSON.stringify({ scale: this.cardScale, limit: this.imageLimit })), 180);
             },
 
             logLayout(source) {
-                const cardWidth = (innerWidth <= 640 ? 82 : 112) * this.cardScale;
-                const radius = Math.max(Math.min(innerWidth, innerHeight) * .34, cardWidth * Math.sqrt(this.files.length) * .72);
-                state.syncLog?.log({ event: 'explore:layout', level: 'info', details: `Explore ${source}: ${this.files.length} images at ${Math.round(this.cardScale * 100)}%, sphere radius ${Math.round(radius)}px.`, data: { source, scale: this.cardScale, limit: this.imageLimit, radius } });
+                clearTimeout(this.logTimer);
+                this.logTimer = setTimeout(() => {
+                    const radius = this.sphereRadius();
+                    state.syncLog?.log({ event: 'explore:layout', level: 'info', details: `Explore ${source}: ${this.files.length} images at ${Math.round(this.cardScale * 100)}%, sphere radius ${Math.round(radius)}px.`, data: { source, scale: this.cardScale, limit: this.imageLimit, radius } });
+                }, 220);
+            },
+
+            sphereRadius() {
+                const width = innerWidth <= 640 ? 82 : 112, height = innerWidth <= 640 ? 108 : 148;
+                const spacing = Math.max(width, height) * this.cardScale * Math.sqrt(Math.max(1, this.files.length)) * .62;
+                return Math.max(Math.min(innerWidth, innerHeight) * .34, spacing) * this.density;
             },
 
             updateControlLabels() {
                 if (this.elements.density) this.elements.density.textContent = `${Math.round(this.cardScale * 100)}%`;
-                if (this.elements.limit) this.elements.limit.textContent = String(this.files.length || this.imageLimit);
+                if (this.elements.limit) this.elements.limit.textContent = String(this.imageLimit);
             },
 
 
@@ -9836,13 +9921,11 @@ this.updateImageCounters();
             },
 
             async dealFocusedCard(targetStack) {
-                const index = this.focusedIndex >= 0 ? this.focusedIndex : this.selectedIndex;
-                this.select(index);
-                await this.dealCard(index, targetStack);
+                await this.dealCard(this.selectedIndex, targetStack);
             },
 
             showFocusedDetails() {
-                const selected = this.files[this.focusedIndex >= 0 ? this.focusedIndex : this.selectedIndex];
+                const selected = this.files[this.selectedIndex];
                 const stack = state.stacks[state.currentStack] || [];
                 const index = stack.findIndex(file => file.id === selected?.id);
                 if (index < 0) return;
@@ -9866,8 +9949,7 @@ this.updateImageCounters();
                 }
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
-                const baseCardWidth = innerWidth <= 640 ? 82 : 112;
-                const sphereRadius = Math.max(Math.min(innerWidth, innerHeight) * 0.34, baseCardWidth * this.cardScale * Math.sqrt(this.cards.length) * .72) * this.density;
+                const sphereRadius = this.sphereRadius();
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
