@@ -9562,7 +9562,7 @@ this.updateImageCounters();
             armedCard: null, pressedCard: null, armedIndex: -1, holdTimer: null, activeDestination: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
-            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null,
+            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -9635,6 +9635,9 @@ this.updateImageCounters();
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
+                this.lastTapIndex = -1; this.lastTapTime = 0;
+                this.elements.scene.replaceChildren();
+                this.cards = [];
                 ExploreThumbnailCache.releaseUnused(new Set());
                 this.previousFocus?.focus?.();
             },
@@ -9663,11 +9666,10 @@ this.updateImageCounters();
                     card.appendChild(img);
                     card.addEventListener('click', event => {
                         if (card.dataset.moved === 'true') return;
+                        if (event.detail !== 0) return;
                         clearTimeout(this.tapTimer);
-                        if (event.detail > 1) return;
-                        this.tapTimer = setTimeout(() => this.center(index), 220);
+                        this.tapTimer = setTimeout(() => this.center(index), 500);
                     });
-                    card.addEventListener('dblclick', event => { event.preventDefault(); clearTimeout(this.tapTimer); this.select(index); this.openSelected(); });
                     this.elements.scene.appendChild(card);
                     this.cards.push({ element: card, vector: null });
                 }
@@ -9700,6 +9702,21 @@ this.updateImageCounters();
                 const z = Math.hypot(vector.x, vector.z);
                 this.rotationY = Math.atan2(vector.y, z);
                 this.select(index);
+            },
+
+            handleCardTap(index, timeStamp) {
+                clearTimeout(this.tapTimer);
+                if (this.lastTapIndex === index && timeStamp - this.lastTapTime <= 500) {
+                    this.lastTapIndex = -1; this.lastTapTime = 0;
+                    this.select(index);
+                    this.openSelected();
+                    return;
+                }
+                this.lastTapIndex = index; this.lastTapTime = timeStamp;
+                this.tapTimer = setTimeout(() => {
+                    this.lastTapIndex = -1; this.lastTapTime = 0;
+                    this.center(index);
+                }, 500);
             },
 
             select(index) {
@@ -9761,6 +9778,7 @@ this.updateImageCounters();
                 this.armedCard?.classList.remove('armed'); this.armedCard = null; this.pressedCard = null; this.armedIndex = -1; this.highlightDestination(0, 0, true);
                 this.elements.scene.classList.remove('dragging');
                 if (targetStack && armedIndex >= 0) this.dealCard(armedIndex, targetStack);
+                else if (armedIndex >= 0 && Math.hypot(dx, dy) <= 8) this.handleCardTap(armedIndex, event.timeStamp);
                 this.requestFrame();
             },
 
