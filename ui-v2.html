@@ -8535,8 +8535,19 @@ this.updateImageCounters();
             TRAIL_INTERVAL_MS: 12,
             TRAIL_LIFETIME_MS: 1050,
             trailThrottle: null,
-            ignoreMouseEvents: false, holdTimer: null, holdConsumed: false,
+            ignoreMouseEvents: false, holdTimer: null, holdConsumed: false, pendingSortTapTimer: null,
             cancelHold() { clearTimeout(this.holdTimer); this.holdTimer = null; },
+            cancelPendingSortTap() {
+                clearTimeout(this.pendingSortTapTimer);
+                this.pendingSortTapTimer = null;
+            },
+            scheduleSortTap(clientX, clientY) {
+                this.cancelPendingSortTap();
+                this.pendingSortTapTimer = setTimeout(() => {
+                    this.pendingSortTapTimer = null;
+                    if (!state.isFocusMode) this.handleTap(clientX, clientY);
+                }, this.DOUBLE_TAP_MAX_INTERVAL);
+            },
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
                 this.setupEventListeners();
@@ -8810,7 +8821,7 @@ this.updateImageCounters();
                 if (this.holdConsumed) { this.holdConsumed = false; this.hideAllEdgeGlows(); return; }
                 if (isTap) {
                     if (this.lastHubTap.time && now - this.lastHubTap.time <= this.DOUBLE_TAP_MAX_INTERVAL && Math.hypot(this.lastHubTap.x-this.currentPos.x,this.lastHubTap.y-this.currentPos.y)<=this.DOUBLE_TAP_MAX_DISTANCE) {
-                        this.lastHubTap={time:0,x:0,y:0}; this.toggleFocusMode(); state.haptic?.triggerFeedback('buttonPress'); this.hideAllEdgeGlows(); return;
+                        this.lastHubTap={time:0,x:0,y:0}; this.cancelPendingSortTap(); this.toggleFocusMode(); state.haptic?.triggerFeedback('buttonPress'); this.hideAllEdgeGlows(); return;
                     }
                     this.lastHubTap={time:now,x:this.currentPos.x,y:this.currentPos.y};
                 }
@@ -8859,7 +8870,8 @@ this.updateImageCounters();
                     if (!this.tapHandled) {
                         this.tapHandled = true;
                         this.spawnRipple(this.currentPos.x, this.currentPos.y);
-                        this.handleTap(this.currentPos.x, this.currentPos.y);
+                        if (state.isFocusMode) this.handleTap(this.currentPos.x, this.currentPos.y);
+                        else this.scheduleSortTap(this.currentPos.x, this.currentPos.y);
                     }
                 }
                 this.hideAllEdgeGlows();
@@ -8906,6 +8918,7 @@ this.updateImageCounters();
                 Core.applyTransform();
             },
             toggleFocusMode() {
+                this.cancelPendingSortTap();
                 state.isFocusMode = !state.isFocusMode;
                 Utils.elements.appContainer.classList.toggle('focus-mode', state.isFocusMode);
                 this.updateGestureOverlayMode();
