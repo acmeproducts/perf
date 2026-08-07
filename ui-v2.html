@@ -914,11 +914,25 @@
 
 
         /* Explore sphere: an isolated, read-only spatial view of the active stack. */
-        .mode-chooser { position: fixed; inset: 0; z-index: 12500; display: grid; place-items: center; background: rgba(2,6,23,.34); }
+        .mode-chooser { position: fixed; z-index: 12500; display: block; padding: 5px; border: 1px solid rgba(255,255,255,.24); border-radius: 999px; background: rgba(15,23,42,.92); box-shadow: 0 18px 48px rgba(0,0,0,.48); backdrop-filter: blur(14px); }
         .mode-chooser[hidden] { display: none; }
-        .mode-chooser__menu { display: flex; gap: 4px; padding: 5px; border: 1px solid rgba(255,255,255,.24); border-radius: 999px; background: rgba(15,23,42,.92); box-shadow: 0 18px 48px rgba(0,0,0,.48); backdrop-filter: blur(14px); }
+        .mode-chooser__menu { display: flex; gap: 4px; }
         .mode-chooser__button { min-height: 44px; padding: 9px 16px; border: 0; border-radius: 999px; color: #e5e7eb; background: transparent; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
         .mode-chooser__button:hover, .mode-chooser__button:focus-visible { color: #fff; background: rgba(37,99,235,.72); outline: 2px solid #93c5fd; outline-offset: 1px; }
+        .photo-table { position: fixed; inset: 0; z-index: 12400; overflow: hidden; color: #fff; background: radial-gradient(circle at 48% 38%, #253128 0, #111813 58%, #080b09 100%); touch-action: none; }
+        .photo-table[hidden] { display: none; }
+        .photo-table::before { content: ''; position: absolute; inset: 0; opacity: .18; pointer-events: none; background-image: repeating-linear-gradient(117deg, transparent 0 7px, rgba(255,255,255,.035) 8px, transparent 9px 15px); }
+        .photo-table__surface { position: absolute; inset: 0; }
+        .photo-table__print { position: absolute; width: clamp(86px, 16vw, 150px); height: clamp(112px, 21vw, 190px); padding: 7px 7px 19px; border: 0; border-radius: 2px; background: #eee9dd; box-shadow: 0 7px 15px rgba(0,0,0,.55); transform-origin: center; transition: filter 160ms, box-shadow 160ms, opacity 160ms; touch-action: none; cursor: grab; }
+        .photo-table__print img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+        .photo-table__print.held { cursor: grabbing; box-shadow: 0 18px 34px rgba(0,0,0,.72); }
+        .photo-table.examining .photo-table__print:not(.examining) { filter: brightness(.45); }
+        .photo-table__chrome { position: absolute; z-index: 1000; top: max(12px, env(safe-area-inset-top)); display: flex; gap: 8px; align-items: center; }
+        .photo-table__chrome.left { left: max(12px, env(safe-area-inset-left)); }
+        .photo-table__chrome.right { right: max(12px, env(safe-area-inset-right)); }
+        .photo-table__control { min-height: 44px; padding: 9px 13px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(15,23,42,.76); backdrop-filter: blur(10px); }
+        .photo-table__a11y { position: absolute; z-index: 1000; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); display: flex; gap: 5px; transform: translateX(-50%); }
+        @media (prefers-reduced-motion: reduce) { .photo-table__print { transition-duration: 1ms; } }
         .spatial-gallery {
             position: fixed; inset: 0; z-index: 12000; overflow: hidden;
             color: #f8fafc; background:
@@ -1112,8 +1126,8 @@
         </div>
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
         <div class="gesture-layer" id="gesture-layer">
-            <div id="gesture-screen-a" class="stage" role="application"
-                 aria-label="Sort mode. Triangular flick zones. Double-tap the center to choose Table, Explore, or Focus.">
+            <div id="gesture-screen-a" class="stage" role="application" tabindex="0"
+                 aria-label="Sort mode. Double tap for Focus. Press and hold for Explore or Table.">
                 <div id="gesture-tri-up" class="tri up"></div>
                 <div id="gesture-tri-right" class="tri right"></div>
                 <div id="gesture-tri-down" class="tri down"></div>
@@ -1170,13 +1184,19 @@
         </div>
     </div>
 
-    <div id="mode-chooser" class="mode-chooser" role="dialog" aria-modal="true" aria-label="Choose image view" hidden>
+    <div id="mode-chooser" class="mode-chooser" role="dialog" aria-label="Choose image view" hidden>
         <div class="mode-chooser__menu" role="menu">
-            <button class="mode-chooser__button" type="button" role="menuitem" data-mode="table">Table</button>
             <button class="mode-chooser__button" type="button" role="menuitem" data-mode="explore">Explore</button>
-            <button class="mode-chooser__button" type="button" role="menuitem" data-mode="focus">Focus</button>
+            <button class="mode-chooser__button" type="button" role="menuitem" data-mode="table">Table</button>
         </div>
     </div>
+
+    <section id="photo-table" class="photo-table" role="dialog" aria-modal="true" aria-label="Photo Table" hidden>
+        <div id="photo-table-surface" class="photo-table__surface"></div>
+        <div class="photo-table__chrome left"><button id="photo-table-close" class="photo-table__control" type="button">Table</button><span id="photo-table-count" class="photo-table__control" aria-live="polite"></span></div>
+        <div class="photo-table__chrome right"><button id="photo-table-details" class="photo-table__control" type="button">Details</button></div>
+        <div class="photo-table__a11y" aria-label="Move selected photo"><button class="photo-table__control" data-table-stack="in">In</button><button class="photo-table__control" data-table-stack="priority">Priority</button><button class="photo-table__control" data-table-stack="trash">Trash</button><button class="photo-table__control" data-table-stack="out">Out</button></div>
+    </section>
 
     <!-- Enhanced Grid Modal -->
 
@@ -8437,44 +8457,66 @@ this.updateImageCounters();
             previousFocus: null,
             init() {
                 const root = Utils.elements.modeChooser;
-                root?.addEventListener('click', event => {
+                root.addEventListener('click', event => {
                     const option = event.target.closest('[data-mode]');
                     if (option) this.choose(option.dataset.mode);
-                    else if (event.target === root) this.close();
                 });
-                root?.addEventListener('keydown', event => {
-                    if (event.key === 'Escape') { event.preventDefault(); this.close(); }
-                    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-                    event.preventDefault();
-                    const options = [...root.querySelectorAll('[data-mode]')];
-                    const offset = event.key === 'ArrowRight' ? 1 : -1;
-                    options[(options.indexOf(document.activeElement) + offset + options.length) % options.length].focus();
+                document.addEventListener('pointerdown', event => {
+                    if (!root.hidden && !root.contains(event.target)) this.close();
                 });
             },
-            open() {
-                if (state.isFocusMode || !Utils.elements.gridModal.classList.contains('hidden') || !SpatialGallery.elements.root?.hidden) return;
+            open(point) {
+                if (state.isFocusMode || !Utils.elements.gridModal.classList.contains('hidden') || !SpatialGallery.elements.root?.hidden || !PhotoTable.elements.root?.hidden) return;
                 this.previousFocus = document.activeElement;
-                ModeCenterTap.reset();
-                Gestures.lastHubTap = { time: 0, x: 0, y: 0 };
-                Utils.elements.modeChooser.hidden = false;
-                Utils.elements.modeChooser.querySelector('[data-mode]')?.focus();
+                const root = Utils.elements.modeChooser;
+                root.hidden = false;
+                root.style.left = `${Math.max(8, Math.min(innerWidth - 190, (point?.x ?? innerWidth / 2) - 90))}px`;
+                root.style.top = `${Math.max(8, Math.min(innerHeight - 64, (point?.y ?? innerHeight / 2) - 28))}px`;
+                root.querySelector('[data-mode]')?.focus();
             },
             close({ restoreFocus = true } = {}) {
-                if (Utils.elements.modeChooser.hidden) return;
-                Utils.elements.modeChooser.hidden = true;
-                ModeCenterTap.reset();
-                Gestures.lastHubTap = { time: 0, x: 0, y: 0 };
-                if (restoreFocus) this.previousFocus?.focus?.();
+                const root = Utils.elements.modeChooser;
+                if (root.hidden) return;
+                root.hidden = true;
+                if (restoreFocus) (this.previousFocus || Utils.elements.gestureScreenA)?.focus?.();
             },
             choose(mode) {
-                const returnFocus = this.previousFocus;
                 this.close({ restoreFocus: false });
-                returnFocus?.focus?.();
-                if (mode === 'table') Grid.open(state.currentStack);
-                else if (mode === 'explore') SpatialGallery.open();
-                else if (mode === 'focus' && !state.isFocusMode) Gestures.toggleFocusMode();
+                const file = state.stacks[state.currentStack]?.[state.currentStackPosition];
+                if (!file) return;
+                if (mode === 'table') PhotoTable.open({ stackName: state.currentStack, fileId: file.id });
+                if (mode === 'explore') SpatialGallery.open({ stackName: state.currentStack, fileId: file.id });
             }
         };
+
+        let spatialReturnInProgress = false;
+        async function returnSpatialModeToSort({ stackName, fileId }) {
+            if (spatialReturnInProgress) return;
+            spatialReturnInProgress = true;
+            try {
+                let resolvedStack = stackName;
+                let index = (state.stacks[resolvedStack] || []).findIndex(file => file.id === fileId);
+                if (index < 0) {
+                    for (const [name, files] of Object.entries(state.stacks)) {
+                        const found = files.findIndex(file => file.id === fileId);
+                        if (found >= 0) { resolvedStack = name; index = found; break; }
+                    }
+                }
+                const fallback = state.stacks[resolvedStack] || [];
+                if (index < 0) index = Math.min(Math.max(0, state.currentStackPosition), Math.max(0, fallback.length - 1));
+                SpatialGallery.close({ restoreFocus: false });
+                PhotoTable.close({ restoreFocus: false });
+                state.isFocusMode = false;
+                Utils.elements.appContainer.classList.remove('focus-mode');
+                state.currentStack = resolvedStack;
+                state.currentStackPosition = index;
+                Gestures.updateGestureOverlayMode();
+                Core.updateImageCounters(); Core.updateActiveProxTab();
+                await Core.displayCurrentImage();
+                Utils.elements.gestureScreenA?.focus();
+            } finally { spatialReturnInProgress = false; }
+        }
+
         const Gestures = {
             startPos: { x: 0, y: 0 },
             currentPos: { x: 0, y: 0 },
@@ -8493,7 +8535,8 @@ this.updateImageCounters();
             TRAIL_INTERVAL_MS: 12,
             TRAIL_LIFETIME_MS: 1050,
             trailThrottle: null,
-            ignoreMouseEvents: false,
+            ignoreMouseEvents: false, holdTimer: null, holdConsumed: false,
+            cancelHold() { clearTimeout(this.holdTimer); this.holdTimer = null; },
             init() {
                 this.edgeElements = [Utils.elements.edgeTop, Utils.elements.edgeBottom, Utils.elements.edgeLeft, Utils.elements.edgeRight];
                 this.setupEventListeners();
@@ -8693,7 +8736,8 @@ this.updateImageCounters();
                 } else if (this.ignoreMouseEvents) {
                     return;
                 }
-                this.tapHandled = false;
+                this.tapHandled = false; this.holdConsumed = false; this.cancelHold();
+                if (e.target?.closest?.('button,a,input,select,textarea,[role="button"],.pill-counter,.modal,.empty-state')) return;
                 if (e.touches && (e.touches.length > 1 || state.isPinching)) return;
                 if (state.currentScale > 1.1) return;
                 const point = e.touches ? e.touches[0] : e;
@@ -8705,7 +8749,12 @@ this.updateImageCounters();
                 this.maxTapDistance = 0;
                 this.gestureStarted = false;
                 state.isDragging = true;
-                this.hubPressActive = hubInteraction;
+                this.hubPressActive = false;
+                if (!state.isFocusMode) this.holdTimer = setTimeout(() => {
+                    if (!state.isDragging || this.maxTapDistance > 12 || state.isPinching) return;
+                    this.holdConsumed = true; this.gestureStarted = false; this.lastHubTap = { time: 0, x: 0, y: 0 };
+                    state.haptic?.triggerFeedback('buttonPress'); ModeChooser.open({ x: this.startPos.x, y: this.startPos.y });
+                }, 500);
                 if (!hubInteraction) {
                     Utils.elements.centerImage.classList.add('dragging');
                 }
@@ -8723,7 +8772,8 @@ this.updateImageCounters();
                 this.currentPos = { x: point.clientX, y: point.clientY };
                 this.maxTapDistance = Math.max(this.maxTapDistance, Math.hypot(this.currentPos.x - this.startPos.x, this.currentPos.y - this.startPos.y));
                 this.queueTrail(point.clientX, point.clientY);
-                if (this.hubPressActive) { return; }
+                if (this.maxTapDistance > 12) this.cancelHold();
+                if (this.holdConsumed) return;
                 if (state.imageFiles.length === 0) return;
                 const deltaX = this.currentPos.x - this.startPos.x;
                 const deltaY = this.currentPos.y - this.startPos.y;
@@ -8744,6 +8794,7 @@ this.updateImageCounters();
                     setTimeout(() => { this.ignoreMouseEvents = false; }, 400);
                 }
                 if (!state.isDragging) return;
+                this.cancelHold();
                 state.isDragging = false;
                 Utils.elements.centerImage.classList.remove('dragging');
                 const point = e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e;
@@ -8756,6 +8807,13 @@ this.updateImageCounters();
                 const now = performance.now();
                 const duration = now - this.startTimestamp;
                 const isTap = this.maxTapDistance < this.TAP_DISTANCE_THRESHOLD && duration < this.TAP_DURATION_THRESHOLD;
+                if (this.holdConsumed) { this.holdConsumed = false; this.hideAllEdgeGlows(); return; }
+                if (isTap) {
+                    if (this.lastHubTap.time && now - this.lastHubTap.time <= this.DOUBLE_TAP_MAX_INTERVAL && Math.hypot(this.lastHubTap.x-this.currentPos.x,this.lastHubTap.y-this.currentPos.y)<=this.DOUBLE_TAP_MAX_DISTANCE) {
+                        this.lastHubTap={time:0,x:0,y:0}; this.toggleFocusMode(); state.haptic?.triggerFeedback('buttonPress'); this.hideAllEdgeGlows(); return;
+                    }
+                    this.lastHubTap={time:now,x:this.currentPos.x,y:this.currentPos.y};
+                }
 
                 if (this.hubPressActive) {
                     if (isTap) {
@@ -8812,7 +8870,7 @@ this.updateImageCounters();
             getCenter(touch1, touch2) { return { x: (touch1.clientX + touch2.clientX) / 2, y: (touch1.clientY + touch2.clientY) / 2 }; },
             handleTouchStart(e) {
                 if (e.touches.length === 2) {
-                    e.preventDefault(); state.isPinching = true;
+                    e.preventDefault(); this.cancelHold(); state.isPinching = true;
                     state.initialDistance = this.getDistance(e.touches[0], e.touches[1]);
                     state.lastTouchPos = this.getCenter(e.touches[0], e.touches[1]);
                 } else if (e.touches.length === 1 && state.currentScale > 1) { state.lastTouchPos = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }
@@ -9659,6 +9717,109 @@ this.updateImageCounters();
             }
         };
 
+        async function sortFileByDirection({ fileId, deltaX, deltaY, source = 'spatial' }) {
+            const direction = Gestures.determineSwipeDirection(deltaX, deltaY);
+            const targetStack = Gestures.directionToStack(direction);
+            const files = state.stacks[state.currentStack] || [];
+            const index = files.findIndex(file => file.id === fileId);
+            if (!targetStack || index < 0 || targetStack === state.currentStack) return false;
+            state.currentStackPosition = index;
+            UI.acknowledgePillCounter(targetStack);
+            await Core.moveToStack(targetStack, { source: `${source}:flick` });
+            return true;
+        }
+
+        const PhotoTable = {
+            elements: {}, photos: [], deck: [], currentFileId: null, stackName: null, pointer: null,
+            frameId: null, tapTimer: null, lastTap: null, z: 1, reducedMotion: false, previousFocus: null,
+            init() {
+                this.elements.root = document.getElementById('photo-table');
+                this.elements.surface = document.getElementById('photo-table-surface');
+                this.elements.count = document.getElementById('photo-table-count');
+                this.elements.close = document.getElementById('photo-table-close');
+                this.elements.details = document.getElementById('photo-table-details');
+                this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+                this.elements.close.addEventListener('click', () => this.exit());
+                this.elements.details.addEventListener('click', () => this.showDetails());
+                this.elements.surface.addEventListener('pointerdown', event => this.down(event));
+                this.elements.surface.addEventListener('pointermove', event => this.move(event));
+                this.elements.surface.addEventListener('pointerup', event => this.up(event));
+                this.elements.surface.addEventListener('pointercancel', event => this.cancelPointer(event));
+                this.elements.surface.addEventListener('click', event => { if (event.target === this.elements.surface && this.examining()) this.restoreExamined(); });
+                this.elements.surface.addEventListener('dblclick', event => { if (!event.target.closest('.photo-table__chrome,.photo-table__a11y,button:not(.photo-table__print),input,a')) { clearTimeout(this.tapTimer); const photo = this.findElement(event); if (photo) this.currentFileId = photo.fileId; this.exit(); } });
+                this.elements.root.querySelectorAll('[data-table-stack]').forEach(button => button.addEventListener('click', () => this.sortSelected(button.dataset.tableStack)));
+                document.addEventListener('visibilitychange', () => { if (document.hidden && this.frameId) { cancelAnimationFrame(this.frameId); this.frameId = null; } });
+            },
+            open({ stackName, fileId }) {
+                const files = state.stacks[stackName] || [];
+                if (!files.length) return;
+                this.previousFocus = document.activeElement; this.stackName = stackName; this.currentFileId = fileId;
+                const limit = Math.min(32, innerWidth < 700 ? 16 : 24, files.length);
+                const start = Math.max(0, files.findIndex(file => file.id === fileId));
+                const ordered = files.slice(start).concat(files.slice(0, start));
+                this.deck = ordered.slice(limit).map(file => file.id);
+                this.elements.root.hidden = false; document.body.style.overflow = 'hidden';
+                this.build(ordered.slice(0, limit)); this.updateCount();
+                this.photos.find(photo => photo.fileId === fileId)?.element.focus();
+            },
+            hash(id) { let h = 2166136261; for (const c of String(id)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; },
+            build(files) {
+                this.elements.surface.replaceChildren(); this.photos = []; this.z = 1;
+                const w = Math.max(90, Math.min(150, innerWidth * .16)), h = w * 1.27;
+                files.forEach((file, index) => {
+                    const seed = this.hash(file.id), cols = Math.max(2, Math.floor((innerWidth - 30) / (w * .72)));
+                    const x = Math.max(8, Math.min(innerWidth - w - 8, 12 + (index % cols) * ((innerWidth - w - 24) / Math.max(1, cols - 1)) + ((seed % 17) - 8)));
+                    const rows = Math.max(1, Math.ceil(files.length / cols));
+                    const y = Math.max(70, Math.min(innerHeight - h - 20, 80 + Math.floor(index / cols) * ((innerHeight - h - 110) / Math.max(1, rows - 1)) + (((seed >> 5) % 17) - 8)));
+                    const rotation = ((seed % 15) - 7) * .9;
+                    const element = document.createElement('button'); element.type = 'button'; element.className = 'photo-table__print';
+                    element.setAttribute('aria-label', file.name || 'Photo'); element.dataset.fileId = file.id;
+                    const img = document.createElement('img'); img.alt = ''; img.draggable = false; element.appendChild(img); this.elements.surface.appendChild(element);
+                    const photo = { fileId:file.id, x,y,homeX:x,homeY:y,rotation,homeRotation:rotation,scale:1,zIndex:++this.z,velocityX:0,velocityY:0,angularVelocity:0,state:'resting',element };
+                    this.photos.push(photo); this.paint(photo);
+                    ExploreThumbnailCache.load(img, Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '', () => !this.elements.root.hidden && img.isConnected);
+                    element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.examine(photo); } });
+                });
+            },
+            paint(photo) { photo.element.style.zIndex = photo.zIndex; photo.element.style.transform = `translate3d(${photo.x}px,${photo.y}px,0) rotate(${photo.rotation}deg) scale(${photo.scale})`; },
+            findElement(event) { const el = event.target.closest('.photo-table__print'); return this.photos.find(photo => photo.element === el); },
+            down(event) {
+                if (event.button !== undefined && event.button !== 0) return;
+                const photo = this.findElement(event); if (!photo) return;
+                clearTimeout(this.tapTimer); this.currentFileId = photo.fileId; photo.zIndex = ++this.z; photo.state='held'; photo.scale=1.06; photo.element.classList.add('held');
+                this.pointer={ id:event.pointerId, photo, x:event.clientX, y:event.clientY, startX:event.clientX, startY:event.clientY, startTime:performance.now(), samples:[{x:event.clientX,y:event.clientY,t:performance.now()}] };
+                photo.element.setPointerCapture?.(event.pointerId); this.paint(photo); state.haptic?.triggerFeedback('buttonPress');
+            },
+            move(event) {
+                const p=this.pointer; if (!p || p.id!==event.pointerId) return; event.preventDefault();
+                const dx=event.clientX-p.x, dy=event.clientY-p.y; p.photo.x+=dx; p.photo.y+=dy; p.x=event.clientX; p.y=event.clientY;
+                p.samples.push({x:p.x,y:p.y,t:performance.now()}); if(p.samples.length>5)p.samples.shift(); this.paint(p.photo);
+            },
+            up(event) {
+                const p=this.pointer; if(!p||p.id!==event.pointerId)return; this.pointer=null; const photo=p.photo; photo.element.classList.remove('held'); photo.scale=1;
+                const distance=Math.hypot(event.clientX-p.startX,event.clientY-p.startY), duration=performance.now()-p.startTime;
+                const last=p.samples[0], dt=Math.max(16,performance.now()-last.t), vx=(event.clientX-last.x)/dt*16, vy=(event.clientY-last.y)/dt*16;
+                const edge=event.clientX<28||event.clientX>innerWidth-28||event.clientY<28||event.clientY>innerHeight-28;
+                if(edge && Math.hypot(vx,vy)>14 && Math.max(Math.abs(vx),Math.abs(vy))>Math.min(Math.abs(vx),Math.abs(vy))*1.35) { this.commitEdge(photo,vx,vy); return; }
+                if(distance<10 && duration<300) { this.handleTap(photo,event.timeStamp); return; }
+                photo.state='resting'; photo.homeX=photo.x; photo.homeY=photo.y;
+                if(!this.reducedMotion && Math.hypot(vx,vy)>4){photo.state='thrown';photo.velocityX=vx;photo.velocityY=vy;photo.angularVelocity=vx*.035;this.requestFrame();} this.paint(photo);
+            },
+            cancelPointer(){ if(this.pointer){this.pointer.photo.state='resting';this.pointer.photo.element.classList.remove('held');this.pointer=null;} },
+            handleTap(photo,time) { if(this.lastTap && time-this.lastTap.time<360){clearTimeout(this.tapTimer);this.currentFileId=photo.fileId;this.lastTap=null;this.exit();return;} this.lastTap={time}; this.tapTimer=setTimeout(()=>{this.lastTap=null;this.examine(photo);},370); },
+            examine(photo){ if(this.examining()&&this.examining()!==photo)this.restoreExamined(); photo.homeX=photo.x;photo.homeY=photo.y;photo.homeRotation=photo.rotation;photo.state='examining';photo.zIndex=++this.z;photo.x=innerWidth/2-photo.element.offsetWidth/2;photo.y=innerHeight/2-photo.element.offsetHeight/2;photo.rotation=0;photo.scale=Math.min(2.1,innerHeight/(photo.element.offsetHeight*1.7));photo.element.classList.add('examining');this.elements.root.classList.add('examining');this.currentFileId=photo.fileId;this.paint(photo); },
+            examining(){return this.photos.find(p=>p.state==='examining');},
+            restoreExamined(){const p=this.examining();if(!p)return false;p.state='resting';p.x=p.homeX;p.y=p.homeY;p.rotation=p.homeRotation;p.scale=1;p.element.classList.remove('examining');this.elements.root.classList.remove('examining');this.paint(p);return true;},
+            requestFrame(){if(!this.frameId&&!this.elements.root.hidden)this.frameId=requestAnimationFrame(t=>this.animate(t));},
+            animate(){this.frameId=null;let active=false;for(const p of this.photos){if(p.state!=='thrown')continue;p.x+=p.velocityX;p.y+=p.velocityY;p.rotation+=p.angularVelocity;p.velocityX*=.91;p.velocityY*=.91;p.angularVelocity*=.88;p.x=Math.max(0,Math.min(innerWidth-p.element.offsetWidth,p.x));p.y=Math.max(55,Math.min(innerHeight-p.element.offsetHeight,p.y));if(Math.hypot(p.velocityX,p.velocityY)<.35){p.state='resting';p.homeX=p.x;p.homeY=p.y;}else active=true;this.paint(p);}if(active)this.requestFrame();},
+            async commitEdge(photo,vx,vy){photo.state='removed';photo.element.remove();this.photos=this.photos.filter(p=>p!==photo);await sortFileByDirection({fileId:photo.fileId,deltaX:vx,deltaY:vy,source:'table'});this.currentFileId=this.photos.at(-1)?.fileId||null;this.updateCount();},
+            async sortSelected(target){const p=this.photos.find(x=>x.fileId===this.currentFileId);if(!p)return;const vector={priority:[0,-1],trash:[0,1],in:[-1,0],out:[1,0]}[target];await this.commitEdge(p,vector[0]*20,vector[1]*20);},
+            showDetails(){const stack=state.stacks[this.stackName]||[], i=stack.findIndex(f=>f.id===this.currentFileId);if(i>=0){state.currentStack=this.stackName;state.currentStackPosition=i;Details.show();}},
+            updateCount(){this.elements.count.textContent=`${STACK_NAMES[this.stackName]||this.stackName} · ${this.photos.length}`;},
+            exit(){returnSpatialModeToSort({stackName:this.stackName,fileId:this.currentFileId||this.photos.at(-1)?.fileId,source:'table'});},
+            close({restoreFocus=true}={}){if(this.elements.root.hidden)return;this.elements.root.hidden=true;clearTimeout(this.tapTimer);if(this.frameId)cancelAnimationFrame(this.frameId);this.frameId=null;this.cancelPointer();this.elements.surface.replaceChildren();this.photos=[];this.lastTap=null;document.body.style.overflow='';if(restoreFocus)this.previousFocus?.focus?.();}
+        };
+
         const SpatialGallery = {
             elements: {}, cards: [], files: [], selectedIndex: 0, imageLimit: 30, density: 1, cardScale: 1,
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0,
@@ -9695,7 +9856,7 @@ this.updateImageCounters();
                 scene?.addEventListener('pointermove', event => this.onPointerMove(event));
                 scene?.addEventListener('pointerup', event => this.onPointerUp(event));
                 scene?.addEventListener('pointercancel', event => this.onPointerUp(event));
-                ModeCenterTap.bind(scene, event => event.target === scene && this.isCentralPoint(event.clientX, event.clientY), () => this.close());
+                ModeCenterTap.bind(scene, event => !event.target.closest('.spatial-gallery__chrome,.spatial-gallery__destination,button:not(.spatial-gallery__card),input,a'), () => this.openSelected());
                 scene?.addEventListener('wheel', event => this.onWheel(event), { passive: false });
                 this.elements.root?.addEventListener('touchstart', event => this.onTouchStart(event), { passive: false });
                 this.elements.root?.addEventListener('touchmove', event => this.onTouchMove(event), { passive: false });
@@ -9704,8 +9865,9 @@ this.updateImageCounters();
                 });
             },
 
-            open() {
-                const stack = state.stacks[state.currentStack] || [];
+            open({ stackName = state.currentStack, fileId } = {}) {
+                state.currentStack = stackName;
+                const stack = state.stacks[stackName] || [];
                 this.restoreSettings();
                 this.files = stack.slice(0, Math.min(this.imageLimit, stack.length));
                 if (!this.files.length) {
@@ -9714,7 +9876,7 @@ this.updateImageCounters();
                 }
                 this.previousFocus = document.activeElement;
                 this.loadGeneration++;
-                this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === stack[state.currentStackPosition]?.id));
+                this.selectedIndex = Math.max(0, this.files.findIndex(file => file.id === (fileId || stack[state.currentStackPosition]?.id)));
                 this.rotationX = 0; this.rotationY = 0; this.velocityX = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 0.0015; this.velocityY = 0;
                 this.elements.root.hidden = false;
                 this.buildCards();
@@ -9728,7 +9890,7 @@ this.updateImageCounters();
                 this.scheduleNextPage();
             },
 
-            close() {
+            close({ restoreFocus = true } = {}) {
                 if (this.elements.root.hidden) return;
                 this.elements.root.hidden = true;
                 this.loadGeneration++;
@@ -9742,7 +9904,7 @@ this.updateImageCounters();
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.armedCard = null; this.armedIndex = -1; this.pinchStartDistance = 0;
                 ModeCenterTap.reset();
                 ExploreThumbnailCache.releaseUnused(new Set());
-                this.previousFocus?.focus?.();
+                if (restoreFocus) this.previousFocus?.focus?.();
             },
 
             buildCards() {
@@ -9758,7 +9920,7 @@ this.updateImageCounters();
                     const file = this.files[index];
                     const card = document.createElement('button');
                     card.type = 'button';
-                    card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`;
+                    card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`; card.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     card.setAttribute('aria-label', `Select ${file.name || `image ${index + 1}`}`);
                     const img = document.createElement('img');
                     img.alt = file.name || '';
@@ -9825,7 +9987,7 @@ this.updateImageCounters();
 
             select(index) {
                 this.selectedIndex = index;
-                this.cards.forEach((card, cardIndex) => card.element.classList.toggle('selected', cardIndex === index));
+                this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });
                 this.requestFrame();
             },
 
@@ -9835,9 +9997,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack] || [];
                 const index = stack.findIndex(file => file.id === selected.id);
                 if (index >= 0) state.currentStackPosition = index;
-                if (state.isFocusMode) Gestures.toggleFocusMode();
-                this.close();
-                Core.displayCurrentImage();
+                returnSpatialModeToSort({ stackName: state.currentStack, fileId: selected.id, source: 'explore' });
             },
 
             isCentralPoint(x, y) {
@@ -10405,12 +10565,6 @@ this.updateImageCounters();
             },
             setupFocusMode() {
                 ModeChooser.init();
-                ModeCenterTap.bind(Utils.elements.gridModal, event => {
-                    if (Utils.elements.gridModal.classList.contains('hidden')) return false;
-                    if (event.target.closest('button, input, select, textarea, a, [role="button"], .grid-item')) return false;
-                    const rect = Utils.elements.gridModal.getBoundingClientRect();
-                    return Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2)) <= Math.min(rect.width, rect.height) * .22;
-                }, () => Grid.close());
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: false, source: 'button:center-trash' }));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'button:focus-trash' }));
@@ -10615,9 +10769,13 @@ this.updateImageCounters();
             setupKeyboardNavigation() {
                 document.addEventListener('keydown', async (e) => {
                     if (Utils.elements.appContainer.classList.contains('hidden')) return;
+                    if (!Utils.elements.modeChooser.hidden) { if (e.key === 'Escape') { e.preventDefault(); ModeChooser.close(); } return; }
                     if (!Utils.elements.detailsModal.classList.contains('hidden')) { if (e.key === 'Escape') Details.hide(); return; }
                     if (!Utils.elements.gridModal.classList.contains('hidden')) { if (e.key === 'Escape') Grid.close(); return; }
                     if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+                    if (!PhotoTable.elements.root?.hidden) { if (e.key === 'Escape') { e.preventDefault(); if (!PhotoTable.restoreExamined()) PhotoTable.exit(); } return; }
+                    if (!SpatialGallery.elements.root?.hidden) { if (e.key === 'Escape') { e.preventDefault(); SpatialGallery.openSelected(); } return; }
+                    if ((e.key === 'm' || e.key === 'M') && !state.isFocusMode) { e.preventDefault(); ModeChooser.open(); return; }
 
                     try {
                         if (state.isFocusMode) {
@@ -10692,6 +10850,8 @@ this.updateImageCounters();
                 Events.init();
                 Gestures.init();
                 SpatialGallery.init();
+                PhotoTable.init();
+                window.PhotoTable = PhotoTable;
                 window.SpatialGallery = SpatialGallery;
                 Core.updateActiveProxTab();
                 App.registerViewPersistenceLifecycle();
