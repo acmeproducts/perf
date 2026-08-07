@@ -914,8 +914,9 @@
 
 
         /* Explore sphere: an isolated, read-only spatial view of the active stack. */
-        #explore-button { top: 20px; right: 104px; }
-        #explore-button.active, #explore-button[aria-pressed="true"] { border-color: rgba(96,165,250,.9); background: rgba(37,99,235,.58); color: #fff; }
+        .view-navigation { position: absolute; z-index: 21; top: 20px; left: 50%; display: flex; padding: 3px; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; background: rgba(0,0,0,.4); backdrop-filter: blur(10px); transform: translateX(-50%); }
+        .view-navigation__button { min-height: 36px; padding: 7px 13px; border: 0; border-radius: 999px; color: #e5e7eb; background: transparent; cursor: pointer; }
+        .view-navigation__button[aria-selected="true"] { background: rgba(37,99,235,.72); color: #fff; }
         .spatial-gallery {
             position: fixed; inset: 0; z-index: 12000; overflow: hidden;
             color: #f8fafc; background:
@@ -961,7 +962,7 @@
         .spatial-gallery__destination.maybe { right: max(18px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); }
         .spatial-gallery__hint { left: 50%; bottom: max(74px, calc(env(safe-area-inset-bottom) + 62px)); transform: translateX(-50%); color: #cbd5e1; font: 12px/1.3 system-ui, sans-serif; text-align: center; pointer-events: none; }
         @media (max-width: 640px) {
-            #explore-button { top: 64px; right: 20px; }
+            .view-navigation { top: 64px; }
             .spatial-gallery__card { width: 82px; height: 108px; margin: -54px 0 0 -41px; }
             .spatial-gallery__destination { padding: 8px 10px; font-size: 10px; }
             .spatial-gallery__header { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); }
@@ -1103,7 +1104,11 @@
             <span id="back-button-spinner" class="spinner" style="display: none; width: 14px; height: 14px; margin-right: 6px;"></span>
             Folders
         </button>
-        <button class="ui-button" id="explore-button" type="button" aria-haspopup="dialog">Explore</button>
+        <nav class="view-navigation" aria-label="Image view" role="tablist">
+            <button class="view-navigation__button" id="table-view-button" type="button" role="tab" aria-selected="false">Table</button>
+            <button class="view-navigation__button" id="explore-button" type="button" role="tab" aria-selected="false" aria-haspopup="dialog">Explore</button>
+            <button class="view-navigation__button" id="focus-view-button" type="button" role="tab" aria-selected="false">Focus</button>
+        </nav>
         <button class="ui-button" id="details-button">Details</button>
 
         <div class="image-viewport" id="image-viewport">
@@ -1939,6 +1944,8 @@
 
                     backButton: document.getElementById('back-button'),
                     backButtonSpinner: document.getElementById('back-button-spinner'),
+                    tableViewButton: document.getElementById('table-view-button'),
+                    focusViewButton: document.getElementById('focus-view-button'),
                     detailsButton: document.getElementById('details-button'),
                     imageViewport: document.getElementById('image-viewport'),
                     centerImage: document.getElementById('center-image'),
@@ -7221,6 +7228,7 @@ this.updateImageCounters();
             open(stack) {
                 this.clearDragState();
                 Utils.showModal('grid-modal');
+                Utils.elements.tableViewButton?.setAttribute('aria-selected', 'true');
                 Utils.elements.gridTitle.textContent = STACK_NAMES[stack] || stack;
                 state.grid.stack = stack;
                 state.grid.isDirty = false;
@@ -7243,6 +7251,7 @@ this.updateImageCounters();
                         await this.reorderStackOnClose();
                     }
                     Utils.hideModal('grid-modal');
+                    Utils.elements.tableViewButton?.setAttribute('aria-selected', 'false');
                     this.resetSearch(); this.destroyLazyLoad();
                     const selectedImages = state.grid.selected;
                     if (selectedImages.length === 1) {
@@ -8761,6 +8770,7 @@ this.updateImageCounters();
             toggleFocusMode() {
                 state.isFocusMode = !state.isFocusMode;
                 Utils.elements.appContainer.classList.toggle('focus-mode', state.isFocusMode);
+                Utils.elements.focusViewButton?.setAttribute('aria-selected', String(state.isFocusMode));
                 this.updateGestureOverlayMode();
 
                 if (!state.isFocusMode) {
@@ -9615,7 +9625,7 @@ this.updateImageCounters();
                 this.buildCards();
                 this.elements.root.hidden = false;
                 this.elements.exploreButton?.classList.add('active');
-                this.elements.exploreButton?.setAttribute('aria-pressed', 'true');
+                this.elements.exploreButton?.setAttribute('aria-selected', 'true');
                 document.body.style.overflow = 'hidden';
                 this.restoreControlsPosition();
                 this.updateControlLabels();
@@ -9630,7 +9640,7 @@ this.updateImageCounters();
                 if (this.elements.root.hidden) return;
                 this.elements.root.hidden = true;
                 this.elements.exploreButton?.classList.remove('active');
-                this.elements.exploreButton?.setAttribute('aria-pressed', 'false');
+                this.elements.exploreButton?.setAttribute('aria-selected', 'false');
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
@@ -10285,6 +10295,10 @@ this.updateImageCounters();
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
             },
             setupFocusMode() {
+                Utils.elements.tableViewButton?.addEventListener('click', () => Grid.open(state.currentStack));
+                Utils.elements.focusViewButton?.addEventListener('click', () => {
+                    if (!state.isFocusMode) Gestures.toggleFocusMode();
+                });
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: false, source: 'button:center-trash' }));
                 Utils.elements.focusStackName.addEventListener('click', () => Modal.setupFocusStackSwitch());
                 Utils.elements.focusDeleteBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'button:focus-trash' }));
