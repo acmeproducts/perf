@@ -11154,5 +11154,788 @@ this.updateImageCounters();
   document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`;});
 })();
 </script>
+
+<!-- Orbital8 v1.3 physics-cache -->
+<style id="orbital8-v13-physics-cache-style">
+/* Orbital8 v1.3 physics-cache */
+.orbital-fx-canvas{position:absolute;inset:0;z-index:1180;pointer-events:none;width:100%;height:100%}
+.photo-table__stacks{position:absolute!important;inset:0!important;display:block!important;pointer-events:none!important;z-index:1250!important}
+.photo-table__stack{
+  position:absolute!important;width:94px!important;height:94px!important;min-height:0!important;padding:0!important;
+  transform:translate(-50%,-50%);border-radius:999px!important;border:2px solid rgba(255,255,255,.42)!important;
+  background:radial-gradient(circle at 45% 38%,rgba(59,130,246,.28),rgba(15,23,42,.92) 66%)!important;
+  color:#fff!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;
+  gap:5px!important;overflow:visible!important;pointer-events:auto!important;touch-action:none!important;user-select:none!important;
+  box-shadow:0 8px 26px rgba(0,0,0,.4),inset 0 0 0 1px rgba(255,255,255,.08);transition:border-color 100ms,box-shadow 100ms,filter 100ms!important
+}
+.photo-table__stack::after{content:'';position:absolute;inset:7px;border:1px dashed rgba(255,255,255,.22);border-radius:999px;pointer-events:none}
+.photo-table__stack.active{border-color:#93c5fd!important;box-shadow:0 0 0 3px rgba(147,197,253,.22),0 8px 26px rgba(0,0,0,.42)!important}
+.photo-table__stack.drop-target,.photo-table__stack.target-moving{border-color:#fbbf24!important;box-shadow:0 0 0 5px rgba(251,191,36,.24),0 0 34px rgba(251,191,36,.38)!important;filter:brightness(1.12)}
+.orbital-target-label{font:800 11px/1 system-ui,sans-serif;letter-spacing:.08em;pointer-events:none}
+.orbital-target-count{font:800 24px/1 system-ui,sans-serif;pointer-events:none}
+.photo-table__stack-title,.photo-table__stack-pile{display:none!important}
+.photo-table__print{will-change:transform;transition:border-color 90ms,box-shadow 90ms,filter 100ms!important}
+.photo-table__print.armed,.photo-table__print.held{border-color:#fbbf24!important;box-shadow:0 0 0 5px rgba(251,191,36,.64),0 0 28px rgba(251,191,36,.52),0 16px 36px rgba(0,0,0,.66)!important}
+.photo-table__print[data-physics='thrown']{pointer-events:none}
+.orbital-explore-targets{position:absolute;inset:0;z-index:1450;pointer-events:none;opacity:0;transition:opacity 110ms}
+.orbital-explore-targets.visible{opacity:1}
+.orbital-explore-target{
+  position:absolute;width:82px;height:82px;transform:translate(-50%,-50%);border-radius:999px;
+  border:2px solid rgba(251,191,36,.68);background:rgba(15,23,42,.84);color:#fff;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:4px;box-shadow:0 0 0 3px rgba(251,191,36,.12),0 8px 24px rgba(0,0,0,.4);backdrop-filter:blur(8px)
+}
+.orbital-explore-target span{font:800 9px/1 system-ui,sans-serif;letter-spacing:.08em}.orbital-explore-target strong{font:800 20px/1 system-ui,sans-serif}
+.spatial-gallery__card.armed{border-color:#fbbf24!important;box-shadow:0 0 0 5px rgba(251,191,36,.72),0 0 30px rgba(251,191,36,.6),0 22px 48px rgba(0,0,0,.56)!important}
+.grid-image{contain:paint;content-visibility:auto}
+@media(max-width:640px){.photo-table__stack{width:78px!important;height:78px!important}.orbital-target-count{font-size:20px}.orbital-target-label{font-size:9px}.orbital-explore-target{width:68px;height:68px}.orbital-explore-target strong{font-size:17px}}
+
+</style>
+<script id="orbital8-v13-physics-cache-script">
+(() => {
+  'use strict';
+  const VERSION = 'v1.3 physics-cache';
+
+  const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150' viewBox='0 0 150 150'%3E%3Crect width='150' height='150' fill='%23111827'/%3E%3Cpath d='M50 48h50v54H50z' fill='%23374151'/%3E%3Ccircle cx='75' cy='38' r='9' fill='%236b7280'/%3E%3C/svg%3E";
+
+  const OrbitalImageCache = {
+    memory: new Map(),
+    inFlight: new Map(),
+    maxMemory: 360,
+    cacheKey(file, rendition = 'thumb') {
+      const version = file?.modifiedTime || file?.version || file?.eTag || file?.size || 'v0';
+      return `${state.providerType || 'provider'}:${file?.id || 'unknown'}:${version}:${rendition}`;
+    },
+    sourceUrl(file, rendition = 'thumb') {
+      if (!file) return '';
+      if (state.providerType === 'googledrive') {
+        const urls = DriveLinkHelper.resolveAssetUrls(file);
+        if (rendition === 'display') return urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '';
+        return urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '';
+      }
+      if (rendition === 'display') {
+        return file.thumbnails?.large?.url || file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
+      }
+      return file.thumbnails?.medium?.url || file.thumbnails?.large?.url || file.downloadUrl || `https://graph.microsoft.com/v1.0/me/drive/items/${file.id}/content`;
+    },
+    async readRecord(key) {
+      try {
+        const db = await ExploreThumbnailCache.open();
+        return db ? await ExploreThumbnailCache.request(db, 'readonly', store => store.get(key)) : null;
+      } catch (_) { return null; }
+    },
+    async writeRecord(key, blob, sourceUrl) {
+      try {
+        const db = await ExploreThumbnailCache.open();
+        if (!db || !blob) return;
+        await ExploreThumbnailCache.request(db, 'readwrite', store => store.put({ url: key, blob, used: Date.now(), sourceUrl }));
+        ExploreThumbnailCache.maxEntries = Math.max(ExploreThumbnailCache.maxEntries || 320, 1200);
+        ExploreThumbnailCache.evict?.(db);
+      } catch (_) {}
+    },
+    objectUrl(key, blob) {
+      let entry = this.memory.get(key);
+      if (!entry && blob) {
+        entry = { src: URL.createObjectURL(blob), used: Date.now() };
+        this.memory.set(key, entry);
+      }
+      if (entry) entry.used = Date.now();
+      this.trim();
+      return entry?.src || '';
+    },
+    trim() {
+      if (this.memory.size <= this.maxMemory) return;
+      const inUse = new Set([...document.images].map(img => img.src));
+      const candidates = [...this.memory.entries()].sort((a, b) => (a[1].used || 0) - (b[1].used || 0));
+      for (const [key, value] of candidates) {
+        if (this.memory.size <= this.maxMemory) break;
+        if (inUse.has(value.src)) continue;
+        URL.revokeObjectURL(value.src);
+        this.memory.delete(key);
+      }
+    },
+    async authenticatedBlob(file) {
+      const sourceUrl = this.sourceUrl(file, 'display');
+      try {
+        if (sourceUrl) {
+          const response = await fetch(sourceUrl, { credentials: 'include', cache: 'force-cache' });
+          if (response.ok) return await response.blob();
+        }
+      } catch (_) {}
+      if (state.providerType === 'googledrive' && state.provider && typeof state.provider.makeApiCall === 'function') {
+        const targetId = file?.targetFileId || file?.id;
+        if (targetId) {
+          try {
+            const response = await state.provider.makeApiCall(`/files/${encodeURIComponent(targetId)}?alt=media`, { method: 'GET' }, false);
+            if (response?.ok === false) throw new Error(`Drive media ${response.status}`);
+            if (response?.blob) return await response.blob();
+          } catch (error) {
+            state.syncLog?.log({ event: 'imagecache:drive-recovery-failed', level: 'warn', fileId: file.id, details: error.message });
+          }
+        }
+      }
+      return null;
+    },
+    async getBlob(file, rendition = 'thumb') {
+      if (!file?.id) return null;
+      const key = this.cacheKey(file, rendition);
+      const existing = this.memory.get(key);
+      if (existing) return { key, src: existing.src, blob: null };
+      const record = await this.readRecord(key);
+      if (record?.blob) {
+        const src = this.objectUrl(key, record.blob);
+        return { key, src, blob: record.blob };
+      }
+      let pending = this.inFlight.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const sourceUrl = this.sourceUrl(file, rendition);
+          let blob = null;
+          if (sourceUrl) {
+            try {
+              const response = await fetch(sourceUrl, { credentials: 'include', cache: 'force-cache' });
+              if (response.ok) blob = await response.blob();
+            } catch (_) {}
+          }
+          if (!blob) blob = await this.authenticatedBlob(file);
+          if (blob) await this.writeRecord(key, blob, sourceUrl);
+          return blob;
+        })();
+        this.inFlight.set(key, pending);
+        pending.finally(() => { if (this.inFlight.get(key) === pending) this.inFlight.delete(key); });
+      }
+      const blob = await pending;
+      if (!blob) return null;
+      const src = this.objectUrl(key, blob);
+      return { key, src, blob };
+    },
+    async attach(img, file, rendition = 'thumb') {
+      if (!img || !file?.id) return;
+      const key = this.cacheKey(file, rendition);
+      img.dataset.fileId = file.id;
+      img.dataset.orbitalImageKey = key;
+      const memory = this.memory.get(key);
+      if (memory) {
+        memory.used = Date.now();
+        if (img.src !== memory.src) img.src = memory.src;
+        return;
+      }
+      const record = await this.readRecord(key);
+      if (img.dataset.orbitalImageKey !== key || !img.isConnected) return;
+      if (record?.blob) {
+        img.src = this.objectUrl(key, record.blob);
+        return;
+      }
+      const direct = this.sourceUrl(file, rendition);
+      let recovered = false;
+      const recover = async () => {
+        if (recovered || img.dataset.orbitalImageKey !== key) return;
+        recovered = true;
+        const value = await this.getBlob(file, rendition);
+        if (value?.src && img.dataset.orbitalImageKey === key && img.isConnected) img.src = value.src;
+        else if (img.dataset.orbitalImageKey === key && img.isConnected) img.src = PLACEHOLDER;
+      };
+      img.onerror = recover;
+      if (direct) img.src = direct;
+      else await recover();
+      Utils.defer(() => this.getBlob(file, rendition), { priority: 'background', timeout: 180 });
+    },
+    warm(files = [], rendition = 'thumb') {
+      files.filter(Boolean).forEach(file => Utils.defer(() => this.getBlob(file, rendition), { priority: 'background', timeout: 240 }));
+    },
+    repairVisible() {
+      document.querySelectorAll('img[data-file-id]').forEach(img => {
+        const file = state.imageFiles?.find(item => item.id === img.dataset.fileId);
+        if (!file) return;
+        const rendition = img === Utils.elements.centerImage ? 'display' : 'thumb';
+        const key = this.cacheKey(file, rendition);
+        const mem = this.memory.get(key);
+        if (mem && img.src !== mem.src) img.src = mem.src;
+        else if (!img.complete || img.naturalWidth === 0) this.attach(img, file, rendition);
+      });
+    }
+  };
+  window.OrbitalImageCache = OrbitalImageCache;
+
+  ExploreThumbnailCache.loadStable = function(img, file, isValid = () => true) {
+    if (!img || !file || !isValid()) return Promise.resolve();
+    return OrbitalImageCache.attach(img, file, 'thumb');
+  };
+  ExploreThumbnailCache.releaseUnused = function() {};
+
+  Utils.setImageSrc = async function(img, file) {
+    if (!img || !file) return;
+    state.currentImageLoadId = `${file.id}_${Date.now()}`;
+    img.alt = file.name || 'Image';
+    img.dataset.fileId = file.id;
+    await OrbitalImageCache.attach(img, file, 'display');
+  };
+  Utils.prefetchImages = function(files = []) { OrbitalImageCache.warm(files, 'thumb'); };
+
+  const originalInitializeStacksV13 = Core.initializeStacks.bind(Core);
+  Core.initializeStacks = function() {
+    const oldClear = Utils.clearImageObjectCache;
+    Utils.clearImageObjectCache = () => {};
+    try { return originalInitializeStacksV13(); }
+    finally { Utils.clearImageObjectCache = oldClear; }
+  };
+
+  Grid._tilePool = Grid._tilePool || new Map();
+  Grid.renderBatch = function() {
+    const lazyState = state.grid.lazyLoadState;
+    const container = Utils.elements.gridContainer;
+    const filesToRender = lazyState.allFiles.slice(lazyState.renderedCount, lazyState.renderedCount + lazyState.batchSize);
+    const oldSentinel = document.getElementById('grid-sentinel');
+    if (oldSentinel && lazyState.observer) lazyState.observer.unobserve(oldSentinel);
+    oldSentinel?.remove();
+    const activeIds = new Set((state.imageFiles || []).map(file => file.id));
+    for (const [id, tile] of this._tilePool) {
+      if (!activeIds.has(id)) { tile.remove(); this._tilePool.delete(id); }
+    }
+    const selectedIds = new Set(state.grid.selected);
+    const fragment = document.createDocumentFragment();
+    const newImages = [];
+    filesToRender.forEach(file => {
+      let div = this._tilePool.get(file.id);
+      if (!div) {
+        div = document.createElement('div');
+        div.className = 'grid-item';
+        div.dataset.fileId = file.id;
+        const img = document.createElement('img');
+        img.className = 'grid-image';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.draggable = false;
+        img.onload = () => img.classList.add('loaded');
+        div.appendChild(img);
+        div.appendChild(this.createDragHandle(div, file.id));
+        div.addEventListener('click', e => this.toggleSelection(e, file.id));
+        this._tilePool.set(file.id, div);
+      }
+      div.classList.toggle('selected', selectedIds.has(file.id));
+      const img = div.querySelector('.grid-image');
+      if (img) {
+        img.alt = file.name || 'Image';
+        OrbitalImageCache.attach(img, file, 'thumb');
+        newImages.push(img);
+      }
+      fragment.appendChild(div);
+    });
+    container.appendChild(fragment);
+    lazyState.latestImages = newImages;
+    lazyState.renderedCount += filesToRender.length;
+    if (lazyState.renderedCount < lazyState.allFiles.length) {
+      const sentinel = document.createElement('div');
+      sentinel.id = 'grid-sentinel';
+      container.appendChild(sentinel);
+      if (lazyState.observer) lazyState.observer.observe(sentinel);
+    }
+  };
+
+  const originalPersistViewContextV13 = App.persistViewContext.bind(App);
+  App.persistViewContext = function() {
+    originalPersistViewContextV13();
+    if (!state.currentFolder?.id || !state.providerType) return;
+    let payload = {};
+    try { payload = JSON.parse(localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY) || '{}'); } catch (_) {}
+    const gridOpen = Boolean(Utils.elements.gridModal && !Utils.elements.gridModal.classList.contains('hidden'));
+    const detailsOpen = Boolean(Utils.elements.detailsModal && !Utils.elements.detailsModal.classList.contains('hidden'));
+    payload.surface = ModeNavigation.currentView?.() || (state.isFocusMode ? 'focus' : 'sort');
+    payload.gridOpen = gridOpen;
+    payload.detailsOpen = detailsOpen;
+    payload.detailsTab = Details.currentTab || 'info';
+    payload.gridState = gridOpen ? {
+      stack: state.grid.stack,
+      selected: [...(state.grid.selected || [])],
+      search: Utils.elements.omniSearch?.value || '',
+      scrollTop: Utils.elements.gridContent?.scrollTop || 0,
+      size: Utils.elements.gridSize?.value || null
+    } : null;
+    payload.exploreState = payload.surface === 'explore' ? {
+      fileId: SpatialGallery.files?.[SpatialGallery.selectedIndex]?.id || null,
+      rotationX: SpatialGallery.rotationX || 0,
+      rotationY: SpatialGallery.rotationY || 0
+    } : null;
+    payload.tableState = payload.surface === 'table' ? { fileId: PhotoTable.currentFileId || null } : null;
+    payload.savedAt = new Date().toISOString();
+    state.lastViewContext = payload;
+    try { localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(payload)); } catch (_) {}
+  };
+
+  App.restoreExactSurfaceV13 = async function() {
+    let saved = state.lastViewContext;
+    if (!saved) { try { saved = JSON.parse(localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY) || 'null'); } catch (_) {} }
+    if (!saved || !state.currentFolder?.id || saved.folderId !== state.currentFolder.id || saved.providerType !== state.providerType) return;
+    const stack = state.stacks[saved.stack] || [];
+    const fileId = saved.fileId || saved.exploreState?.fileId || saved.tableState?.fileId;
+    const index = stack.findIndex(file => file.id === fileId);
+    if (index >= 0) { state.currentStack = saved.stack; state.currentStackPosition = index; }
+    if (saved.surface === 'focus') {
+      state.isFocusMode = true;
+      Utils.elements.appContainer.classList.add('focus-mode');
+      Gestures.updateGestureOverlayMode();
+      ModeNavigation.show('focus');
+    } else if (saved.surface === 'explore' && stack.length) {
+      SpatialGallery.open({ stackName: saved.stack, fileId });
+      if (saved.exploreState) {
+        SpatialGallery.rotationX = Number(saved.exploreState.rotationX) || 0;
+        SpatialGallery.rotationY = Number(saved.exploreState.rotationY) || 0;
+        SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0;
+        SpatialGallery.requestFrame();
+      }
+    } else if (saved.surface === 'table' && stack.length) {
+      PhotoTable.open({ stackName: saved.stack, fileId });
+    }
+    if (saved.gridOpen && saved.gridState?.stack) {
+      Grid.open(saved.gridState.stack);
+      state.grid.selected = [...(saved.gridState.selected || [])];
+      if (saved.gridState.size && Utils.elements.gridSize) {
+        Utils.elements.gridSize.value = saved.gridState.size;
+        Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${saved.gridState.size}, 1fr)`;
+      }
+      if (saved.gridState.search && Utils.elements.omniSearch) {
+        Utils.elements.omniSearch.value = saved.gridState.search;
+        Grid.performSearch();
+      } else Grid.updateSelectionUI();
+      requestAnimationFrame(() => { if (Utils.elements.gridContent) Utils.elements.gridContent.scrollTop = Number(saved.gridState.scrollTop) || 0; });
+    }
+    if (saved.detailsOpen) {
+      await Details.show();
+      if (saved.detailsTab) Details.switchTab(saved.detailsTab);
+    }
+  };
+
+  App.registerViewPersistenceLifecycle = function() {
+    if (this._viewPersistenceLifecycleRegistered) return;
+    const persist = () => this.persistViewContext();
+    const resumeWithoutNavigation = () => {
+      if (document.visibilityState !== 'visible') return;
+      OrbitalImageCache.repairVisible();
+      if (!PhotoTable.elements?.root?.hidden && PhotoTable.photos?.some(p => p.state === 'thrown' || p.state === 'rim')) PhotoTable.requestFrame();
+      if (!SpatialGallery.elements?.root?.hidden && SpatialGallery._flingActive) SpatialGallery.requestFlingFrame?.();
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') persist();
+      else resumeWithoutNavigation();
+    });
+    window.addEventListener('blur', persist);
+    window.addEventListener('pagehide', persist);
+    window.addEventListener('beforeunload', persist);
+    window.addEventListener('focus', resumeWithoutNavigation);
+    this._viewPersistenceLifecycleRegistered = true;
+    setTimeout(() => this.restoreExactSurfaceV13(), 0);
+  };
+
+  const TargetLayout = {
+    storageKey: `${APP_IDENTITY.storagePrefix}:sorting-target-layout:v1`,
+    defaults: { in: { x: .13, y: .50 }, out: { x: .87, y: .50 }, priority: { x: .50, y: .16 }, trash: { x: .50, y: .76 } },
+    load() {
+      try {
+        const value = JSON.parse(localStorage.getItem(this.storageKey) || 'null');
+        if (value && typeof value === 'object') return { ...this.defaults, ...value };
+      } catch (_) {}
+      return typeof structuredClone === 'function' ? structuredClone(this.defaults) : JSON.parse(JSON.stringify(this.defaults));
+    },
+    save(layout) { try { localStorage.setItem(this.storageKey, JSON.stringify(layout)); } catch (_) {} },
+    layout: null,
+    get() { if (!this.layout) this.layout = this.load(); return this.layout; },
+    apply(root) {
+      if (!root) return;
+      const layout = this.get();
+      root.querySelectorAll('[data-table-pile],[data-explore-target]').forEach(el => {
+        const name = el.dataset.tablePile || el.dataset.exploreTarget;
+        const pos = layout[name] || this.defaults[name];
+        el.style.left = `${pos.x * 100}%`;
+        el.style.top = `${pos.y * 100}%`;
+      });
+    },
+    set(name, x, y) {
+      const layout = this.get();
+      layout[name] = { x: Math.max(.06, Math.min(.94, x)), y: Math.max(.08, Math.min(.90, y)) };
+      this.save(layout);
+      this.apply(document.getElementById('photo-table'));
+      this.apply(document.getElementById('spatial-gallery'));
+    }
+  };
+
+  const FlingFX = {
+    views: new Map(),
+    ensure(root, name) {
+      if (!root) return null;
+      let view = this.views.get(name);
+      if (view?.canvas?.isConnected) return view;
+      const canvas = document.createElement('canvas');
+      canvas.className = 'orbital-fx-canvas';
+      canvas.dataset.fx = name;
+      root.appendChild(canvas);
+      view = { canvas, ctx: canvas.getContext('2d'), particles: [] };
+      this.views.set(name, view);
+      this.resize(view);
+      return view;
+    },
+    resize(view) {
+      if (!view) return;
+      const dpr = Math.min(2, devicePixelRatio || 1);
+      const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
+      if (view.canvas.width !== Math.round(w * dpr) || view.canvas.height !== Math.round(h * dpr)) {
+        view.canvas.width = Math.round(w * dpr); view.canvas.height = Math.round(h * dpr);
+        view.canvas.style.width = `${w}px`; view.canvas.style.height = `${h}px`;
+        view.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+    },
+    trail(name, x, y, vx = 0, vy = 0) {
+      const view = this.views.get(name); if (!view) return;
+      view.particles.push({ x, y, vx: -vx * .06 + (Math.random() - .5) * .6, vy: -vy * .06 + (Math.random() - .5) * .6, life: 1, r: 2 + Math.random() * 3 });
+      if (view.particles.length > 160) view.particles.splice(0, view.particles.length - 160);
+    },
+    impact(name, x, y) {
+      for (let i = 0; i < 14; i++) this.trail(name, x, y, (Math.random() - .5) * 20, (Math.random() - .5) * 20);
+    },
+    draw(name) {
+      const view = this.views.get(name); if (!view) return false;
+      this.resize(view);
+      const ctx = view.ctx;
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      view.particles = view.particles.filter(p => p.life > .025);
+      view.particles.forEach(p => {
+        p.x += p.vx; p.y += p.vy; p.life *= .90;
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = 'rgba(251,191,36,.95)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life + .4, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+      return view.particles.length > 0;
+    }
+  };
+
+  function targetGeometry(root, selector) {
+    return [...root.querySelectorAll(selector)].map(el => {
+      const r = el.getBoundingClientRect();
+      return { el, stack: el.dataset.tablePile || el.dataset.exploreTarget, x: r.left + r.width / 2, y: r.top + r.height / 2, radius: Math.min(r.width, r.height) / 2 };
+    });
+  }
+  function cornersFor(photo) {
+    const w = photo.element.offsetWidth, h = photo.element.offsetHeight;
+    const cx = photo.x + w / 2, cy = photo.y + h / 2, a = (photo.rotation || 0) * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    return [[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]].map(([dx,dy]) => ({ x: cx + dx*ca - dy*sa, y: cy + dx*sa + dy*ca }));
+  }
+  function captureStyle(centerDistance, radius, cornerDistance) {
+    const quality = 1 - Math.min(1, centerDistance / Math.max(1, radius));
+    if (quality > .62) return 'swish';
+    if (cornerDistance < radius * .45) return Math.random() < .5 ? 'corner' : 'vacuum';
+    return Math.random() < .55 ? 'rim' : 'vacuum';
+  }
+  function animateCaptureElement(element, target, style, done) {
+    const rect = element.getBoundingClientRect();
+    const dx = target.x - (rect.left + rect.width / 2), dy = target.y - (rect.top + rect.height / 2);
+    const base = getComputedStyle(element).transform === 'none' ? '' : getComputedStyle(element).transform;
+    const frames = style === 'swish'
+      ? [{ transform: `${base} translate(0,0) scale(1)`, opacity: 1 }, { transform: `${base} translate(${dx}px,${dy}px) scale(.06) rotate(28deg)`, opacity: .12 }]
+      : style === 'corner'
+        ? [{ transform: `${base} translate(0,0) scale(1)` }, { transform: `${base} translate(${dx*.55}px,${dy*.55}px) rotate(38deg) skewX(18deg) scale(.72,.92)` }, { transform: `${base} translate(${dx}px,${dy}px) rotate(120deg) skewX(32deg) scale(.04,.18)`, opacity: .08 }]
+        : style === 'rim'
+          ? [{ transform: `${base} translate(0,0)` }, { transform: `${base} translate(${dx*.72}px,${dy*.78}px) rotate(150deg) scale(.58)` }, { transform: `${base} translate(${dx*1.08}px,${dy*.94}px) rotate(310deg) scale(.3)` }, { transform: `${base} translate(${dx}px,${dy}px) rotate(430deg) scale(.04)`, opacity: .05 }]
+          : [{ transform: `${base} translate(0,0)` }, { transform: `${base} translate(${dx*.45}px,${dy*.45}px) skewY(22deg) scale(.8,1.12)` }, { transform: `${base} translate(${dx*.82}px,${dy*.82}px) skewY(-28deg) rotate(80deg) scale(.35,.78)` }, { transform: `${base} translate(${dx}px,${dy}px) rotate(150deg) scale(.03,.18)`, opacity: .04 }];
+    const duration = style === 'rim' ? 720 : style === 'swish' ? 360 : 560;
+    if (!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) { done(); return; }
+    const anim = element.animate(frames, { duration, easing: style === 'swish' ? 'cubic-bezier(.2,.9,.3,1)' : 'cubic-bezier(.35,.1,.2,1)', fill: 'forwards' });
+    anim.finished.then(done).catch(done);
+  }
+
+  const ShotStats = {
+    startedAt: 0, attempts: 0, hits: 0, misses: 0, streak: 0, bestStreak: 0,
+    begin() { if (!this.startedAt) this.startedAt = Date.now(); this.attempts += 1; return this.attempts; },
+    finish(shotNumber, hit) {
+      if (!shotNumber) return;
+      if (hit) { this.hits++; this.streak++; this.bestStreak = Math.max(this.bestStreak, this.streak); }
+      else { this.misses++; this.streak = 0; }
+      if (shotNumber % 10 === 0) {
+        const rate = this.attempts ? Math.round((this.hits / this.attempts) * 100) : 0;
+        const elapsed = Math.max(0, Date.now() - this.startedAt);
+        const m = Math.floor(elapsed / 60000), sec = Math.floor((elapsed % 60000) / 1000);
+        Utils.showToast(`${this.attempts} shots · ${this.hits} hits · ${rate}% · streak ${this.streak} · ${m}:${String(sec).padStart(2,'0')}`, 'info', true);
+      }
+    }
+  };
+
+  const oldTableInitV13 = PhotoTable.init.bind(PhotoTable);
+  PhotoTable.init = function() {
+    oldTableInitV13();
+    FlingFX.ensure(this.elements.root, 'table');
+    this.setupRoundTargetsV13();
+  };
+  PhotoTable.setupRoundTargetsV13 = function() {
+    const root = this.elements.root;
+    const layer = document.getElementById('photo-table-stacks');
+    if (!layer || layer.dataset.physicsReady === '1') { TargetLayout.apply(root); return; }
+    layer.dataset.physicsReady = '1';
+    const labels = { in: 'INBOX', out: 'MAYBE', priority: 'KEEP', trash: 'TRASH' };
+    [...layer.querySelectorAll('[data-table-pile]')].forEach(oldButton => { const clone = oldButton.cloneNode(true); oldButton.replaceWith(clone); });
+    layer.querySelectorAll('[data-table-pile]').forEach(button => {
+      const name = button.dataset.tablePile;
+      button.innerHTML = `<span class="orbital-target-label">${labels[name]}</span><span class="orbital-target-count">0</span>`;
+      let drag = null;
+      button.addEventListener('pointerdown', event => {
+        if (this.pointer) return;
+        event.preventDefault(); event.stopPropagation();
+        const r = button.getBoundingClientRect();
+        drag = { id: event.pointerId, startX:event.clientX, startY:event.clientY, dx: event.clientX - (r.left + r.width/2), dy: event.clientY - (r.top + r.height/2), moved:false };
+        button.setPointerCapture?.(event.pointerId);
+        button.classList.add('target-moving');
+      });
+      button.addEventListener('pointermove', event => {
+        if (!drag || drag.id !== event.pointerId) return;
+        event.preventDefault(); event.stopPropagation();
+        if (Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)>4) drag.moved=true;
+        TargetLayout.set(name, (event.clientX - drag.dx) / innerWidth, (event.clientY - drag.dy) / innerHeight);
+      });
+      const end = event => {
+        if (!drag || drag.id !== event.pointerId) return;
+        event.preventDefault(); event.stopPropagation(); button._targetMoved=drag.moved; drag = null; button.classList.remove('target-moving');
+        setTimeout(()=>{button._targetMoved=false;},0);
+      };
+      button.addEventListener('pointerup', end); button.addEventListener('pointercancel', end);
+      button.addEventListener('click', event => {
+        event.preventDefault(); event.stopPropagation(); if(button._targetMoved)return;
+        const files=state.stacks[name]||[]; if(!files.length)return; this.stackName=name; state.currentStack=name; this.currentFileId=files[0].id; const limit=Math.min(32,innerWidth<700?16:24,files.length); this.deck=files.slice(limit).map(f=>f.id); this.build(files.slice(0,limit)); this.updateCount(); this.refreshPiles(); this.updateFavorite?.();
+      });
+    });
+    TargetLayout.apply(root);
+  };
+  PhotoTable.refreshPiles = function() {
+    const labels = { in: 'INBOX', out: 'MAYBE', priority: 'KEEP', trash: 'TRASH' };
+    this.elements.root.querySelectorAll('[data-table-pile]').forEach(button => {
+      const name = button.dataset.tablePile;
+      button.classList.toggle('active', name === this.stackName);
+      button.innerHTML = `<span class="orbital-target-label">${labels[name]}</span><span class="orbital-target-count">${state.stacks[name]?.length || 0}</span>`;
+    });
+    TargetLayout.apply(this.elements.root);
+  };
+  PhotoTable.spawnPhotoV13 = function(file, index = this.photos.length) {
+    if (!file || this.photos.some(p => p.fileId === file.id)) return null;
+    const w = Math.max(82, Math.min(138, innerWidth * .14)), h = w * 1.27;
+    const cols = Math.max(2, Math.floor((innerWidth - 26) / (w + 12)));
+    const col = index % cols, row = Math.floor(index / cols);
+    const seed = this.hash(file.id);
+    const x = Math.max(8, Math.min(innerWidth - w - 8, 12 + col * ((innerWidth - w - 24) / Math.max(1, cols - 1)) + ((seed % 13) - 6)));
+    const yBase = Math.max(innerHeight * .34, 205);
+    const y = Math.max(yBase, Math.min(innerHeight - h - 18, yBase + row * (h * .72) + (((seed >> 4) % 15) - 7)));
+    const element = document.createElement('button');
+    element.type = 'button'; element.className = 'photo-table__print'; element.dataset.fileId = file.id; element.setAttribute('aria-label', file.name || 'Photo');
+    const img = document.createElement('img'); img.alt = ''; img.draggable = false; element.appendChild(img); this.elements.surface.appendChild(element);
+    const photo = { fileId: file.id, x, y, homeX: x, homeY: y, rotation: ((seed % 11) - 5) * .55, homeRotation: 0, scale: 1, zIndex: ++this.z, velocityX: 0, velocityY: 0, angularVelocity: 0, state: 'resting', element, shotPending: false };
+    photo.homeRotation = photo.rotation;
+    this.photos.push(photo); this.paint(photo); OrbitalImageCache.attach(img, file, 'thumb');
+    element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.handleTap(photo, performance.now()); } });
+    return photo;
+  };
+  PhotoTable.build = function(files) {
+    this.elements.surface.replaceChildren(); this.photos = []; this.z = 1;
+    files.forEach((file, index) => this.spawnPhotoV13(file, index));
+    this.refreshPiles(); this.updateFavorite?.();
+  };
+  PhotoTable.beginShotV13 = function(photo) { photo.shotPending = true; photo.shotNumber = ShotStats.begin(); };
+  PhotoTable.finishShotV13 = function(photo, hit) { if (!photo?.shotPending) return; photo.shotPending = false; ShotStats.finish(photo.shotNumber, hit); };
+  PhotoTable.down = function(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    const photo = this.findElement(event); if (!photo || photo.state === 'capturing') return;
+    clearTimeout(this.tapTimer); this.photos.forEach(p => p.element.classList.remove('armed'));
+    this.currentFileId = photo.fileId; this.updateCount(); this.updateFavorite?.(); photo.zIndex = ++this.z; photo.state = 'held'; photo.scale = 1.08; photo.element.classList.add('held','armed');
+    const now = performance.now(); this.pointer = { id: event.pointerId, photo, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, startTime: now, samples: [{x:event.clientX,y:event.clientY,t:now}] };
+    photo.element.setPointerCapture?.(event.pointerId); this.paint(photo); FlingFX.ensure(this.elements.root,'table'); FlingFX.trail('table', event.clientX, event.clientY); state.haptic?.triggerFeedback('buttonPress'); this.requestFrame();
+  };
+  PhotoTable.move = function(event) {
+    const p = this.pointer; if (!p || p.id !== event.pointerId) return;
+    event.preventDefault(); const dx = event.clientX - p.x, dy = event.clientY - p.y;
+    p.photo.x += dx; p.photo.y += dy; p.x = event.clientX; p.y = event.clientY;
+    p.samples.push({x:p.x,y:p.y,t:performance.now()}); if (p.samples.length > 7) p.samples.shift();
+    FlingFX.trail('table', p.x, p.y, dx, dy); this.paint(p.photo); this.requestFrame();
+  };
+  PhotoTable.up = function(event) {
+    const p = this.pointer; if (!p || p.id !== event.pointerId) return; this.pointer = null;
+    const photo = p.photo; photo.element.classList.remove('held'); photo.scale = 1;
+    const distance = Math.hypot(event.clientX - p.startX, event.clientY - p.startY), duration = performance.now() - p.startTime;
+    if (distance < 10 && duration < 300) { photo.state = 'resting'; this.handleTap(photo, event.timeStamp); this.paint(photo); return; }
+    const sample = p.samples[Math.max(0, p.samples.length - 4)] || p.samples[0];
+    const dt = Math.max(16, performance.now() - sample.t); const vx = (event.clientX - sample.x) / dt * 16, vy = (event.clientY - sample.y) / dt * 16;
+    photo.homeX = photo.x; photo.homeY = photo.y; photo.state = 'thrown'; photo.velocityX = vx; photo.velocityY = vy; photo.angularVelocity = Math.max(-4.5, Math.min(4.5, vx * .055));
+    this.beginShotV13(photo); this.requestFrame();
+  };
+  PhotoTable.cancelPointer = function() {
+    if (!this.pointer) return; const p = this.pointer.photo; p.state = 'resting'; p.element.classList.remove('held'); this.pointer = null; this.paint(p);
+  };
+  PhotoTable.hitTargetV13 = function(photo) {
+    const targets = targetGeometry(this.elements.root, '[data-table-pile]');
+    const w = photo.element.offsetWidth, h = photo.element.offsetHeight, cx = photo.x + w/2, cy = photo.y + h/2;
+    const corners = cornersFor(photo);
+    for (const target of targets) {
+      const centerDistance = Math.hypot(cx - target.x, cy - target.y);
+      const cornerDistance = Math.min(...corners.map(c => Math.hypot(c.x - target.x, c.y - target.y)));
+      if (centerDistance < target.radius * .68 || cornerDistance < target.radius * .62) return { target, mode: 'capture', centerDistance, cornerDistance };
+      if (centerDistance < target.radius + Math.min(w,h) * .28 || cornerDistance < target.radius + 8) return { target, mode: 'rim', centerDistance, cornerDistance };
+    }
+    return null;
+  };
+  PhotoTable.startRimV13 = function(photo, hit) {
+    const t = hit.target; const speed = Math.hypot(photo.velocityX, photo.velocityY);
+    photo.state = 'rim'; photo.rimTarget = t.stack; photo.rimAngle = Math.atan2((photo.y + photo.element.offsetHeight/2) - t.y, (photo.x + photo.element.offsetWidth/2) - t.x);
+    photo.rimRadius = t.radius + Math.min(photo.element.offsetWidth, photo.element.offsetHeight) * .18;
+    photo.rimSpin = (photo.velocityX * (photo.y - t.y) - photo.velocityY * (photo.x - t.x)) >= 0 ? .11 : -.11;
+    photo.rimFrames = 0; photo.rimDrop = Math.random() < Math.max(.28, Math.min(.82, .34 + speed / 48));
+    FlingFX.impact('table', t.x, t.y);
+  };
+  PhotoTable.captureV13 = function(photo, target, style) {
+    if (photo.state === 'capturing') return; photo.state = 'capturing'; photo.element.classList.remove('armed');
+    FlingFX.impact('table', target.x, target.y); this.requestFrame();
+    animateCaptureElement(photo.element, target, style, () => this.commitCapturedV13(photo, target.stack));
+  };
+  PhotoTable.commitCapturedV13 = async function(photo, targetStack) {
+    try {
+      let sourceStack = null, index = -1;
+      for (const name of STACKS) { const i = (state.stacks[name] || []).findIndex(file => file.id === photo.fileId); if (i >= 0) { sourceStack = name; index = i; break; } }
+      if (sourceStack && index >= 0) {
+        state.currentStack = sourceStack; state.currentStackPosition = index;
+        await Core.moveToStack(targetStack, { source: 'table:physics' });
+      }
+      this.finishShotV13(photo, true);
+      photo.element.remove(); this.photos = this.photos.filter(p => p !== photo);
+      this.currentFileId = this.photos.at(-1)?.fileId || null;
+      while (this.deck?.length && this.photos.length < Math.min(32, innerWidth < 700 ? 16 : 24)) {
+        const nextId = this.deck.shift(); const file = state.imageFiles.find(item => item.id === nextId); if (file) { this.spawnPhotoV13(file, this.photos.length); break; }
+      }
+      this.updateCount(); this.refreshPiles(); this.updateFavorite?.();
+    } catch (error) { Utils.showToast(`Table fling failed: ${error.message}`, 'error', true); }
+  };
+  PhotoTable.animate = function() {
+    this.frameId = null; let active = FlingFX.draw('table');
+    for (const p of this.photos) {
+      if (p.state === 'rim') {
+        active = true; const target = targetGeometry(this.elements.root, '[data-table-pile]').find(t => t.stack === p.rimTarget);
+        if (!target) { p.state = 'thrown'; continue; }
+        p.rimFrames++; p.rimAngle += p.rimSpin; const cx = target.x + Math.cos(p.rimAngle) * p.rimRadius, cy = target.y + Math.sin(p.rimAngle) * p.rimRadius;
+        p.x = cx - p.element.offsetWidth/2; p.y = cy - p.element.offsetHeight/2; p.rotation += p.rimSpin * 32; FlingFX.trail('table', cx, cy, 0, 0); this.paint(p);
+        if (p.rimFrames > 34) {
+          if (p.rimDrop) this.captureV13(p, target, 'rim');
+          else { const nx = Math.cos(p.rimAngle), ny = Math.sin(p.rimAngle); p.state = 'thrown'; p.velocityX = nx * (7 + Math.random()*4); p.velocityY = ny * (7 + Math.random()*4); p.angularVelocity *= -.7; p.rimTarget = null; p.rimCooldown = 12; }
+        }
+        continue;
+      }
+      if (p.state !== 'thrown') continue;
+      active = true; p.x += p.velocityX; p.y += p.velocityY; p.rotation += p.angularVelocity;
+      const cx = p.x + p.element.offsetWidth/2, cy = p.y + p.element.offsetHeight/2; FlingFX.trail('table', cx, cy, p.velocityX, p.velocityY);
+      if (p.rimCooldown) p.rimCooldown--;
+      const hit = this.hitTargetV13(p);
+      if (hit?.mode === 'capture') { this.captureV13(p, hit.target, captureStyle(hit.centerDistance, hit.target.radius, hit.cornerDistance)); continue; }
+      if (hit?.mode === 'rim' && !p.rimCooldown) { this.startRimV13(p, hit); continue; }
+      const maxX = innerWidth - p.element.offsetWidth, maxY = innerHeight - p.element.offsetHeight;
+      if (p.x < 0) { p.x = 0; p.velocityX = Math.abs(p.velocityX) * .72; }
+      else if (p.x > maxX) { p.x = maxX; p.velocityX = -Math.abs(p.velocityX) * .72; }
+      if (p.y < 48) { p.y = 48; p.velocityY = Math.abs(p.velocityY) * .72; }
+      else if (p.y > maxY) { p.y = maxY; p.velocityY = -Math.abs(p.velocityY) * .72; }
+      p.velocityX *= .975; p.velocityY *= .975; p.angularVelocity *= .965;
+      if (Math.hypot(p.velocityX,p.velocityY) < .42) { p.state = 'resting'; p.homeX = p.x; p.homeY = p.y; this.finishShotV13(p, false); }
+      this.paint(p);
+    }
+    if (active) this.requestFrame();
+  };
+
+  function ensureExploreTargets() {
+    const root = document.getElementById('spatial-gallery'); if (!root || root.querySelector('.orbital-explore-targets')) return;
+    const layer = document.createElement('div'); layer.className = 'orbital-explore-targets';
+    const labels = { in:'INBOX', out:'MAYBE', priority:'KEEP', trash:'TRASH' };
+    ['in','out','priority','trash'].forEach(name => { const el = document.createElement('div'); el.className = 'orbital-explore-target'; el.dataset.exploreTarget = name; el.innerHTML = `<span>${labels[name]}</span><strong>${state.stacks[name]?.length || 0}</strong>`; layer.appendChild(el); });
+    root.appendChild(layer); TargetLayout.apply(root); FlingFX.ensure(root,'explore');
+  }
+  function refreshExploreTargets() {
+    const root = document.getElementById('spatial-gallery'); if (!root) return;
+    root.querySelectorAll('[data-explore-target]').forEach(el => { const name = el.dataset.exploreTarget; const strong = el.querySelector('strong'); if (strong) strong.textContent = state.stacks[name]?.length || 0; });
+    TargetLayout.apply(root);
+  }
+  function showExploreTargets(show) { document.querySelector('.orbital-explore-targets')?.classList.toggle('visible', Boolean(show)); }
+
+  const oldSpatialInitV13 = SpatialGallery.init.bind(SpatialGallery);
+  const oldSpatialDownV13 = SpatialGallery.onPointerDown.bind(SpatialGallery);
+  const oldSpatialMoveV13 = SpatialGallery.onPointerMove.bind(SpatialGallery);
+  const oldSpatialUpV13 = SpatialGallery.onPointerUp.bind(SpatialGallery);
+  SpatialGallery.init = function() { oldSpatialInitV13(); ensureExploreTargets(); };
+  SpatialGallery._flingActive = false;
+  SpatialGallery.onPointerDown = function(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    const el = event.target.closest('.spatial-gallery__card');
+    if (!el) { this._gestureOwner = 'sphere'; return oldSpatialDownV13(event); }
+    event.preventDefault(); this._gestureOwner = 'card'; this.velocityX = 0; this.velocityY = 0;
+    if (this.frameId) { cancelAnimationFrame(this.frameId); this.frameId = null; }
+    const index = this.cards.findIndex(c => c.element === el); if (index < 0) return;
+    this.select(index); el.classList.add('armed');
+    const rect = el.getBoundingClientRect(); const record = this.cards[index];
+    record.detached = true; record.originalNext = el.nextSibling;
+    el.style.position = 'fixed'; el.style.left = `${rect.left}px`; el.style.top = `${rect.top}px`; el.style.width = `${rect.width}px`; el.style.height = `${rect.height}px`; el.style.transform = 'none'; el.style.opacity = '1'; el.style.filter = 'none'; el.style.zIndex = '1505';
+    this.elements.root.appendChild(el);
+    const now = performance.now(); this._cardGesture = { id:event.pointerId, record, index, x:event.clientX, y:event.clientY, startX:event.clientX, startY:event.clientY, startTime:now, samples:[{x:event.clientX,y:event.clientY,t:now}] };
+    el.setPointerCapture?.(event.pointerId); showExploreTargets(true); refreshExploreTargets(); FlingFX.trail('explore',event.clientX,event.clientY); this.requestFlingFrame();
+  };
+  SpatialGallery.onPointerMove = function(event) {
+    if (this._gestureOwner !== 'card') return oldSpatialMoveV13(event);
+    const g = this._cardGesture; if (!g || g.id !== event.pointerId) return; event.preventDefault();
+    const dx = event.clientX - g.x, dy = event.clientY - g.y; g.x = event.clientX; g.y = event.clientY;
+    const el = g.record.element; el.style.left = `${parseFloat(el.style.left) + dx}px`; el.style.top = `${parseFloat(el.style.top) + dy}px`;
+    g.samples.push({x:g.x,y:g.y,t:performance.now()}); if(g.samples.length>7)g.samples.shift(); FlingFX.trail('explore',g.x,g.y,dx,dy); this.requestFlingFrame();
+  };
+  SpatialGallery.onPointerUp = function(event) {
+    if (this._gestureOwner !== 'card') return oldSpatialUpV13(event);
+    const g = this._cardGesture; if (!g || g.id !== event.pointerId) return; event.preventDefault();
+    this._cardGesture = null; this._gestureOwner = null; const distance = Math.hypot(event.clientX-g.startX,event.clientY-g.startY), duration = performance.now()-g.startTime;
+    if (distance < 10 && duration < 300) { this.returnCardToSphereV13(g.record); this.center(g.index); showExploreTargets(false); return; }
+    const sample = g.samples[Math.max(0,g.samples.length-4)] || g.samples[0], dt = Math.max(16,performance.now()-sample.t);
+    const vx = (event.clientX-sample.x)/dt*16, vy = (event.clientY-sample.y)/dt*16;
+    this._projectile = { record:g.record, index:g.index, vx, vy, rotation:0, started:performance.now(), rim:null, shotNumber:ShotStats.begin() };
+    this._flingActive = true; this.requestFlingFrame();
+  };
+  SpatialGallery.returnCardToSphereV13 = function(record) {
+    const el = record.element; record.detached = false; el.classList.remove('armed');
+    el.style.position='';el.style.left='';el.style.top='';el.style.width='';el.style.height='';el.style.transform='';el.style.opacity='';el.style.filter='';el.style.zIndex='';
+    if (record.originalNext?.parentNode === this.elements.scene) this.elements.scene.insertBefore(el, record.originalNext); else this.elements.scene.appendChild(el);
+    this.updateVectors(); this.requestFrame();
+  };
+  SpatialGallery.requestFlingFrame = function() { if (!this._flingFrame) this._flingFrame = requestAnimationFrame(t => this.animateFlingV13(t)); };
+  SpatialGallery.animateFlingV13 = function() {
+    this._flingFrame = null; let activeFx = FlingFX.draw('explore'); const p = this._projectile;
+    if (!p) { if (activeFx) this.requestFlingFrame(); return; }
+    const el = p.record.element, rect = el.getBoundingClientRect(); let x = rect.left + p.vx, y = rect.top + p.vy; p.rotation += p.vx * .05;
+    el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.transform = `rotate(${p.rotation}deg)`; FlingFX.trail('explore',x+rect.width/2,y+rect.height/2,p.vx,p.vy);
+    const targets = targetGeometry(this.elements.root,'[data-explore-target]'); let hit = null;
+    const cx=x+rect.width/2, cy=y+rect.height/2;
+    for(const t of targets){const d=Math.hypot(cx-t.x,cy-t.y);if(d<t.radius*.86){hit={target:t,d};break;}if(d<t.radius+18&&Math.random()<.08){p.vx*=-.72;p.vy*=-.72;FlingFX.impact('explore',t.x,t.y);}}
+    if(hit){
+      this._projectile=null; this._flingActive=false; FlingFX.impact('explore',hit.target.x,hit.target.y);
+      animateCaptureElement(el,hit.target,captureStyle(hit.d,hit.target.radius,hit.d),async()=>{ShotStats.finish(p.shotNumber,true);const currentIndex=this.cards.findIndex(c=>c===p.record);if(currentIndex>=0)await this.dealCard(currentIndex,hit.target.stack);refreshExploreTargets();showExploreTargets(false);this.velocityX=0;this.velocityY=0;this.requestFrame();});
+      if(activeFx)this.requestFlingFrame(); return;
+    }
+    const maxX=innerWidth-rect.width,maxY=innerHeight-rect.height;
+    if(x<0){x=0;p.vx=Math.abs(p.vx)*.72;el.style.left='0px';}else if(x>maxX){x=maxX;p.vx=-Math.abs(p.vx)*.72;el.style.left=`${x}px`;}
+    if(y<0){y=0;p.vy=Math.abs(p.vy)*.72;el.style.top='0px';}else if(y>maxY){y=maxY;p.vy=-Math.abs(p.vy)*.72;el.style.top=`${y}px`;}
+    p.vx*=.976;p.vy*=.976;
+    if(Math.hypot(p.vx,p.vy)<.38||performance.now()-p.started>3800){ShotStats.finish(p.shotNumber,false);this._projectile=null;this._flingActive=false;this.returnCardToSphereV13(p.record);showExploreTargets(false);this.velocityX=0;this.velocityY=0;this.requestFrame();}
+    if(this._projectile||activeFx)this.requestFlingFrame();
+  };
+
+  const oldSpatialCloseV13 = SpatialGallery.close.bind(SpatialGallery);
+  SpatialGallery.close = function(options = {}) {
+    if (this._flingFrame) cancelAnimationFrame(this._flingFrame); this._flingFrame = null; this._projectile = null; this._flingActive = false; showExploreTargets(false);
+    return oldSpatialCloseV13(options);
+  };
+
+  const oldTableOpenV13 = PhotoTable.open.bind(PhotoTable);
+  PhotoTable.open = function(options) { const result = oldTableOpenV13(options); TargetLayout.apply(this.elements.root); this.refreshPiles(); return result; };
+
+  const oldPhotoTableCloseV13 = PhotoTable.close.bind(PhotoTable);
+  PhotoTable.close = function(options = {}) { if (this.frameId) cancelAnimationFrame(this.frameId); this.frameId = null; return oldPhotoTableCloseV13(options); };
+
+  const installVersionLabel = () => document.querySelectorAll('.footer-baseline').forEach(el => { el.textContent = `Orbital8 UI · ${VERSION}`; });
+  document.addEventListener('DOMContentLoaded', installVersionLabel, { once: true });
+  state.syncLog?.log?.({ event: 'ui:v13-installed', level: 'info', details: 'Shared image cache, exact hot-resume, keyed Grid tiles, and physics sorting installed.' });
+})();
+
+</script>
 </body>
 </html>
