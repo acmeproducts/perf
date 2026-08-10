@@ -15,10 +15,10 @@ if not match:
     raise SystemExit('could not extract v1.2 override payload')
 override = match.group(1)
 
-if text.count('</body>') != 1:
-    raise SystemExit('expected exactly one </body>')
-
-text = text.replace('</body>', override + '\n</body>', 1)
+close_at = text.rfind('</body>')
+if close_at < 0:
+    raise SystemExit('missing document </body>')
+text = text[:close_at] + override + '\n' + text[close_at:]
 
 required = [
     MARKER,
