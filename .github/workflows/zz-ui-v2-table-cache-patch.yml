@@ -1,0 +1,165 @@
+name: temporary-ui-v2-table-cache-patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/zz-ui-v2-table-cache-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch ui-v2
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path("ui-v2.html")
+          text=path.read_text(encoding="utf-8")
+          marker='<!-- Orbital8 v1.2 table/cache interaction patch -->'
+          if marker in text:
+              raise SystemExit("v1.2 patch already present")
+          override='''<!-- Orbital8 v1.2 table/cache interaction patch -->
+<style id="orbital8-v12-table-cache-style">
+  .spatial-gallery__hint,
+  .spatial-gallery__destination { display:none !important; }
+  .spatial-gallery__card.armed {
+    border-color:#fbbf24 !important;
+    box-shadow:0 0 0 5px rgba(251,191,36,.72),0 0 30px rgba(251,191,36,.6),0 22px 48px rgba(0,0,0,.56) !important;
+  }
+  .photo-table { background:radial-gradient(circle at 50% 52%,#17221c 0,#0d130f 62%,#070907 100%); }
+  .photo-table__surface { inset:0; }
+  .photo-table__stacks {
+    position:absolute; z-index:1100; top:20vh; left:2vw; right:2vw;
+    display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; pointer-events:auto;
+  }
+  .photo-table__stack {
+    min-height:82px; padding:8px; border:1px solid rgba(255,255,255,.22); border-radius:14px;
+    background:rgba(15,23,42,.82); color:#fff; backdrop-filter:blur(10px); overflow:hidden; touch-action:manipulation;
+  }
+  .photo-table__stack.active { border-color:#93c5fd; box-shadow:0 0 0 2px rgba(147,197,253,.32); }
+  .photo-table__stack.drop-target { border-color:#fbbf24; box-shadow:0 0 0 4px rgba(251,191,36,.4); transform:translateY(-2px); }
+  .photo-table__stack-title { display:flex; justify-content:space-between; gap:6px; font:700 11px/1.1 system-ui,sans-serif; }
+  .photo-table__stack-pile { position:relative; height:46px; margin-top:5px; }
+  .photo-table__stack-pile img { position:absolute; top:3px; width:38px; height:38px; object-fit:cover; border-radius:5px; border:1px solid rgba(255,255,255,.75); box-shadow:0 3px 8px rgba(0,0,0,.5); }
+  .photo-table__stack-pile img:nth-child(1){left:3px;transform:rotate(-5deg)}
+  .photo-table__stack-pile img:nth-child(2){left:18px;transform:rotate(4deg)}
+  .photo-table__stack-pile img:nth-child(3){left:33px;transform:rotate(-2deg)}
+  .photo-table__stack-pile img:nth-child(4){left:48px;transform:rotate(5deg)}
+  .photo-table__stack-pile img:nth-child(5){left:63px;transform:rotate(-4deg)}
+  .photo-table__destination { display:none !important; }
+  .photo-table__print { width:clamp(82px,14vw,138px); height:clamp(106px,18vw,176px); border:3px solid rgba(255,255,255,.55); border-radius:8px; transition:transform 160ms ease,box-shadow 160ms ease,border-color 120ms ease,filter 160ms ease; }
+  .photo-table__print.held,.photo-table__print.armed { border-color:#fbbf24 !important; box-shadow:0 0 0 5px rgba(251,191,36,.7),0 0 30px rgba(251,191,36,.55),0 18px 34px rgba(0,0,0,.72) !important; }
+  .photo-table__print.examining { border-color:#93c5fd !important; }
+  .photo-table__favorite { position:absolute; z-index:1300; left:50%; bottom:max(38px,calc(env(safe-area-inset-bottom) + 26px)); transform:translateX(-50%); width:66px; height:66px; border:0; border-radius:999px; background:rgba(15,23,42,.64); color:#9ca3af; font-size:34px; line-height:1; backdrop-filter:blur(10px); }
+  .photo-table__favorite.is-favorite { color:#ef4444; }
+  .photo-table__viewer { position:fixed; inset:0; z-index:16000; display:grid; place-items:center; background:rgba(0,0,0,.92); padding:18px; }
+  .photo-table__viewer[hidden]{display:none}
+  .photo-table__viewer img { max-width:96vw; max-height:94vh; object-fit:contain; }
+  .photo-table__viewer-close { position:fixed; z-index:16001; top:max(14px,env(safe-area-inset-top)); right:max(14px,env(safe-area-inset-right)); width:48px; height:48px; border:1px solid rgba(255,255,255,.4); border-radius:999px; background:rgba(15,23,42,.85); color:#fff; font:700 28px/1 system-ui,sans-serif; }
+  @media(max-width:640px){
+    .photo-table__stacks{gap:5px;left:1vw;right:1vw}
+    .photo-table__stack{min-height:72px;padding:6px}
+    .photo-table__stack-title{font-size:9px}
+    .photo-table__stack-pile{height:38px}
+    .photo-table__stack-pile img{width:31px;height:31px}
+    .photo-table__stack-pile img:nth-child(2){left:13px}.photo-table__stack-pile img:nth-child(3){left:23px}.photo-table__stack-pile img:nth-child(4){left:33px}.photo-table__stack-pile img:nth-child(5){left:43px}
+  }
+</style>
+<script id="orbital8-v12-table-cache-script">
+(() => {
+  const VERSION='v1.2 table-cache';
+  ExploreThumbnailCache.objectUrlsByKey=ExploreThumbnailCache.objectUrlsByKey||new Map();
+  ExploreThumbnailCache.inFlightByKey=ExploreThumbnailCache.inFlightByKey||new Map();
+  ExploreThumbnailCache.loadStable=async function(img,file,isValid=()=>true){
+    if(!img||!file||!isValid())return;
+    const key=`${state.providerType||'provider'}:${file.id}`;
+    const url=Utils.getPreferredImageUrl(file)||file.thumbnailLink||file.downloadUrl||'';
+    if(!url)return;
+    const memory=this.objectUrlsByKey.get(key);
+    if(memory){memory.used=Date.now();if(isValid()&&img.isConnected)img.src=memory.src;return;}
+    let pending=this.inFlightByKey.get(key);
+    if(!pending){
+      pending=(async()=>{const db=await this.open();let record=db&&await this.request(db,'readonly',store=>store.get(key));
+        if(!record){const response=await fetch(url,{credentials:'same-origin'});if(!response.ok)throw new Error(`thumbnail ${response.status}`);record={url:key,blob:await response.blob(),used:Date.now(),sourceUrl:url};if(db)this.request(db,'readwrite',store=>store.put(record));}
+        else{record.used=Date.now();if(db)this.request(db,'readwrite',store=>store.put(record));}
+        return record.blob;})();
+      this.inFlightByKey.set(key,pending);pending.finally(()=>this.inFlightByKey.delete(key));
+    }
+    try{const blob=await pending;if(!blob||!isValid()||!img.isConnected)return;let value=this.objectUrlsByKey.get(key);if(!value){value={src:URL.createObjectURL(blob),used:Date.now()};this.objectUrlsByKey.set(key,value);}img.src=value.src;}
+    catch(_){if(isValid()&&img.isConnected)img.src=url;}
+  };
+  ExploreThumbnailCache.releaseUnused=function(){};
+
+  const oldSpatialInit=SpatialGallery.init.bind(SpatialGallery);
+  SpatialGallery.init=function(){oldSpatialInit();this.elements.root.querySelector('.spatial-gallery__hint')?.remove();this.elements.root.querySelectorAll('.spatial-gallery__destination').forEach(el=>el.remove());};
+  SpatialGallery.appendPage=function(){
+    const start=this.cards.length,end=Math.min(this.files.length,start+this.pageSize);
+    for(let index=start;index<end;index++){
+      const file=this.files[index],card=document.createElement('button');card.type='button';card.className=`spatial-gallery__card${index===this.selectedIndex?' selected':''}`;card.setAttribute('aria-pressed',index===this.selectedIndex?'true':'false');card.setAttribute('aria-label',`Select ${file.name||`image ${index+1}`}`);card.dataset.fileId=file.id;
+      const img=document.createElement('img');img.alt=file.name||'';img.loading=index<18?'eager':'lazy';img.decoding='async';img.draggable=false;card.appendChild(img);
+      card.addEventListener('click',event=>{if(card.dataset.moved==='true'||event.detail!==0)return;clearTimeout(this.tapTimer);this.tapTimer=setTimeout(()=>this.center(this.cards.findIndex(item=>item.element===card)),320);});
+      this.elements.scene.appendChild(card);this.cards.push({element:card,vector:null,fileId:file.id});const generation=this.loadGeneration;ExploreThumbnailCache.loadStable(img,file,()=>generation===this.loadGeneration&&!this.elements.root.hidden&&img.isConnected);
+    }
+    this.updateVectors();this.requestFrame();this.scheduleNextPage();
+  };
+  const oldSpatialDown=SpatialGallery.onPointerDown.bind(SpatialGallery);
+  SpatialGallery.onPointerDown=function(event){oldSpatialDown(event);if(this.pressedCard)this.pressedCard.classList.add('armed');};
+  SpatialGallery.dealCard=async function(index,targetStack){
+    const file=this.files[index];if(!file||targetStack===state.currentStack)return;const source=state.stacks[state.currentStack]||[],stackIndex=source.findIndex(item=>item.id===file.id);if(stackIndex<0)return;state.currentStackPosition=stackIndex;await Core.moveToStack(targetStack,{source:'explore:flick'});
+    const removed=this.cards[index];removed?.element.remove();this.cards.splice(index,1);this.files=(state.stacks[state.currentStack]||[]).slice(0,this.imageLimit);this.selectedIndex=Math.min(index,Math.max(0,this.files.length-1));if(!this.files.length){ModeNavigation.exit();return;}this.updateVectors();this.appendPage();this.updateControlLabels();this.updateChrome();this.requestFrame();
+  };
+
+  function ensureTableChrome(){
+    const root=document.getElementById('photo-table');if(!root||document.getElementById('photo-table-stacks'))return;
+    const stacks=document.createElement('div');stacks.id='photo-table-stacks';stacks.className='photo-table__stacks';['in','out','priority','trash'].forEach(name=>{const button=document.createElement('button');button.type='button';button.className='photo-table__stack';button.dataset.tablePile=name;stacks.appendChild(button);});root.appendChild(stacks);
+    const favorite=document.createElement('button');favorite.id='photo-table-favorite';favorite.type='button';favorite.className='photo-table__favorite';favorite.setAttribute('aria-label','Favorite armed image');favorite.textContent='♥';root.appendChild(favorite);
+    const viewer=document.createElement('div');viewer.id='photo-table-viewer';viewer.className='photo-table__viewer';viewer.hidden=true;viewer.innerHTML='<button type="button" class="photo-table__viewer-close" aria-label="Close full size">×</button><img alt="">';root.appendChild(viewer);
+  }
+  PhotoTable.refreshPiles=function(){
+    const labels={in:'INBOX',out:'MAYBE',priority:'KEEP',trash:'TRASH'};this.elements.root.querySelectorAll('[data-table-pile]').forEach(button=>{const name=button.dataset.tablePile,files=state.stacks[name]||[];button.classList.toggle('active',name===this.stackName);button.innerHTML=`<span class="photo-table__stack-title"><span>${labels[name]}</span><span>${files.length}</span></span><span class="photo-table__stack-pile"></span>`;const pile=button.querySelector('.photo-table__stack-pile');files.slice(-5).forEach(file=>{const img=document.createElement('img');img.alt='';img.draggable=false;pile.appendChild(img);ExploreThumbnailCache.loadStable(img,file,()=>button.isConnected&&!this.elements.root.hidden);});});
+  };
+  PhotoTable.updateFavorite=function(){const button=document.getElementById('photo-table-favorite'),file=state.imageFiles.find(f=>f.id===this.currentFileId);if(!button)return;button.classList.toggle('is-favorite',Utils.isFavorite(file));button.setAttribute('aria-pressed',String(Utils.isFavorite(file)));};
+  PhotoTable.openFullSize=function(photo){const viewer=document.getElementById('photo-table-viewer'),source=photo?.element.querySelector('img')?.src;if(!viewer||!source)return;viewer.querySelector('img').src=source;viewer.hidden=false;};
+  PhotoTable.closeFullSize=function(){const viewer=document.getElementById('photo-table-viewer');if(viewer)viewer.hidden=true;};
+
+  const oldTableInit=PhotoTable.init.bind(PhotoTable);
+  PhotoTable.init=function(){ensureTableChrome();oldTableInit();
+    document.querySelectorAll('[data-table-pile]').forEach(button=>button.addEventListener('click',()=>{const name=button.dataset.tablePile,files=state.stacks[name]||[];if(!files.length)return;this.stackName=name;state.currentStack=name;this.currentFileId=files[0].id;this.build(files.slice(0,Math.min(32,innerWidth<700?16:24)));this.updateCount();this.refreshPiles();this.updateFavorite();}));
+    document.getElementById('photo-table-favorite')?.addEventListener('click',async()=>{const file=state.imageFiles.find(f=>f.id===this.currentFileId);if(!file)return;const next=!Utils.isFavorite(file);file.favorite=next;this.updateFavorite();try{await App.updateUserMetadata(file.id,{favorite:next},{providerSilent:true});}catch(error){file.favorite=!next;this.updateFavorite();Utils.showToast(`Favorite failed: ${error.message}`,'error',true);}});
+    document.querySelector('#photo-table-viewer .photo-table__viewer-close')?.addEventListener('click',()=>this.closeFullSize());document.getElementById('photo-table-viewer')?.addEventListener('click',event=>{if(event.target.id==='photo-table-viewer')this.closeFullSize();});
+  };
+  PhotoTable.build=function(files){
+    this.elements.surface.replaceChildren();this.photos=[];this.z=1;const w=Math.max(82,Math.min(138,innerWidth*.14)),h=w*1.27,cols=Math.max(2,Math.floor((innerWidth-24)/(w+12))),top=Math.max(innerHeight*.36,210);
+    files.forEach((file,index)=>{const col=index%cols,row=Math.floor(index/cols),x=12+col*((innerWidth-24-w)/Math.max(1,cols-1)),y=top+row*(h*.72),element=document.createElement('button');element.type='button';element.className='photo-table__print';element.dataset.fileId=file.id;element.setAttribute('aria-label',file.name||'Photo');const img=document.createElement('img');img.alt='';img.draggable=false;element.appendChild(img);this.elements.surface.appendChild(element);const photo={fileId:file.id,x,y,homeX:x,homeY:y,rotation:0,homeRotation:0,scale:1,zIndex:++this.z,velocityX:0,velocityY:0,angularVelocity:0,state:'resting',element};this.photos.push(photo);this.paint(photo);ExploreThumbnailCache.loadStable(img,file,()=>!this.elements.root.hidden&&img.isConnected);element.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();this.handleTap(photo,performance.now());}});});this.refreshPiles();this.updateFavorite();
+  };
+  PhotoTable.down=function(event){if(event.button!==undefined&&event.button!==0)return;const photo=this.findElement(event);if(!photo)return;clearTimeout(this.tapTimer);this.photos.forEach(p=>p.element.classList.remove('armed'));this.currentFileId=photo.fileId;this.updateCount();this.updateFavorite();photo.zIndex=++this.z;photo.state='held';photo.scale=1.08;photo.element.classList.add('held','armed');this.pointer={id:event.pointerId,photo,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,startTime:performance.now(),samples:[{x:event.clientX,y:event.clientY,t:performance.now()}]};photo.element.setPointerCapture?.(event.pointerId);this.paint(photo);state.haptic?.triggerFeedback('buttonPress');};
+  PhotoTable.move=function(event){const p=this.pointer;if(!p||p.id!==event.pointerId)return;event.preventDefault();const dx=event.clientX-p.x,dy=event.clientY-p.y;p.photo.x+=dx;p.photo.y+=dy;p.x=event.clientX;p.y=event.clientY;p.samples.push({x:p.x,y:p.y,t:performance.now()});if(p.samples.length>5)p.samples.shift();this.paint(p.photo);this.elements.root.querySelectorAll('[data-table-pile]').forEach(el=>{const r=el.getBoundingClientRect();el.classList.toggle('drop-target',event.clientX>=r.left&&event.clientX<=r.right&&event.clientY>=r.top&&event.clientY<=r.bottom);});};
+  PhotoTable.up=function(event){const p=this.pointer;if(!p||p.id!==event.pointerId)return;this.pointer=null;const photo=p.photo;photo.element.classList.remove('held');photo.scale=1;const distance=Math.hypot(event.clientX-p.startX,event.clientY-p.startY),duration=performance.now()-p.startTime;const target=[...this.elements.root.querySelectorAll('[data-table-pile]')].find(el=>{const r=el.getBoundingClientRect();return event.clientX>=r.left&&event.clientX<=r.right&&event.clientY>=r.top&&event.clientY<=r.bottom;});this.elements.root.querySelectorAll('[data-table-pile]').forEach(el=>el.classList.remove('drop-target'));if(target&&distance>18){this.commitToPile(photo,target.dataset.tablePile);return;}if(distance<10&&duration<300){this.handleTap(photo,event.timeStamp);return;}photo.state='resting';photo.homeX=photo.x;photo.homeY=photo.y;this.paint(photo);};
+  PhotoTable.handleTap=function(photo,time=performance.now()){const now=Number(time)||performance.now();if(this.lastTap&&this.lastTap.fileId===photo.fileId&&now-this.lastTap.time<330){clearTimeout(this.tapTimer);this.lastTap=null;this.openFullSize(photo);return;}this.lastTap={fileId:photo.fileId,time:now};clearTimeout(this.tapTimer);this.tapTimer=setTimeout(()=>{if(this.lastTap?.fileId===photo.fileId){this.examine(photo);this.lastTap=null;}},335);};
+  PhotoTable.commitToPile=async function(photo,target){if(!photo||!target||target===this.stackName){photo.state='resting';this.paint(photo);return;}photo.state='removed';const destination=document.querySelector(`[data-table-pile="${target}"]`);if(destination){const r=destination.getBoundingClientRect();photo.x=r.left+r.width/2-photo.element.offsetWidth/2;photo.y=r.top+r.height/2-photo.element.offsetHeight/2;photo.scale=.28;this.paint(photo);await new Promise(resolve=>setTimeout(resolve,150));}photo.element.remove();this.photos=this.photos.filter(p=>p!==photo);const source=state.stacks[this.stackName]||[],idx=source.findIndex(f=>f.id===photo.fileId);if(idx>=0){state.currentStack=this.stackName;state.currentStackPosition=idx;await Core.moveToStack(target,{source:'table:pile'});}this.currentFileId=this.photos.at(-1)?.fileId||null;this.refreshPiles();this.updateCount();this.updateFavorite();};
+  const oldTableOpen=PhotoTable.open.bind(PhotoTable);PhotoTable.open=function(args){oldTableOpen(args);if(!this.elements.root.hidden){this.refreshPiles();this.updateFavorite();}};
+  const oldTableClose=PhotoTable.close.bind(PhotoTable);PhotoTable.close=function(options){this.closeFullSize();oldTableClose(options);};
+  document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`;});
+})();
+</script>'''
+          if text.count('</body>') != 1:
+              raise SystemExit('expected one body close')
+          text=text.replace('</body>',override+'\n</body>',1)
+          path.write_text(text,encoding='utf-8')
+          PY
+          git diff --check
+          grep -q 'Orbital8 v1.2 table/cache interaction patch' ui-v2.html
+          grep -q 'photo-table__stacks' ui-v2.html
+          grep -q 'loadStable=async function' ui-v2.html
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ui-v2.html
+          git commit -m 'Fix thumbnail caching and rebuild Table interactions'
+          git push origin HEAD:main
