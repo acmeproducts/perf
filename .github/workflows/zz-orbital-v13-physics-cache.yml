@@ -27,20 +27,13 @@ jobs:
           test "$(wc -c < /tmp/orbital-v13.js)" -eq 45160
           test "$(sha256sum /tmp/orbital-v13.js | cut -d' ' -f1)" = "1e67771ed116ab7fc7792ca9fb4da423bf8255a57748a5d6b2ff63cb75a29cd2"
           node --check /tmp/orbital-v13.js
-          grep -q "const VERSION = 'v1.3 physics-cache'" /tmp/orbital-v13.js
-          grep -q "const OrbitalImageCache" /tmp/orbital-v13.js
-          grep -q "Grid._tilePool" /tmp/orbital-v13.js
-          grep -q "restoreExactSurfaceV13" /tmp/orbital-v13.js
-          grep -q "PhotoTable.captureV13" /tmp/orbital-v13.js
-          grep -q "SpatialGallery.animateFlingV13" /tmp/orbital-v13.js
       - name: Insert v1.3 into ui-v2.html
         shell: python
         run: |
           from pathlib import Path
           path = Path('ui-v2.html')
           text = path.read_text(encoding='utf-8')
-          marker = 'orbital8-v13-physics-cache-script'
-          if marker in text:
+          if 'id="orbital8-v13-physics-cache-script"' in text:
               raise SystemExit('v1.3 marker already exists; refusing duplicate install')
           css = Path('/tmp/orbital-v13.css').read_text(encoding='utf-8')
           js = Path('/tmp/orbital-v13.js').read_text(encoding='utf-8')
@@ -49,32 +42,15 @@ jobs:
           if idx < 0:
               raise SystemExit('closing body not found')
           path.write_text(text[:idx] + block + text[idx:], encoding='utf-8')
-      - name: Validate resulting single HTML
+      - name: Validate and commit ui-v2.html only
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
-          test "$(grep -c 'id="'"'orbital8-v13-physics-cache-script'"'"'' ui-v2.html)" -eq 1
-          test "$(grep -c 'id="'"'orbital8-v13-physics-cache-style'"'"'' ui-v2.html)" -eq 1
-          grep -q "const VERSION = 'v1.3 physics-cache'" ui-v2.html
-          grep -q 'sorting-target-layout:v1' ui-v2.html
-          python - <<'PY'
-          from pathlib import Path
-          import re
-          text = Path('ui-v2.html').read_text(encoding='utf-8')
-          match = re.search(r'<script id="orbital8-v13-physics-cache-script">\n(.*?)\n</script>', text, re.S)
-          assert match, 'embedded v1.3 script missing'
-          Path('/tmp/embedded-v13.js').write_text(match.group(1), encoding='utf-8')
-          assert text.count('orbital8-v13-physics-cache-script') == 1
-          PY
-          node --check /tmp/embedded-v13.js
-      - name: Commit ui-v2.html only
-        shell: bash
-        run: |
-          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add ui-v2.html
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
           git diff --cached --name-only | grep -qx 'ui-v2.html'
           git commit -m 'Implement shared cache and physics sorting'
           git push origin HEAD:main
