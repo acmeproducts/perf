@@ -12602,5 +12602,192 @@ body.orbital-explore-inspecting .quick-view-switcher { display:none !important; 
 })();
 
 </script>
+
+<!-- Orbital8 v1.4.1 focus-chrome -->
+<style id="orbital8-v141-focus-chrome-style">
+/* Explore inspection deliberately reuses the REAL Focus chrome. */
+body.orbital-explore-inspecting .orbital-explore-action,
+body.orbital-explore-inspecting .orbital-explore-position {
+  display:none !important;
+}
+body.orbital-explore-inspecting #focus-stack-name,
+body.orbital-explore-inspecting #focus-image-count,
+body.orbital-explore-inspecting #focus-favorite-btn,
+body.orbital-explore-inspecting #focus-delete-btn,
+body.orbital-explore-inspecting #details-button {
+  display:flex !important;
+  position:fixed !important;
+  z-index:12960 !important;
+}
+body.orbital-explore-inspecting #focus-stack-name {
+  top:max(20px,env(safe-area-inset-top)) !important;
+  left:max(20px,env(safe-area-inset-left)) !important;
+}
+body.orbital-explore-inspecting #details-button {
+  top:max(20px,env(safe-area-inset-top)) !important;
+  right:max(20px,env(safe-area-inset-right)) !important;
+}
+body.orbital-explore-inspecting #focus-image-count {
+  bottom:max(20px,env(safe-area-inset-bottom)) !important;
+  left:max(20px,env(safe-area-inset-left)) !important;
+}
+body.orbital-explore-inspecting #focus-favorite-btn {
+  bottom:max(20px,env(safe-area-inset-bottom)) !important;
+  left:50% !important;
+  transform:translateX(-50%) !important;
+}
+body.orbital-explore-inspecting #focus-delete-btn {
+  bottom:max(20px,env(safe-area-inset-bottom)) !important;
+  right:max(20px,env(safe-area-inset-right)) !important;
+}
+body.orbital-explore-inspecting #back-button,
+body.orbital-explore-inspecting #normal-image-count,
+body.orbital-explore-inspecting #center-trash-btn,
+body.orbital-explore-inspecting .pill-counter {
+  display:none !important;
+}
+body.orbital-explore-inspecting #action-modal {
+  z-index:14050 !important;
+}
+body.orbital-explore-inspecting #details-modal {
+  z-index:14060 !important;
+}
+</style>
+<script id="orbital8-v141-focus-chrome-script">
+(() => {
+  'use strict';
+  const VERSION = 'v1.4.1 focus-chrome';
+
+  const ExploreFocusChromeV141 = {
+    isInspecting() {
+      return document.body.classList.contains('orbital-explore-inspecting');
+    },
+
+    isFullOpen() {
+      return Boolean(window.ExploreInspectV14?.full && !window.ExploreInspectV14.full.hidden);
+    },
+
+    sync() {
+      if (!this.isInspecting()) return;
+      window.ExploreInspectV14?.syncPosition?.();
+      Core.updateImageCounters?.();
+      Core.updateFavoriteButton?.();
+    },
+
+    async reopenCurrent({ keepFull = false } = {}) {
+      const stack = state.stacks[state.currentStack] || [];
+      if (!stack.length) {
+        window.ExploreInspectV14?.closePreview?.();
+        return;
+      }
+
+      const position = Math.max(0, Math.min(stack.length - 1, state.currentStackPosition || 0));
+      const file = stack[position] || stack[0];
+      state.currentStackPosition = Math.max(0, stack.findIndex(item => item.id === file.id));
+
+      SpatialGallery.open({ stackName: state.currentStack, fileId: file.id });
+      const index = SpatialGallery.files.findIndex(item => item.id === file.id);
+      if (index < 0) return;
+
+      window.ExploreInspectV14?.openPreview?.(index);
+      if (keepFull) window.ExploreInspectV14?.openFull?.();
+      this.sync();
+    }
+  };
+  window.ExploreFocusChromeV141 = ExploreFocusChromeV141;
+
+  if (window.ExploreInspectV14) {
+    const oldOpenPreview = ExploreInspectV14.openPreview.bind(ExploreInspectV14);
+    ExploreInspectV14.openPreview = function(index) {
+      const result = oldOpenPreview(index);
+      ExploreFocusChromeV141.sync();
+      return result;
+    };
+
+    const oldOpenFull = ExploreInspectV14.openFull.bind(ExploreInspectV14);
+    ExploreInspectV14.openFull = function() {
+      const result = oldOpenFull();
+      ExploreFocusChromeV141.sync();
+      return result;
+    };
+
+    const oldUpdateFavorite = ExploreInspectV14.updateFavorite?.bind(ExploreInspectV14);
+    ExploreInspectV14.updateFavorite = function() {
+      const result = oldUpdateFavorite?.();
+      Core.updateFavoriteButton?.();
+      return result;
+    };
+  }
+
+  const oldSwitchToStackV141 = UI.switchToStack.bind(UI);
+  UI.switchToStack = async function(stackName) {
+    if (!ExploreFocusChromeV141.isInspecting()) {
+      return oldSwitchToStackV141(stackName);
+    }
+    const keepFull = ExploreFocusChromeV141.isFullOpen();
+    const result = await oldSwitchToStackV141(stackName);
+    await ExploreFocusChromeV141.reopenCurrent({ keepFull });
+    return result;
+  };
+
+  const oldDeleteCurrentImageV141 = Core.deleteCurrentImage.bind(Core);
+  Core.deleteCurrentImage = async function(options = {}) {
+    const fromExploreFocusTrash =
+      ExploreFocusChromeV141.isInspecting() &&
+      options?.source === 'button:focus-trash';
+    const keepFull = fromExploreFocusTrash && ExploreFocusChromeV141.isFullOpen();
+
+    const result = await oldDeleteCurrentImageV141(options);
+
+    if (fromExploreFocusTrash) {
+      const stack = state.stacks[state.currentStack] || [];
+      if (!stack.length) {
+        ExploreInspectV14.closePreview?.();
+        SpatialGallery.files = [];
+        SpatialGallery.cards?.forEach(card => card.element?.remove());
+        SpatialGallery.cards = [];
+        SpatialGallery.updateChrome?.();
+        SpatialGallery.requestFrame?.();
+      } else {
+        await ExploreFocusChromeV141.reopenCurrent({ keepFull });
+      }
+    }
+    return result;
+  };
+
+  const oldUpdateFavoriteButtonV141 = Core.updateFavoriteButton.bind(Core);
+  Core.updateFavoriteButton = function() {
+    const result = oldUpdateFavoriteButtonV141();
+    if (ExploreFocusChromeV141.isInspecting()) {
+      const currentFile = state.stacks[state.currentStack]?.[state.currentStackPosition];
+      if (currentFile && ExploreInspectV14) {
+        ExploreInspectV14.currentFileId = currentFile.id;
+        ExploreInspectV14.currentIndex = SpatialGallery.files?.findIndex(file => file.id === currentFile.id) ?? -1;
+      }
+    }
+    return result;
+  };
+
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !ExploreFocusChromeV141.isInspecting()) return;
+    if (Utils.elements.detailsModal && !Utils.elements.detailsModal.classList.contains('hidden')) return;
+    if (ExploreFocusChromeV141.isFullOpen()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      ExploreInspectV14.closeFull?.();
+      ExploreFocusChromeV141.sync();
+    }
+  }, true);
+
+  document.querySelectorAll('.footer-baseline').forEach(el => {
+    if (el.textContent.includes('Orbital8 UI')) el.textContent = `Orbital8 UI · ${VERSION}`;
+  });
+  state.syncLog?.log?.({
+    event: 'ui:v141-installed',
+    level: 'info',
+    details: 'Explore inspection now reuses Focus stack, details, count, heart, and trash controls.'
+  });
+})();
+</script>
 </body>
 </html>
