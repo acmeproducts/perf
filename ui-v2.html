@@ -12789,5 +12789,166 @@ body.orbital-explore-inspecting #details-modal {
   });
 })();
 </script>
+
+<!-- Orbital8 v1.5 triage-table + switcher shield -->
+<style id="orbital8-v15-triage-table-style">
+#orbital-switcher-shield-v15{position:fixed;inset:0;z-index:14015;background:transparent;pointer-events:auto;touch-action:none}
+#orbital-switcher-shield-v15[hidden]{display:none!important}
+.quick-view-switcher{z-index:14020!important}
+#photo-table [data-table-pile="in"]{display:none!important;pointer-events:none!important}
+#photo-table .photo-table__stack{display:flex!important;align-items:center!important;justify-content:center!important;gap:7px!important;min-width:86px!important;padding:10px 16px!important}
+#photo-table .photo-table__stack .orbital-target-label{display:inline!important;font:700 12px/1 system-ui,sans-serif!important;letter-spacing:.04em}
+#photo-table .photo-table__stack .orbital-target-count{display:inline-grid!important;place-items:center;min-width:27px;height:27px;padding:0 7px;border-radius:999px;background:rgba(0,0,0,.16);font:800 13px/1 system-ui,sans-serif!important}
+#photo-table .photo-table__print{box-shadow:0 7px 18px rgba(0,0,0,.52)}
+</style>
+<script id="orbital8-v15-triage-table-script">
+(() => {
+  'use strict';
+  const VERSION = 'v1.5 triage-table';
+
+  const SwitcherShieldV15 = {
+    el:null,
+    ensure(){
+      if(this.el?.isConnected)return this.el;
+      const el=document.createElement('div');
+      el.id='orbital-switcher-shield-v15';
+      el.hidden=true;
+      el.setAttribute('aria-hidden','true');
+      document.body.appendChild(el);
+      this.el=el;
+      const swallow=e=>{e.preventDefault();e.stopPropagation();e.stopImmediatePropagation?.();};
+      el.addEventListener('pointerdown',swallow,true);
+      el.addEventListener('pointermove',swallow,true);
+      el.addEventListener('pointerup',swallow,true);
+      el.addEventListener('touchstart',swallow,{capture:true,passive:false});
+      el.addEventListener('touchmove',swallow,{capture:true,passive:false});
+      el.addEventListener('touchend',swallow,{capture:true,passive:false});
+      el.addEventListener('click',e=>{swallow(e);ModeNavigation.closeSwitcher?.();},true);
+      el.addEventListener('pointercancel',e=>{swallow(e);ModeNavigation.closeSwitcher?.();},true);
+      return el;
+    },
+    show(){this.ensure().hidden=false;},
+    hide(){if(this.el)this.el.hidden=true;}
+  };
+  window.SwitcherShieldV15=SwitcherShieldV15;
+
+  const oldOpenSwitcherV15=ModeNavigation.openSwitcher.bind(ModeNavigation);
+  ModeNavigation.openSwitcher=function(){SwitcherShieldV15.show();return oldOpenSwitcherV15();};
+  const oldCloseSwitcherV15=ModeNavigation.closeSwitcher.bind(ModeNavigation);
+  ModeNavigation.closeSwitcher=function(){const r=oldCloseSwitcherV15();SwitcherShieldV15.hide();return r;};
+
+  const TRIAGE_TARGETS=['priority','out','trash'];
+  const targetLabels={priority:'KEEP',out:'MAYBE',trash:'TRASH'};
+
+  PhotoTable.triageFilesV15=function(){
+    const seen=new Set();
+    return [...(state.stacks.in||[]),...(state.stacks.out||[])].filter(file=>{
+      if(!file?.id||seen.has(file.id))return false;
+      seen.add(file.id);return true;
+    });
+  };
+
+  PhotoTable.syncTriageSelectionV15=function(fileId){
+    if(!fileId)return null;
+    for(const stackName of ['in','out','priority','trash']){
+      const stack=state.stacks[stackName]||[];
+      const index=stack.findIndex(file=>file.id===fileId);
+      if(index>=0){
+        state.currentStack=stackName;
+        state.currentStackPosition=index;
+        this.currentFileId=fileId;
+        Core.updateImageCounters?.();
+        Core.updateFavoriteButton?.();
+        return {stackName,index,file:stack[index]};
+      }
+    }
+    return null;
+  };
+
+  const oldSpawnPhotoV15=PhotoTable.spawnPhotoV13.bind(PhotoTable);
+  PhotoTable.spawnPhotoV13=function(file,index=this.photos.length){
+    const photo=oldSpawnPhotoV15(file,index);
+    if(!photo)return photo;
+    const seed=this.hash(file.id);
+    const randA=((seed*9301+49297)%233280)/233280;
+    const randB=((seed*233+7919)%104729)/104729;
+    const randC=((seed*97+17)%65521)/65521;
+    const w=photo.element.offsetWidth||Math.max(82,Math.min(138,innerWidth*.14));
+    const h=photo.element.offsetHeight||w*1.27;
+    const left=Math.max(10,innerWidth*.10);
+    const right=Math.max(left+1,innerWidth*.90-w);
+    const top=Math.max(100,innerHeight*.22);
+    const bottom=Math.max(top+1,innerHeight*.86-h);
+    photo.x=left+randA*Math.max(1,right-left);
+    photo.y=top+randB*Math.max(1,bottom-top);
+    photo.rotation=(randC-.5)*18;
+    photo.homeX=photo.x;photo.homeY=photo.y;photo.homeRotation=photo.rotation;photo.zIndex=++this.z;
+    this.paint(photo);
+    return photo;
+  };
+
+  const oldTableDownV15=PhotoTable.down.bind(PhotoTable);
+  PhotoTable.down=function(event){
+    const photo=this.findElement?.(event);
+    if(photo?.fileId)this.syncTriageSelectionV15(photo.fileId);
+    return oldTableDownV15(event);
+  };
+
+  const oldTableOpenV15=PhotoTable.open.bind(PhotoTable);
+  PhotoTable.open=function(options={}){
+    const result=oldTableOpenV15(options);
+    if(this.elements?.root?.hidden)return result;
+    this.triageModeV15=true;
+    const files=this.triageFilesV15();
+    const limit=Math.min(32,innerWidth<700?16:24,files.length);
+    this.deck=files.slice(limit).map(file=>file.id);
+    this.build(files.slice(0,limit));
+    this.currentFileId=files[0]?.id||null;
+    if(this.currentFileId)this.syncTriageSelectionV15(this.currentFileId);
+    this.refreshPiles();
+    this.updateCount?.();
+    return result;
+  };
+
+  const oldTableCloseV15=PhotoTable.close.bind(PhotoTable);
+  PhotoTable.close=function(options={}){this.triageModeV15=false;return oldTableCloseV15(options);};
+
+  const oldRefreshPilesV15=PhotoTable.refreshPiles.bind(PhotoTable);
+  PhotoTable.refreshPiles=function(){
+    oldRefreshPilesV15();
+    this.elements.root?.querySelectorAll('[data-table-pile]').forEach(button=>{
+      const name=button.dataset.tablePile;
+      if(name==='in'){button.hidden=true;return;}
+      button.hidden=!TRIAGE_TARGETS.includes(name);
+      if(!TRIAGE_TARGETS.includes(name))return;
+      button.innerHTML=`<span class="orbital-target-label">${targetLabels[name]}</span><span class="orbital-target-count">${state.stacks[name]?.length||0}</span>`;
+    });
+  };
+
+  const root=document.getElementById('photo-table');
+  root?.addEventListener('click',event=>{
+    const target=event.target.closest('[data-table-pile]');
+    if(!target||!root.contains(target))return;
+    const name=target.dataset.tablePile;
+    if(!TRIAGE_TARGETS.includes(name)){event.preventDefault();event.stopImmediatePropagation();return;}
+    if(target._targetMoved||target.classList.contains('target-moving'))return;
+    event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();
+    Grid.open(name);
+  },true);
+
+  const oldUpdateCountV15=PhotoTable.updateCount?.bind(PhotoTable);
+  PhotoTable.updateCount=function(){
+    if(!this.triageModeV15)return oldUpdateCountV15?.();
+    const remaining=(this.photos?.length||0)+(this.deck?.length||0);
+    if(this.elements?.count){
+      this.elements.count.textContent=`${remaining} to sort`;
+      this.elements.count.setAttribute('aria-label',`${remaining} images remaining in Inbox and Maybe`);
+    }
+  };
+
+  document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`;});
+  state.syncLog?.log?.({event:'ui:v15-installed',level:'info',details:'Table triages Inbox + Maybe into KEEP/MAYBE/TRASH; target tap opens Grid; quick switcher outside taps are shielded.'});
+})();
+</script>
 </body>
 </html>
