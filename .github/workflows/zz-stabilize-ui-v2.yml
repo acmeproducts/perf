@@ -1,0 +1,42 @@
+name: stabilize-orbital8-ui-v2
+on:
+  push:
+    paths:
+      - '.github/workflows/zz-stabilize-ui-v2.yml'
+permissions:
+  contents: write
+jobs:
+  stabilize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply stabilization
+        run: python .github/scripts/stabilize-ui-v2.py
+      - name: Validate
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only)" = "ui-v2.html"
+          grep -q 'orbital8-v161-stable-chrome-script' ui-v2.html
+          grep -q 'v1.6.1 stable-chrome' ui-v2.html
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('ui-v2.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',text,re.S)
+          Path('/tmp/orbital-all.js').write_text('\n'.join(scripts),encoding='utf-8')
+          assert text.count('id="orbital8-v161-stable-chrome-script"') == 1
+          assert 'id="orbital8-v16-standard-chrome-script"' not in text
+          PY
+          node --check /tmp/orbital-all.js
+      - name: Commit application file only
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ui-v2.html
+          test "$(git diff --cached --name-only)" = "ui-v2.html"
+          git commit -m 'Stabilize Orbital8 UI initialization'
+          git push origin HEAD:main
