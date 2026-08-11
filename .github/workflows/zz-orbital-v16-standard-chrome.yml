@@ -1,0 +1,121 @@
+name: temporary-orbital-v16-standard-chrome
+on:
+  push:
+    paths: ['.github/workflows/zz-orbital-v16-standard-chrome.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply v1.6
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('ui-v2.html')
+          s=p.read_text(encoding='utf-8')
+          if 'orbital8-v16-standard-chrome-script' in s: raise SystemExit('already installed')
+          patch=r'''
+<!-- Orbital8 v1.6 standard-chrome -->
+<style id="orbital8-v16-standard-chrome-style">
+/* Focus is the visual standard. Explore/Table reuse its REAL DOM controls. */
+body.orbital-explore-inspecting #spatial-gallery-folder,
+body.orbital-explore-inspecting #spatial-gallery-details,
+body.orbital-explore-inspecting #spatial-gallery-count,
+body.orbital-explore-inspecting #spatial-gallery-delete,
+body.orbital-explore-inspecting #back-button,
+body.orbital-explore-inspecting #normal-image-count,
+body.orbital-explore-inspecting #center-trash-btn,
+body.orbital-explore-inspecting .pill-counter,
+body.orbital-table-standard #photo-table-folder,
+body.orbital-table-standard #photo-table-details,
+body.orbital-table-standard #photo-table-count,
+body.orbital-table-standard #photo-table-delete,
+body.orbital-table-standard #back-button,
+body.orbital-table-standard #normal-image-count,
+body.orbital-table-standard #center-trash-btn,
+body.orbital-table-standard .pill-counter {display:none!important}
+
+body.orbital-explore-inspecting #focus-stack-name,
+body.orbital-explore-inspecting #focus-image-count,
+body.orbital-explore-inspecting #focus-favorite-btn,
+body.orbital-explore-inspecting #focus-delete-btn,
+body.orbital-explore-inspecting #details-button,
+body.orbital-table-standard #focus-stack-name,
+body.orbital-table-standard #focus-image-count,
+body.orbital-table-standard #focus-favorite-btn,
+body.orbital-table-standard #focus-delete-btn,
+body.orbital-table-standard #details-button {display:flex!important;position:fixed!important;z-index:15020!important}
+
+body.orbital-explore-inspecting #focus-stack-name,
+body.orbital-table-standard #focus-stack-name {top:max(16px,env(safe-area-inset-top))!important;left:max(16px,env(safe-area-inset-left))!important}
+body.orbital-explore-inspecting #details-button,
+body.orbital-table-standard #details-button {top:max(16px,env(safe-area-inset-top))!important;right:max(16px,env(safe-area-inset-right))!important}
+body.orbital-explore-inspecting #focus-image-count,
+body.orbital-table-standard #focus-image-count {bottom:max(20px,env(safe-area-inset-bottom))!important;left:max(16px,env(safe-area-inset-left))!important}
+body.orbital-explore-inspecting #focus-favorite-btn,
+body.orbital-table-standard #focus-favorite-btn {bottom:max(20px,env(safe-area-inset-bottom))!important;left:50%!important;transform:translateX(-50%)!important}
+body.orbital-explore-inspecting #focus-delete-btn,
+body.orbital-table-standard #focus-delete-btn {bottom:max(20px,env(safe-area-inset-bottom))!important;right:max(16px,env(safe-area-inset-right))!important}
+
+/* Table is a triage game: YES up, NO down, MAYBE right. Inbox is the loose workspace, not a target. */
+body.orbital-table-standard #photo-table [data-table-pile="in"],
+body.orbital-table-standard #photo-table [data-table-stack="in"] {display:none!important}
+body.orbital-table-standard #photo-table [data-table-pile="priority"],
+body.orbital-table-standard #photo-table [data-table-stack="priority"] {top:72px!important;bottom:auto!important;left:50%!important;right:auto!important;transform:translateX(-50%)!important}
+body.orbital-table-standard #photo-table [data-table-pile="trash"],
+body.orbital-table-standard #photo-table [data-table-stack="trash"] {bottom:82px!important;top:auto!important;left:50%!important;right:auto!important;transform:translateX(-50%)!important}
+body.orbital-table-standard #photo-table [data-table-pile="out"],
+body.orbital-table-standard #photo-table [data-table-stack="out"] {right:18px!important;left:auto!important;top:50%!important;bottom:auto!important;transform:translateY(-50%)!important}
+</style>
+<script id="orbital8-v16-standard-chrome-script">
+(()=>{
+ 'use strict';
+ const VERSION='v1.6 standard-chrome';
+ const focusIds=['focus-stack-name','focus-image-count','focus-favorite-btn','focus-delete-btn','details-button'];
+ function syncFocusChrome(){Core.updateImageCounters?.();Core.updateFavoriteButton?.();}
+ function relabelTable(){
+   const root=PhotoTable.elements?.root||document.getElementById('photo-table'); if(!root)return;
+   const labels={priority:'YES',out:'MAYBE',trash:'NO'};
+   root.querySelectorAll('[data-table-pile],[data-table-stack]').forEach(el=>{
+     const n=el.dataset.tablePile||el.dataset.tableStack;
+     if(n==='in'){el.hidden=true;return}
+     if(!labels[n])return;
+     el.hidden=false;
+     const count=state.stacks[n]?.length||0;
+     el.innerHTML=`<span class="orbital-target-label">${labels[n]}</span><span class="orbital-target-count">${count}</span>`;
+     el.setAttribute('aria-label',`${labels[n]} stack, ${count} images`);
+     el.title=`${labels[n]} · ${count}`;
+   });
+ }
+ const oldTableOpen=PhotoTable.open.bind(PhotoTable);
+ PhotoTable.open=function(options={}){const r=oldTableOpen(options);document.body.classList.add('orbital-table-standard');relabelTable();syncFocusChrome();return r};
+ const oldTableClose=PhotoTable.close.bind(PhotoTable);
+ PhotoTable.close=function(options={}){document.body.classList.remove('orbital-table-standard');return oldTableClose(options)};
+ const oldRefresh=PhotoTable.refreshPiles.bind(PhotoTable);
+ PhotoTable.refreshPiles=function(){const r=oldRefresh();relabelTable();return r};
+ const oldDown=PhotoTable.down.bind(PhotoTable);
+ PhotoTable.down=function(event){const r=oldDown(event);syncFocusChrome();return r};
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(!PhotoTable.elements?.root?.hidden){document.body.classList.add('orbital-table-standard');relabelTable();syncFocusChrome()}if(document.body.classList.contains('orbital-explore-inspecting'))syncFocusChrome()}},true);
+ document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`});
+ state.syncLog?.log?.({event:'ui:v16-installed',level:'info',details:'Explore and Table use Focus standard chrome; Table targets YES/MAYBE/NO.'});
+})();
+</script>
+'''
+          i=s.rfind('</body>')
+          if i<0: raise SystemExit('no body close')
+          p.write_text(s[:i]+patch+s[i:],encoding='utf-8')
+      - name: Validate and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only)" = "ui-v2.html"
+          grep -q 'orbital8-v16-standard-chrome-script' ui-v2.html
+          grep -q "VERSION='v1.6 standard-chrome'" ui-v2.html
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ui-v2.html
+          git commit -m 'Standardize Explore and Table on Focus chrome'
+          git push origin HEAD:main
