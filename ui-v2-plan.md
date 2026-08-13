@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.5 -->
-# UI-V2 MASTER PLAN v1.3.5
+<!-- UI-V2-PLAN v1.3.6 -->
+# UI-V2 MASTER PLAN v1.3.6
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -18,14 +18,13 @@ Owner ruling 2026-08-13: **do not create eight owner-tested releases.** Build on
 
 Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 
-- `ui-v2.html` stays production and is not modified during candidate construction.
-- **Working repository/harness/build/test execution lives in the builder VM. GitHub is the patch/deployment endpoint, not the working repository.**
-- Each patch is developed and exercised in the VM first, then GitHub applies that tested patch to a candidate rebuilt from the locked clean baseline.
-- `ui-v2-candidate.html` exists in GitHub only as the patched candidate artifact for validation/deployment, not as the development workspace.
-- Harness gates are run in the VM; GitHub Actions performs patch-application/static syntax verification only.
-- Internal harness gates are engineering checkpoints, not releases.
-- Only the fully integrated candidate is presented to the owner for one device/UX gate.
-- On owner PASS, the exact verified candidate is promoted to `ui-v2.html` with no additional functional edits.
+- Production `ui-v2.html` is read as the deployment baseline and is not modified until the integrated candidate is frozen and validated locally.
+- **All development, build, harness, syntax, responsive, simulated-sync and integration validation lives only in the builder VM. GitHub is the production patch/deployment endpoint, not a workspace.**
+- No repository branches, candidate files, harnesses, manifests, staging files, temporary blobs, experimental commits or test surfaces are permitted.
+- Internal H0-H8 gates run locally and are engineering checkpoints, not releases.
+- After local H0-H8 validation freezes the candidate, GitHub receives only the exact production `ui-v2.html` replacement (plus governance-required plan updates).
+- If production validation fails, fix and revalidate locally, then roll forward or roll back with a production commit; never improvise in the repository.
+- Verify GitHub Pages is serving the exact production commit, then provide a cache-busted Pages URL automatically.
 
 ### Internal gates
 
@@ -201,6 +200,13 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 8 · TURN LEDGER
 
+### 2026-08-13 · Integrated local execution started under production-only GitHub governance
+**Owner ruling:** all development/build/harness/syntax/responsive/simulated-sync validation is VM-local; GitHub receives no candidate, branch, harness, manifest, staging, temporary or experimental artifact.  
+**Start evidence:** read plan v1.3.5 and graveyard v1.0.0; recovered H0-H8/A1-A18 scope; local project mirror contains no working candidate, so production `ui-v2.html` will be copied into the VM as the only application baseline.  
+**Authorized repository writes:** this start/end plan ledger and, only after the integrated candidate is locally frozen and validated, the actual production `ui-v2.html`.  
+**Next action:** build and validate H0-H8 locally, patch production once, then verify the exact Pages artifact and return a cache-busted URL.
+
+
 ### 2026-08-13 · VM-first patch workflow restored
 **Owner correction:** GitHub is the patch/deployment endpoint only; development, harness work and patch testing belong in the builder VM. Patching itself is the tried-and-true delivery method.  
 **VM work:** created and fixture-tested the H1 shared-thumbnail patch locally; Python compile + fixture gate passed.  
@@ -238,7 +244,10 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 9 · CHANGE LOG
 
-**v1.3.5 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
+**v1.3.6 · 2026-08-13.** Recorded production-only GitHub governance: all candidate and harness work is VM-local; only the frozen `ui-v2.html` production patch and required plan ledger updates may be written to GitHub.
+
+
+**v1.3.6 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
 
 **v1.3.4 · 2026-08-13.** Restored VM-first/test-first patch discipline; H1 tested patch and candidate syntax gate passed; GitHub reclassified as patch/deployment endpoint only.
 
