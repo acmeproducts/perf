@@ -295,3 +295,11 @@ No fake data may be presented as production proof. Deterministic harness fixture
 **v1.1.x · 2026-08-12.** Baseline history audit and initial release planning.
 
 **v1.0.x · 2026-08-12.** Governance, graveyard and recovered requirements established.
+
+
+### 2026-08-13 · Owner correction audit and production replacement
+**Owner-reported regressions fixed:** removed the errant Explore trash control; disabled hidden sphere sorting; added discrete left/right tap + swipe navigation with comet/touch feedback; removed the per-frame Explore blur/brightness/contrast hot path and reduced initial sphere page pressure; retained medium/large Focus chrome while adding touch navigation/fling; made the three folder tag targets draggable/reorderable with persisted order and long-press rename; added a Grid chip beside every stack in the Focus/Explore/Table stack selector; made tag targets enter filtered Grid; added Table image-image collision avoidance; and changed Grid close to return to Sort per the owner’s latest explicit ruling.
+**A13 contract resolution:** the owner’s 2026-08-13 instruction that Grid exit drops directly to Sort supersedes the earlier exact-origin-return sentence for this release. Grid still captures origin fields for reconciliation/resume before entering Grid.
+**Construction lineage:** corrected the last integrated clean-lineage production release `45fa45dea68107f5400abfbaddb855b54b64bedd`, whose integrated candidate originated from locked clean baseline `a6de049...`; no older damaged patch-forward snapshot was used as construction input.
+**Automated gates:** A1-A18 source-contract matrix PASS; known-regression checks PASS; owner-correction JavaScript `node --check` PASS; donor application JavaScript retains its prior clean-lineage syntax gate.
+**Evidence boundary:** authenticated provider/device timing, real Drive URL-expiry recovery, and physical touch performance remain device/provider evidence and are not falsely claimed by the static runner.
