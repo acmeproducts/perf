@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.0.0 -->
-# UI-V2 MASTER PLAN v1.0.0
+<!-- UI-V2-PLAN v1.0.1 -->
+# UI-V2 MASTER PLAN v1.0.1
 
 **Location:** `ui-v2-plan.md` in `acmeproducts/perf`.
 **Owner:** acmeproducts — sole decision-maker and device-gate authority.
@@ -20,7 +20,7 @@ The previous development history became fragmented across devices/chat context. 
 | # | Release | Feature | Status |
 |---|---|---|---|
 | 0 | Baseline recovery | Establish exact owner-approved `ui-v2.html` input commit/file; audit current main and relevant history | OPEN — HARD BLOCKER |
-| 1 | Governance + requirements recovery | Create authoritative plan, graveyard, requirements, authority order and gates | IN PROGRESS — plan created 2026-08-12 |
+| 1 | Governance + requirements recovery | Create authoritative plan, graveyard, requirements, authority order and gates | COMPLETE — owner accepted governance setup 2026-08-12 |
 | 2 | Shared thumbnail performance | Profile and repair shared thumbnail/cache/render path for Explore sphere and Table; Drive idle recovery | NOT STARTED — requires R0 |
 | 3 | Canonical inspection model | Focus chrome reuse; Explore sphere->medium->large; Table thumbnail->medium->large; navigation and X semantics | NOT STARTED — requires R0/R2 |
 | 4 | Folder tag-target model | Three renameable folder-specific tag targets shared by Explore medium and Table; persistence | NOT STARTED |
@@ -336,7 +336,7 @@ Nothing unresolved lives only in conversation.
 | O4 | Long-press rename UX | Gesture is fixed; exact editor surface/validation is not | Design proposal after baseline audit | OPEN |
 | O5 | Stack-selector gesture/control for direct Grid entry | Capability is fixed; exact gesture/menu affordance needs mapping to existing selector | Audit current selector and propose minimal addition | OPEN |
 | O6 | Previous/next affordance in medium/large Explore/Table | Behavior fixed; whether invisible swipe/tap zones or visible Focus controls are canonical must be confirmed from current Focus | Baseline audit | OPEN |
-| O7 | Explore sphere pinch semantics | Pinch remains; exact scale limits/interaction with rotation need current implementation audit | Baseline audit | OPEN |
+| O7 | Explore sphere pinch semantics | Pinch remains; exact scale limits/interaction with rotation need current implementation audit | Baseline audit |
 | O8 | Video scope in this release family | Product horizon includes video; current recovered requirements are image-centric | Owner decision after image curation stabilizes | DEFERRED |
 | O9 | Existing Grid bulk move/tag capabilities | Owner recalls useful bulk operations; exact current behavior needs verification | Baseline audit/device test | OPEN |
 | O10 | Thumbnail performance root cause | Shared cache exists in some historical builds, but actual bottleneck is unproven | Instrumentation/profile | OPEN |
@@ -641,9 +641,12 @@ Every project turn appends one row before substantive work and closes it before 
 |---|---|---|---|---|---|---|
 | 2026-08-12 | T001 | PLAN-AUTHORIZED only | Recover missing Explore/Table/Focus/tag/Grid requirements into a durable plan; determine whether governance existed | Created `UI-V2-CURATION-PLAN.md`; repo search found no current UI-V2 governance document | Requirements precursor created | Owner supplied TalkBridge governance template next |
 | 2026-08-12 | T002 | PLAN-AUTHORIZED only | Adopt TalkBridge plan structure/conventions/disciplines for UI-V2; capture lessons; create graveyard; always start/end turns in plan | Read `talkbridge/TALKBRIDGE-PLAN-v9.md`; extracted release table, immutable rules, authority order, graveyard discipline, failure protocol, verification/device-gate discipline; created UI-V2 graveyard and this master plan | `UI-V2-GRAVEYARD.md` v1.0.0 and `ui-v2-plan.md` v1.0.0 created | Next: owner reviews plan. No application implementation authorized. R0 baseline recovery remains hard blocker |
+| 2026-08-12 | T003 | READ-ONLY | Owner asks TL;DR: what is next? | Re-read master plan. R1 governance accepted; R0 baseline recovery remains the hard blocker before any implementation | Plan v1.0.1; R1 marked COMPLETE | Next: perform repository-history baseline audit and present candidate baseline(s) with test links for owner selection. This is read-only and does not modify `ui-v2.html` |
 
 ---
 
 ## 19 · CHANGE LOG
+
+**v1.0.1 · 2026-08-12.** Owner accepted governance setup. R1 marked complete. Next action fixed as read-only R0 baseline recovery: audit repository history, identify candidate clean/known-good `ui-v2.html` baselines, and present testable candidates to the owner. No application implementation authorized.
 
 **v1.0.0 · 2026-08-12.** Initial governed master plan. Structure and discipline adapted from the owner-designated TalkBridge working plan to UI-V2 scope. Incorporated recovered Focus/Explore/Table/tag/Grid requirements, shared thumbnail performance requirements, Drive idle recovery, resume-state requirement, Sort desktop pill defect, release gates, open-item ledger, authority order, fixed infrastructure, do-not-touch invariants, graveyard discipline, no-patch-forward rule, explicit authorization boundary, published-artifact verification, and mandatory per-turn start/end plan updates. R0 baseline recovery is a hard blocker before application implementation.
