@@ -1,652 +1,341 @@
-<!-- UI-V2-PLAN v1.0.1 -->
-# UI-V2 MASTER PLAN v1.0.1
+<!-- UI-V2-PLAN v1.1.0 -->
+# UI-V2 MASTER PLAN v1.1.0
 
-**Location:** `ui-v2-plan.md` in `acmeproducts/perf`.
-**Owner:** acmeproducts — sole decision-maker and device-gate authority.
-**Builder:** ChatGPT/Codex as explicitly authorized by the owner — researches, plans, builds only when authorized, runs available gates, verifies deployment, maintains this plan and the graveyard.
-**Application:** `ui-v2.html` / Orbital8 UI.
+**Location:** `ui-v2-plan.md` in `acmeproducts/perf`  
+**Owner:** acmeproducts — sole product decision-maker and device-gate authority.  
+**Builder:** ChatGPT/Codex when explicitly authorized.  
+**Application:** `ui-v2.html` / Orbital8 UI.  
 **Graveyard:** `UI-V2-GRAVEYARD.md`.
 
-**This file is the project operating record.** Every UI-V2 turn starts by reading/updating it and ends by updating it with decisions, evidence, release state, open items, and next action. An owner ruling made in session must be written here in the same turn or it is not durable project state.
-
-The previous development history became fragmented across devices/chat context. That is now treated as a governance failure, not a conversational inconvenience. This document replaces conversation memory as the source of truth.
+**Operating rule:** every UI-V2 turn starts by reading this plan + graveyard and ends by updating this plan with decisions, evidence, release state, open items, and next action. Conversation history is not durable project state.
 
 ---
 
-## 1 · RELEASES
+## 1 · RELEASE CHAIN
 
-**Last known owner-approved application baseline:** UNRESOLVED. Must be established before the next implementation release. `v1.9 final-requirements` improved some behavior but was explicitly reported as not meeting requirements and is not an approved baseline.
+The owner has authorized execution of this plan on 2026-08-12. Authorization does **not** waive gates or permit patch-forward work.
 
-| # | Release | Feature | Status |
-|---|---|---|---|
-| 0 | Baseline recovery | Establish exact owner-approved `ui-v2.html` input commit/file; audit current main and relevant history | OPEN — HARD BLOCKER |
-| 1 | Governance + requirements recovery | Create authoritative plan, graveyard, requirements, authority order and gates | COMPLETE — owner accepted governance setup 2026-08-12 |
-| 2 | Shared thumbnail performance | Profile and repair shared thumbnail/cache/render path for Explore sphere and Table; Drive idle recovery | NOT STARTED — requires R0 |
-| 3 | Canonical inspection model | Focus chrome reuse; Explore sphere->medium->large; Table thumbnail->medium->large; navigation and X semantics | NOT STARTED — requires R0/R2 |
-| 4 | Folder tag-target model | Three renameable folder-specific tag targets shared by Explore medium and Table; persistence | NOT STARTED |
-| 5 | Grid round-trip | Stack->Grid and tag->filtered Grid; exact return to Focus/Explore/Table with reconciled stack/image | NOT STARTED |
-| 6 | Table physics + fast curation | Current-stack scatter, thumbnail fling, medium fling, Sort comet trails, target physics retained, image collisions removed | NOT STARTED |
-| 7 | Resume/state integrity | Preserve surface/folder/stack/image/inspection level across idle/provider refresh | NOT STARTED |
-| 8 | Sort desktop fit | Shorter PC stack pills; trash clears footer; preserve symmetry | NOT STARTED |
-| 9 | Integration/device gate | Cross-surface regression, large-library performance, Drive/OneDrive, deployment verification | NOT STARTED |
+| # | Release | Input -> output | Scope | Gate | Status |
+|---|---|---|---|---|---|
+| R0 | Baseline recovery | repository history -> approved clean `ui-v2.html` input | Find the last clean lineage that preserves working Sort/Focus/Grid/provider behavior and the useful shared-cache/Table work without later failed override/snapshot experiments | History diff + static audit + owner-visible test candidate | **IN PROGRESS** |
+| R1 | Performance foundation | R0 -> `v2.0-perf` | Shared thumbnail/cache/render path; Explore sphere + Table speed; no repaint/refetch on movement; Drive expired URL recovery; preserve UI state through provider refresh | Instrumented before/after metrics + syntax/runtime + provider smoke + owner device gate | BLOCKED ON R0 |
+| R2 | Inspection foundation | R1 -> `v2.1-inspection` | Canonical Focus chrome; Explore sphere->medium->large; Table thumbnail->medium->large; previous/next; X hierarchy; stack switching | State-machine tests + no duplicate controls + Focus regression + owner device gate | BLOCKED ON R1 |
+| R3 | Folder tag targets | R2 -> `v2.2-tags` | Exactly 3 renameable folder-specific tag targets shared by Explore medium + Table; long-press rename; persistent target positions; current stack remains independent | Persistence/reload/folder-isolation tests + touch/desktop gate | BLOCKED ON R2 |
+| R4 | Grid round-trip | R3 -> `v2.3-grid-return` | Tag target -> filtered Grid; stack selector -> stack Grid; Grid origin context; return to exact Focus/Explore/Table surface and reconciled image | Mutation-return tests: delete/move/tag/bulk + origin restoration gate | BLOCKED ON R3 |
+| R5 | Table fast curation | R4 -> `v2.4-table-physics` | Current-stack scatter; thumbnail + medium fling to tag; actual Sort comet trail; bank/rim/corner/vacuum/capture effects retained; image-image collisions removed | Physics behavior gate + no image collision regression + performance gate | BLOCKED ON R4 |
+| R6 | Resume integrity | R5 -> `v2.5-resume` | Preserve surface/folder/stack/image/inspection level across idle/background/auth refresh | Idle/background/provider-refresh tests + device gate | BLOCKED ON R5 |
+| R7 | Sort desktop fit | R6 -> `v2.6-sort-fit` | Shorter desktop stack pills; trash clears footer; no Sort redesign or symmetry change | Desktop visual gate + Sort behavior regression | BLOCKED ON R6 |
+| R8 | Integrated candidate | R7 -> `v2.7-rc1` | No new features. Cross-surface regression, large-library performance, provider verification, deployment verification | Automated gates + published-artifact verification + owner physical/device gate | BLOCKED ON R7 |
 
-No release may be implemented from an unapproved baseline. Release numbers describe scope/order; they do not authorize work.
-
----
-
-## 2 · CURRENT PRODUCT MODEL
-
-Orbital8 is a curation environment for very large cloud image/video libraries. The immediate UI-V2 scope is image curation, with architecture that must not unnecessarily prevent later image+video use.
-
-The product separates two concepts that previous iterations conflated:
-
-1. **Stacks** — the user's current organizational stack within the selected folder. Focus, Explore and Table all retain stack context and can switch stacks.
-2. **Tag targets** — three fast curation destinations used to apply folder-specific tags. They are not hard-coded semantic stacks. Their visible names are renameable by long press.
-
-The goal is to make tens of thousands of items practical to cull, curate, group, rank and manage without turning every surface into a control panel.
+**Green automated gates mean allowed to test, never “done.”** A release advances only after the owner passes its device gate.
 
 ---
 
-## 3 · CANONICAL FOCUS CHROME
+## 2 · RELEASE REQUIREMENTS AND GATES
 
-Focus is the decoration and action standard for Focus, Explore inspection, and Table inspection. There is one visual/behavioral language, not per-surface imitations.
+### R0 · Baseline recovery
 
-Canonical placement:
+**Purpose:** stop building on uncertain lineage.
 
-| Position | Control |
+Actions:
+1. Audit `ui-v2.html` history around the known navigation/cache/Table commits and the later failed stabilization/snapshot period.
+2. Reject any candidate containing buried approaches from the graveyard.
+3. Compare candidates for preservation of provider selection, Sort, Focus, Grid, footer/nav drawer, stack state, and useful cache work.
+4. Select the cleanest candidate as the proposed R0 input; do not combine candidates by patching forward.
+5. Publish/test the candidate only if needed to establish behavior; label it baseline-candidate, not a release.
+
+**R0 gate:** application loads after provider selection; Sort/Focus/Grid basic behavior works; no browser lock; no fake/duplicate chrome architecture; lineage is known. Owner device approval establishes the baseline.
+
+### R1 · Shared thumbnail performance
+
+**Instrument first. No diagnosis by intuition.**
+
+Measure before changing:
+- first useful thumbnail paint;
+- visible Explore sphere fill time;
+- visible Table fill time;
+- provider requests per visible item;
+- cache hits/misses across surface changes;
+- refetches during sphere rotation/movement;
+- refetches during Table movement;
+- image-node recreation/redecode where measurable;
+- Drive image behavior after idle/URL expiry.
+
+Build requirements:
+- one shared thumbnail service/cache wherever the same rendition can be reused;
+- visible/near-visible work prioritized;
+- durable-cache work cannot block first useful paint;
+- moving an item does not recreate/refetch its unchanged thumbnail;
+- Google Drive temporary URL expiry recovers without permanent broken images;
+- provider/auth refresh does not reset UI navigation state.
+
+**R1 gate:** measurable improvement over R0, zero avoidable refetch on movement, Drive recovery proven, Grid/Focus/Sort image loading not regressed.
+
+### R2 · Canonical inspection model
+
+**Focus is the decoration standard.** Actual Focus controls/handlers, not imitations:
+- top-left stack selector;
+- top-right Details;
+- bottom-left image # / total;
+- bottom-center real Focus heart;
+- bottom-right real Focus trash.
+
+Explore:
+- Sphere: thumbnails only; no tag targets.
+- Tap thumbnail -> Medium.
+- Medium: Focus chrome + previous/next + stack selector + Details/favorite/trash + X.
+- Tap medium image -> Large.
+- Large: Focus-like sequential inspection; X clear of Details.
+- Large X -> Medium; Medium X -> Sphere at correct context.
+
+Table:
+- Table thumbnail state remains physical/scattered.
+- Tap thumbnail -> Medium.
+- Medium/large use the same Focus inspection model and X hierarchy.
+
+**R2 gate:** no duplicate/fake hearts/trash/details/counters; every transition and reverse transition preserves current image/stack; Focus itself unchanged.
+
+### R3 · Folder-specific tag targets
+
+Exactly three active tag targets.
+
+They are **tags**, not semantic stacks:
+- renameable by long press;
+- folder-specific definitions;
+- shared between Explore medium and Table for that folder;
+- positions draggable and persistent;
+- defaults may exist, but YES/MAYBE/NO are not immutable architecture;
+- switching folders loads that folder's tag definitions;
+- switching stacks does not redefine the folder's tags.
+
+Explore sphere has no tag targets. Explore medium has the three targets. Table has the three targets in thumbnail and medium states.
+
+**R3 gate:** rename one target, reload, switch stacks, switch surfaces, switch folders, return — correct names/positions must persist only where intended.
+
+### R4 · Grid round-trip
+
+Tag target tap:
+- Explore medium or Table target tap -> Grid with that tag implicitly filtered.
+
+Stack selector:
+- Focus/Explore/Table -> Grid for current/selected stack.
+
+Origin context records:
+- origin surface;
+- folder;
+- stack;
+- current image/logical position;
+- tag filter if any;
+- inspection level if applicable.
+
+Exit Grid:
+- return to exact origin surface;
+- reconcile against current data after delete/move/tag/bulk operations;
+- never restore a stale numeric index blindly.
+
+**R4 gate:** test delete current image, move current image, tag selection, bulk operation, and no-op Grid visit from each origin surface.
+
+### R5 · Table fast curation / physics
+
+Table opens on the **current stack**, never Inbox-only.
+
+Thumbnail state:
+- current-stack thumbnails scattered across the table;
+- fling directly to any of the three tag targets;
+- actual Sort comet-trail implementation reused;
+- target physics retained: momentum, bank shots, rim/corner interaction, vacuum/capture and capture animation;
+- image-to-image collisions removed only.
+
+Medium state:
+- same three tag targets;
+- fling medium image to tag;
+- same comet trail;
+- Focus chrome remains canonical.
+
+**R5 gate:** target capture effects remain fun/visible; image-image collisions do not occur; fling applies the intended tag once; target tap still opens filtered Grid.
+
+### R6 · Resume / idle integrity
+
+Persist/reconcile:
+- active surface;
+- folder;
+- stack;
+- current image/logical position;
+- Explore/Table inspection level;
+- Grid origin context when applicable.
+
+Provider authentication refresh is infrastructure and must not overwrite navigation state.
+
+**R6 gate:** leave each surface idle/backgrounded, resume after provider refresh opportunity, and verify the exact surface/context remains instead of folder-selection reset + image jump.
+
+### R7 · Sort desktop fit
+
+Only approved Sort changes:
+- reduce stack-pill height on desktop/PC;
+- lift/size trash pill so it clears footer;
+- preserve Sort symmetry and behavior.
+
+**R7 gate:** desktop screenshot/device check at representative viewport widths; no overlap; no movement of unrelated Sort controls; touch layout unchanged unless required for clearance.
+
+### R8 · Integrated candidate
+
+No feature work.
+
+Gate matrix:
+- provider screen -> application load;
+- Sort;
+- Focus;
+- Explore sphere/medium/large;
+- Table thumbnail/medium/large;
+- tag rename/persistence;
+- tag -> Grid -> return;
+- stack -> Grid -> return;
+- Details/favorite/trash;
+- large-library thumbnail performance;
+- idle/resume;
+- Google Drive expiry/recovery;
+- OneDrive smoke where available;
+- desktop + touch/mobile;
+- published artifact version matches repository release exactly.
+
+---
+
+## 3 · PRODUCT MODEL
+
+Two concepts must never be conflated again:
+
+1. **Stacks** — current organizational stack inside the selected folder. Focus, Explore and Table retain stack context and can switch stacks.
+2. **Tag targets** — three fast curation destinations applying folder-specific tags. They are renameable and shared across Explore/Table inside that folder.
+
+---
+
+## 4 · CANONICAL FOCUS CHROME
+
+| Position | Canonical control |
 |---|---|
 | Top-left | Stack selector |
 | Top-right | Details |
 | Bottom-left | Current image # / total |
 | Bottom-center | Actual Focus favorite/heart |
-| Bottom-right | Actual Focus trash icon/control |
+| Bottom-right | Actual Focus trash |
 
-Rules:
-
-- Reuse the actual canonical controls/handlers where architecture permits.
-- No fake hearts, duplicate trash icons, alternate Details buttons, or decorative substitutes.
-- Stack selector remains available in Focus, Explore inspection, and Table inspection.
-- Previous/next navigation behavior is shared by Focus and medium/large inspection states.
-- Large-format X must never be occluded by Details.
+No fake/duplicate Explore or Table versions.
 
 ---
 
-## 4 · FOCUS
+## 5 · OPEN ITEMS LEDGER
 
-Focus remains the dedicated sequential inspection surface.
-
-Required behavior:
-
-| # | Requirement | Status |
-|---|---|---|
-| F1 | Previous/next image navigation | Existing behavior — must baseline-audit |
-| F2 | Stack switching with canonical selector | Existing concept — must baseline-audit |
-| F3 | Direct Grid entry for current stack from stack selector | Required |
-| F4 | Details | Existing — preserve |
-| F5 | Favorite | Existing — preserve |
-| F6 | Trash | Existing — preserve |
-| F7 | Grid exit returns to Focus, correct stack and reconciled image after Grid edits | Required |
+| # | Item | Resolution path | Status |
+|---|---|---|---|
+| O1 | Exact clean baseline | R0 repository-history audit; propose one candidate for owner gate | IN PROGRESS |
+| O2 | Default names for three tags | Defaults are presentation only; implementation must support rename immediately | OPEN — does not block architecture |
+| O3 | Tag persistence schema | Audit existing tag/metadata/storage model during R3 | OPEN |
+| O4 | Long-press rename editor appearance | Minimal editor using existing UI conventions; decide in R3 plan-before-build update | OPEN |
+| O5 | Stack-selector Grid affordance | Map to existing selector without changing its core interaction | OPEN |
+| O6 | Previous/next affordance | Reuse current Focus behavior; verify exact gesture/control during R2 audit | OPEN |
+| O7 | Video | Outside current release chain; architecture must not gratuitously block later image+video | DEFERRED |
+| O8 | AI/Venice modes | Separate future mode family; never mixed into normal/card curation releases | DEFERRED |
+| O9 | Device matrix | Desktop Chrome + touch/mobile minimum; owner may add devices | OPEN |
 
 ---
 
-## 5 · EXPLORE
+## 6 · IMMUTABLE WORKING RULES
 
-### 5.1 Sphere state
+### 6.1 Start every turn here
+Read this plan and `UI-V2-GRAVEYARD.md`. Record the owner request and authorization state before substantive project work.
 
-Explore begins as the sphere/orbital thumbnail surface.
+### 6.2 End every turn here
+Record decisions, evidence, release/open-item state, exact next action, and whether owner action is required. Commit the plan update before final response.
 
-- Sphere state is visually quiet.
-- **No tag targets are shown in sphere state.**
-- Sphere thumbnails use the shared thumbnail/cache service.
-- Moving/rotating/repositioning the sphere must not recreate/refetch unchanged thumbnails.
-- Pinch/zoom remains available for thumbnail inspection as designed.
-- Tap thumbnail -> medium inspection.
+### 6.3 Authority order
+1. Current owner ruling, written into this plan in the same turn.
+2. Graveyard vetoes.
+3. This master plan.
+4. Owner-approved baseline behavior.
+5. `UI-V2-CURATION-PLAN.md` recovered precursor.
+6. Owner-designated references such as `vid-v1.html`.
+7. Conversation history.
 
-### 5.2 Medium inspection
+### 6.4 Never patch forward after a failed gate
+Failure sequence is mandatory:
 
-Medium is the active curation state.
+**stop -> clean approved input -> graveyard -> plan -> rebuild -> automated gates -> publish -> verify published artifact -> owner device gate.**
 
-Required:
+### 6.5 Instrument first when cause is unknown
+Do not declare root cause from reasoning. Add measurements/logging, reproduce, then diagnose.
 
-- canonical Focus chrome;
-- previous/next navigation;
-- stack selector;
-- Details;
-- image # / total;
-- favorite;
-- trash;
-- exactly three current-folder tag targets;
-- fling image to a tag target;
-- use the actual Sort comet-trail visual behavior;
-- tap a tag target -> Grid filtered by that tag;
-- X -> return to Explore sphere at the correct context.
+### 6.6 Verify, do not infer
+Repository state, Actions green, or a commit SHA does not prove the live application. Verify the published artifact.
 
-### 5.3 Large inspection
+### 6.7 Reuse proven implementation
+Use existing controls, handlers, trails, cache services, and patterns where they satisfy the requirement. Do not create lookalike parallel systems.
 
-Tap medium image -> large/full inspection.
+### 6.8 No unauthorized implementation
+READ/PLAN requests do not permit application writes. This turn explicitly authorizes execution of the release plan.
 
-Large behaves essentially as Focus:
+### 6.9 One release has one testable purpose
+Do not bundle later release work merely because the same file is open.
 
-- previous/next;
-- stack selector;
-- Details;
-- favorite;
-- trash;
-- X clear of Details;
-- X -> medium, preserving current image/context.
+### 6.10 Green means testable, not done
+Only the owner passes the physical/device gate.
 
-Tag fling is not required in large inspection.
+### 6.11 Version every application build
+Version identity must be static in shipped HTML/footer and verified after publish. Every build requiring owner action gets a cache-busted test URL automatically.
 
-### 5.4 Explore state machine
-
-`Sphere -> tap thumbnail -> Medium -> tap image -> Large`
-
-Reverse:
-
-`Large -> X -> Medium -> X -> Sphere`
-
-The return path is part of the feature, not incidental navigation.
+### 6.12 No stubs / fake controls / fake data
+A release must deliver real cumulative behavior.
 
 ---
 
-## 6 · TABLE
+## 7 · FIXED / DO-NOT-TOUCH BEHAVIOR
 
-Table is the fast physical triage/tagging surface.
+Unless a release explicitly names it:
+- provider selection/auth flows;
+- Sort interaction/symmetry;
+- Focus core behavior;
+- Grid search/selection/bulk behavior;
+- footer/nav drawer mode switching;
+- storage-provider data semantics;
+- existing favorite/trash/details semantics.
 
-### 6.1 Entry and source
-
-- Table opens on **the current stack**.
-- It is not restricted to Inbox, Maybe, or any special source stack.
-- Stack selector can switch the working stack.
-- Images from the current stack are scattered across the table as thumbnails.
-- Table thumbnails use the same shared thumbnail/cache path as Explore/Grid/Focus where the rendition is reusable.
-
-### 6.2 Three tag targets
-
-Exactly three active tag targets are visible.
-
-They are tags, not immutable stacks.
-
-Required:
-
-- three targets;
-- draggable/repositionable;
-- positions persist;
-- long press target -> rename/redefine tag;
-- tag names/definitions are folder-specific;
-- the same folder's tag definitions are shared by Explore and Table;
-- defaults may exist for a new folder, but `YES/MAYBE/NO` must not be baked in as immutable architecture.
-
-### 6.3 Thumbnail behavior
-
-Table uniquely permits fast fling directly from thumbnail state.
-
-- Fling thumbnail -> tag target.
-- Same actual comet trails as Sort.
-- Target physics remain: momentum, bank shots, rim/corner interaction, vacuum/capture and capture animation.
-- **Only image-to-image collisions are removed.**
-- Tap thumbnail -> medium inspection.
-
-### 6.4 Medium inspection
-
-Medium uses canonical Focus chrome and remains taggable:
-
-- previous/next;
-- stack selector;
-- Details;
-- image # / total;
-- favorite;
-- trash;
-- same three current-folder tag targets;
-- fling medium image -> tag;
-- same Sort comet trail;
-- X -> Table at correct context.
-
-### 6.5 Large inspection
-
-Tap medium -> large.
-
-- previous/next;
-- stack selector;
-- Details;
-- favorite;
-- trash;
-- X -> medium;
-- no tag fling required.
+Any regression here fails the release.
 
 ---
 
-## 7 · GRID ROUND-TRIP CONTRACT
+## 8 · GRAVEYARD SUMMARY
 
-Grid is a powerful operational surface, not a dead-end mode switch.
+Full veto list: `UI-V2-GRAVEYARD.md`.
 
-### 7.1 Tag target -> Grid
-
-Tapping a tag target in Explore medium or Table opens Grid with that tag already applied as an implicit filter.
-
-The user should experience normal Grid capabilities — search, selection, tagging, notes/details as supported, and bulk operations — without needing a separate visible filter-management ceremony just to enter.
-
-### 7.2 Stack selector -> Grid
-
-Focus, Explore, and Table stack selectors provide a direct route to Grid for the selected/current stack.
-
-### 7.3 Origin context
-
-Every Grid entry from these surfaces records at minimum:
-
-- origin surface: Focus / Explore / Table;
-- folder;
-- stack;
-- current image or logical position where applicable;
-- tag-filter context where applicable;
-- originating inspection level where applicable.
-
-### 7.4 Return
-
-Grid exit returns to the exact originating surface. It must reconcile state after Grid mutations rather than restoring a stale numeric index.
-
-Examples:
-
-- image deleted in Grid -> choose the appropriate surviving neighbor;
-- image moved/tagged -> stack/tag context reflects the mutation;
-- stack changed by bulk operation -> return state resolves against current data;
-- origin was Explore medium -> return to Explore medium when still meaningful;
-- origin was Table -> return to Table with current stack/layout context.
-
----
-
-## 8 · SHARED THUMBNAIL PERFORMANCE
-
-This is a structural release, not polish. Current Explore sphere and Table thumbnail loading is reported as too slow.
-
-### 8.1 Required architecture
-
-- One shared thumbnail service/cache for every surface that can reuse the same rendition.
-- No duplicate provider fetch merely because the user changed surfaces.
-- No refetch/repaint of unchanged thumbnail content merely because an item moved on the sphere/table.
-- Visible and near-visible thumbnails get priority.
-- Cache/database persistence must not block first useful paint.
-- Reuse decoded/image resources where practical; avoid unnecessary image-node destruction/recreation.
-- Google Drive signed/temporary URL expiry must recover without visible images becoming permanent "not found" after idle.
-- Provider credential refresh must not reset navigation state.
-
-### 8.2 Instrument first — hard stop
-
-Before changing the cache/loading path, instrument and measure:
-
-| Metric | Baseline required? |
-|---|---|
-| Time to first useful thumbnail | YES |
-| Time to fill visible Explore sphere | YES |
-| Time to fill visible Table | YES |
-| Provider requests per visible item | YES |
-| Cache hit/miss by surface transition | YES |
-| Refetch count during sphere movement | YES |
-| Refetch count during Table movement | YES |
-| Decode/repaint/node recreation count where measurable | YES |
-| Drive URL expiry/recovery path after idle | YES |
-
-Do not claim a root cause until logs/profiling identify it.
-
-### 8.3 Repository-history audit
-
-Before inventing a new cache, search history for the previous performance/cache work the owner recalls. Recover working ideas when evidence supports them; do not blindly restore old code.
-
----
-
-## 9 · RESUME / IDLE STATE
-
-The application restores the screen the user actually left.
-
-Required persisted/reconciled state:
-
-- active surface;
-- folder;
-- current stack;
-- current image/logical position;
-- Explore/Table inspection level where appropriate;
-- Grid origin context where appropriate.
-
-Reported failure to prevent: after idle/background, app returns to folder selection and then jumps into the remembered image. That is incorrect. Authentication/provider refresh is infrastructure and must not overwrite UI navigation state.
-
----
-
-## 10 · SORT DESKTOP FIT
-
-Existing Sort behavior/symmetry is protected.
-
-Only approved defect scope:
-
-- stack pills are too tall on PC/desktop;
-- trash pill overlaps/competes with the footer;
-- reduce pill height and provide footer clearance;
-- do not redesign Sort or disturb its established symmetry.
-
----
-
-## 11 · OPEN ITEMS LEDGER
-
-Nothing unresolved lives only in conversation.
-
-| # | Open item | Why open | Needed decision/evidence | Status |
-|---|---|---|---|---|
-| O1 | Approved baseline commit/file | Current `main` lineage contains unapproved/failed iterations | Owner identifies baseline or repository audit proposes candidates for owner gate | HARD BLOCKER |
-| O2 | Exact default names for the three folder tag targets | Architecture says renameable tags; defaults not yet owner-fixed | Owner ruling; may retain YES/MAYBE/NO only as defaults if desired | OPEN |
-| O3 | Tag persistence representation | Folder-specific and shared across Explore/Table is fixed; storage schema is not | Audit existing metadata/tag model and provider constraints | OPEN |
-| O4 | Long-press rename UX | Gesture is fixed; exact editor surface/validation is not | Design proposal after baseline audit | OPEN |
-| O5 | Stack-selector gesture/control for direct Grid entry | Capability is fixed; exact gesture/menu affordance needs mapping to existing selector | Audit current selector and propose minimal addition | OPEN |
-| O6 | Previous/next affordance in medium/large Explore/Table | Behavior fixed; whether invisible swipe/tap zones or visible Focus controls are canonical must be confirmed from current Focus | Baseline audit | OPEN |
-| O7 | Explore sphere pinch semantics | Pinch remains; exact scale limits/interaction with rotation need current implementation audit | Baseline audit |
-| O8 | Video scope in this release family | Product horizon includes video; current recovered requirements are image-centric | Owner decision after image curation stabilizes | DEFERRED |
-| O9 | Existing Grid bulk move/tag capabilities | Owner recalls useful bulk operations; exact current behavior needs verification | Baseline audit/device test | OPEN |
-| O10 | Thumbnail performance root cause | Shared cache exists in some historical builds, but actual bottleneck is unproven | Instrumentation/profile | OPEN |
-| O11 | Google Drive idle disappearance root cause | Reported; not diagnosed | Reproduce with logs and provider/cache evidence | OPEN |
-| O12 | Exact device/browser gate matrix | Chrome desktop is known; mobile/touch behavior is central | Owner confirms required devices; at minimum desktop + touch/mobile should gate | OPEN |
-| O13 | Footer/version convention | Visible footer version is required; exact semantic version scheme can remain simple | Use plan release/build identity once baseline fixed | OPEN |
-| O14 | AI-assisted modes / Venice.ai | Earlier horizon allowed separate low-cost/free AI modes, explicitly separated from normal/card modes | Not part of current curation release; revisit separately | DEFERRED |
-
----
-
-## 12 · IMMUTABLE WORKING RULES
-
-These are operating rules, not suggestions.
-
-### 12.1 Every UI-V2 turn starts here
-
-Before analysis, planning, or implementation:
-
-1. Read `ui-v2-plan.md`.
-2. Read `UI-V2-GRAVEYARD.md`.
-3. Update this plan's **Turn Ledger** with the incoming owner request and current state before substantive project work.
-4. State internally whether the turn is READ-ONLY, PLAN-AUTHORIZED, or BUILD-AUTHORIZED. Do not infer build permission from frustration, bug reports, screenshots, or requirements discussion.
-
-### 12.2 Every UI-V2 turn ends here
-
-Before the final response:
-
-1. Update decisions made this turn.
-2. Update release/open-item status.
-3. Add graveyard entries for newly disproven approaches.
-4. Record evidence/verification performed.
-5. Record the exact next action and whether it requires owner authorization.
-6. Commit the plan update.
-
-This rule applies even when no application code changes.
-
-### 12.3 Authority order
-
-When sources disagree, stop at the first source that answers:
-
-1. Owner ruling in the current session — but it must be written into this plan before the turn ends.
-2. `UI-V2-GRAVEYARD.md` — vetoes buried implementation approaches.
-3. `ui-v2-plan.md` — scope, sequence, requirements, release state, open items.
-4. Approved baseline `ui-v2.html` — existing behavior that must be preserved unless explicitly changed.
-5. `UI-V2-CURATION-PLAN.md` — recovered requirements precursor; subordinate to this master plan.
-6. `vid-v1.html` and other owner-designated references — inspiration/reference, not automatic requirements.
-7. Conversation history — useful evidence, never the durable source of truth.
-
-### 12.4 Never patch forward after a failed gate
-
-On material failure:
-
-**rollback/re-establish clean approved input -> graveyard -> plan -> rebuild -> automated gates -> publish -> verify -> owner device gate.**
-
-Never stack another override on an uncertain build merely because it is faster.
-
-### 12.5 No application edits without explicit authorization
-
-Requirements capture, diagnosis, audit, review, and planning are read-only unless the owner explicitly authorizes implementation.
-
-### 12.6 Instrument first when cause is unknown — HARD STOP
-
-Do not diagnose thumbnail performance, Drive expiry, resume state, physics bugs, or rendering loops from reasoning alone when runtime evidence can be collected. Add scoped instrumentation or use existing logs, reproduce, then state what evidence proves.
-
-### 12.7 Verify, do not infer
-
-- Repository commit != deployed application.
-- Workflow green != deployed application.
-- Static marker != runtime correctness.
-- Automated tests green != owner/device approval.
-
-State only what the evidence proves.
-
-### 12.8 Published artifact verification is mandatory
-
-After an authorized push:
-
-1. Read back the exact committed blob.
-2. Verify expected version/requirements markers in that blob.
-3. Verify GitHub Pages/deployment is serving the intended commit/artifact when tooling permits.
-4. Open/fetch the public artifact where possible.
-5. Provide a cache-busted test URL automatically.
-
-The owner should never need to ask for the test URL.
-
-### 12.9 Green means allowed to test, never done
-
-Automated syntax/structure/unit checks are preconditions. The owner/device gate determines approval.
-
-### 12.10 One coherent behavior slice per release
-
-Do not combine unrelated redesigns because they are nearby in one HTML file. A release should be independently testable and have a clear rollback boundary.
-
-### 12.11 Preserve working behavior by construction
-
-Prefer reusing/wrapping canonical behavior over duplicating/reimplementing it. When changing shared code, enumerate downstream surfaces and regression-test them.
-
-### 12.12 Assert downstream effects
-
-Tests must verify the user-visible consequence, not only that a handler returned or a class was added.
-
-### 12.13 Mutation-test critical gates
-
-For critical automated gates, deliberately reproduce the defect or violate the invariant and confirm the gate fails. A test that cannot catch its named regression is not a gate.
-
-### 12.14 No fake interfaces, duplicate controls, stubs, or TODO releases
-
-Every authorized release is cumulative and real. No placeholder tag targets, fake Focus controls, mock provider data, or partial UX shipped as if complete.
-
-### 12.15 No workflow source-payload experiments
-
-GitHub Actions may orchestrate established build/test/deploy commands. Do not embed large application patches inside workflow YAML.
-
-### 12.16 Source lineage is explicit
-
-Before building, record:
-
-- input commit/file;
-- output version;
-- exact release scope;
-- files allowed to change.
-
-If input lineage is uncertain, stop.
-
-### 12.17 Cosmetic work stays scoped
-
-Cosmetic fixes may ship when explicitly scoped (e.g. Sort pill height/footer clearance), but must not become an excuse to restructure unrelated surfaces.
-
-### 12.18 Response discipline
-
-For implementation turns, report result, version, evidence, known limitations/open items, and test URL. Do not bury whether the owner must act.
-
----
-
-## 13 · FIXED INFRASTRUCTURE / PRACTICALITIES
-
-| Thing | Rule / value |
-|---|---|
-| Repository | `acmeproducts/perf` |
-| Application | `ui-v2.html` |
-| Public Pages app | `https://acmeproducts.github.io/perf/ui-v2.html` |
-| Plan | `ui-v2-plan.md` |
-| Graveyard | `UI-V2-GRAVEYARD.md` |
-| Requirements precursor | `UI-V2-CURATION-PLAN.md` |
-| Primary providers | Google Drive, OneDrive |
-| Deployment branch | `main` unless owner changes it |
-| Application form | Single HTML file currently; do not assume a modular rewrite is authorized |
-| Verification | Fresh GitHub read at exact commit + published artifact verification + cache-busted URL |
-| Build identity | Visible in footer, not comment-only and not dependent solely on late runtime rewrite |
-
-Do not change provider credentials, OAuth configuration, storage semantics, Pages configuration, or deployment infrastructure as incidental work.
-
----
-
-## 14 · DO-NOT-TOUCH INVARIANTS
-
-Until a release explicitly scopes them, preserve:
-
-- cloud provider selection/authentication paths;
-- existing Sort interaction symmetry and physics except specifically approved desktop pill fit;
-- canonical Focus Details/favorite/trash behavior;
-- folder and stack semantics outside the tag-target additions;
-- Grid search/bulk capabilities that already work;
-- provider data integrity — curation actions must not silently destroy originals;
-- existing mode drawer/navigation behavior unless a release explicitly changes it;
-- double-tap Focus entry/exit behavior previously retained by owner direction, subject to baseline confirmation;
-- touch and desktop input support.
-
----
-
-## 15 · RELEASE GATES
-
-### 15.1 R0 — baseline recovery gate
-
-- Candidate baseline identified by commit SHA.
-- Owner can open it with a cache-busted URL or local historical artifact.
-- Core provider login works.
-- Owner explicitly declares it the baseline.
-- Plan records the approval and exact SHA.
-
-No implementation release proceeds before this gate.
-
-### 15.2 R2 — performance gate
-
-Automated evidence plus owner test:
-
-- baseline and new measurements recorded;
-- Explore first useful paint materially improved;
-- visible sphere fill materially improved;
-- Table fill materially improved;
-- movement does not refetch unchanged thumbnails;
-- cross-surface cache reuse demonstrated;
-- Drive idle/expiry recovery demonstrated or remaining provider limitation explicitly proven;
-- no provider-selection hang.
-
-### 15.3 R3/R4 — inspection/tag gate
-
-Explore:
-
-- sphere has no tag targets;
-- tap -> medium;
-- medium has canonical Focus chrome + 3 tag targets + previous/next;
-- medium X -> sphere;
-- tap medium -> large;
-- large X -> medium;
-- Details/favorite/trash/stack switching work at appropriate inspection states.
-
-Table:
-
-- opens current stack;
-- three renameable draggable folder tag targets;
-- thumbnail fling works;
-- tap -> medium; medium fling works;
-- medium -> large; X hierarchy works;
-- canonical Focus chrome, no duplicates.
-
-### 15.4 R5 — Grid round-trip gate
-
-- tag target -> tag-filtered Grid;
-- stack selector -> stack Grid;
-- Grid mutations performed;
-- exit returns to exact origin surface;
-- stack/image context reconciled correctly after deletion/move/tagging.
-
-### 15.5 R6 — Table physics gate
-
-- Sort comet trail is actual shared/reused behavior or verified exact canonical implementation;
-- bank/rim/corner/vacuum/capture effects remain;
-- image-image collisions absent;
-- target dragging persists;
-- fling capture is reliable enough for fast curation.
-
-### 15.6 R7 — resume gate
-
-- leave app idle/backgrounded on Focus, Explore sphere, Explore medium, Table, and Grid;
-- resume each;
-- no folder-selection reset;
-- surface/folder/stack/image/inspection context preserved or correctly reconciled;
-- provider refresh does not hijack navigation state.
-
-### 15.7 R8 — Sort fit gate
-
-- desktop pills visibly shorter;
-- trash clears footer;
-- symmetry and existing Sort behavior unchanged.
-
-### 15.8 Final integration gate
-
-At minimum test:
-
-- desktop Chrome;
-- touch/mobile browser/device designated by owner;
-- Google Drive;
-- OneDrive where available;
-- a meaningfully large folder/stack, not only tiny test data.
-
----
-
-## 16 · GRAVEYARD SUMMARY
-
-Full veto details live in `UI-V2-GRAVEYARD.md`.
-
-Currently buried:
-
+Never reuse without explicit owner revival:
 - application payloads embedded in workflow YAML;
-- patch-forward development from damaged/uncertain snapshots;
-- broad MutationObserver stabilization loops;
-- fake/parallel Explore and Table chrome;
-- hard-coded Table semantic stacks as final architecture;
+- forward patching damaged snapshots;
+- broad MutationObserver stabilization;
+- fake Explore/Table Focus controls;
 - Inbox/Maybe-only Table;
-- Explore tag targets on sphere state;
-- Table image-image collisions;
-- per-surface thumbnail caches;
-- deployment claims without published-artifact verification;
-- runtime-only version identity;
-- unauthorized application changes;
-- building from fragmented conversation memory;
-- claiming shared effects without actual reuse/parity;
-- CSS-hiding duplicate architecture as the final solution.
+- immutable YES/MAYBE/NO semantic stacks;
+- Explore tag targets in sphere state;
+- image-image Table collisions;
+- separate per-surface thumbnail caches;
+- deployment inference without live verification.
 
 ---
 
-## 17 · FUTURE / OUT OF CURRENT RELEASE TRAIN
+## 9 · TURN LEDGER
 
-| # | Idea | Status |
-|---|---|---|
-| FUT1 | Video-only curation modes beyond the card metaphor | Future |
-| FUT2 | Unified image+video curation modes | Future |
-| FUT3 | AI-assisted modes using Venice.ai free/low-cost models | Future — must remain explicitly separate from normal/card modes |
-| FUT4 | Additional named modes beyond Heart/Diamond/Club/Spade metaphor | Future |
-| FUT5 | Ranking/grouping games for very large libraries | Future |
-
-These do not enter the current release train without owner scheduling.
+### 2026-08-12 · Turn 3
+**Owner request:** The plan lacked an executable release sequence despite requirements being repeatedly enumerated. Owner directed: put the releases, changes, updates and gates into the plan and execute it.  
+**Authorization:** BUILD-AUTHORIZED for the release chain, subject to its gates.  
+**Decision:** Replace the vague feature list with R0-R8, each with explicit input/output, scope and gate. Baseline recovery executes first; no feature implementation may skip R0.  
+**Evidence at start:** repository history includes known useful commits `a6de049` (quick horizontal view switcher), `7c1ac45` (thumbnail caching/Table interactions), `a8c6917` (shared cache/physics sorting), followed by later failed/contested iterations. Exact approved baseline still requires R0 audit.  
+**Current release:** R0 IN PROGRESS.  
+**Next action:** audit candidate commits and select/prove the clean R0 baseline; then execute R1 instrumentation/performance work.
 
 ---
 
-## 18 · TURN LEDGER
+## 10 · CHANGE LOG
 
-Every project turn appends one row before substantive work and closes it before final response.
+**v1.1.0 · 2026-08-12.** Owner required an actual executable release plan. Added R0-R8 with explicit release outputs, requirements and gates; recorded build authorization; made baseline recovery the first executing release rather than an indefinite planning blocker.
 
-| Date/time | Turn | Authorization | Incoming request / decision | Work/evidence | Plan/graveyard change | End state / next action |
-|---|---|---|---|---|---|---|
-| 2026-08-12 | T001 | PLAN-AUTHORIZED only | Recover missing Explore/Table/Focus/tag/Grid requirements into a durable plan; determine whether governance existed | Created `UI-V2-CURATION-PLAN.md`; repo search found no current UI-V2 governance document | Requirements precursor created | Owner supplied TalkBridge governance template next |
-| 2026-08-12 | T002 | PLAN-AUTHORIZED only | Adopt TalkBridge plan structure/conventions/disciplines for UI-V2; capture lessons; create graveyard; always start/end turns in plan | Read `talkbridge/TALKBRIDGE-PLAN-v9.md`; extracted release table, immutable rules, authority order, graveyard discipline, failure protocol, verification/device-gate discipline; created UI-V2 graveyard and this master plan | `UI-V2-GRAVEYARD.md` v1.0.0 and `ui-v2-plan.md` v1.0.0 created | Next: owner reviews plan. No application implementation authorized. R0 baseline recovery remains hard blocker |
-| 2026-08-12 | T003 | READ-ONLY | Owner asks TL;DR: what is next? | Re-read master plan. R1 governance accepted; R0 baseline recovery remains the hard blocker before any implementation | Plan v1.0.1; R1 marked COMPLETE | Next: perform repository-history baseline audit and present candidate baseline(s) with test links for owner selection. This is read-only and does not modify `ui-v2.html` |
+**v1.0.1 · 2026-08-12.** Governance/requirements recovery completed; initial feature ledger created.
 
----
-
-## 19 · CHANGE LOG
-
-**v1.0.1 · 2026-08-12.** Owner accepted governance setup. R1 marked complete. Next action fixed as read-only R0 baseline recovery: audit repository history, identify candidate clean/known-good `ui-v2.html` baselines, and present testable candidates to the owner. No application implementation authorized.
-
-**v1.0.0 · 2026-08-12.** Initial governed master plan. Structure and discipline adapted from the owner-designated TalkBridge working plan to UI-V2 scope. Incorporated recovered Focus/Explore/Table/tag/Grid requirements, shared thumbnail performance requirements, Drive idle recovery, resume-state requirement, Sort desktop pill defect, release gates, open-item ledger, authority order, fixed infrastructure, do-not-touch invariants, graveyard discipline, no-patch-forward rule, explicit authorization boundary, published-artifact verification, and mandatory per-turn start/end plan updates. R0 baseline recovery is a hard blocker before application implementation.
+**v1.0.0 · 2026-08-12.** Master plan created from TalkBridge governance structure and recovered UI-V2 requirements.
