@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.1 -->
-# UI-V2 MASTER PLAN v1.3.1
+<!-- UI-V2-PLAN v1.3.2 -->
+# UI-V2 MASTER PLAN v1.3.2
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -7,6 +7,7 @@
 **Integrated candidate:** `ui-v2-candidate.html`  
 **Harness:** `ui-v2-harness.html`  
 **Candidate manifest:** `ui-v2-candidate-manifest.json`  
+**Detailed requirements audit:** `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`  
 **Graveyard:** `UI-V2-GRAVEYARD.md`
 
 **Every UI-V2 turn starts by reading this plan + graveyard and ends by updating this plan. Conversation is not project state.**
@@ -47,22 +48,18 @@ Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 
 ## 2 · CURRENT EXECUTION STATE
 
-### Completed this turn
+### Completed
 
 1. Retired the eight owner-facing release sequence.
 2. Created `ui-v2-harness.html` as the single requirements dashboard.
-3. Instantiated `ui-v2-candidate.html` by referencing the exact baseline `ui-v2.html` blob from `a6de049` rather than copying current production or patching forward.
-4. Created `ui-v2-candidate-manifest.json` recording:
-   - baseline commit `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`;
-   - baseline blob `1f3943655b157ccf10626d32bf4d1679e835867c`;
-   - candidate blob at instantiation = the same exact blob;
-   - candidate stage = integration;
-   - ownerFacing = false.
-5. Production `ui-v2.html` was not modified.
+3. Instantiated `ui-v2-candidate.html` from the exact clean baseline blob from `a6de049`, not current production and not a later damaged snapshot.
+4. Created `ui-v2-candidate-manifest.json` recording baseline commit/blob and integration status.
+5. Published the item-by-item A1-A18 audit as `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.
+6. Production `ui-v2.html` was not modified by the audit turn.
 
 ### Current status
 
-**Candidate is NOT owner-testable yet.** It is still the clean baseline plus harness/manifest infrastructure. The harness is expected to show many TODOs because the final curation contract has not yet been integrated into the candidate. This is correct behavior; no fake green results.
+**Candidate is NOT owner-testable yet.** It is still in integration. The clean baseline audit is PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. These are baseline findings, not claims about completed candidate behavior.
 
 ### Next internal execution
 
@@ -109,28 +106,30 @@ Graveyard veto remains authoritative: no forward patching damaged snapshots; no 
 
 ## 4 · CLEAN BASELINE AUDIT
 
-Baseline `a6de049` findings remain:
+Baseline `a6de049` findings:
 
-| Requirement | Baseline |
-|---|---|
-| A1 Focus canonical | FAIL — Explore/Table own separate controls |
-| A2 three configurable tag targets | FAIL — four hard-coded stack destinations |
-| A3 long-press rename | FAIL |
-| A4 folder-specific shared tags | PARTIAL — TagService exists, target config absent |
-| A5 Table current stack | PARTIAL — handoff exists, canonical selector absent |
-| A6 Explore 3-state hierarchy | FAIL |
-| A7 Explore tags only at medium | FAIL/OPPOSITE — sphere has destinations |
-| A8 Table thumbnail+medium tag fling | PARTIAL — thumbnail stack sorting only |
-| A9 medium prev/next | FAIL |
-| A10 large behaves as Focus | FAIL |
-| A11 tag→filtered Grid | FAIL |
-| A12 stack selector→Grid | FAIL |
-| A13 exact Grid origin return | PARTIAL foundation only |
-| A14 shared cache + measurements | PARTIAL — Explore/Table cache donor only; no required all-surface metrics |
-| A15 Drive expiry recovery | PARTIAL foundation/unproven |
-| A16 idle restoration | PARTIAL — provider/folder/stack/file/Focus only |
-| A17 Sort desktop fit | FAIL — 12px vertical pill padding/18px type; trash bottom 20px |
-| A18 graveyard/rejected directions | PASS |
+| Requirement | Baseline | Remediation gate |
+|---|---|---|
+| A1 Focus canonical | FAIL — Explore/Table own separate controls | H2 |
+| A2 three configurable tag targets | FAIL — four hard-coded stack destinations | H3 |
+| A3 long-press rename | FAIL | H3 |
+| A4 folder-specific shared tags | PARTIAL — TagService exists, target config absent | H3 |
+| A5 Table current stack | PARTIAL — handoff exists, canonical selector absent | H2/H3 |
+| A6 Explore 3-state hierarchy | FAIL | H2 |
+| A7 Explore tags only at medium | FAIL/OPPOSITE — sphere has destinations | H2/H3 |
+| A8 Table thumbnail+medium tag fling | PARTIAL — thumbnail stack sorting only | H3/H5 |
+| A9 medium prev/next | FAIL | H2 |
+| A10 large behaves as Focus | FAIL | H2 |
+| A11 tag→filtered Grid | FAIL | H4 |
+| A12 stack selector→Grid | FAIL | H4 |
+| A13 exact Grid origin return | PARTIAL foundation only | H4 |
+| A14 shared cache + measurements | PARTIAL — Explore/Table precursor cache; no required all-surface metrics | H1 |
+| A15 Drive expiry recovery | PARTIAL/FAIL — foundation exists; recovery unproven | H1 |
+| A16 idle restoration | PARTIAL — provider/folder/stack/file/Focus only | H6 |
+| A17 Sort desktop fit | FAIL — pills too tall; trash too low | H7 |
+| A18 graveyard/rejected directions | PASS | H8 regression veto checks |
+
+**Detailed findings and remediation instructions:** `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.
 
 Reusable foundations: actual Focus chrome; ModeNavigation/current-stack handoff; TagService/file tags; Grid; actual Sort comet trail; partial persistence/provider infrastructure.
 
@@ -201,9 +200,20 @@ No fake data may be presented as production proof. Deterministic harness fixture
 **Current state:** harness/candidate infrastructure complete; candidate deliberately not owner-facing yet because H1–H7 implementation remains.  
 **Next action:** integrate H1 performance/instrumentation into candidate first, run harness, then continue H2–H7 internally. Owner receives one URL only after integrated H8 eligibility.
 
+### 2026-08-13 · Published A1-A18 requirements audit
+**Owner request:** audit every enumerated final requirement and publish findings plus remediation instructions where needed.  
+**Evidence:** clean baseline `a6de049`; final curation contract; graveyard vetoes; candidate manifest/harness state.  
+**Published:** `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.  
+**Findings:** PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. The clean baseline is suitable construction input but is not requirements-complete.  
+**Remediation:** A1/A6/A9/A10→H2; A2/A3/A4→H3; A5→H2/H3; A7→H2/H3; A8→H3/H5; A11-A13→H4; A14-A15→H1; A16→H6; A17→H7; A18→H8 regression veto checks.  
+**Application writes:** none in this audit turn.  
+**Next action:** H1 performance instrumentation/integration in `ui-v2-candidate.html`, then continue internal gates toward the single H8 owner-facing candidate.
+
 ---
 
 ## 9 · CHANGE LOG
+
+**v1.3.2 · 2026-08-13.** Linked and recorded the published A1-A18 detailed requirements audit and remediation map. No production/candidate application changes in this audit turn.
 
 **v1.3.1 · 2026-08-13.** Recorded actual harness/candidate/manifest creation, locked exact candidate baseline blob, made production immutability explicit, and set H1 as next internal integration step.
 
