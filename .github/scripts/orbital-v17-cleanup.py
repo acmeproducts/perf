@@ -1,96 +1,163 @@
 from pathlib import Path
 import re
 
-PATH = Path('ui-v2.html')
-text = PATH.read_text(encoding='utf-8')
-original = text
-VERSION = 'v1.8 focus-standard'
+CACHE_PATTERN = re.compile(r"\n        const ExploreThumbnailCache = \{.*?\n        \};\n\n        async function sortFileByDirection", re.S)
 
-def replace_once(old, new, label):
-    global text
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f'{label}: expected 1 exact match, found {count}')
-    text = text.replace(old, new, 1)
+CACHE_REPLACEMENT = r'''
+        const SharedThumbnailService = {
+            dbName: `${APP_IDENTITY.storagePrefix}:shared-thumbnails:v2`, storeName: 'thumbnails', maxEntries: 420,
+            objectUrls: new Map(), inFlight: new Map(), dbPromise: null, persistQueue: [], persistActive: 0, maxPersistWorkers: 2,
+            metrics: { cacheHit:0, cacheMiss:0, providerFetch:0, directPaint:0, recovery:0, refetch:0, firstThumbnailAt:0, surfaces:{} },
+            key(file) { return `${state.providerType || 'unknown'}::${state.currentFolder?.id || 'none'}::${file?.id || 'missing'}`; },
+            source(file) { return Utils.getPreferredImageUrl(file) || file?.thumbnailLink || file?.downloadUrl || ''; },
+            mark(surface, event) {
+                const bucket = this.metrics.surfaces[surface] || (this.metrics.surfaces[surface] = { requested:0, loaded:0, errors:0 });
+                bucket[event] = (bucket[event] || 0) + 1;
+                if (event === 'loaded' && !this.metrics.firstThumbnailAt) this.metrics.firstThumbnailAt = performance.now();
+            },
+            snapshot() { return JSON.parse(JSON.stringify(this.metrics)); },
+            open() {
+                if (!('indexedDB' in window)) return Promise.resolve(null);
+                if (!this.dbPromise) this.dbPromise = new Promise(resolve => {
+                    const request = indexedDB.open(this.dbName, 1);
+                    request.onupgradeneeded = () => {
+                        const store = request.result.createObjectStore(this.storeName, { keyPath: 'key' });
+                        store.createIndex('used', 'used');
+                    };
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => resolve(null);
+                });
+                return this.dbPromise;
+            },
+            request(db, mode, action) {
+                return new Promise(resolve => {
+                    const transaction = db.transaction(this.storeName, mode);
+                    const request = action(transaction.objectStore(this.storeName));
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => resolve(null);
+                });
+            },
+            async refreshFile(file) {
+                if (!file?.id || state.providerType !== 'googledrive' || typeof state.provider?.fetchFilesByIds !== 'function') return false;
+                try {
+                    const refreshed = await state.provider.fetchFilesByIds(state.currentFolder?.id, [file.id], { signal: state.activeRequests?.signal });
+                    const fresh = refreshed?.find(item => item.id === file.id) || refreshed?.[0];
+                    if (!fresh) return false;
+                    Object.assign(file, fresh);
+                    this.metrics.recovery += 1;
+                    return true;
+                } catch (_) { return false; }
+            },
+            queuePersist(file) {
+                if (!file?.id) return;
+                const key = this.key(file);
+                if (this.inFlight.has(key) || this.persistQueue.some(item => item.key === key)) return;
+                this.persistQueue.push({ file, key });
+                this.drainPersistQueue();
+            },
+            drainPersistQueue() {
+                while (this.persistActive < this.maxPersistWorkers && this.persistQueue.length) {
+                    const job = this.persistQueue.shift();
+                    this.persistActive += 1;
+                    const run = async () => {
+                        try { await this.persist(job.file, job.key); } catch (_) {}
+                        finally { this.persistActive -= 1; this.drainPersistQueue(); }
+                    };
+                    if ('requestIdleCallback' in window) requestIdleCallback(() => run(), { timeout: 1800 });
+                    else setTimeout(run, 250);
+                }
+            },
+            async persist(file, key = this.key(file)) {
+                let pending = this.inFlight.get(key);
+                if (!pending) {
+                    pending = (async () => {
+                        const db = await this.open();
+                        let record = db && await this.request(db, 'readonly', store => store.get(key));
+                        if (record?.blob) { this.metrics.cacheHit += 1; record.used = Date.now(); this.request(db, 'readwrite', store => store.put(record)); return record.blob; }
+                        this.metrics.cacheMiss += 1;
+                        const url = this.source(file);
+                        if (!url) return null;
+                        this.metrics.providerFetch += 1;
+                        const response = await fetch(url, { credentials: 'same-origin' });
+                        if (!response.ok) return null;
+                        record = { key, blob: await response.blob(), used: Date.now(), fileId:file.id };
+                        if (db) this.request(db, 'readwrite', store => store.put(record)).then(() => this.evict(db));
+                        return record.blob;
+                    })();
+                    this.inFlight.set(key, pending);
+                    pending.finally(() => { if (this.inFlight.get(key) === pending) this.inFlight.delete(key); });
+                }
+                const blob = await pending;
+                if (!blob) return null;
+                let value = this.objectUrls.get(key);
+                if (!value) { value = { src: URL.createObjectURL(blob), used: Date.now() }; this.objectUrls.set(key, value); }
+                return value.src;
+            },
+            async load(img, file, isValid = () => true, surface = 'unknown') {
+                if (!img || !file?.id || !isValid()) return;
+                const key = this.key(file);
+                img.dataset.thumbnailKey = key;
+                this.mark(surface, 'requested');
+                const existing = this.objectUrls.get(key);
+                if (existing) {
+                    this.metrics.cacheHit += 1; existing.used = Date.now();
+                    if (isValid() && img.isConnected) img.src = existing.src;
+                    return;
+                }
+                let recovered = false;
+                const assignDirect = () => {
+                    const url = this.source(file);
+                    if (!url || !isValid() || !img.isConnected || img.dataset.thumbnailKey !== key) return false;
+                    this.metrics.directPaint += 1;
+                    img.src = url;
+                    return true;
+                };
+                img.onload = () => this.mark(surface, 'loaded');
+                img.onerror = async () => {
+                    this.mark(surface, 'errors');
+                    if (recovered || img.dataset.thumbnailKey !== key || !isValid() || !img.isConnected) return;
+                    recovered = true;
+                    if (await this.refreshFile(file)) { this.metrics.refetch += 1; assignDirect(); return; }
+                    const cached = await this.persist(file, key);
+                    if (cached && isValid() && img.isConnected && img.dataset.thumbnailKey === key) img.src = cached;
+                };
+                assignDirect();
+                this.queuePersist(file);
+            },
+            async evict(db) {
+                const records = await this.request(db, 'readonly', store => store.getAll());
+                if (!records || records.length <= this.maxEntries) return;
+                const expired = records.sort((a,b) => a.used - b.used).slice(0, records.length - this.maxEntries);
+                expired.forEach(record => { this.request(db, 'readwrite', store => store.delete(record.key)); const value=this.objectUrls.get(record.key); if(value){URL.revokeObjectURL(value.src);this.objectUrls.delete(record.key);} });
+            },
+            releaseUnused(activeKeys) {
+                this.objectUrls.forEach((value, key) => { if (!activeKeys.has(key)) { URL.revokeObjectURL(value.src); this.objectUrls.delete(key); } });
+            }
+        };
 
-def regex_once(pattern, replacement, label, flags=re.S):
-    global text
-    text, count = re.subn(pattern, replacement, text, count=1, flags=flags)
-    if count != 1:
-        raise SystemExit(f'{label}: expected 1 regex match, found {count}')
+        async function sortFileByDirection'''
 
-text = text.replace('<!-- Orbital8- baseline V9b -->', '<!-- Orbital8 UI · v1.8 focus-standard -->', 1)
-text = re.sub(r'<span class="footer-baseline">[^<]*</span>', f'<span class="footer-baseline">Orbital8 UI · {VERSION}</span>', text)
-replace_once("const VERSION = 'v1.7 clean-table-explore';", f"const VERSION = '{VERSION}';", 'final runtime version')
 
-focus_css_anchor = '''/* Explore inspection deliberately reuses the REAL Focus chrome. */'''
-focus_css = '''/* Explore/Table use the REAL Focus chrome. Legacy surface controls never render. */
-#spatial-gallery-folder,
-#spatial-gallery-details,
-#spatial-gallery-count,
-#spatial-gallery-delete,
-#photo-table-folder,
-#photo-table-details,
-#photo-table-count,
-#photo-table-delete,
-.photo-table__favorite { display:none !important; }
-body.orbital-explore-active #focus-stack-name,
-body.orbital-explore-active #focus-image-count,
-body.orbital-explore-active #focus-favorite-btn,
-body.orbital-explore-active #focus-delete-btn,
-body.orbital-explore-active #details-button,
-body.orbital-table-standard #focus-stack-name,
-body.orbital-table-standard #focus-image-count,
-body.orbital-table-standard #focus-favorite-btn,
-body.orbital-table-standard #focus-delete-btn,
-body.orbital-table-standard #details-button { display:flex !important; position:fixed !important; z-index:12960 !important; }
-body.orbital-explore-active #focus-stack-name,
-body.orbital-table-standard #focus-stack-name { top:max(20px,env(safe-area-inset-top)) !important; left:max(20px,env(safe-area-inset-left)) !important; }
-body.orbital-explore-active #details-button,
-body.orbital-table-standard #details-button { top:max(20px,env(safe-area-inset-top)) !important; right:max(20px,env(safe-area-inset-right)) !important; }
-body.orbital-explore-active #focus-image-count,
-body.orbital-table-standard #focus-image-count { bottom:max(20px,env(safe-area-inset-bottom)) !important; left:max(20px,env(safe-area-inset-left)) !important; }
-body.orbital-explore-active #focus-favorite-btn,
-body.orbital-table-standard #focus-favorite-btn { bottom:max(20px,env(safe-area-inset-bottom)) !important; left:50% !important; transform:translateX(-50%) !important; }
-body.orbital-explore-active #focus-delete-btn,
-body.orbital-table-standard #focus-delete-btn { bottom:max(20px,env(safe-area-inset-bottom)) !important; right:max(20px,env(safe-area-inset-right)) !important; }
-body.orbital-explore-active #back-button,
-body.orbital-explore-active #normal-image-count,
-body.orbital-explore-active #center-trash-btn,
-body.orbital-explore-active .pill-counter,
-body.orbital-table-standard #back-button,
-body.orbital-table-standard #normal-image-count,
-body.orbital-table-standard #center-trash-btn,
-body.orbital-table-standard .pill-counter { display:none !important; }
-'''
-replace_once(focus_css_anchor, focus_css, 'canonical Focus chrome CSS')
-regex_once(r'''\n/\* v1\.7: hide surface-specific duplicate decorations; use the actual Focus controls\. \*/.*?body\.orbital-table-standard #focus-delete-btn \{ bottom:max\(20px,env\(safe-area-inset-bottom\)\) !important; right:max\(20px,env\(safe-area-inset-right\)\) !important; \}\n''','\n','remove old v1.7 Focus/Table CSS')
+def patch_text(text:str)->str:
+    out, n = CACHE_PATTERN.subn(CACHE_REPLACEMENT, text, count=1)
+    if n != 1:
+        raise RuntimeError(f'cache block matches={n}')
+    replacements = {
+        "ExploreThumbnailCache.load(img, Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '', () => !this.elements.root.hidden && img.isConnected);":
+        "SharedThumbnailService.load(img, file, () => !this.elements.root.hidden && img.isConnected, 'table');",
+        "ExploreThumbnailCache.releaseUnused(new Set());":
+        "SharedThumbnailService.releaseUnused(new Set());",
+        "ExploreThumbnailCache.releaseUnused(new Set(this.files.map(file => Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '')));":
+        "SharedThumbnailService.releaseUnused(new Set(this.files.map(file => SharedThumbnailService.key(file))));",
+        "ExploreThumbnailCache.load(img, Utils.getPreferredImageUrl(file) || file.thumbnailLink || file.downloadUrl || '', () => generation === this.loadGeneration && !this.elements.root.hidden && img.isConnected);":
+        "SharedThumbnailService.load(img, file, () => generation === this.loadGeneration && !this.elements.root.hidden && img.isConnected, 'explore');",
+    }
+    for old,new in replacements.items():
+        c=out.count(old)
+        if c!=1: raise RuntimeError(f'expected one callsite, got {c}: {old[:40]}')
+        out=out.replace(old,new,1)
+    return out
 
-replace_once('''                this.elements.root.hidden = false;\n                this.buildCards();''','''                this.elements.root.hidden = false;\n                document.body.classList.add('orbital-explore-active');\n                this.buildCards();''','Explore active class open')
-replace_once('''                this.elements.root.hidden = true;\n                this.loadGeneration++;''','''                this.elements.root.hidden = true;\n                document.body.classList.remove('orbital-explore-active');\n                this.loadGeneration++;''','Explore active class close')
-replace_once('''            select(index) {\n                this.selectedIndex = index;\n                this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });\n                this.updateChrome();\n                this.requestFrame();\n            },''','''            select(index) {\n                this.selectedIndex = index;\n                this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });\n                const selected = this.files[index];\n                const stack = state.stacks[state.currentStack] || [];\n                const stackIndex = stack.findIndex(file => file.id === selected?.id);\n                if (stackIndex >= 0) state.currentStackPosition = stackIndex;\n                Core.updateImageCounters?.();\n                Core.updateFavoriteButton?.();\n                this.updateChrome();\n                this.requestFrame();\n            },''','Explore Focus selection sync')
-replace_once('''                this.updateChrome();\n                ModeNavigation.show('explore');''','''                this.updateChrome();\n                const selectedFile = this.files[this.selectedIndex];\n                const selectedStackIndex = stack.findIndex(file => file.id === selectedFile?.id);\n                if (selectedStackIndex >= 0) state.currentStackPosition = selectedStackIndex;\n                Core.updateImageCounters?.();\n                Core.updateFavoriteButton?.();\n                ModeNavigation.show('explore');''','Explore initial Focus sync')
-replace_once('''  UI.switchToStack = async function(stackName) {\n    if (!ExploreFocusChromeV141.isInspecting()) {\n      return oldSwitchToStackV141(stackName);\n    }\n    const keepFull = ExploreFocusChromeV141.isFullOpen();\n    const result = await oldSwitchToStackV141(stackName);\n    await ExploreFocusChromeV141.reopenCurrent({ keepFull });\n    return result;\n  };''','''  UI.switchToStack = async function(stackName) {\n    const exploreActive = document.body.classList.contains('orbital-explore-active');\n    if (!exploreActive) return oldSwitchToStackV141(stackName);\n    const inspecting = ExploreFocusChromeV141.isInspecting();\n    const keepFull = ExploreFocusChromeV141.isFullOpen();\n    const result = await oldSwitchToStackV141(stackName);\n    const stack = state.stacks[state.currentStack] || [];\n    const file = stack[state.currentStackPosition] || stack[0];\n    if (!file) return result;\n    SpatialGallery.close({ restoreFocus:false });\n    SpatialGallery.open({ stackName:state.currentStack, fileId:file.id });\n    if (inspecting) {\n      const index = SpatialGallery.files.findIndex(item => item.id === file.id);\n      if (index >= 0) ExploreInspectV14.openPreview(index);\n      if (keepFull) ExploreInspectV14.openFull();\n    }\n    Core.updateImageCounters?.();\n    Core.updateFavoriteButton?.();\n    return result;\n  };''','Explore Focus stack switch')
-
-replace_once('''        .spatial-gallery__adjust { display: none; width: 34px; height: 30px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(30,41,59,.95); font: 700 20px/1 system-ui; cursor: pointer; }\n        .spatial-gallery__stepper.expanded .spatial-gallery__adjust { display: block; }''','''        .spatial-gallery__adjust { display: block; width: 34px; height: 30px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(30,41,59,.95); font: 700 20px/1 system-ui; cursor: pointer; }\n        .spatial-gallery__value { cursor: grab; }\n        .spatial-gallery__controls.dragging .spatial-gallery__value { cursor: grabbing; }''','Explore selector fixed geometry')
-regex_once(r'''\s*this\.elements\.controls\?\.querySelectorAll\('\.spatial-gallery__value'\)\.forEach\(button => button\.addEventListener\('click', event => \{\s*event\.stopPropagation\(\); button\.closest\('\.spatial-gallery__stepper'\)\.classList\.toggle\('expanded'\);\s*\}\)\);''','', 'remove selector expand toggle')
-replace_once("                if (event.target.closest('button')) return;","                if (event.target.closest('.spatial-gallery__adjust')) return;",'selector drag from value/body')
-
-# Remove only creation of the fake Table heart. Its now-unreachable legacy listener remains inert and preserves syntax.
-regex_once(r'''\s*const favorite=document\.createElement\('button'\);favorite\.id='photo-table-favorite';favorite\.type='button';favorite\.className='photo-table__favorite';favorite\.setAttribute\('aria-label','Favorite armed image'\);favorite\.textContent='♥';root\.appendChild\(favorite\);''','', 'remove fake Table heart creation')
-
-replace_once('''  PhotoTable.down=function(event){\n    const photo=this.findElement?.(event);\n    if(photo?.fileId)this.syncTriageSelectionV15(photo.fileId);\n    return oldTableDownV15(event);\n  };''','''  PhotoTable.down=function(event){\n    const photo=this.findElement?.(event);\n    if(photo?.fileId)this.syncTriageSelectionV15(photo.fileId);\n    const result=oldTableDownV15(event);\n    Core.updateImageCounters?.();\n    Core.updateFavoriteButton?.();\n    return result;\n  };''','Table real Focus chrome sync')
-replace_once("    const targets = tableTargetGeometryV14();","    const targets = tableTargetGeometryV14().filter(target => target.el.dataset.tablePile !== 'in' && !target.el.hidden);",'Table physics excludes Inbox')
-replace_once('''        .gesture-layer .comet-trail {''','''        .gesture-layer .comet-trail,\n        .photo-table .comet-trail {''','Sort comet CSS shared with Table')
-text = text.replace("const labels = { in:'INBOX', out:'MAYBE', priority:'KEEP', trash:'TRASH' };", "const labels = { in:'INBOX', out:'MAYBE', priority:'YES', trash:'NO' };")
-text = text.replace("const labels = { in: 'INBOX', out: 'MAYBE', priority: 'KEEP', trash: 'TRASH' };", "const labels = { in: 'INBOX', out: 'MAYBE', priority: 'YES', trash: 'NO' };")
-text = text.replace("Table scatters Inbox into YES/MAYBE/NO; target tap opens Grid; Sort comet trails reused; image-image collisions disabled.","v1.8 focus-standard: Explore and Table use real Focus chrome; Explore selector fixed/draggable; Table Inbox scatters to draggable YES/MAYBE/NO; exact Sort trails; no image-image collisions.")
-
-required=[f"const VERSION = '{VERSION}';",f'Orbital8 UI · {VERSION}',"const targetLabels={priority:'YES',out:'MAYBE',trash:'NO'};","return [...(state.stacks.in||[])]","document.body.classList.add('orbital-explore-active')","document.body.classList.add('orbital-table-standard')","body.orbital-explore-active #focus-stack-name","body.orbital-table-standard #focus-stack-name",".photo-table .comet-trail","tableTargetGeometryV14().filter(target => target.el.dataset.tablePile !== 'in'",'aria-label="Back to medium inspection"']
-for marker in required:
-    if marker not in text: raise SystemExit(f'missing required marker: {marker}')
-for forbidden in ["favorite.textContent='♥'","classList.toggle('expanded')","this.resolveMovingCollisionsV14();","const VERSION = 'v1.7 clean-table-explore';","Tap image for full size · pinch to inspect","orbital8-v16-standard-chrome-script","orbital8-v161-stable-chrome-script"]:
-    if forbidden in text: raise SystemExit(f'forbidden legacy marker remains: {forbidden}')
-if text == original: raise SystemExit('v1.8 editor made no changes')
-PATH.write_text(text,encoding='utf-8')
-print('Orbital8 v1.8 focus-standard applied')
+if __name__=='__main__':
+    p=Path(__import__('sys').argv[1])
+    p.write_text(patch_text(p.read_text()), encoding='utf-8')
