@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.6 -->
-# UI-V2 MASTER PLAN v1.3.6
+<!-- UI-V2-PLAN v1.3.7 -->
+# UI-V2 MASTER PLAN v1.3.7
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -200,6 +200,13 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 8 · TURN LEDGER
 
+### 2026-08-13 · Local baselines acquired; production patch withheld
+**VM evidence:** copied current production `main/ui-v2.html` locally (GitHub blob `aac15d26f5e7e6f415a3e15fdfde947fc91908ff`, 729,285 bytes) and independently copied locked clean baseline `a6de049.../ui-v2.html` locally (blob `1f3943655b157ccf10626d32bf4d1679e835867c`, 615,179 bytes).  
+**Audit finding:** current production contains later patch-forward v1.2-v1.8 layers, including hard-coded Inbox/YES/MAYBE/NO behavior prohibited by A2-A5 and graveyard G2/G5/G6. It is donor evidence, not approved construction input.  
+**Decision:** build continues locally from the locked clean baseline; no application file was written to GitHub and no Pages URL is issued because the integrated H0-H8 candidate is not yet frozen or validated.  
+**Next action:** integrate H1-H7 into the local clean candidate, run syntax/runtime/responsive/simulated-sync gates, then replace only production `ui-v2.html` and verify Pages serves that exact commit.
+
+
 ### 2026-08-13 · Integrated local execution started under production-only GitHub governance
 **Owner ruling:** all development/build/harness/syntax/responsive/simulated-sync validation is VM-local; GitHub receives no candidate, branch, harness, manifest, staging, temporary or experimental artifact.  
 **Start evidence:** read plan v1.3.5 and graveyard v1.0.0; recovered H0-H8/A1-A18 scope; local project mirror contains no working candidate, so production `ui-v2.html` will be copied into the VM as the only application baseline.  
@@ -244,10 +251,13 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 9 · CHANGE LOG
 
-**v1.3.6 · 2026-08-13.** Recorded production-only GitHub governance: all candidate and harness work is VM-local; only the frozen `ui-v2.html` production patch and required plan ledger updates may be written to GitHub.
+**v1.3.7 · 2026-08-13.** Recorded exact local production/clean-baseline blobs and sizes, rejected current patch-forward production as construction input, and withheld production deployment pending local H0-H8 validation.
 
 
-**v1.3.6 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
+**v1.3.7 · 2026-08-13.** Recorded production-only GitHub governance: all candidate and harness work is VM-local; only the frozen `ui-v2.html` production patch and required plan ledger updates may be written to GitHub.
+
+
+**v1.3.7 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
 
 **v1.3.4 · 2026-08-13.** Restored VM-first/test-first patch discipline; H1 tested patch and candidate syntax gate passed; GitHub reclassified as patch/deployment endpoint only.
 
