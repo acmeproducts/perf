@@ -1,4 +1,4 @@
-name: orbital8-rollback-to-18bde15
+name: orbital8-integrated-candidate-patch
 on:
   push:
     paths:
@@ -6,23 +6,48 @@ on:
 permissions:
   contents: write
 jobs:
-  rollback:
+  patch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Restore approved application and builder
+      - name: Build candidate from locked clean baseline
+        shell: bash
         run: |
           set -euo pipefail
-          git show 18bde1535fa3af41e1421ec6376d34616ede48fc:ui-v2.html > ui-v2.html
-          git show 18bde1535fa3af41e1421ec6376d34616ede48fc:.github/scripts/orbital-v17-cleanup.py > .github/scripts/orbital-v17-cleanup.py
-      - name: Commit rollback
+          git show a6de049f8c8b9798c610984b35b9d8ade57d0fa5:ui-v2.html > ui-v2-candidate.html
+          python .github/scripts/orbital-v17-cleanup.py ui-v2-candidate.html
+      - name: Validate candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile .github/scripts/orbital-v17-cleanup.py
+          grep -q 'const SharedThumbnailService' ui-v2-candidate.html
+          grep -q 'maxPersistWorkers: 2' ui-v2-candidate.html
+          grep -q 'refreshFile(file)' ui-v2-candidate.html
+          grep -q "'table'" ui-v2-candidate.html
+          grep -q "'explore'" ui-v2-candidate.html
+          ! grep -q 'const ExploreThumbnailCache' ui-v2-candidate.html
+          python - <<'PY'
+          from pathlib import Path
+          import re, subprocess, tempfile
+          html=Path('ui-v2-candidate.html').read_text(encoding='utf-8')
+          blocks=[]
+          for attrs, body in re.findall(r'<script([^>]*)>(.*?)</script>', html, re.S|re.I):
+              if 'src=' not in attrs.lower(): blocks.append(body)
+          js='\n;\n'.join(blocks)
+          with tempfile.NamedTemporaryFile('w',suffix='.js',delete=False,encoding='utf-8') as f:
+              f.write(js); name=f.name
+          subprocess.run(['node','--check',name],check=True)
+          PY
+      - name: Commit candidate patch
+        shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add ui-v2.html .github/scripts/orbital-v17-cleanup.py
+          git add ui-v2-candidate.html
           git diff --cached --quiet && exit 0
-          git commit -m 'Restore Orbital8 UI to 18bde15 baseline'
+          git commit -m 'Build UI-V2 integrated candidate H1 thumbnail foundation'
           git push origin HEAD:main
