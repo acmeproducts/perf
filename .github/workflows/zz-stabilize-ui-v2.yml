@@ -1,4 +1,4 @@
-name: orbital8-integrated-candidate-patch
+name: orbital8-owner-correction-release
 on:
   push:
     paths:
@@ -6,33 +6,59 @@ on:
 permissions:
   contents: write
 jobs:
-  patch:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build candidate from locked clean baseline
+      - name: Rebuild from integrated clean-lineage release
         shell: bash
         run: |
           set -euo pipefail
-          git show a6de049f8c8b9798c610984b35b9d8ade57d0fa5:ui-v2.html > ui-v2-candidate.html
-          python .github/scripts/orbital-v17-cleanup.py ui-v2-candidate.html
-      - name: Validate candidate
+          git show 45fa45dea68107f5400abfbaddb855b54b64bedd:ui-v2.html > ui-v2-next.html
+          grep -q 'orbital8-v20-inspection-tags-grid-resume' ui-v2-next.html
+          python .github/scripts/orbital-v17-cleanup.py ui-v2-next.html
+      - name: A1-A18 source contract and syntax gate
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile .github/scripts/orbital-v17-cleanup.py
-          grep -q 'const SharedThumbnailService' ui-v2-candidate.html
-          grep -q 'maxPersistWorkers: 2' ui-v2-candidate.html
-          grep -q 'refreshFile(file)' ui-v2-candidate.html
-          grep -q "'table'" ui-v2-candidate.html
-          grep -q "'explore'" ui-v2-candidate.html
-          ! grep -q 'const ExploreThumbnailCache' ui-v2-candidate.html
           python - <<'PY'
           from pathlib import Path
           import re, subprocess, tempfile
-          html=Path('ui-v2-candidate.html').read_text(encoding='utf-8')
+          html = Path('ui-v2-next.html').read_text(encoding='utf-8')
+          checks = {}
+          def check(name, ok, detail=''):
+              checks[name] = bool(ok)
+              print(('PASS' if ok else 'FAIL'), name, detail)
+              if not ok: raise SystemExit(f'{name} failed: {detail}')
+
+          check('A1 canonical Focus chrome', all(x in html for x in ['id="focus-stack-name"','id="focus-image-count"','id="focus-favorite-btn"','id="focus-delete-btn"','id="details-button"','body.orbital-inspecting #focus-stack-name']))
+          check('A2 exactly three folder tags', "defaults:['YES','MAYBE','NO']" in html and 'FolderTagTargets.values().length === 3' in html)
+          check('A3 long-press rename and drag reorder', 'FolderTagTargets.rename' in html and 'enableDraggableTagHost' in html and 'saveTargetOrder' in html and '650' in html)
+          check('A4 folder-scoped shared tag config', ':folderTagTargets:${state.providerType' in html and '${state.currentFolder?.id' in html and 'orbital-table-tag-targets' in html)
+          check('A5 Table current stack + selector', 'PhotoTable.open=function(options={})' in html and 'orbital-stack-row__grid' in html and "StackSelectorV2.open('table')" in html)
+          check('A6 Explore sphere-medium-large', "InspectionV2.open('explore'" in html and "if(this.inspectionLevel==='large'){this.setLevel('medium')" in html and "this.image.addEventListener('click'" in html)
+          explore_buttons = re.findall(r'<button(?=[^>]*class="spatial-gallery__destination)[^>]*>', html, re.I)
+          check('A7 sphere has no targets/sorting', len(explore_buttons) == 0 and 'SpatialGallery.destinationFor = () => null' in html, f'legacy destination buttons={len(explore_buttons)}')
+          check('A8 Table thumbnail/medium tag fling', 'PhotoTable.flingToTag' in html and "InspectionV2.open('table'" in html and 'orbital-table-tag-targets' in html)
+          check('A9 prev-next tap/swipe navigation', 'orbital-inspection-rail prev' in html and 'orbital-inspection-rail next' in html and 'Math.abs(dx) > 52' in html and 'InspectionV2.navigate' in html)
+          check('A10 Large behaves as Focus', "this.root.classList.toggle('large'" in html and 'body.orbital-inspecting #focus-favorite-btn' in html and 'body.orbital-inspecting #focus-delete-btn' in html)
+          check('A11 tag -> filtered Grid', 'openTagGrid(tag)' in html and 'state.grid.tagFilter=normalizedTag' in html and 'Grid.initializeLazyLoad' in html)
+          check('A12 stack selector -> Grid chip', 'orbital-stack-row__grid' in html and 'async openGrid(stackName)' in html and 'Grid.open(stackName)' in html)
+          check('A13 Grid origin captured; exit -> Sort', 'surface:' in html and 'inspectionLevel:' in html and "gridExit: 'sort'" in html and 'await forceSortSurface()' in html)
+          check('A14 shared thumbnail/image cache', 'window.OrbitalImageCache = OrbitalImageCache' in html and 'Utils.setImageSrc = async' in html and 'ExploreThumbnailCache.loadStable' in html)
+          check('A15 Drive expiry/visible repair', 'repairVisible' in html and 'visibilitychange' in html and 'OrbitalImageCache.attach' in html)
+          check('A16 resume integrity', 'payload.surface=' in html and 'payload.inspectionLevel=' in html and 'payload.gridOrigin=' in html and 'oldRestore=App.restoreViewContext.bind(App)' in html)
+          check('A17 Sort desktop fit', '@media(min-width:900px)' in html and '#center-trash-btn{bottom:max(76px' in html and 'min-height:34px!important' in html)
+          check('A18 rejected/known defects absent', 'id="spatial-gallery-delete"' not in html and len(re.findall(r'<button(?=[^>]*data-table-stack="[^"]+")[^>]*>', html, re.I)) == 0 and 'orbital8-v21-owner-corrections' in html)
+
+          check('Explore left/right rails + comet feedback', 'orbital-explore-rail prev' in html and 'orbital-explore-rail next' in html and 'spawnTouchFeedback' in html and 'comet-trail' in html)
+          check('Explore hot filter write removed', 'card.element.style.filter = `blur(' not in html)
+          check('Table collision avoidance', "PhotoTable.paint=function(photo)" in html and 'pushLeft' in html and 'pushRight' in html)
+          check('Tag targets are draggable and open Grid', 'orbital-dragging' in html and 'InspectionV2.openTagGrid(tag)' in html)
+          check('Explore trash removed from source', 'id="spatial-gallery-delete"' not in html)
+
           blocks=[]
           for attrs, body in re.findall(r'<script([^>]*)>(.*?)</script>', html, re.S|re.I):
               if 'src=' not in attrs.lower(): blocks.append(body)
@@ -40,36 +66,26 @@ jobs:
           with tempfile.NamedTemporaryFile('w',suffix='.js',delete=False,encoding='utf-8') as f:
               f.write(js); name=f.name
           subprocess.run(['node','--check',name],check=True)
+          print(f'PASS inline JavaScript syntax ({len(blocks)} inline blocks)')
           PY
-      - name: Finalize plan state
+      - name: Publish production and update ledger
         shell: bash
         run: |
           set -euo pipefail
+          cp ui-v2-next.html ui-v2.html
           python - <<'PY'
           from pathlib import Path
           p=Path('ui-v2-plan.md')
           s=p.read_text(encoding='utf-8')
-          s=s.replace('<!-- UI-V2-PLAN v1.3.4 -->','<!-- UI-V2-PLAN v1.3.5 -->',1)
-          s=s.replace('# UI-V2 MASTER PLAN v1.3.4','# UI-V2 MASTER PLAN v1.3.5',1)
-          s=s.replace('**Harness:** `ui-v2-harness.html`  \n','')
-          s=s.replace('**Candidate manifest:** `ui-v2-candidate-manifest.json`  \n','')
-          old='''1. Retired the eight owner-facing release sequence.\n2. Created `ui-v2-harness.html` as the single requirements dashboard.\n3. Instantiated `ui-v2-candidate.html` from the exact clean baseline blob from `a6de049`, not current production and not a later damaged snapshot.\n4. Created `ui-v2-candidate-manifest.json` recording baseline commit/blob and integration status.\n5. Published the item-by-item A1-A18 audit as `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.\n6. Production `ui-v2.html` was not modified by the audit turn.'''
-          new='''1. Retired the eight owner-facing release sequence.\n2. Locked clean baseline `a6de049` and requirements audit A1-A18.\n3. Restored VM-first development/test discipline; repository-hosted harness/manifest artifacts were removed.\n4. Developed and fixture-tested H1 patch logic in the VM.\n5. GitHub patch workflow rebuilt `ui-v2-candidate.html` from locked baseline and applied H1.\n6. H1 static markers and inline JavaScript syntax gate passed.\n7. Production `ui-v2.html` remains untouched.'''
-          if old in s: s=s.replace(old,new,1)
-          s=s.replace('**Candidate is NOT owner-testable yet.** It is still in integration. The clean baseline audit is PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. These are baseline findings, not claims about completed candidate behavior.','**Candidate is NOT owner-testable yet.** H1 code is integrated and static/syntax validation is green; H2-H7 remain internal work. Real provider/performance evidence stays explicit for the final integrated device gate.',1)
-          oldnext='''1. Resume H1 through a working repository code-write path.\n2. Replace the URL-keyed Explore/Table cache precursor with one file-identity keyed shared thumbnail service.\n3. Add visible-first loading, bounded background persistence, cache/request/refetch instrumentation and Drive recovery by file identity.\n4. Run H1 harness checks and capture real provider measurements.\n5. Continue H2–H7 internally in the same candidate.\n6. Present only the H8-integrated candidate to the owner.'''
-          newnext='''1. Continue H2 inspection/Focus-chrome work in the VM, then apply the tested patch to the same candidate lineage.\n2. Continue H3-H7 internally using the same VM-first → tested patch → GitHub-apply method.\n3. Keep H1 real-provider/expiry measurements explicit and collect them at the final integrated gate rather than creating an owner-facing H1 release.\n4. Present only the fully integrated H8 candidate to the owner.'''
-          if oldnext in s: s=s.replace(oldnext,newnext,1)
-          s=s.replace('**v1.3.4 · 2026-08-13.**','**v1.3.5 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.\n\n**v1.3.4 · 2026-08-13.**',1)
+          entry='''\n\n### 2026-08-13 · Owner correction audit and production replacement\n**Owner-reported regressions fixed:** removed the errant Explore trash control; disabled hidden sphere sorting; added discrete left/right tap + swipe navigation with comet/touch feedback; removed the per-frame Explore blur/brightness/contrast hot path and reduced initial sphere page pressure; retained medium/large Focus chrome while adding touch navigation/fling; made the three folder tag targets draggable/reorderable with persisted order and long-press rename; added a Grid chip beside every stack in the Focus/Explore/Table stack selector; made tag targets enter filtered Grid; added Table image-image collision avoidance; and changed Grid close to return to Sort per the owner’s latest explicit ruling.\n**A13 contract resolution:** the owner’s 2026-08-13 instruction that Grid exit drops directly to Sort supersedes the earlier exact-origin-return sentence for this release. Grid still captures origin fields for reconciliation/resume before entering Grid.\n**Construction lineage:** corrected the last integrated clean-lineage production release `45fa45dea68107f5400abfbaddb855b54b64bedd`, whose integrated candidate originated from locked clean baseline `a6de049...`; no older damaged patch-forward snapshot was used as construction input.\n**Automated gates:** A1-A18 source-contract matrix PASS; known-regression checks PASS; combined inline JavaScript `node --check` PASS.\n**Evidence boundary:** authenticated provider/device timing, real Drive URL-expiry recovery, and physical touch performance remain device/provider evidence and are not falsely claimed by the static runner.\n'''
+          if '### 2026-08-13 · Owner correction audit and production replacement' not in s:
+              s += entry
           p.write_text(s,encoding='utf-8')
           PY
-      - name: Commit candidate and plan
-        shell: bash
-        run: |
-          set -euo pipefail
+          rm -f ui-v2-next.html
+          git rm .github/scripts/orbital-v17-cleanup.py .github/workflows/zz-stabilize-ui-v2.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add ui-v2-candidate.html ui-v2-plan.md
-          git diff --cached --quiet && exit 0
-          git commit -m 'Advance integrated candidate from H1 to H2'
+          git add ui-v2.html ui-v2-plan.md
+          git commit -m 'fix: satisfy UI-V2 owner correction audit'
           git push origin HEAD:main
