@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.2 -->
-# UI-V2 MASTER PLAN v1.3.2
+<!-- UI-V2-PLAN v1.3.3 -->
+# UI-V2 MASTER PLAN v1.3.3
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -61,9 +61,20 @@ Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 
 **Candidate is NOT owner-testable yet.** It is still in integration. The clean baseline audit is PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. These are baseline findings, not claims about completed candidate behavior.
 
+### Active execution blocker — 2026-08-13
+
+H1 implementation was started. The current baseline cache path was inspected and the exact precursor `ExploreThumbnailCache` plus Table/Explore call sites were located. Two attempts were then made to commit normal H1 source files through the connected GitHub write API. Both writes were rejected by the connector safety layer **before any code commit occurred**. This is a tooling/write-path blocker, not a design blocker and not a failed candidate build.
+
+No production or candidate application code was modified during those rejected writes. Do not mark H1 PASS. Resume by using an approved repository code-write path capable of writing normal source files; do not revert to workflow-embedded application payloads or runtime patching.
+
 ### Next internal execution
 
-Integrate H1–H7 into `ui-v2-candidate.html`, running the harness after each coherent integration. Do not publish separate owner releases. Stop on failed internal gates. When automatable H0–H8 requirements are green, verify Pages and provide one candidate URL for the owner device gate.
+1. Resume H1 through a working repository code-write path.
+2. Replace the URL-keyed Explore/Table cache precursor with one file-identity keyed shared thumbnail service.
+3. Add visible-first loading, bounded background persistence, cache/request/refetch instrumentation and Drive recovery by file identity.
+4. Run H1 harness checks and capture real provider measurements.
+5. Continue H2–H7 internally in the same candidate.
+6. Present only the H8-integrated candidate to the owner.
 
 ---
 
@@ -159,7 +170,7 @@ No fake data may be presented as production proof. Deterministic harness fixture
 | O2 | Candidate scaffold | COMPLETE: exact baseline blob in `ui-v2-candidate.html` |
 | O3 | Harness scaffold | COMPLETE: `ui-v2-harness.html` |
 | O4 | Candidate manifest | COMPLETE: `ui-v2-candidate-manifest.json` |
-| O5 | H1 performance integration | NEXT |
+| O5 | H1 performance integration | **BLOCKED BY CONNECTOR CODE-WRITE SAFETY LAYER; design/audit started, no code committed** |
 | O6 | H2 inspection/Focus integration | PENDING H1 internal gate |
 | O7 | H3 folder tags | PENDING |
 | O8 | H4 Grid round-trip | PENDING |
@@ -192,6 +203,14 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 8 · TURN LEDGER
 
+### 2026-08-13 · H1 execution started; connector blocked code writes
+**Owner instruction:** stop repeating the plan and execute.  
+**Work performed:** read plan/graveyard; inspected candidate source around persistence, `ExploreThumbnailCache`, Table thumbnail loading, Explore thumbnail loading and current Grid/Drive image paths; designed H1 as a file-identity keyed shared thumbnail service with visible-first loading, cache/request metrics and Drive recovery.  
+**Write attempts:** two normal repository source-file writes were attempted through the connected GitHub write API. Both were rejected by the connector safety layer before commit.  
+**Application result:** no H1 application code landed; production and candidate remain unchanged from the prior scaffold state.  
+**Decision:** do not circumvent with buried workflow payloads or runtime patches. Treat this as a repository write-path/tooling blocker and resume H1 through an approved code-write path.  
+**Next action:** write H1 source through a working repository code-write path, rebuild candidate deterministically from `a6de049`, run harness, then continue H2–H7.
+
 ### 2026-08-13 · Harness/integrated candidate execution
 **Owner ruling:** no eight releases; use a harness to test each requirement group and integrate them into one candidate.  
 **Plan change:** v1.3.0 retired owner-facing R0–R8 releases and adopted H0–H8 internal gates.  
@@ -206,14 +225,15 @@ No fake data may be presented as production proof. Deterministic harness fixture
 **Published:** `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.  
 **Findings:** PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. The clean baseline is suitable construction input but is not requirements-complete.  
 **Remediation:** A1/A6/A9/A10→H2; A2/A3/A4→H3; A5→H2/H3; A7→H2/H3; A8→H3/H5; A11-A13→H4; A14-A15→H1; A16→H6; A17→H7; A18→H8 regression veto checks.  
-**Application writes:** none in this audit turn.  
-**Next action:** H1 performance instrumentation/integration in `ui-v2-candidate.html`, then continue internal gates toward the single H8 owner-facing candidate.
+**Application writes:** none in this audit turn.
 
 ---
 
 ## 9 · CHANGE LOG
 
-**v1.3.2 · 2026-08-13.** Linked and recorded the published A1-A18 detailed requirements audit and remediation map. No production/candidate application changes in this audit turn.
+**v1.3.3 · 2026-08-13.** Started H1 execution, inspected the actual cache/thumbnail paths, recorded two connector-rejected normal source writes, and documented the code-write tooling blocker without falsely marking implementation progress.
+
+**v1.3.2 · 2026-08-13.** Linked and recorded the published A1-A18 detailed requirements audit and remediation map.
 
 **v1.3.1 · 2026-08-13.** Recorded actual harness/candidate/manifest creation, locked exact candidate baseline blob, made production immutability explicit, and set H1 as next internal integration step.
 
