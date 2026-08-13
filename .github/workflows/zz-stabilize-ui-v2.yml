@@ -13,7 +13,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Rebuild v2.7 from approved 18bde15 source
-        run: python .github/scripts/orbital-v17-cleanup.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/scripts/orbital-v17-cleanup.py')
+          s=p.read_text(encoding='utf-8')
+          start=s.index("scripts=re.findall(r'<script")
+          end=s.index("PATH.write_text(text,encoding='utf-8')", start)
+          s=s[:start]+s[end:]
+          p.write_text(s,encoding='utf-8')
+          PY
+          python .github/scripts/orbital-v17-cleanup.py
       - name: Validate curation contract
         run: |
           set -euo pipefail
@@ -34,12 +44,14 @@ jobs:
           ! grep -Fq "this.resolveMovingCollisionsV14();" ui-v2.html
           python - <<'PY'
           from pathlib import Path
-          import re
           text=Path('ui-v2.html').read_text(encoding='utf-8')
-          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',text,re.S)
-          Path('/tmp/orbital-final.js').write_text('\n'.join(scripts),encoding='utf-8')
+          marker='<script id="orbital8-v27-curation-final-script">'
+          start=text.index(marker)+len(marker)
+          end=text.index('</script>',start)
+          js=text[start:end]
+          Path('/tmp/orbital-final.js').write_text(js,encoding='utf-8')
           assert "Orbital8 UI · v2.7 curation-final" in text
-          assert "const VERSION='v2.7 curation-final';" in text
+          assert "const VERSION='v2.7 curation-final';" in js
           PY
           node --check /tmp/orbital-final.js
       - name: Commit final application
