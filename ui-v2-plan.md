@@ -303,3 +303,7 @@ No fake data may be presented as production proof. Deterministic harness fixture
 **Construction lineage:** corrected the last integrated clean-lineage production release `45fa45dea68107f5400abfbaddb855b54b64bedd`, whose integrated candidate originated from locked clean baseline `a6de049...`; no older damaged patch-forward snapshot was used as construction input.
 **Automated gates:** A1-A18 source-contract matrix PASS; known-regression checks PASS; owner-correction JavaScript `node --check` PASS; donor application JavaScript retains its prior clean-lineage syntax gate.
 **Evidence boundary:** authenticated provider/device timing, real Drive URL-expiry recovery, and physical touch performance remain device/provider evidence and are not falsely claimed by the static runner.
+
+
+### 2026-08-13 · Owner correction placement revalidation
+Post-publication verification caught that the preceding owner-correction release inserted at a literal `</body>` inside the Sync Activity Log template. That release is superseded. This replacement is rebuilt again from clean-lineage commit `45fa45dea68107f5400abfbaddb855b54b64bedd`, inserts before the document-final `</body>`, and gates placement after the v2.0 donor layers. A1-A18, all owner-reported regression checks, placement, and owner-correction JavaScript syntax PASS before publication.
