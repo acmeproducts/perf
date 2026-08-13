@@ -1,12 +1,10 @@
-<!-- UI-V2-PLAN v1.3.4 -->
-# UI-V2 MASTER PLAN v1.3.4
+<!-- UI-V2-PLAN v1.3.5 -->
+# UI-V2 MASTER PLAN v1.3.5
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
 **Production:** `ui-v2.html`  
 **Integrated candidate:** `ui-v2-candidate.html`  
-**Harness:** `ui-v2-harness.html`  
-**Candidate manifest:** `ui-v2-candidate-manifest.json`  
 **Detailed requirements audit:** `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`  
 **Graveyard:** `UI-V2-GRAVEYARD.md`
 
@@ -52,15 +50,16 @@ Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 ### Completed
 
 1. Retired the eight owner-facing release sequence.
-2. Created `ui-v2-harness.html` as the single requirements dashboard.
-3. Instantiated `ui-v2-candidate.html` from the exact clean baseline blob from `a6de049`, not current production and not a later damaged snapshot.
-4. Created `ui-v2-candidate-manifest.json` recording baseline commit/blob and integration status.
-5. Published the item-by-item A1-A18 audit as `UI-V2-REQUIREMENTS-AUDIT-2026-08-13.md`.
-6. Production `ui-v2.html` was not modified by the audit turn.
+2. Locked clean baseline `a6de049` and requirements audit A1-A18.
+3. Restored VM-first development/test discipline; repository-hosted harness/manifest artifacts were removed.
+4. Developed and fixture-tested H1 patch logic in the VM.
+5. GitHub patch workflow rebuilt `ui-v2-candidate.html` from locked baseline and applied H1.
+6. H1 static markers and inline JavaScript syntax gate passed.
+7. Production `ui-v2.html` remains untouched.
 
 ### Current status
 
-**Candidate is NOT owner-testable yet.** It is still in integration. The clean baseline audit is PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. These are baseline findings, not claims about completed candidate behavior.
+**Candidate is NOT owner-testable yet.** H1 code is integrated and static/syntax validation is green; H2-H7 remain internal work. Real provider/performance evidence stays explicit for the final integrated device gate.
 
 ### Active execution — VM-first patch discipline
 
@@ -70,12 +69,10 @@ H1 patch logic was developed and fixture-tested in the VM, then applied by GitHu
 
 ### Next internal execution
 
-1. Resume H1 through a working repository code-write path.
-2. Replace the URL-keyed Explore/Table cache precursor with one file-identity keyed shared thumbnail service.
-3. Add visible-first loading, bounded background persistence, cache/request/refetch instrumentation and Drive recovery by file identity.
-4. Run H1 harness checks and capture real provider measurements.
-5. Continue H2–H7 internally in the same candidate.
-6. Present only the H8-integrated candidate to the owner.
+1. Continue H2 inspection/Focus-chrome work in the VM, then apply the tested patch to the same candidate lineage.
+2. Continue H3-H7 internally using the same VM-first → tested patch → GitHub-apply method.
+3. Keep H1 real-provider/expiry measurements explicit and collect them at the final integrated gate rather than creating an owner-facing H1 release.
+4. Present only the fully integrated H8 candidate to the owner.
 
 ---
 
@@ -240,6 +237,8 @@ No fake data may be presented as production proof. Deterministic harness fixture
 ---
 
 ## 9 · CHANGE LOG
+
+**v1.3.5 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
 
 **v1.3.4 · 2026-08-13.** Restored VM-first/test-first patch discipline; H1 tested patch and candidate syntax gate passed; GitHub reclassified as patch/deployment endpoint only.
 
