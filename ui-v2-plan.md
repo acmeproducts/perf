@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.7 -->
-# UI-V2 MASTER PLAN v1.3.7
+<!-- UI-V2-PLAN v1.3.8 -->
+# UI-V2 MASTER PLAN v1.3.8
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -200,6 +200,14 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 8 · TURN LEDGER
 
+### 2026-08-13 · H1-H7 integrated locally; static/syntax/startup gates green
+**VM implementation:** rebuilt from locked clean blob `1f394365...`; added shared file-identity image service and metrics/Drive recovery; Explore/Table medium→large inspection using actual Focus chrome; exactly three folder-scoped renameable tag targets; tag/stack Grid origin and filtered return context; Table current-stack tag fling with Sort comet trails and no image collisions; exact surface/inspection/Grid-origin persistence; desktop Sort pill/trash clearance.  
+**Local gates:** H0-H7 source contracts PASS; combined inline JavaScript `node --check` PASS; local browser startup PASS with no fatal screen and no console warnings/errors; exactly 3 Table targets present; 0 legacy Explore destinations; 0 legacy Table stack destinations; desktop trash computed bottom = 76px.  
+**Not yet proven:** provider-backed interaction, real thumbnail performance/Drive expiry recovery, authenticated idle refresh, and visible target geometry within an active folder. Those remain required H8/manual evidence.  
+**Production:** untouched. No candidate/harness artifacts, branches, staging files, blobs or experimental commits were written to GitHub.  
+**Next action:** run authenticated provider/device gates against the local candidate, fix locally if needed, freeze exact HTML, replace only production `ui-v2.html`, verify Pages exact commit, and return cache-busted URL.
+
+
 ### 2026-08-13 · Local baselines acquired; production patch withheld
 **VM evidence:** copied current production `main/ui-v2.html` locally (GitHub blob `aac15d26f5e7e6f415a3e15fdfde947fc91908ff`, 729,285 bytes) and independently copied locked clean baseline `a6de049.../ui-v2.html` locally (blob `1f3943655b157ccf10626d32bf4d1679e835867c`, 615,179 bytes).  
 **Audit finding:** current production contains later patch-forward v1.2-v1.8 layers, including hard-coded Inbox/YES/MAYBE/NO behavior prohibited by A2-A5 and graveyard G2/G5/G6. It is donor evidence, not approved construction input.  
@@ -251,13 +259,16 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 9 · CHANGE LOG
 
-**v1.3.7 · 2026-08-13.** Recorded exact local production/clean-baseline blobs and sizes, rejected current patch-forward production as construction input, and withheld production deployment pending local H0-H8 validation.
+**v1.3.8 · 2026-08-13.** Recorded local H1-H7 implementation, green static/syntax/startup gates, exact remaining provider/device H8 evidence, and continued production hold.
 
 
-**v1.3.7 · 2026-08-13.** Recorded production-only GitHub governance: all candidate and harness work is VM-local; only the frozen `ui-v2.html` production patch and required plan ledger updates may be written to GitHub.
+**v1.3.8 · 2026-08-13.** Recorded exact local production/clean-baseline blobs and sizes, rejected current patch-forward production as construction input, and withheld production deployment pending local H0-H8 validation.
 
 
-**v1.3.7 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
+**v1.3.8 · 2026-08-13.** Recorded production-only GitHub governance: all candidate and harness work is VM-local; only the frozen `ui-v2.html` production patch and required plan ledger updates may be written to GitHub.
+
+
+**v1.3.8 · 2026-08-13.** Removed stale repository-harness/manifest references, recorded H1 static/syntax PASS, and advanced internal execution to H2.
 
 **v1.3.4 · 2026-08-13.** Restored VM-first/test-first patch discipline; H1 tested patch and candidate syntax gate passed; GitHub reclassified as patch/deployment endpoint only.
 
