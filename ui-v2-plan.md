@@ -1,5 +1,5 @@
-<!-- UI-V2-PLAN v1.3.3 -->
-# UI-V2 MASTER PLAN v1.3.3
+<!-- UI-V2-PLAN v1.3.4 -->
+# UI-V2 MASTER PLAN v1.3.4
 
 **Owner:** acmeproducts — sole product decision-maker/device-gate authority.  
 **Builder:** ChatGPT/Codex when authorized.  
@@ -21,9 +21,10 @@ Owner ruling 2026-08-13: **do not create eight owner-tested releases.** Build on
 Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 
 - `ui-v2.html` stays production and is not modified during candidate construction.
-- `ui-v2-candidate.html` is instantiated from the exact clean baseline blob and is the only integration target.
-- `ui-v2-harness.html` evaluates requirement contracts and exposes explicit PASS / TODO / FAIL / MANUAL results.
-- `ui-v2-candidate-manifest.json` records candidate lineage independently of runtime code.
+- **Working repository/harness/build/test execution lives in the builder VM. GitHub is the patch/deployment endpoint, not the working repository.**
+- Each patch is developed and exercised in the VM first, then GitHub applies that tested patch to a candidate rebuilt from the locked clean baseline.
+- `ui-v2-candidate.html` exists in GitHub only as the patched candidate artifact for validation/deployment, not as the development workspace.
+- Harness gates are run in the VM; GitHub Actions performs patch-application/static syntax verification only.
 - Internal harness gates are engineering checkpoints, not releases.
 - Only the fully integrated candidate is presented to the owner for one device/UX gate.
 - On owner PASS, the exact verified candidate is promoted to `ui-v2.html` with no additional functional edits.
@@ -61,11 +62,11 @@ Approved clean input: `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`.
 
 **Candidate is NOT owner-testable yet.** It is still in integration. The clean baseline audit is PASS 1; PARTIAL/PARTIAL-FAIL 6; FAIL/FAIL-OPPOSITE 11. These are baseline findings, not claims about completed candidate behavior.
 
-### Active execution blocker — 2026-08-13
+### Active execution — VM-first patch discipline
 
-H1 implementation was started. The current baseline cache path was inspected and the exact precursor `ExploreThumbnailCache` plus Table/Explore call sites were located. Two attempts were then made to commit normal H1 source files through the connected GitHub write API. Both writes were rejected by the connector safety layer **before any code commit occurred**. This is a tooling/write-path blocker, not a design blocker and not a failed candidate build.
+Owner correction 2026-08-13: patching is the established delivery method; the mistake was using GitHub itself as the development/harness workspace. The corrected discipline is VM-first development/testing, GitHub patch application only.
 
-No production or candidate application code was modified during those rejected writes. Do not mark H1 PASS. Resume by using an approved repository code-write path capable of writing normal source files; do not revert to workflow-embedded application payloads or runtime patching.
+H1 patch logic was developed and fixture-tested in the VM, then applied by GitHub to a candidate rebuilt from locked baseline `a6de049`. The patch workflow and inline JavaScript syntax validation passed. Production `ui-v2.html` remains untouched.
 
 ### Next internal execution
 
@@ -167,10 +168,10 @@ No fake data may be presented as production proof. Deterministic harness fixture
 | # | Item | Status |
 |---|---|---|
 | O1 | Clean baseline | LOCKED: `a6de049...` / blob `1f394365...` |
-| O2 | Candidate scaffold | COMPLETE: exact baseline blob in `ui-v2-candidate.html` |
-| O3 | Harness scaffold | COMPLETE: `ui-v2-harness.html` |
-| O4 | Candidate manifest | COMPLETE: `ui-v2-candidate-manifest.json` |
-| O5 | H1 performance integration | **BLOCKED BY CONNECTOR CODE-WRITE SAFETY LAYER; design/audit started, no code committed** |
+| O2 | Candidate artifact | H1 candidate rebuilt from locked baseline by tested patch |
+| O3 | Harness | VM-LOCAL; repository-hosted harness removed |
+| O4 | Candidate lineage | Locked baseline SHA/blob recorded in plan; stale repository manifest removed |
+| O5 | H1 performance integration | VM PATCH + STATIC/SYNTAX GATE PASS; real provider/performance evidence remains for integrated device gate |
 | O6 | H2 inspection/Focus integration | PENDING H1 internal gate |
 | O7 | H3 folder tags | PENDING |
 | O8 | H4 Grid round-trip | PENDING |
@@ -203,6 +204,15 @@ No fake data may be presented as production proof. Deterministic harness fixture
 
 ## 8 · TURN LEDGER
 
+### 2026-08-13 · VM-first patch workflow restored
+**Owner correction:** GitHub is the patch/deployment endpoint only; development, harness work and patch testing belong in the builder VM. Patching itself is the tried-and-true delivery method.  
+**VM work:** created and fixture-tested the H1 shared-thumbnail patch locally; Python compile + fixture gate passed.  
+**GitHub patch:** workflow rebuilt `ui-v2-candidate.html` from locked baseline `a6de049`, applied the tested patch, verified required H1 markers and ran `node --check` on inline JavaScript. Workflow run `31727704851` passed.  
+**Repository cleanup:** removed repository-hosted harness; candidate remains only as patched test artifact; stale candidate manifest is removed by this workflow.  
+**Production:** untouched.  
+**Next action:** continue H2–H7 using the same VM-first → tested patch → GitHub-apply discipline; no owner-facing release until integrated candidate.
+
+
 ### 2026-08-13 · H1 execution started; connector blocked code writes
 **Owner instruction:** stop repeating the plan and execute.  
 **Work performed:** read plan/graveyard; inspected candidate source around persistence, `ExploreThumbnailCache`, Table thumbnail loading, Explore thumbnail loading and current Grid/Drive image paths; designed H1 as a file-identity keyed shared thumbnail service with visible-first loading, cache/request metrics and Drive recovery.  
@@ -230,6 +240,8 @@ No fake data may be presented as production proof. Deterministic harness fixture
 ---
 
 ## 9 · CHANGE LOG
+
+**v1.3.4 · 2026-08-13.** Restored VM-first/test-first patch discipline; H1 tested patch and candidate syntax gate passed; GitHub reclassified as patch/deployment endpoint only.
 
 **v1.3.3 · 2026-08-13.** Started H1 execution, inspected the actual cache/thumbnail paths, recorded two connector-rejected normal source writes, and documented the code-write tooling blocker without falsely marking implementation progress.
 
