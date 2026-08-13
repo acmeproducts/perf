@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UI-V2 Candidate Harness</title>
+<style>
+body{font:14px system-ui,sans-serif;background:#09090b;color:#fafafa;margin:0;padding:20px}h1{font-size:20px}button,a{color:#fff;background:#27272a;border:1px solid #52525b;border-radius:8px;padding:8px 12px;text-decoration:none;margin-right:8px}table{width:100%;border-collapse:collapse;margin-top:18px}th,td{padding:9px;border-bottom:1px solid #3f3f46;text-align:left;vertical-align:top}.PASS{color:#22c55e}.FAIL{color:#ef4444}.TODO{color:#60a5fa}.MANUAL{color:#f59e0b}code{font-size:12px}.note{color:#a1a1aa}.summary{margin:14px 0;font-weight:700}
+</style>
+</head>
+<body>
+<h1>UI-V2 Integrated Candidate Harness</h1>
+<p class="note">Target: <code>ui-v2-candidate.html</code>. Clean baseline: <code>a6de049f8c8b9798c610984b35b9d8ade57d0fa5</code>. Automated checks never substitute for provider/device gates.</p>
+<p><button id="run">Run</button><a href="ui-v2-candidate.html" target="_blank">Open candidate</a></p>
+<div id="summary" class="summary"></div>
+<table><thead><tr><th>Gate</th><th>Requirement</th><th>Status</th><th>Evidence / remediation</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+const target='ui-v2-candidate.html';
+const tests=[
+['H0','Clean baseline identity',s=>s.includes('a6de049f8c8b9798c610984b35b9d8ade57d0fa5'),'Add static baseline lineage marker to candidate.'],
+['H0','No buried stabilization patch',s=>!(/orbital8-v16-standard-chrome|orbital8-v161-stable-chrome/i.test(s)),'Remove buried runtime stabilization blocks.'],
+['H2','Canonical Focus controls present',s=>['focus-stack-name','focus-image-count','focus-favorite-btn','focus-delete-btn'].every(x=>s.includes(x)),'Use actual Focus controls for Explore/Table inspection.'],
+['H2','Explore sphere has no destination controls',s=>{const p=s.indexOf('id="spatial-gallery"');const q=p<0?'':s.slice(p,p+14000);return !q.includes('spatial-gallery__destination')},'Remove tag/sort targets from sphere; targets start at medium.'],
+['H2','Explore medium and large inspection states',s=>/explore.{0,60}medium/i.test(s)&&/explore.{0,60}large/i.test(s),'Implement Sphere -> Medium -> Large and exact X returns.'],
+['H2','Table medium and large inspection states',s=>/table.{0,60}medium/i.test(s)&&/table.{0,60}large/i.test(s),'Implement Table thumbnail -> Medium -> Large.'],
+['H3','Exactly three tag targets',s=>{const a=(s.match(/data-(?:tag-target|curation-target)=/g)||[]).length;const m=s.match(/(?:TAG_TARGETS|tagTargets)\s*=\s*\[([^\]]*)\]/i);const b=m?(m[1].match(/["'][^"']+["']/g)||[]).length:0;return (a||b)===3},'Define exactly three configurable folder tag targets.'],
+['H3','No hard-coded Table stack destinations',s=>!(/data-table-stack=["'](?:priority|trash|in|out)/.test(s)),'Targets are tags, not stack IDs.'],
+['H3','Long-press rename',s=>/longpress|long-press|pressTimer|renameTagTarget/i.test(s),'Add long-press rename with drag discrimination.'],
+['H3','Folder-specific target persistence',s=>/folderTagTargets|folder.{0,40}tag.{0,40}target|tag.{0,40}target.{0,40}folder/i.test(s),'Persist names/positions by folder and share Explore/Table.'],
+['H4','Grid origin context',s=>/grid.{0,40}origin|origin.{0,40}grid/i.test(s)&&['surface','folder','stack','fileId'].every(x=>s.includes(x)),'Persist surface/folder/stack/file/tag/inspection origin and reconcile on exit.'],
+['H4','Tag target opens filtered Grid',s=>/grid.{0,80}tag.{0,80}filter|tag.{0,80}grid/i.test(s),'Target tap opens normal Grid with implicit tag filter.'],
+['H4','Stack selector opens Grid',s=>/stack.{0,80}grid|grid.{0,80}stack/i.test(s),'Add Grid action to canonical stack selector.'],
+['H1','Shared all-surface thumbnail service',s=>/SharedThumbnail|ThumbnailService|OrbitalImageCache/i.test(s)&&!/const ExploreThumbnailCache\s*=/.test(s),'Replace per-surface cache ownership with shared service.'],
+['H1','Performance metrics',s=>/cacheHit|cacheMiss|sphere.{0,30}fill|table.{0,30}fill|first.{0,30}thumbnail|refetch/i.test(s),'Instrument first paint/fill/request/cache/refetch metrics.'],
+['H1','Drive error recovery by file identity',s=>/googledrive/i.test(s)&&/recover|refresh|retry/i.test(s)&&/fileId|file\.id/.test(s),'Re-resolve expired Drive URLs by file identity.'],
+['H5','No image-image collision resolver',s=>!(/resolveMovingCollisions|image.?to.?image.?collision/i.test(s)),'Remove only image-image collisions.'],
+['H5','Actual Sort comet trail available',s=>/spawnTrail/.test(s)&&/comet-trail/.test(s),'Reuse the real Sort trail helper from Table.'],
+['H6','Persist surface + inspection context',s=>/persistViewContext/.test(s)&&/surface/.test(s)&&/inspection/i.test(s),'Extend resume context through Explore/Table/Grid.'],
+['H7','Desktop Sort pills shortened',s=>/@media[\s\S]{0,500}pill-counter[\s\S]{0,220}padding:\s*(?:[0-9]px\s+)/i.test(s),'Add desktop-only smaller vertical pill geometry.'],
+['H7','Trash clears footer',s=>/pill-trash|bottom-center/.test(s)&&/footer/i.test(s)&&/bottom:\s*(?:3[6-9]|[4-9][0-9])px/i.test(s),'Raise trash pill above footer without changing Sort symmetry.'],
+['H8','Visible static candidate version',s=>/footer-baseline[^>]*>[^<]*(candidate|rc|v2\.)/i.test(s),'Put candidate version statically in visible footer source.']
+];
+const manual=[
+['H0','Provider/authenticated startup','Provider -> folders/app; no fatal loop or Chrome Wait/Quit.'],
+['H1','Real Google Drive idle/expired URL recovery','Verify after real idle/URL expiry without losing view state.'],
+['H5','Physics/device feel','Momentum/bank/rim/corner/vacuum/capture remain; no image-image collisions.'],
+['H6','Idle/auth refresh restoration','Exact surface/folder/stack/file/inspection returns after background/auth refresh.'],
+['H8','Final desktop + touch owner gate','Owner validates the one integrated candidate before production promotion.']
+];
+function esc(v){return String(v).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+async function run(){let source='',error='';try{const r=await fetch(target+'?h='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error(r.status+' '+r.statusText);source=await r.text()}catch(e){error=e.message}
+const out=tests.map(t=>{let ok=false;if(!error)try{ok=!!t[2](source)}catch(e){}return [t[0],t[1],error?'FAIL':ok?'PASS':'TODO',error?('Candidate unavailable: '+error):ok?'Contract evidence found.':t[3]]});manual.forEach(x=>out.push([x[0],x[1],'MANUAL',x[2]]));
+const tbody=document.getElementById('rows');tbody.innerHTML='';out.forEach(r=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+r[0]+'</td><td>'+esc(r[1])+'</td><td class="'+r[2]+'">'+r[2]+'</td><td>'+esc(r[3])+'</td>';tbody.appendChild(tr)});const count=k=>out.filter(r=>r[2]===k).length;document.getElementById('summary').textContent='PASS '+count('PASS')+' · TODO '+count('TODO')+' · FAIL '+count('FAIL')+' · MANUAL '+count('MANUAL')+' · source '+source.length.toLocaleString()+' chars';}
+document.getElementById('run').onclick=run;run();
+</script>
+</body>
+</html>
