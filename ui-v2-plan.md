@@ -1,3 +1,322 @@
+<!-- UI-V2-PLAN v2.0.0 -->
+# UI-V2 EXPLORER RELEASE PLAN — TARGET APP RELEASE v1.9
+
+**Plan revision:** v2.0.0  
+**Status:** PLAN ONLY — implementation is not yet authorized by this document update.  
+**Production artifact:** `ui-v2.html`  
+**Repository:** `acmeproducts/perf`  
+**Locked restored baseline commit:** `60bb757728045dd09323c136bef1245ab5fb3fa5`  
+**Locked restored `ui-v2.html` blob:** `aac15d26f5e7e6f415a3e15fdfde947fc91908ff`  
+**Current static app marker:** `Orbital8 UI · v1.8 focus-standard`  
+**Target app release:** `v1.9`  
+**Graveyard:** `UI-V2-GRAVEYARD.md`
+
+**Owner ruling for this release:** fix Explorer first, deliver the entire approved Explorer scope together in one release, reuse established behavior instead of inventing substitutes, and do not begin implementation until this plan is reviewed.
+
+---
+
+## 1 · RELEASE CONTRACT
+
+This is a single, complete Explorer release. There are no partial owner-facing releases and no interim production patches.
+
+1. Construction starts only from the locked restored `main` snapshot above.
+2. The shipped application remains named **`ui-v2.html`**.
+3. The application release identifier advances from **v1.8 → v1.9** only when the complete Explorer scope and all release gates pass.
+4. Before implementation, enumerate every existing static build/release marker and every footer occurrence of the release identifier. At release time, update all of those existing locations consistently to `v1.9`; do not create a parallel version mechanism.
+5. Do not invent replacement controls, navigation effects, Grid behavior, or inspection chrome. Reuse the existing implementations identified in this plan.
+6. Explorer is the only feature surface being changed in this release except for the minimal shared/internal plumbing required to reuse existing Sort, Focus, Grid, cache, and version infrastructure without regression.
+7. Table/tag-stack work described in §9 is roadmap context only and is explicitly **out of scope** for v1.9.
+8. Any implementation failure that compromises the restored baseline follows the graveyard failure protocol rather than patching forward from a damaged result.
+
+---
+
+## 2 · NON-NEGOTIABLE REUSE RULES
+
+The implementation must reuse existing application behavior rather than create lookalikes.
+
+- **Comet navigation:** Medium and Large Explorer navigation must use the actual established Sort left/right tap-and-swipe comet-trail behavior. A similarly named or visually approximate effect does not satisfy this requirement.
+- **Inspection controls:** reuse the actual Focus stack selector, Details behavior, favorite heart behavior, and trash behavior. Do not create Explorer-owned duplicate behavioral controls.
+- **Grid:** reuse the existing Grid surface and its existing Grid→Sort exit/reconciliation behavior. Do not create an Explorer-specific Grid.
+- **Stack selection:** reuse the existing stack model and stack switching behavior. Grid-entry chips are adjuncts to those existing stack rows, not a new stack system.
+- **Image identity:** navigation and Grid return must reconcile by the application’s existing stable file/image identity rather than array position alone.
+- **Thumbnail/cache plumbing:** use or extend the existing reusable thumbnail/cache path. Do not add another per-surface cache that duplicates provider work.
+
+---
+
+## 3 · EXPLORER SPHERE: THUMBNAIL CACHE AND PERFORMANCE
+
+### E1 — Active thumbnail count is controlled by the existing floating image-count control
+
+Let `N` be the number of images currently selected by the existing floating image-count control.
+
+- Explorer’s active sphere set is exactly those `N` images selected by the existing control and existing ordering/filter rules.
+- All `N` active thumbnails must be prepared through the cache path so sphere navigation does not wait on routine thumbnail acquisition.
+- Increasing the control from `N` to `M` adds the newly required images to the cache without invalidating already cached images.
+- Decreasing the control does **not** immediately discard thumbnails that were already prepared.
+
+### E2 — LRU retention policy
+
+The cache must behave as an LRU-backed working set:
+
+- The current active `N` thumbnails are **pinned** and are not eviction candidates while they are part of the active Explorer set.
+- Previously cached thumbnails outside the active set remain available as LRU entries so increasing the image count again can reuse them immediately.
+- Eviction is permitted only from non-active entries and only when the cache reaches its established capacity/memory-pressure boundary.
+- Changing the image-count control downward must not itself trigger a purge of the now-inactive thumbnails.
+- Re-adding a still-resident LRU thumbnail must be a cache hit, not a provider refetch/redecode cycle.
+
+No new arbitrary numeric cache multiplier is specified by product requirements. The implementation must use an evidence-based capacity appropriate to the existing cache/memory architecture while preserving the pin-active/LRU-inactive rule above.
+
+### E3 — No thumbnail churn when the sphere moves
+
+Sphere movement is positional navigation, not a thumbnail-loading event.
+
+Once the active thumbnails are prepared:
+
+- paging/panning the sphere left, right, up, or down must not recreate unchanged thumbnail elements merely because their screen positions changed;
+- position changes must not re-resolve provider thumbnail URLs;
+- position changes must not refetch unchanged thumbnails;
+- position changes must not cause avoidable image decode/recreation work;
+- cache identity must remain stable while images move on and off screen;
+- the application should update geometry/composited position rather than rebuild the thumbnail population.
+
+The performance target is immediate movement through an already prepared sphere. The browser compositor may of course paint changed pixels; the prohibited work is **application-level thumbnail reconstruction/refetch/redecode caused only by sphere movement**.
+
+### E4 — Visible result
+
+With the active set warm, paging the sphere must not show routine blank-thumbnail flashes, loading placeholders, or progressive refilling caused by movement alone.
+
+---
+
+## 4 · EXPLORER SPHERE: INDEPENDENT SIZE CONTROLS
+
+### E5 — Floating percentage control scales thumbnails
+
+The existing floating percentage-size control controls **thumbnail rendered scale**.
+
+- Changing the percentage changes the displayed size of Explorer thumbnails.
+- It does not change which images are in the active set.
+- It does not invalidate or repopulate the thumbnail cache merely because the rendered size changed, unless the existing rendition architecture genuinely requires a different source rendition; any such source change must be measured and justified rather than implicit.
+- It does not act as the sphere zoom control.
+
+### E6 — Pinch zoom scales the sphere
+
+Pinch zoom independently changes the **overall sphere scale/radius/spatial extent**.
+
+- Pinch zoom may make the sphere smaller or larger.
+- The sphere is allowed to become larger than the viewport.
+- When larger than the viewport, the user can page/pan through the sphere left/right/up/down using the established Explorer movement model.
+- Pinch zoom does not change the floating thumbnail percentage setting.
+- Pinch zoom does not change the active image count.
+- Pinch zoom must not invalidate already prepared thumbnails merely because their positions change.
+
+### E7 — Independence invariant
+
+These controls are orthogonal:
+
+- **image-count control → number of active/cached images;**
+- **percentage control → thumbnail display scale;**
+- **pinch → sphere spatial scale.**
+
+Changing one must not silently rewrite the state owned by either of the other two.
+
+---
+
+## 5 · THUMBNAIL → MEDIUM → LARGE INSPECTION HIERARCHY
+
+### E8 — Thumbnail → Medium
+
+A single tap on an Explorer sphere thumbnail opens that exact image in **Medium** inspection.
+
+Medium must provide:
+
+- the existing stack selector;
+- the existing favorite heart behavior;
+- the existing trash behavior;
+- the existing Details behavior;
+- left/right image navigation by both tap and swipe using the actual Sort comet-trail implementation;
+- stable selected-image identity as navigation advances backward/forward;
+- a top-center **X** that returns to the Explorer thumbnail sphere with the corresponding image/context preserved.
+
+Reuse existing Focus chrome/handlers. Required controls above must not be reimplemented as Explorer-specific lookalikes. Existing Focus chrome that is not contradicted by this plan may remain as part of the reused canonical control set.
+
+### E9 — Medium → Large
+
+Tapping the image while in Medium opens that image in **Large** inspection.
+
+Large must:
+
+- use the same image display size/format already established by Sort’s large image presentation;
+- retain the same selected-image identity;
+- support left/right tap navigation with the actual Sort comet trail;
+- support left/right swipe navigation with the actual Sort comet trail;
+- retain the existing stack selector, favorite, trash, and Details behaviors;
+- provide a top-center **X** that returns to Medium on the same image.
+
+### E10 — X hierarchy and placement
+
+The inspection hierarchy is exactly:
+
+`Explorer thumbnail sphere → Medium → Large`
+
+and closes exactly:
+
+`Large X → Medium`  
+`Medium X → Explorer thumbnail sphere`
+
+For both Medium and Large:
+
+- X is top-center;
+- X must remain readily tappable/clickable;
+- X must not occlude or compete with the Details control;
+- entering/exiting a level must not unnecessarily reacquire the displayed image.
+
+---
+
+## 6 · MEDIUM/LARGE STACK SELECTOR → GRID
+
+### E11 — Grid chip beside every stack row
+
+In both Medium and Large, opening the existing stack selector presents the existing stack list. Beside each stack name, provide the required Grid-entry chip.
+
+The chip:
+
+- represents **Grid for that stack in the current folder**;
+- uses the existing Grid surface;
+- does not create a new stack type;
+- does not alter the stack simply by entering Grid;
+- is available consistently from both Medium and Large.
+
+### E12 — Grid return contract
+
+When Grid is entered from an Explorer Medium/Large stack chip:
+
+1. preserve enough file/folder/stack context to identify the corresponding image;
+2. run the existing Grid for the selected stack/folder;
+3. on Grid exit, return to **Sort**, not back to Explorer inspection;
+4. use the established Grid→Sort reconciliation behavior so the appropriate corresponding image is at center stage, matching the existing Sort/Grid round-trip behavior.
+
+Do not invent a second Explorer-specific return algorithm. If Grid actions changed/deleted/moved the originally selected file, the existing Grid→Sort reconciliation rule remains authoritative for choosing the resulting center image.
+
+---
+
+## 7 · RELEASE TEST GATES
+
+No v1.9 production release is allowed until all applicable gates below pass together. A static/code gate permits device testing; it is not a substitute for device/provider behavior.
+
+| Gate | Requirement coverage | Required evidence | Release blocker |
+|---|---|---|---|
+| **G0 — Baseline/identity** | Release contract | Build is derived from commit `60bb757…` / blob `aac15d26…`; source artifact remains `ui-v2.html`; no unrelated rollback/forward lineage | Yes |
+| **G1 — Count/cache fill** | E1 | For multiple image-count values, active count exactly matches control; all active entries reach prepared cache state; increase adds only required new entries | Yes |
+| **G2 — LRU retention** | E2 | Increase → decrease → increase sequence demonstrates retained non-active entries become cache hits; active entries are never evicted; eviction occurs only from non-active LRU entries at capacity/memory pressure | Yes |
+| **G3 — Movement churn** | E3–E4 | Instrument provider requests, cache hits/misses, image element/source recreation and decode/recreation where measurable; warm left/right/up/down sphere movement produces zero movement-caused provider refetches and zero avoidable thumbnail population rebuilds | Yes |
+| **G4 — Thumbnail percentage** | E5/E7 | Percentage control visibly scales thumbnails without changing active count or sphere pinch state; warm cache remains reusable | Yes |
+| **G5 — Pinch/sphere scale** | E6/E7 | Pinch changes sphere extent independently; sphere can exceed viewport; left/right/up/down access remains usable; active count and thumbnail percentage remain unchanged | Yes |
+| **G6 — Medium inspection** | E8/E10 | Single-tap selected thumbnail opens correct image; actual Focus controls work; tap/swipe left/right uses actual Sort comet behavior; top-center X returns to Explorer sphere | Yes |
+| **G7 — Large inspection** | E9/E10 | Medium image tap opens Large at Sort-equivalent format; actual controls work; tap/swipe comet navigation works; X is top-center, clear of Details, and returns to Medium on same image | Yes |
+| **G8 — Stack/Grid round-trip** | E11/E12 | Every Medium/Large stack row has working Grid chip; correct folder/stack Grid opens; exit lands in Sort with existing reconciliation and appropriate image centered | Yes |
+| **G9 — Existing behavior regression** | Reuse rules | Sort comet behavior remains unchanged; Focus controls remain canonical; Grid normal entry/exit still works; favorite/trash/details/stack actions retain existing semantics | Yes |
+| **G10 — Performance/device gate** | E1–E7 | On representative desktop and touch device with real provider data, warm sphere paging feels immediate and shows no routine movement-caused blank/refill cycle; pinch and independent sizing remain stable | Yes |
+| **G11 — Release stamping** | Release contract | Enumerate all pre-existing release markers/footer locations before edit; all intended locations show `v1.9`; no stale `v1.8` remains in those release-identification contexts; static header identity is verifiable in shipped HTML | Yes |
+| **G12 — Published artifact verification** | Release contract | Published `ui-v2.html` matches the gated production commit/blob and visibly reports the intended v1.9 identity; repository commit success alone is not accepted as runtime proof | Yes |
+
+### Minimum cache/performance instrumentation for G1–G3
+
+Capture at least:
+
+- active image-count value;
+- cache resident count;
+- active/pinned count;
+- cache hit count;
+- cache miss count;
+- LRU eviction count;
+- provider thumbnail request/re-resolution count;
+- movement-caused source replacement count;
+- movement-caused thumbnail element recreation count;
+- decode/recreation count where the browser/runtime exposes a reliable measurement.
+
+Instrumentation may be development-only, but the measured behavior must be represented honestly. Do not claim “no repaint” from source inspection alone.
+
+---
+
+## 8 · IMPLEMENTATION ORDER — ONE RELEASE, INTERNAL SEQUENCE ONLY
+
+These steps are engineering order, **not separate releases**.
+
+1. **Baseline lock and inventory** — confirm restored v1.8 snapshot, locate existing Explorer count/percentage/pinch controls, cache path, Sort comet behavior, Focus controls, stack selector, Grid entry/exit, and all release/footer identifiers.
+2. **Cache first** — implement/adjust active-set pinning, LRU retention, count-change behavior, and instrumentation. Prove G1–G3 before changing inspection UX.
+3. **Independent sphere sizing** — wire percentage to thumbnail display scale and pinch to sphere scale without coupling or cache churn. Prove G4–G5.
+4. **Medium** — thumbnail tap, canonical controls, actual Sort comet navigation, top-center X. Prove G6.
+5. **Large** — Medium→Large, Sort-equivalent image format, canonical controls, actual comet navigation, X→Medium. Prove G7.
+6. **Stack Grid chips** — expose chips in Medium/Large selector and reuse existing Grid→Sort round-trip. Prove G8.
+7. **Integrated regression** — run G0–G10 together against the same candidate.
+8. **Release identity** — only after functional gates are green, bump all existing release-identification locations from v1.8 to v1.9 and run G11.
+9. **Publish exact gated `ui-v2.html`** — no post-gate functional edits. Verify the published artifact and run G12.
+10. **Owner device review** — the v1.9 release is the single review build for this scope.
+
+---
+
+## 9 · ROADMAP CONTEXT — EXPLICITLY NOT PART OF v1.9
+
+This section records direction so the Explorer architecture does not block the next phases. It does **not** authorize these changes in v1.9.
+
+### R1 — Table follows a proven Explorer foundation
+
+If Explorer v1.9 is as solid as expected, Table should reuse the proven Explorer foundations rather than start another implementation family: thumbnail/cache behavior, thumbnail sizing, inspection hierarchy, navigation reuse, and Grid integration should be candidates for direct reuse/copy of the validated patterns.
+
+### R2 — Table tag-stack phase
+
+The later Table phase is expected to:
+
+- add the tag-stack curation destinations on the Table thumbnail surface;
+- remove the Sort-stack destination treatment from that Table curation surface;
+- keep Table thumbnails as the direct curation entry surface;
+- preserve the reusable inspection/cache foundations proven in Explorer.
+
+Exact Table requirements and gates will be written before that release; this paragraph is direction, not an implementation specification.
+
+### R3 — Later Explorer tag-stack backport
+
+Only after the Table tag-stack behavior is proven, backport those tag-stack destinations to **Explorer Medium only**.
+
+- Do **not** put tag-stack targets on the Explorer sphere/thumbnail surface.
+- Explorer sphere remains inspection-first.
+- The later backport gets its own reviewed requirements and tests.
+
+---
+
+## 10 · TRACEABILITY MATRIX
+
+| Requirement | Product decision | Test gate(s) |
+|---|---|---|
+| E1 | Floating image-count value defines active thumbnails and cache-fill target | G1 |
+| E2 | Keep decreased-count thumbnails in LRU; active set pinned | G2 |
+| E3 | Sphere movement does not trigger thumbnail rebuild/refetch/redecode churn | G3 |
+| E4 | Warm movement has no routine blank/refill cycle | G3, G10 |
+| E5 | Floating percentage scales thumbnails | G4 |
+| E6 | Pinch scales sphere and may exceed viewport | G5 |
+| E7 | Count / thumbnail % / pinch are independent | G4, G5 |
+| E8 | Thumbnail → Medium; Focus controls; actual Sort comet nav; X→sphere | G6, G9 |
+| E9 | Medium → Large; Sort-equivalent format; actual comet nav | G7, G9 |
+| E10 | X is top-center; Large→Medium→sphere; Details not occluded | G6, G7 |
+| E11 | Medium/Large stack selector has Grid chip beside each stack | G8 |
+| E12 | Explorer-started Grid exits to Sort with appropriate image centered | G8, G9 |
+| Release | One complete `ui-v2.html` v1.9 release with consistent static/footer identity | G0, G11, G12 |
+| Roadmap | Table/tag-stack work deferred | Regression scope check |
+
+---
+
+## 11 · CURRENT EXECUTION STATE
+
+**2026-08-13:** Plan rewritten after owner restored `ui-v2.html` to a known, usable v1.8 snapshot. No application code was changed in this planning step. Implementation remains blocked pending owner review of this plan.
+
+**Next authorized action after plan approval:** implement the complete v1.9 Explorer scope above against the locked restored baseline, run G0–G12, then publish one exact `ui-v2.html` release.
+
+---
+
+## APPENDIX A · SUPERSEDED PREVIOUS PLAN — PRESERVED VERBATIM
+
+The entire immediately preceding operative plan is retained below verbatim for historical traceability. It is **superseded** by the v2.0.0 Explorer plan above and does not authorize implementation where it conflicts with the current owner ruling.
+
 <!-- UI-V2-PLAN v1.3.9 -->
 # UI-V2 MASTER PLAN v1.3.9
 
