@@ -1,4 +1,4 @@
-<!-- Orbital8 UI · v1.8 focus-standard -->
+<!-- Orbital8 UI · v1.9 explorer -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1089,7 +1089,7 @@
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
         </div>
         <div class="app-footer">
-            <span class="footer-baseline">Orbital8 UI · v1.8 focus-standard</span>
+            <span class="footer-baseline">Orbital8 UI · v1.9 explorer</span>
         </div>
     </div>
     
@@ -1106,7 +1106,7 @@
             <div id="auth-status" class="status info"></div>
         </div>
         <div class="app-footer">
-            <span class="footer-baseline">Orbital8 UI · v1.8 focus-standard</span>
+            <span class="footer-baseline">Orbital8 UI · v1.9 explorer</span>
         </div>
     </div>
 
@@ -1148,7 +1148,7 @@
             </div>
         </div>
         <div class="app-footer">
-            <span class="footer-baseline">Orbital8 UI · v1.8 focus-standard</span>
+            <span class="footer-baseline">Orbital8 UI · v1.9 explorer</span>
         </div>
     </div>
     
@@ -1165,7 +1165,7 @@
             <button class="button" id="cancel-loading" style="background: rgba(239, 68, 68, 0.8); margin-top: 16px;">Cancel</button>
         </div>
         <div class="app-footer">
-            <span class="footer-baseline">Orbital8 UI · v1.8 focus-standard</span>
+            <span class="footer-baseline">Orbital8 UI · v1.9 explorer</span>
         </div>
     </div>
 
@@ -1236,7 +1236,7 @@
         <div id="toast" class="toast"></div>
 
         <div class="app-footer">
-            <span class="footer-baseline">Orbital8 UI · v1.8 focus-standard</span>
+            <span class="footer-baseline">Orbital8 UI · v1.9 explorer</span>
         </div>
     </div>
 
@@ -12869,7 +12869,7 @@ body.orbital-explore-inspecting #details-modal {
 <script id="orbital8-v15-triage-table-script">
 (() => {
   'use strict';
-  const VERSION = 'v1.8 focus-standard';
+  const VERSION = 'v1.9 explorer';
 
   const SwitcherShieldV15 = {
     el:null,
@@ -13037,9 +13037,347 @@ body.orbital-explore-inspecting #details-modal {
   };
 
   document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`;});
-  state.syncLog?.log?.({event:'ui:v15-installed',level:'info',details:'v1.8 focus-standard: Explore and Table use real Focus chrome; Explore selector fixed/draggable; Table Inbox scatters to draggable YES/MAYBE/NO; exact Sort trails; no image-image collisions.'});
+  state.syncLog?.log?.({event:'ui:v15-installed',level:'info',details:'v1.9 explorer: Explore and Table use real Focus chrome; Explore selector fixed/draggable; Table Inbox scatters to draggable YES/MAYBE/NO; exact Sort trails; no image-image collisions.'});
 })();
 </script>
 
+\n\n<!-- Orbital8 v1.9 Explorer completion -->
+<style id="orbital8-v19-explorer-style">
+/* v1.9: Explorer-only completion. Focus controls, Grid, and Sort comet class/animation remain canonical. */
+body.orbital-explore-inspecting .orbital-explore-close {
+  top:max(12px,env(safe-area-inset-top)) !important;
+  left:50% !important;
+  right:auto !important;
+  transform:translateX(-50%) !important;
+  z-index:12980 !important;
+}
+.orbital-explore-status {
+  position:fixed;
+  z-index:12979;
+  top:max(68px,calc(env(safe-area-inset-top) + 56px));
+  left:50%;
+  transform:translateX(-50%);
+  min-height:20px;
+  padding:4px 10px;
+  border-radius:999px;
+  color:rgba(255,255,255,.82);
+  background:rgba(15,23,42,.68);
+  font:600 11px/1.1 system-ui,sans-serif;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity .12s ease;
+}
+.orbital-explore-status.visible{opacity:1}
+.orbital-explore-inspect__stage .comet-trail,
+.orbital-explore-full__stage .comet-trail{
+  position:absolute;
+  width:26px;
+  height:26px;
+  margin:-13px 0 0 -13px;
+  border-radius:999px;
+  pointer-events:none;
+  background:radial-gradient(circle,rgba(255,255,255,.92) 0%,rgba(255,255,255,.28) 45%,rgba(255,255,255,0) 75%);
+  opacity:.95;
+  transform:scale(.85);
+  animation:cometFade 1.05s ease-out forwards;
+  mix-blend-mode:screen;
+  filter:blur(.4px);
+  z-index:12940;
+}
+.orbital-v19-stack-list{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.orbital-v19-stack-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.orbital-v19-stack-select,.orbital-v19-grid-chip{
+  min-height:42px;border-radius:9px;border:1px solid #d1d5db;background:#fff;color:#1f2937;cursor:pointer
+}
+.orbital-v19-stack-select{text-align:left;padding:8px 12px;font:600 14px/1.2 system-ui,sans-serif}
+.orbital-v19-stack-select[aria-current="true"]{border-color:#f59e0b;background:#fffbeb}
+.orbital-v19-grid-chip{padding:8px 12px;font:700 12px/1 system-ui,sans-serif;color:#92400e;background:#fffbeb;border-color:#fbbf24}
+</style>
+<script id="orbital8-v19-explorer-script">
+(() => {
+  'use strict';
+  const VERSION = 'v1.9 explorer';
+  if (!window.ExploreInspectV14 || !window.ExploreFocusChromeV141 || !window.OrbitalImageCache) return;
+
+  const ExplorerV19 = {
+    statusEl:null,
+    loadToken:0,
+    pointerStates:new WeakMap(),
+    gridEntry:null,
+    allowFullWhileSelector:false,
+    movementActive:false,
+    cacheHighWater:Math.max(360,Number(window.OrbitalImageCache?.maxMemory)||360),
+    metrics:{cacheHits:0,cacheMisses:0,evictions:0,providerRequests:0,sourceResolutions:0,sourceReplacements:0,elementCreations:0,movementSourceReplacements:0,movementElementRecreations:0},
+    ensureChrome(){
+      ExploreInspectV14.ensure();
+      if (ExploreInspectV14.preview && !ExploreInspectV14.preview.querySelector('.orbital-explore-close--medium')) {
+        const close=document.createElement('button');
+        close.type='button';close.className='orbital-explore-close orbital-explore-close--medium';close.setAttribute('aria-label','Back to Explorer thumbnails');close.textContent='×';
+        close.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();ExploreInspectV14.closePreview();});
+        ExploreInspectV14.preview.appendChild(close);
+      }
+      if (!this.statusEl) {
+        const el=document.createElement('div');el.className='orbital-explore-status';el.setAttribute('role','status');el.setAttribute('aria-live','polite');
+        document.getElementById('spatial-gallery')?.appendChild(el);this.statusEl=el;
+      }
+      this.installInspectionNavigation(ExploreInspectV14.preview?.querySelector('.orbital-explore-inspect__stage'),'medium');
+      this.installInspectionNavigation(ExploreInspectV14.full?.querySelector('.orbital-explore-full__stage'),'large');
+    },
+    showStatus(text=''){
+      this.ensureChrome();
+      if(!this.statusEl)return;
+      this.statusEl.textContent=text;
+      this.statusEl.classList.toggle('visible',Boolean(text));
+    },
+    currentIndexInStack(){
+      const stack=state.stacks[state.currentStack]||[];
+      const id=ExploreInspectV14.currentFileId;
+      const found=stack.findIndex(file=>file.id===id);
+      return found>=0?found:Math.max(0,Math.min(stack.length-1,state.currentStackPosition||0));
+    },
+    async navigate(delta, host){
+      const files=SpatialGallery.files||[];
+      if(!files.length)return;
+      const current=Math.max(0,files.findIndex(file=>file.id===ExploreInspectV14.currentFileId));
+      const next=(current+delta+files.length)%files.length;
+      const file=files[next];
+      const stack=state.stacks[state.currentStack]||[];
+      const stackIndex=stack.findIndex(item=>item.id===file.id);
+      if(stackIndex>=0){state.currentStackPosition=stackIndex;state.focusTraversalIndex=stackIndex;}
+      const rect=host?.getBoundingClientRect?.();
+      if(rect) Gestures.spawnTrail(delta>0?rect.right-rect.width*.22:rect.left+rect.width*.22,rect.top+rect.height*.5,host);
+      ExploreInspectV14.openPreview(next);
+      if(host?.closest('.orbital-explore-full')) ExploreInspectV14.openFull();
+      Core.updateImageCounters?.();Core.updateFavoriteButton?.();
+    },
+    trailInspection(host,x,y){
+      if(!host)return;
+      const now=performance.now(),interval=Number(Gestures.TRAIL_INTERVAL_MS)||12;
+      if(now-(host._orbitalV19TrailAt||0)<interval)return;
+      host._orbitalV19TrailAt=now;
+      Gestures.spawnTrail(x,y,host);
+    },
+    installInspectionNavigation(stage,level){
+      if(!stage||stage.dataset.v19Nav==='1')return;
+      stage.dataset.v19Nav='1';
+      const stateNav={id:null,x:0,y:0,t:0,moved:false,pinch:false};this.pointerStates.set(stage,stateNav);
+      stage.addEventListener('pointerdown',event=>{
+        if(event.button!==undefined&&event.button!==0)return;
+        if(stateNav.id!==null){stateNav.pinch=true;return;}
+        stateNav.id=event.pointerId;stateNav.x=event.clientX;stateNav.y=event.clientY;stateNav.t=performance.now();stateNav.moved=false;stateNav.pinch=false;
+        this.trailInspection(stage,event.clientX,event.clientY);
+      },true);
+      stage.addEventListener('pointermove',event=>{
+        if(event.pointerId!==stateNav.id)return;
+        if(Math.hypot(event.clientX-stateNav.x,event.clientY-stateNav.y)>8)stateNav.moved=true;
+        if(stateNav.moved)this.trailInspection(stage,event.clientX,event.clientY);
+      },true);
+      stage.addEventListener('pointerup',event=>{
+        if(event.pointerId!==stateNav.id)return;
+        const dx=event.clientX-stateNav.x,dy=event.clientY-stateNav.y,duration=performance.now()-stateNav.t;
+        const moved=stateNav.moved,pinch=stateNav.pinch;stateNav.id=null;stateNav.pinch=false;
+        if(pinch)return;
+        if(Math.abs(dx)>64&&Math.abs(dx)>Math.abs(dy)*1.25){
+          event.preventDefault();event.stopImmediatePropagation();
+          // Exact existing Focus semantics: swipe right = next, swipe left = previous.
+          this.navigate(dx>0?1:-1,stage);return;
+        }
+        if(level==='large'&&!moved&&duration<320){
+          event.preventDefault();event.stopImmediatePropagation();
+          const rect=stage.getBoundingClientRect();this.navigate(event.clientX>=rect.left+rect.width/2?1:-1,stage);
+        }
+      },true);
+      if(level==='medium'){
+        stage.addEventListener('click',event=>{
+          if(event.target!==stage)return;
+          event.preventDefault();event.stopImmediatePropagation();
+          const rect=stage.getBoundingClientRect();this.navigate(event.clientX>=rect.left+rect.width/2?1:-1,stage);
+        },true);
+      }
+    },
+    selectorOpen(){return Modal.currentAction==='focus-stack-switch'&&Utils.elements.actionModal&&!Utils.elements.actionModal.classList.contains('hidden');},
+    detailsOpen(){return Utils.elements.detailsModal&&!Utils.elements.detailsModal.classList.contains('hidden');},
+    async openGrid(stackName){
+      const keepFull=ExploreFocusChromeV141.isFullOpen();
+      if(stackName!==state.currentStack) await UI.switchToStack(stackName);
+      const stack=state.stacks[state.currentStack]||[];
+      const file=stack[state.currentStackPosition]||stack[0]||null;
+      this.gridEntry={stackName:state.currentStack,fileId:file?.id||null,level:keepFull?'large':'medium'};
+      Modal.hide();
+      ExploreInspectV14.closePreview?.();
+      SpatialGallery.close({restoreFocus:false});
+      Grid.open(state.currentStack);
+    }
+  };
+  window.ExplorerV19=ExplorerV19;
+  window.ExplorerV19Metrics=ExplorerV19.metrics;
+
+  // Reuse the exact Sort comet creation function/class, adding only an optional host for Explorer inspection.
+  const oldSpawnTrail=Gestures.spawnTrail.bind(Gestures);
+  Gestures.spawnTrail=function(clientX,clientY,host=null){
+    if(!host)return oldSpawnTrail(clientX,clientY);
+    const rect=host.getBoundingClientRect();const trail=document.createElement('div');trail.className='comet-trail';
+    trail.style.left=`${clientX-rect.left}px`;trail.style.top=`${clientY-rect.top}px`;host.appendChild(trail);
+    setTimeout(()=>trail.remove(),this.TRAIL_LIFETIME_MS);
+  };
+
+  // Shared cache: active Explorer thumb keys are pinned; inactive memory/IDB records remain LRU candidates.
+  const pinned=new Set();window.explorePinnedKeys=pinned;
+  const originalTrim=OrbitalImageCache.trim.bind(OrbitalImageCache);
+  OrbitalImageCache.trim=function(){
+    if(this.memory.size<=this.maxMemory)return;
+    const inUse=new Set([...document.images].map(img=>img.src));
+    const candidates=[...this.memory.entries()].sort((a,b)=>(a[1].used||0)-(b[1].used||0));
+    for(const [key,value] of candidates){
+      if(this.memory.size<=this.maxMemory)break;
+      if(pinned.has(key)||inUse.has(value.src))continue;
+      URL.revokeObjectURL(value.src);this.memory.delete(key);ExplorerV19.metrics.evictions++;
+    }
+  };
+  const oldGetBlob=OrbitalImageCache.getBlob.bind(OrbitalImageCache);
+  OrbitalImageCache.getBlob=async function(file,rendition='thumb'){
+    const key=this.cacheKey(file,rendition);
+    if(this.memory.has(key))ExplorerV19.metrics.cacheHits++;
+    else{
+      ExplorerV19.metrics.cacheMisses++;
+      const record=await this.readRecord(key);
+      if(!record?.blob)ExplorerV19.metrics.providerRequests++;
+    }
+    return oldGetBlob(file,rendition);
+  };
+  const oldSourceUrl=OrbitalImageCache.sourceUrl.bind(OrbitalImageCache);
+  OrbitalImageCache.sourceUrl=function(file,rendition='thumb'){
+    ExplorerV19.metrics.sourceResolutions++;
+    return oldSourceUrl(file,rendition);
+  };
+  OrbitalImageCache.pinActive=function(files=[]){
+    pinned.clear();files.forEach(file=>pinned.add(this.cacheKey(file,'thumb')));
+    ExplorerV19.cacheHighWater=Math.max(ExplorerV19.cacheHighWater,pinned.size,this.memory.size);
+    this.maxMemory=Math.max(360,ExplorerV19.cacheHighWater,pinned.size);
+    this.warm(files,'thumb');
+  };
+  const oldEvict=ExploreThumbnailCache.evict.bind(ExploreThumbnailCache);
+  ExploreThumbnailCache.evict=async function(db){
+    const records=await this.request(db,'readonly',store=>store.getAll());
+    if(!records||records.length<=this.maxEntries)return;
+    let removeCount=records.length-this.maxEntries;
+    for(const record of records.sort((a,b)=>(a.used||0)-(b.used||0))){
+      if(removeCount<=0)break;if(pinned.has(record.url))continue;
+      await this.request(db,'readwrite',store=>store.delete(record.url));removeCount--;ExplorerV19.metrics.evictions++;
+      const value=this.objectUrls.get(record.url);const inUse=value&&[...document.images].some(img=>img.isConnected&&img.src===value.src);
+      if(value&&!inUse){URL.revokeObjectURL(value.src);this.objectUrls.delete(record.url);}
+    }
+  };
+
+  function pinActive(){OrbitalImageCache.pinActive(SpatialGallery.files||[]);}
+  const oldAttachV19=OrbitalImageCache.attach.bind(OrbitalImageCache);
+  OrbitalImageCache.attach=async function(img,file,rendition='thumb'){
+    const before=img?.src||'';
+    const result=await oldAttachV19(img,file,rendition);
+    if(img&&before!==img.src){ExplorerV19.metrics.sourceReplacements++;if(ExplorerV19.movementActive)ExplorerV19.metrics.movementSourceReplacements++;}
+    return result;
+  };
+  const oldBuildCards=SpatialGallery.buildCards.bind(SpatialGallery);
+  SpatialGallery.buildCards=function(){const result=oldBuildCards();pinActive();return result;};
+  const oldAppendPage=SpatialGallery.appendPage.bind(SpatialGallery);
+  SpatialGallery.appendPage=function(){
+    const before=this.cards.length,result=oldAppendPage(),created=Math.max(0,this.cards.length-before);
+    ExplorerV19.metrics.elementCreations+=created;
+    if(ExplorerV19.movementActive)ExplorerV19.metrics.movementElementRecreations+=created;
+    if(created)pinActive();
+    return result;
+  };
+  const oldCloseSpatial=SpatialGallery.close.bind(SpatialGallery);
+  SpatialGallery.close=function(options={}){const result=oldCloseSpatial(options);pinned.clear();return result;};
+
+  // Percentage scales cards only. Pinch independently scales sphere spatial extent.
+  SpatialGallery.sphereScale=1;
+  SpatialGallery.sphereRadius=function(){
+    const width=innerWidth<=640?82:112,height=innerWidth<=640?108:148;
+    const spacing=Math.max(width,height)*Math.sqrt(Math.max(1,this.files.length))*.62;
+    return Math.max(Math.min(innerWidth,innerHeight)*.34,spacing)*this.density*this.sphereScale;
+  };
+  const oldRestoreSettings=SpatialGallery.restoreSettings.bind(SpatialGallery);
+  SpatialGallery.restoreSettings=function(){oldRestoreSettings();try{const saved=JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:explore_settings`)||'{}');if(Number.isFinite(saved.sphereScale))this.sphereScale=Math.max(.45,Math.min(3.5,saved.sphereScale));}catch(_){}};
+  SpatialGallery.persistSettings=function(){clearTimeout(this.persistTimer);this.persistTimer=setTimeout(()=>localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_settings`,JSON.stringify({scale:this.cardScale,limit:this.imageLimit,sphereScale:this.sphereScale})),180);};
+  SpatialGallery.onTouchStart=function(event){
+    if(this.elements.root.hidden||event.touches.length!==2||ExploreFocusChromeV141.isInspecting())return;
+    event.preventDefault();this.dragging=false;this.pointerId=null;this.elements.scene.classList.remove('dragging');
+    const [a,b]=event.touches;this.pinchStartDistance=Math.max(1,Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY));this.pinchStartScale=this.sphereScale;
+  };
+  SpatialGallery.onTouchMove=function(event){
+    if(this.elements.root.hidden||event.touches.length!==2||!this.pinchStartDistance||ExploreFocusChromeV141.isInspecting())return;
+    event.preventDefault();const [a,b]=event.touches;const distance=Math.max(1,Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY));
+    this.sphereScale=Math.max(.45,Math.min(3.5,this.pinchStartScale*(distance/this.pinchStartDistance)));this.persistSettings();this.requestFrame();
+  };
+  // Remove the per-frame blur/brightness/contrast hot path; movement changes geometry/opacity only.
+  SpatialGallery.render=function(time){
+    ExplorerV19.movementActive=true;
+    this.frameId=null;const dt=Math.min(32,Math.max(1,time-(this.lastFrameTime||time)));this.lastFrameTime=time;
+    if(!this.dragging){this.rotationX+=this.velocityX*dt/16;this.rotationY=Math.max(-1.35,Math.min(1.35,this.rotationY+this.velocityY*dt/16));const damping=Math.pow(.94,dt/16);this.velocityX*=damping;this.velocityY*=damping;}
+    const sinX=Math.sin(this.rotationX),cosX=Math.cos(this.rotationX),sinY=Math.sin(this.rotationY),cosY=Math.cos(this.rotationY),sphereRadius=this.sphereRadius();
+    let nearestIndex=-1,nearestDistance=Infinity,nearestDepth=-Infinity;
+    this.cards.forEach((card,index)=>{const v=card.vector;if(!v)return;const x1=v.x*cosX+v.z*sinX,z1=-v.x*sinX+v.z*cosX,y2=v.y*cosY-z1*sinY,z2=v.y*sinY+z1*cosY,perspective=1/(1.8-z2*.45),scale=Math.max(.34,perspective*1.18*this.cardScale),x=x1*sphereRadius*perspective,y=y2*sphereRadius*perspective;
+      card.element.style.transform=`translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;const depth=Math.max(0,Math.min(1,(z2+1)/2));card.element.style.opacity=String(Math.max(.16,Math.min(1,.22+depth*.78)));card.element.style.zIndex=String(Math.round(depth*1000));
+      if(card.element.style.filter)card.element.style.filter='none';const centerDistance=Math.hypot(x,y);if(centerDistance<nearestDistance||(Math.abs(centerDistance-nearestDistance)<2&&z2>nearestDepth)){nearestDistance=centerDistance;nearestDepth=z2;nearestIndex=index;}});
+    if(nearestIndex!==this.focusedIndex){this.focusedIndex=nearestIndex;this.cards.forEach((card,index)=>card.element.classList.toggle('focused',index===nearestIndex));}
+    if(this.dragging||Math.abs(this.velocityX)+Math.abs(this.velocityY)>.00015)this.requestFrame();
+    ExplorerV19.movementActive=false;
+  };
+
+  // Top-center X/status; reuse already-resident Medium image for Large when possible.
+  ExplorerV19.ensureChrome();
+  const oldLoadImage=ExploreInspectV14.loadImage.bind(ExploreInspectV14);
+  ExploreInspectV14.loadImage=async function(img,file){
+    if(!img||!file)return;const token=++ExplorerV19.loadToken;ExplorerV19.showStatus('Loading…');
+    const sibling=[ExploreInspectV14.preview?.querySelector('img'),ExploreInspectV14.full?.querySelector('img')].find(other=>other&&other!==img&&other.dataset.fileId===file.id&&other.src&&other.complete&&other.naturalWidth>0);
+    if(sibling){img.alt=file.name||'Image';img.dataset.fileId=file.id;if(img.src!==sibling.src)img.src=sibling.src;}
+    else await oldLoadImage(img,file);
+    if(token===ExplorerV19.loadToken)ExplorerV19.showStatus('');
+  };
+  const oldOpenPreview=ExploreInspectV14.openPreview.bind(ExploreInspectV14);
+  ExploreInspectV14.openPreview=function(index){ExplorerV19.ensureChrome();return oldOpenPreview(index);};
+  const oldOpenFull=ExploreInspectV14.openFull.bind(ExploreInspectV14);
+  ExploreInspectV14.openFull=function(){ExplorerV19.ensureChrome();return oldOpenFull();};
+
+  // Older v1.4.1 capture listener runs before this layer. Shield selector Escape from being mistaken for Large->Medium.
+  const oldIsFullOpenV19=ExploreFocusChromeV141.isFullOpen.bind(ExploreFocusChromeV141);
+  ExploreFocusChromeV141.isFullOpen=function(){
+    if(!ExplorerV19.allowFullWhileSelector&&ExplorerV19.selectorOpen())return false;
+    return oldIsFullOpenV19();
+  };
+
+  // Stack selector remains a modal. Every stack row includes a Grid entry.
+  Modal.setupFocusStackSwitch=function(){
+    const rows=STACKS.map(stack=>`<div class="orbital-v19-stack-row"><button type="button" class="orbital-v19-stack-select" data-stack="${stack}" aria-current="${stack===state.currentStack}">${STACK_NAMES[stack]} (${state.stacks[stack]?.length||0})</button><button type="button" class="orbital-v19-grid-chip" data-stack-grid="${stack}" aria-label="Open ${STACK_NAMES[stack]} Grid">Grid</button></div>`).join('');
+    this.show('focus-stack-switch',{title:'Switch Stack',content:`<div class="orbital-v19-stack-list">${rows}</div>`,confirmText:'Cancel'});
+    document.querySelectorAll('.orbital-v19-stack-select').forEach(button=>button.addEventListener('click',async()=>{
+      const target=button.dataset.stack;ExplorerV19.allowFullWhileSelector=true;
+      try{if(target!==state.currentStack)await UI.switchToStack(target);Core.updateImageCounters?.();}
+      finally{ExplorerV19.allowFullWhileSelector=false;this.hide();}
+    }));
+    document.querySelectorAll('[data-stack-grid]').forEach(button=>button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();ExplorerV19.openGrid(button.dataset.stackGrid);}));
+  };
+
+  const oldGridClose=Grid.close.bind(Grid);
+  Grid.close=async function(){
+    const entry=ExplorerV19.gridEntry;const result=await oldGridClose();
+    if(entry){ExplorerV19.gridEntry=null;if(typeof returnSpatialModeToSort==='function')await returnSpatialModeToSort({stackName:entry.stackName,fileId:entry.fileId});else{ModeNavigation.hide();state.isFocusMode=false;Utils.elements.appContainer.classList.remove('focus-mode');Gestures.updateGestureOverlayMode();}}
+    return result;
+  };
+
+  // Modal-first Back/Escape, then Large -> Medium -> sphere. Grid keeps its own real-mode Escape behavior.
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape'||SpatialGallery.elements?.root?.hidden)return;
+    if(ExplorerV19.detailsOpen()){event.preventDefault();event.stopImmediatePropagation();Utils.hideModal('details-modal');return;}
+    if(ExplorerV19.selectorOpen()){event.preventDefault();event.stopImmediatePropagation();Modal.hide();return;}
+    if(ExploreFocusChromeV141.isFullOpen()){event.preventDefault();event.stopImmediatePropagation();ExploreInspectV14.closeFull();ExploreFocusChromeV141.sync();return;}
+    if(ExploreFocusChromeV141.isInspecting()){event.preventDefault();event.stopImmediatePropagation();ExploreInspectV14.closePreview();return;}
+  },true);
+
+  document.querySelectorAll('.footer-baseline').forEach(el=>{if(el.textContent.includes('Orbital8 UI'))el.textContent=`Orbital8 UI · ${VERSION}`;});
+  state.syncLog?.log?.({event:'ui:v19-installed',level:'info',details:'Explorer v1.9: independent sphere scale, pinned/LRU thumbnails, Medium/Large X + navigation, modal stack selector, and Grid chips installed.'});
+})();
+</script>
 </body>
 </html>
