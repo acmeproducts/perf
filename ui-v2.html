@@ -1,4 +1,4 @@
-<!-- Orbital8 UI · v1.9 explorer -->
+<!-- Orbital8 UI · v1.9.1 continuity -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13379,5 +13379,412 @@ body.orbital-explore-inspecting .orbital-explore-close {
   state.syncLog?.log?.({event:'ui:v19-installed',level:'info',details:'Explorer v1.9: independent sphere scale, pinned/LRU thumbnails, Medium/Large X + navigation, modal stack selector, and Grid chips installed.'});
 })();
 </script>
+
+<!-- Orbital8 v1.9.1 Explorer/Grid continuity correction -->
+<style id="orbital8-v191-continuity-style">
+/* Thumbnail size belongs exclusively to the Explorer floating percentage control. */
+#photo-table [data-table-pile="in"],
+#photo-table [data-table-stack="in"] { display:none !important; pointer-events:none !important; }
+
+/* Make Medium a visibly distinct inspection level; Large remains full-screen. */
+.orbital-explore-inspect__stage {
+  width:min(82vw,720px) !important;
+  height:min(68vh,680px) !important;
+  border:2px solid rgba(255,255,255,.28) !important;
+  box-shadow:0 30px 90px rgba(0,0,0,.72) !important;
+}
+.orbital-explore-full__stage { width:100vw !important; height:100vh !important; }
+.orbital-explore-inspect[data-explore-level="medium"] { background:rgba(2,6,23,.86) !important; }
+.orbital-explore-full[data-explore-level="large"] { background:rgba(0,0,0,.98) !important; }
+@media(max-width:640px){
+  .orbital-explore-inspect__stage { width:88vw !important; height:62vh !important; }
+}
+</style>
+<script id="orbital8-v191-continuity-script">
+(() => {
+  'use strict';
+  const VERSION = 'v1.9.1 continuity';
+  if (!window.ExplorerV19 || !window.ExploreInspectV14 || !window.ExploreFocusChromeV141) return;
+
+  const ContinuityV191 = {
+    gridEntry: null,
+    gridArmedId: null,
+    gridOpening: false,
+
+    mode() {
+      return ModeNavigation.currentView?.() || (state.isFocusMode ? 'focus' : 'sort');
+    },
+
+    level() {
+      if (this.mode() !== 'explore') return null;
+      if (ExploreFocusChromeV141.isFullOpen?.()) return 'large';
+      if (ExploreFocusChromeV141.isInspecting?.()) return 'medium';
+      return 'sphere';
+    },
+
+    armed() {
+      const mode = this.mode();
+      if (mode === 'explore') {
+        const fileId = ExploreInspectV14.currentFileId
+          || SpatialGallery.files?.[SpatialGallery.selectedIndex]?.id
+          || state.stacks[state.currentStack]?.[state.currentStackPosition]?.id
+          || null;
+        return { mode, level:this.level(), stackName:state.currentStack, fileId };
+      }
+      if (mode === 'table') {
+        return {
+          mode,
+          level:PhotoTable.examining?.() ? 'examining' : 'table',
+          stackName:PhotoTable.stackName || state.currentStack,
+          fileId:PhotoTable.currentFileId || state.stacks[state.currentStack]?.[state.currentStackPosition]?.id || null
+        };
+      }
+      return {
+        mode,
+        level:mode,
+        stackName:state.currentStack,
+        fileId:state.stacks[state.currentStack]?.[state.currentStackPosition]?.id || null
+      };
+    },
+
+    resolve(stackName, fileId, fallback = null) {
+      let resolvedStack = stackName || fallback?.stackName || state.currentStack;
+      let files = state.stacks[resolvedStack] || [];
+      let index = fileId ? files.findIndex(file => file.id === fileId) : -1;
+      if (index < 0 && fileId) {
+        for (const [name, stack] of Object.entries(state.stacks)) {
+          const found = stack.findIndex(file => file.id === fileId);
+          if (found >= 0) { resolvedStack = name; files = stack; index = found; break; }
+        }
+      }
+      if (index < 0 && fallback?.fileId) {
+        for (const [name, stack] of Object.entries(state.stacks)) {
+          const found = stack.findIndex(file => file.id === fallback.fileId);
+          if (found >= 0) { resolvedStack = name; files = stack; index = found; fileId = fallback.fileId; break; }
+        }
+      }
+      if (index < 0) {
+        files = state.stacks[resolvedStack] || [];
+        index = files.length ? Math.max(0, Math.min(files.length - 1, state.currentStackPosition || 0)) : -1;
+        fileId = index >= 0 ? files[index]?.id || null : null;
+      }
+      return { stackName:resolvedStack, files, index, fileId };
+    },
+
+    setCurrent(resolved) {
+      state.currentStack = resolved.stackName;
+      state.currentStackPosition = Math.max(0, resolved.index);
+      state.focusTraversalIndex = state.currentStackPosition;
+    },
+
+    async switchStack(target, invocation) {
+      const files = state.stacks[target] || [];
+      if (!files.length) return;
+      const preferred = target === invocation.stackName && files.some(file => file.id === invocation.fileId)
+        ? invocation.fileId
+        : files[0].id;
+
+      if (invocation.mode === 'table') {
+        PhotoTable.close({ restoreFocus:false });
+        state.currentStack = target;
+        state.currentStackPosition = Math.max(0, files.findIndex(file => file.id === preferred));
+        state.focusTraversalIndex = state.currentStackPosition;
+        PhotoTable.open({ stackName:target, fileId:preferred });
+        PhotoTable.currentFileId = preferred;
+        return;
+      }
+
+      if (invocation.mode === 'explore') {
+        ExplorerV19.allowFullWhileSelector = true;
+        try {
+          await UI.switchToStack(target);
+        } finally {
+          ExplorerV19.allowFullWhileSelector = false;
+        }
+        return;
+      }
+
+      await UI.switchToStack(target);
+      Core.updateImageCounters?.();
+      Core.updateFavoriteButton?.();
+    },
+
+    openGrid(target, invocation = this.armed()) {
+      const files = state.stacks[target] || [];
+      if (!files.length) {
+        Utils.showToast('This stack has no images to show in Grid.', 'info');
+        return;
+      }
+      const preferred = target === invocation.stackName && files.some(file => file.id === invocation.fileId)
+        ? invocation.fileId
+        : files[0].id;
+      const preferredIndex = Math.max(0, files.findIndex(file => file.id === preferred));
+
+      this.gridEntry = { ...invocation, gridStack:target };
+      this.gridArmedId = preferred;
+      ExplorerV19.gridEntry = null;
+
+      Modal.hide();
+      state.currentStack = target;
+      state.currentStackPosition = preferredIndex;
+      state.focusTraversalIndex = preferredIndex;
+
+      Grid.open(target);
+      Grid.syncWithStack(target, { selectedId:preferred, preselectFirst:true });
+      state.grid.isDirty = false;
+      state.grid.skipReorderOnClose = true;
+      requestAnimationFrame(() => {
+        Utils.elements.gridContainer?.querySelectorAll('.grid-item').forEach(item => {
+          item.classList.toggle('selected', item.dataset.fileId === preferred);
+        });
+        Grid.updateSelectionUI?.();
+      });
+    },
+
+    async restore(entry, requestedId, gridStack) {
+      const resolved = this.resolve(gridStack || entry.gridStack || entry.stackName, requestedId, entry);
+      if (!resolved.files.length || resolved.index < 0) return;
+      this.setCurrent(resolved);
+
+      SpatialGallery.close({ restoreFocus:false });
+      PhotoTable.close({ restoreFocus:false });
+
+      if (entry.mode === 'focus') {
+        state.isFocusMode = true;
+        Utils.elements.appContainer.classList.add('focus-mode');
+        Gestures.updateGestureOverlayMode();
+        ModeNavigation.show('focus');
+        await Core.displayCurrentImage();
+        Core.updateImageCounters?.();
+        Core.updateFavoriteButton?.();
+        return;
+      }
+
+      if (entry.mode === 'explore') {
+        state.isFocusMode = false;
+        Utils.elements.appContainer.classList.remove('focus-mode');
+        Gestures.updateGestureOverlayMode();
+        SpatialGallery.open({ stackName:resolved.stackName, fileId:resolved.fileId });
+        const index = SpatialGallery.files.findIndex(file => file.id === resolved.fileId);
+        if (index >= 0) {
+          SpatialGallery.select?.(index);
+          SpatialGallery.center?.(index);
+          SpatialGallery.cards?.forEach((card, cardIndex) => card.element.classList.toggle('armed', cardIndex === index));
+          if (entry.level === 'medium' || entry.level === 'large') {
+            ExploreInspectV14.openPreview(index);
+            if (entry.level === 'large') ExploreInspectV14.openFull();
+          }
+        }
+        Core.updateImageCounters?.();
+        Core.updateFavoriteButton?.();
+        return;
+      }
+
+      if (entry.mode === 'table') {
+        state.isFocusMode = false;
+        Utils.elements.appContainer.classList.remove('focus-mode');
+        Gestures.updateGestureOverlayMode();
+        PhotoTable.open({ stackName:resolved.stackName, fileId:resolved.fileId });
+        PhotoTable.currentFileId = resolved.fileId;
+        PhotoTable.syncTriageSelectionV15?.(resolved.fileId);
+        if (entry.level === 'examining') {
+          const photo = PhotoTable.photos?.find(item => item.fileId === resolved.fileId);
+          if (photo) PhotoTable.examine?.(photo);
+        }
+        Core.updateImageCounters?.();
+        Core.updateFavoriteButton?.();
+        return;
+      }
+
+      state.isFocusMode = false;
+      Utils.elements.appContainer.classList.remove('focus-mode');
+      Gestures.updateGestureOverlayMode();
+      ModeNavigation.hide();
+      await Core.displayCurrentImage();
+      Core.updateImageCounters?.();
+      Core.updateFavoriteButton?.();
+      Utils.elements.gestureScreenA?.focus?.();
+    },
+
+    ensureInspectionLevels() {
+      ExploreInspectV14.ensure();
+      if (ExploreInspectV14.preview) {
+        ExploreInspectV14.preview.dataset.exploreLevel = 'medium';
+        ExploreInspectV14.preview.setAttribute('aria-label', 'Explorer medium view');
+      }
+      if (ExploreInspectV14.full) {
+        ExploreInspectV14.full.dataset.exploreLevel = 'large';
+        ExploreInspectV14.full.setAttribute('aria-label', 'Explorer large view');
+      }
+      const mediumImage = ExploreInspectV14.preview?.querySelector('.orbital-explore-inspect__stage img');
+      if (mediumImage && mediumImage.dataset.v191LargeOpen !== '1') {
+        mediumImage.dataset.v191LargeOpen = '1';
+        mediumImage.addEventListener('click', event => {
+          if (ExploreInspectV14.preview?.hidden) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          ExploreInspectV14.openFull();
+        }, true);
+      }
+    },
+
+    removeInboxTableTarget() {
+      PhotoTable.elements?.root?.querySelectorAll('[data-table-pile="in"],[data-table-stack="in"]').forEach(element => element.remove());
+    }
+  };
+  window.ContinuityV191 = ContinuityV191;
+
+  // Explorer zoom contract: pinch/wheel scales sphere radius; only the floating % control changes cards.
+  SpatialGallery.onWheel = function(event) {
+    event.preventDefault();
+    this.sphereScale = Math.max(.45, Math.min(3.5, (this.sphereScale || 1) * Math.exp(-event.deltaY * .001)));
+    this.persistSettings?.();
+    this.requestFrame?.();
+  };
+
+  // Guarantee two explicit Explorer inspection levels and direct Medium -> Large image tap.
+  ContinuityV191.ensureInspectionLevels();
+  const oldEnsureChromeV191 = ExplorerV19.ensureChrome.bind(ExplorerV19);
+  ExplorerV19.ensureChrome = function() {
+    const result = oldEnsureChromeV191();
+    ContinuityV191.ensureInspectionLevels();
+    return result;
+  };
+
+  // Table has only YES / MAYBE / NO sorting targets; Inbox is never a table target.
+  ContinuityV191.removeInboxTableTarget();
+  const oldTableOpenV191 = PhotoTable.open.bind(PhotoTable);
+  PhotoTable.open = function(options = {}) {
+    const result = oldTableOpenV191(options);
+    ContinuityV191.removeInboxTableTarget();
+    return result;
+  };
+  const oldRefreshPilesV191 = PhotoTable.refreshPiles?.bind(PhotoTable);
+  if (oldRefreshPilesV191) {
+    PhotoTable.refreshPiles = function() {
+      const result = oldRefreshPilesV191();
+      ContinuityV191.removeInboxTableTarget();
+      return result;
+    };
+  }
+
+  // One canonical Focus stack selector is shared by Focus, Explore, Table and Sort.
+  Modal.setupFocusStackSwitch = function() {
+    const invocation = ContinuityV191.armed();
+    const rows = STACKS.map(stack => {
+      const count = state.stacks[stack]?.length || 0;
+      const disabled = count === 0 ? ' disabled' : '';
+      return `<div class="orbital-v19-stack-row"><button type="button" class="orbital-v19-stack-select" data-stack="${stack}" aria-current="${stack === state.currentStack}"${disabled}>${STACK_NAMES[stack]} (${count})</button><button type="button" class="orbital-v19-grid-chip" data-stack-grid="${stack}" aria-label="Open ${STACK_NAMES[stack]} Grid"${disabled}>Grid</button></div>`;
+    }).join('');
+    this.show('focus-stack-switch', { title:'Switch Stack', content:`<div class="orbital-v19-stack-list">${rows}</div>`, confirmText:'Cancel' });
+
+    document.querySelectorAll('.orbital-v19-stack-select').forEach(button => button.addEventListener('click', async () => {
+      const target = button.dataset.stack;
+      if (!target || !state.stacks[target]?.length) return;
+      try { await ContinuityV191.switchStack(target, invocation); }
+      finally { this.hide(); }
+    }));
+    document.querySelectorAll('[data-stack-grid]').forEach(button => button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = button.dataset.stackGrid;
+      if (!target || !state.stacks[target]?.length) return;
+      ContinuityV191.openGrid(target, invocation);
+    }));
+  };
+
+  // Explorer's old Grid hook is replaced by the same invocation-aware bridge.
+  ExplorerV19.openGrid = function(stackName) {
+    ContinuityV191.openGrid(stackName, ContinuityV191.armed());
+  };
+
+  // Any direct Grid entry (for example Sort's current-stack pill) also records its invoking view.
+  const oldGridOpenV191 = Grid.open.bind(Grid);
+  Grid.open = function(stackName) {
+    if (!ContinuityV191.gridEntry && !ContinuityV191.gridOpening) {
+      const invocation = ContinuityV191.armed();
+      const files = state.stacks[stackName] || [];
+      const preferred = stackName === invocation.stackName && files.some(file => file.id === invocation.fileId)
+        ? invocation.fileId
+        : files[0]?.id || null;
+      ContinuityV191.gridEntry = { ...invocation, gridStack:stackName };
+      ContinuityV191.gridArmedId = preferred;
+      ExplorerV19.gridEntry = null;
+      if (preferred) {
+        state.currentStack = stackName;
+        state.currentStackPosition = Math.max(0, files.findIndex(file => file.id === preferred));
+        state.focusTraversalIndex = state.currentStackPosition;
+      }
+      const result = oldGridOpenV191(stackName);
+      if (preferred) {
+        Grid.syncWithStack(stackName, { selectedId:preferred, preselectFirst:true });
+        state.grid.isDirty = false;
+        state.grid.skipReorderOnClose = true;
+      }
+      return result;
+    }
+    return oldGridOpenV191(stackName);
+  };
+
+  // The image grabbed/reordered in Grid becomes the new armed return image.
+  const oldGridStartDragV191 = Grid.startDrag.bind(Grid);
+  Grid.startDrag = function(event, fileId, gridItem) {
+    ContinuityV191.gridArmedId = fileId || ContinuityV191.gridArmedId;
+    return oldGridStartDragV191(event, fileId, gridItem);
+  };
+  const oldGridToggleSelectionV191 = Grid.toggleSelection.bind(Grid);
+  Grid.toggleSelection = function(event, fileId) {
+    const wasSelected = state.grid.selected.includes(fileId);
+    const result = oldGridToggleSelectionV191(event, fileId);
+    if (!wasSelected && state.grid.selected.includes(fileId)) ContinuityV191.gridArmedId = fileId;
+    else if (wasSelected && !state.grid.selected.includes(fileId) && ContinuityV191.gridArmedId === fileId) ContinuityV191.gridArmedId = state.grid.selected.at(-1) || null;
+    return result;
+  };
+  const oldApplyReorderV191 = Grid.applyReorder.bind(Grid);
+  Grid.applyReorder = async function(selectedIds, targetIndex) {
+    const armedId = ContinuityV191.gridArmedId || selectedIds?.[0] || null;
+    const result = await oldApplyReorderV191(selectedIds, targetIndex);
+    const stackName = state.grid.stack;
+    const index = armedId ? (state.stacks[stackName] || []).findIndex(file => file.id === armedId) : -1;
+    if (index >= 0) {
+      state.currentStack = stackName;
+      state.currentStackPosition = index;
+      state.focusTraversalIndex = index;
+    }
+    return result;
+  };
+
+  // Capture Grid selection BEFORE core close/reset clears it, then restore the invoking view to that image.
+  const oldGridCloseV191 = Grid.close.bind(Grid);
+  Grid.close = async function() {
+    const entry = ContinuityV191.gridEntry;
+    if (!entry) return oldGridCloseV191();
+
+    const gridStack = state.grid.stack || entry.gridStack || entry.stackName;
+    const selectedIds = [...(state.grid.selected || [])];
+    const candidate = (ContinuityV191.gridArmedId && selectedIds.includes(ContinuityV191.gridArmedId))
+      ? ContinuityV191.gridArmedId
+      : (selectedIds.length ? selectedIds.at(-1) : (ContinuityV191.gridArmedId || entry.fileId));
+
+    ContinuityV191.gridEntry = null;
+    ContinuityV191.gridArmedId = null;
+    ExplorerV19.gridEntry = null;
+
+    const result = await oldGridCloseV191();
+    await ContinuityV191.restore(entry, candidate, gridStack);
+    return result;
+  };
+
+  document.querySelectorAll('.footer-baseline').forEach(el => {
+    if (el.textContent.includes('Orbital8 UI')) el.textContent = `Orbital8 UI · ${VERSION}`;
+  });
+  state.syncLog?.log?.({
+    event:'ui:v191-installed',
+    level:'info',
+    details:'v1.9.1 continuity: Explorer pinch/wheel changes sphere radius only; explicit Medium/Large inspection; Table Inbox target removed; canonical stack selector; Grid returns to invoking mode on the newly armed image.'
+  });
+})();
+</script>
+
 </body>
 </html>
