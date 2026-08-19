@@ -6,10 +6,10 @@
 **Frozen reconstruction baseline commit:** `a6de049f8c8b9798c610984b35b9d8ade57d0fa5`  
 **Frozen baseline `ui-v2.html` blob:** `1f3943655b157ccf10626d32bf4d1679e835867c`  
 **Baseline identity:** `Orbital8- baseline V9b`  
-**Production rule:** current production remains untouched during reconstruction  
 **Release rule:** cumulative releases only; every release starts from the last passed release  
 **Owner-facing test rule:** only coherent functional milestones are published for owner testing  
-**Canonical plan:** `UI-V2-MASTER-PLAN.md`
+**Canonical plan:** `UI-V2-MASTER-PLAN.md`  
+**Product simplification amendment:** 2026-08-19 — Explore and Table have no Medium/Large inspection hierarchy. Both enter the one canonical Focus inspection directly; tag physics exists only on Table thumbnails.
 
 ---
 
@@ -40,6 +40,8 @@ A release advances only when all of its gates pass.
 
 If a release fails, fix that release. Do not start the next one.
 
+The 2026-08-19 owner simplification removes obsolete intermediate inspection levels without changing the stage order.
+
 ---
 
 ## 1 · SOURCE-OF-TRUTH GOVERNANCE
@@ -57,6 +59,8 @@ The following documents are historical evidence and no longer independently gove
 Their original contents are preserved under `docs/retired-ui-v2-plans/`.
 
 `UI-V2-GRAVEYARD.md` remains binding.
+
+When an owner decision explicitly simplifies a governed behavior, this canonical plan is updated and the simplified rule supersedes conflicting historical requirements.
 
 ---
 
@@ -87,9 +91,7 @@ Their appended architecture is not inherited wholesale.
 
 ---
 
-## 3 · CONSTRUCTION RULE
-
-Production `main/ui-v2.html` remains untouched until the final approved candidate.
+## 3 · CONSTRUCTION AND OWNER-TEST RULE
 
 Development occurs on one reconstruction line.
 
@@ -104,7 +106,18 @@ Owner-facing builds are produced only for coherent functional milestones:
 - integrated continuity
 - final application
 
-This deliberately avoids repeated testing of architectural scaffolding.
+The existing GitHub Pages deployment serves `main`. For owner testing, after a candidate has passed its engineering gate, `main/ui-v2.html` may be repointed directly to that exact candidate so the existing Pages URL can be used. This is an owner-authorized test publication mechanism, not a new deployment architecture.
+
+Rules for that publication:
+
+- use the existing `main`/Pages configuration only;
+- replace only the intended application file unless a governed documentation update is part of the same release;
+- no loader, wrapper, runtime reconstruction, third-party host, or alternate workflow;
+- verify the exact committed blob after publication;
+- use a cache-busted Pages URL for owner testing;
+- the reconstruction branch remains the cumulative development lineage.
+
+This deliberately avoids repeated testing of architectural scaffolding and avoids parallel preview infrastructure.
 
 ---
 
@@ -125,7 +138,7 @@ All transitions operate from a state context containing the relevant subset of:
 - normal stack
 - active `fileId`
 - surface
-- inspection level
+- inspection origin
 - Grid context/filter
 - Details-open state
 
@@ -141,7 +154,13 @@ UI-V2 contains four primary views:
 
 Grid is a secondary working surface invoked from those views.
 
-Details is a modal/inspection overlay associated with the currently active image.
+Details is a modal associated with the currently active image.
+
+There is one canonical full-image inspection behavior: **Focus**.
+
+Explore and Table may enter Focus while preserving their origin context so Focus can return to the invoking surface.
+
+There are no Explore Medium/Large or Table Medium/Large product states.
 
 ---
 
@@ -173,6 +192,12 @@ UI-V2 does not permanently destroy provider files.
 
 Restoration or permanent deletion remains the responsibility of the user through the provider's normal recycle/trash facility and policies.
 
+### 6.2 Table never exposes normal-stack physics targets
+
+Normal stacks may determine which population Table is working on, but Inbox/Keep/Maybe/Recycle are never physical Table destinations.
+
+A Table fling never moves an image between normal stacks.
+
 ---
 
 ## 7 · R1 — STATE AND CANONICAL INSPECTION FOUNDATION
@@ -195,7 +220,7 @@ Local indexes may exist for rendering but cannot independently decide identity.
 
 ### 7.2 Universal mutation reconciliation
 
-After deletion, movement, filtering, Grid mutation, or another operation that removes the active file from its current context:
+After deletion, movement, filtering, Grid mutation, tagging, or another operation that removes the active file from its current context:
 
 1. attempt the next surviving neighbor in the post-operation ordering;
 2. if none exists, use the nearest preceding surviving neighbor;
@@ -208,16 +233,15 @@ This rule applies to:
 
 - Sort
 - Focus
-- Explore Medium
-- Explore Large
+- Explore sphere
+- Explore-origin Focus
 - Table thumbnails
-- Table Medium
-- Table Large
+- Table-origin Focus
 - Grid return
 
 ### 7.3 Canonical Focus inspection behavior
 
-Focus is the behavioral standard for all inspection modes.
+Focus is the behavioral standard and the only full-image inspection mode.
 
 Canonical Focus behavior owns:
 
@@ -234,9 +258,9 @@ Canonical Focus behavior owns:
 
 Explore and Table do not create their own versions.
 
-### 7.4 Real shared controls
+### 7.4 Origin-aware Focus entry and return
 
-Explore Medium/Large and Table Medium/Large must use the **actual canonical Focus control implementation**.
+Explore and Table reuse the **actual canonical Focus implementation**.
 
 Not visually similar controls.
 
@@ -244,12 +268,23 @@ Not separately owned buttons that call approximately similar code.
 
 One behavioral implementation.
 
+The only additional state is the invoking origin:
+
+- Explore sphere → Focus → Explore sphere
+- Table thumbnails → Focus → Table thumbnails
+
+The exact current `fileId` is retained across entry and return whenever that file still exists in the working context.
+
+There is no center-circle transition and no intermediate inspection level.
+
 ### R1 gate
 
 Must prove:
 
 - Sort → Focus preserves exact `fileId`
 - Focus navigation updates exact `fileId`
+- origin-aware Focus entry preserves exact `fileId`
+- origin-aware Focus return restores the correct parent surface
 - stack switching preserves coherent state
 - favorite acts on displayed file
 - trash acts on displayed file
@@ -324,7 +359,7 @@ A failed rendition is recovered from stable `fileId` without destroying:
 
 - current surface
 - current image
-- inspection level
+- Focus origin
 - navigation state
 
 ### 8.6 Resume
@@ -335,7 +370,7 @@ Resume restores the actual open state, including where applicable:
 - folder
 - stack
 - `fileId`
-- Medium/Large state
+- Focus origin when Focus was invoked from Explore or Table
 - Grid
 - Grid filter/origin context
 - Details-open state
@@ -378,9 +413,11 @@ It contains **no physical normal-stack targets**.
 
 It contains **no tag targets**.
 
+Explorer will not receive tag targets in a later stage.
+
 ### 9.2 Exact tap behavior
 
-A clean tap on any thumbnail opens **that exact thumbnail's `fileId`**.
+A clean tap on any thumbnail opens **that exact thumbnail's `fileId` directly in canonical Focus**.
 
 No prior arming is required.
 
@@ -420,91 +457,53 @@ Sphere scaling must not trigger thumbnail cache churn.
 
 ---
 
-## 10 · EXPLORER MEDIUM
+## 10 · EXPLORER → CANONICAL FOCUS
 
-Explorer progression begins:
+Explorer progression is exactly:
 
-**Sphere → Medium**
+**Sphere → Focus**
 
-Medium is a persistent inspection state.
+There is no Explorer Medium.
 
-It uses canonical Focus behavior.
+There is no Explorer Large product distinction.
 
-Medium displays:
+There is no center-circle control.
+
+Focus uses the canonical Focus implementation and displays its normal controls:
 
 - canonical stack selector
 - Details
 - image position/count
 - favorite
 - provider trash
-- canonical Focus forward/back navigation
-- canonical Focus swipes
+- canonical forward/back navigation
+- canonical swipes
+- canonical tap-navigation semantics
 - canonical comet behavior
-- top-center X
 
-### 10.1 Medium exit
+### 10.1 Return to Explorer
 
-Top-center X:
+A single explicit outward/close action while Focus was invoked from Explore returns:
 
-**Medium → Explorer sphere**
+**Focus → Explorer sphere**
 
 The current `fileId` and sphere context remain coherent.
 
-### 10.2 Enter Large via center circle
+If the current file was removed, the universal deterministic fallback chooses the surviving return image.
 
-Do **not** use an ordinary image tap to enter Large.
+### 10.2 Stack switching during Explore-origin Focus
 
-Restore/reuse the former Focus center-circle interaction concept specifically for Medium.
+Changing the normal stack through canonical Focus controls does not create another inspection mode.
 
-In Explorer Medium:
+The user remains in canonical Focus with Explore recorded as the return origin.
 
-**center circle → Large**
-
-The center circle has one job: enter Large for the current image.
-
-This avoids collision with Focus's existing tap-navigation semantics.
-
-The center circle is:
-
-- present in Explorer Medium
-- present in Table Medium
-- not used in ordinary Focus
-- not needed in Large
-
-Focus's established left/right navigation semantics remain untouched around it.
+Returning to Explore opens the sphere for the resulting working stack and current `fileId`.
 
 ---
 
-## 11 · EXPLORER LARGE
+## 11 · FOCUS NAVIGATION IS THE STANDARD
 
-Center-circle activation from Medium produces:
-
-**Medium → Large**
-
-Large uses canonical Focus behavior:
-
-- stack selector
-- Details
-- count
-- favorite
-- trash
-- forward/back
-- swipe
-- comet behavior
-
-Large has no tag-fling targets.
-
-Top-center X:
-
-**Large → Medium**
-
-on the same `fileId`.
-
----
-
-## 12 · FOCUS NAVIGATION IS THE STANDARD
-
-Do not reinterpret back/forward semantics separately for Explorer or Table.
+Do not reinterpret back/forward semantics separately for Explore or Table.
 
 Whatever current canonical Focus does for:
 
@@ -516,25 +515,39 @@ Whatever current canonical Focus does for:
 - tap zones
 - comet animation
 
-is used unchanged by:
+is used unchanged when Focus was entered from:
 
-- Explorer Medium
-- Explorer Large
-- Table Medium
-- Table Large
+- Sort/ordinary Focus
+- Explore sphere
+- Table thumbnails
 
-The only additional interactions are:
+Origin changes only where an explicit outward/close action returns. It does not fork the Focus navigation implementation.
 
-- top-center X to move outward one inspection level
-- center circle in Medium to enter Large
+---
+
+## 12 · R3 FINAL EXPLORER CONTRACT
+
+R3 is complete when all of the following are simultaneously true:
+
+- the sphere remains browse-only;
+- arbitrary exact thumbnail tap enters canonical Focus for that exact `fileId`;
+- drag/rotation does not open images;
+- Images, Percentage, and spatial zoom remain independent;
+- movement does not recreate/refetch unchanged thumbnails;
+- canonical Focus controls remain unique;
+- Focus navigation remains exact by stable `fileId`;
+- Focus invoked from Explore returns directly to the sphere;
+- no Explore Medium DOM, state, center control, transition, acceptance requirement, resume state, or future tag-target backport remains.
 
 ---
 
 ## 13 · R4 — TABLE COMPLETE
 
-Table is physical tag curation for images in the selected normal stack.
+Table is physical **tag curation** for images in the selected normal stack.
 
 It is **not a physical normal-stack sorting surface**.
+
+It is also not an inspection surface with its own Medium/Large levels.
 
 ### 13.1 Table working population
 
@@ -545,17 +558,28 @@ Table loads images from the current normal stack:
 - Maybe
 - Recycle
 
-The canonical Focus stack selector remains available.
+The working normal stack is context, not a physical destination.
 
-Changing normal stack keeps the user in Table.
+Changing normal stack through canonical controls keeps Table as the return/origin surface.
+
+### 13.2 Table interaction model
+
+There are only two primary thumbnail actions:
+
+- **tap thumbnail** → canonical Focus for that exact `fileId`;
+- **physical fling thumbnail to a tag target** → apply that tag.
+
+No Table thumbnail gesture may move an image between normal stacks.
 
 ---
 
 ## 14 · TABLE TAG TARGET MODEL
 
-Table tag targets are actual tags.
+Table tag targets are actual folder tags.
 
 They never move a file between normal stacks.
+
+Normal-stack targets are forbidden on the Table surface.
 
 ### 14.1 Defaults
 
@@ -640,6 +664,10 @@ Retain the approved playful physical behavior:
 
 Permanently remove image-to-image collisions.
 
+Physics exists on **Table thumbnails only**.
+
+Focus inspection has no tag targets and no fling-to-tag behavior.
+
 ### 16.1 Successful tag fling
 
 A successful fling:
@@ -653,6 +681,8 @@ A successful fling:
 7. continues with the remaining untagged population.
 
 Because the tagged image is excluded by the active-target filter, it does not immediately reappear.
+
+The image remains in its existing normal stack.
 
 ---
 
@@ -715,7 +745,7 @@ The press must not originate on:
 - tag target
 - control
 - modal
-- inspection image
+- canonical Focus image
 - interactive UI
 
 Long-press empty space opens:
@@ -794,23 +824,19 @@ This is deliberately an expert-discovery model.
 
 Configuration is per folder.
 
-### Table
-
-Per-folder configuration includes:
+Per-folder Table configuration includes:
 
 - active target tag bindings
 - target ordering
 - Table target positions
 
-Table thumbnails and Table Medium use the **same Table positions**.
+There is one Table target-position set because tag targets exist only on the Table thumbnail surface.
 
-### Explore Medium
+Explore has no tag-target positions.
 
-Explore Medium uses the same folder tag identities/bindings.
+Focus has no tag-target positions.
 
-It stores **separate Explore-Medium target positions per folder** because its inspection geometry differs from Table.
-
-Changing a normal stack does not change either target layout.
+Changing the working normal stack does not change the folder's Table target layout.
 
 ---
 
@@ -820,81 +846,73 @@ Images from the current working stack are physically scattered across the Table.
 
 Only images not already carrying one of the active Table target tags appear.
 
-A clean tap on any thumbnail opens that exact `fileId` in Table Medium.
+A clean tap on any thumbnail opens that exact `fileId` directly in canonical Focus.
 
 No prior arming is required.
 
+Dragging/flinging remains distinct from tapping.
+
 ---
 
-## 22 · TABLE MEDIUM
+## 22 · TABLE → CANONICAL FOCUS
 
-Table progression:
+Table progression is exactly:
 
-**Table thumbnails → Medium**
+**Table thumbnails → Focus**
 
-Medium uses canonical Focus behavior:
+There is no Table Medium.
+
+There is no Table Large.
+
+Focus uses canonical Focus behavior:
 
 - stack selector
 - Details
 - count
 - favorite
-- trash
+- provider trash
 - forward/back
 - Focus swipe semantics
 - Focus tap-navigation semantics
 - comet effect
 
-Table Medium also displays the same current Table tag targets in the same Table positions.
+Focus contains **no Table tag targets** and supports **no tag fling**.
 
-The current Medium image may be flung to a tag target.
+An explicit outward/close action returns:
 
-After successful tagging:
+**Focus → Table thumbnails**
 
-- animation completes
-- image leaves the Table curation population
-- deterministic next/surviving context is chosen
-
-Top-center X:
-
-**Medium → Table thumbnails**
+using the exact current `fileId` when it remains eligible, or the universal deterministic fallback when it does not.
 
 ---
 
-## 23 · TABLE LARGE
+## 23 · TABLE TAGGING IS THUMBNAIL-ONLY
 
-The center circle in Table Medium enters:
+This rule is absolute:
 
-**Medium → Large**
+> **All physical Table tag assignment happens on the Table thumbnail surface.**
 
-Large uses canonical Focus behavior.
+Do not add tag targets to:
 
-Large has no tag targets and no fling-to-tag.
+- Explore
+- canonical Focus
+- Grid
+- Details
+- any intermediate inspection surface
 
-Top-center X:
-
-**Large → Medium**
-
-on the same current `fileId`.
+Do not create an intermediate Table inspection surface solely to support tagging.
 
 ---
 
-## 24 · EXPLORE MEDIUM TAG TARGET BACKPORT
+## 24 · NO EXPLORE TAG-TARGET BACKPORT
 
-Only after Table's tag architecture passes R4 gates is the proven target model applied to Explore Medium.
+The former plan to copy Table tag targets into Explore is retired.
 
-Explorer sphere remains target-free.
+Explorer remains browse/inspect only for the entire UI-V2 reconstruction.
 
-Explorer Large remains target-free.
+The proven Table tag-target architecture stays Table-only.
 
-Explore Medium receives:
-
-- the same folder tag bindings
-- up to five active targets
-- separate Explore-specific per-folder positions
-- fling-to-tag
-- tag-target tap → filtered Grid
-
-This behavior is copied from the proven Table tag system, not independently invented.
+This reduces duplication and keeps curation mechanics in one deliberately physical surface.
 
 ---
 
@@ -907,7 +925,7 @@ Grid must know exactly where it came from.
 Opening Grid records:
 
 - invoking surface
-- invoking inspection level
+- Focus origin when applicable
 - folder
 - normal stack
 - current `fileId`
@@ -917,13 +935,13 @@ Opening Grid records:
 Possible origins include:
 
 - Sort
-- Focus
+- ordinary Focus
 - Explore sphere
-- Explore Medium
-- Explore Large
+- Explore-origin Focus
 - Table thumbnails
-- Table Medium
-- Table Large
+- Table-origin Focus
+
+There are no Medium/Large origin variants.
 
 ---
 
@@ -966,7 +984,7 @@ The top-left return law is independent from bulk selection.
 
 ## 28 · GRID RETURNS TO ITS INVOKER
 
-Every Grid exits to the exact surface and level that invoked it.
+Every Grid exits to the exact surface/context that invoked it.
 
 Examples:
 
@@ -976,15 +994,11 @@ Examples:
 
 **Explore sphere → Grid → Explore sphere**
 
-**Explore Medium → Grid → Explore Medium**
-
-**Explore Large → Grid → Explore Large**
+**Explore-origin Focus → Grid → Explore-origin Focus**
 
 **Table thumbnails → Grid → Table thumbnails**
 
-**Table Medium → Grid → Table Medium**
-
-**Table Large → Grid → Table Large**
+**Table-origin Focus → Grid → Table-origin Focus**
 
 Older Grid→Sort-only requirements are superseded.
 
@@ -999,35 +1013,37 @@ The canonical stack selector presents normal stacks:
 - Maybe
 - Recycle
 
-Each stack can provide Grid entry.
+Each stack can provide Grid entry where the canonical selector already permits it.
 
 If the user opens Grid for another stack:
 
 1. Grid opens on the chosen stack;
 2. that stack becomes the working stack for the return;
 3. top-left Grid image at exit becomes return `fileId`;
-4. exact invoking surface/level is restored on that stack.
+4. exact invoking surface/Focus origin is restored on that stack.
 
 Example:
 
-Explore Medium Keep  
+Explore-origin Focus on Keep  
 → stack selector  
 → Grid Recycle  
 → exit  
-→ Explore Medium Recycle at Grid top-left image.
+→ Explore-origin Focus on Recycle at the Grid top-left image.
 
 ---
 
 ## 30 · TAG TARGET → GRID
 
-Tapping a Table or Explore Medium tag target opens existing Grid with that tag implicitly filtered.
+Tapping a **Table tag target** opens existing Grid with that tag implicitly filtered.
+
+Explore has no tag targets.
 
 Grid remains normal Grid.
 
 On exit:
 
 - tag-filter modal state closes
-- invoking surface/level is restored
+- Table is restored
 - top-left visible Grid image is used when valid for restored context
 - otherwise universal deterministic fallback applies
 
@@ -1039,7 +1055,7 @@ Details always describes the current stable `fileId`.
 
 Resume must restore Details if it was actually open.
 
-Grid or inspection transitions must never leave an obsolete Details modal layered underneath.
+Grid or Focus transitions must never leave an obsolete Details modal layered underneath.
 
 ---
 
@@ -1074,9 +1090,9 @@ There must be **one authoritative version/build value in code**.
 
 Every existing visible footer/build-identity location reads from that same authoritative value.
 
-There appear historically to be approximately five visible occurrences; the implementation must inventory the actual number rather than assume five.
+The implementation must inventory the actual visible occurrences rather than assume a fixed count.
 
-Do not maintain five independently edited version strings.
+Do not maintain independently edited version strings.
 
 Every owner-facing candidate receives a distinct visible build identity.
 
@@ -1087,7 +1103,7 @@ Example conceptual progression:
 - reconstruction-R5-continuity
 - reconstruction-R7-final
 
-Exact naming may be normalized in the implementation plan, but one value controls all visible locations.
+Exact naming may be normalized in implementation, but one value controls all visible locations.
 
 ---
 
@@ -1104,10 +1120,10 @@ Test:
 - sphere performance
 - exact thumbnail identity
 - independent scale controls
-- Medium
-- center-circle → Large
-- Focus controls
-- X hierarchy
+- direct thumbnail → canonical Focus
+- canonical Focus controls
+- Focus → sphere exact return
+- no Medium/center-circle hierarchy
 
 ### Owner build 2 — R4
 
@@ -1115,13 +1131,14 @@ Table complete.
 
 Test:
 
-- active normal stack
+- active normal stack as working population only
+- no physical normal-stack targets
 - configurable tag targets
 - Manage Tag Stacks
-- physical fling
+- physical tag fling
 - disappearing processed images
-- Medium
-- Large
+- direct thumbnail → canonical Focus
+- Focus → Table exact return
 - tag-target Grid
 
 ### Owner build 3 — R5
@@ -1130,7 +1147,7 @@ Integrated continuity.
 
 Test:
 
-- Grid return from every surface
+- Grid return from every surface/origin
 - top-left Grid return law
 - stack changes
 - tag-filter Grid
@@ -1169,25 +1186,26 @@ A green automated gate means **eligible for owner testing**, not owner approval.
 
 Must pass:
 
-- tap arbitrary sphere thumbnail → exact Medium image
-- rotate → tap arbitrary image → exact Medium image
+- tap arbitrary sphere thumbnail → exact canonical Focus image
+- rotate → tap arbitrary image → exact canonical Focus image
 - drag never opens image
 - percentage changes thumbnail size only
 - Images changes active/warmed count only
 - pinch changes sphere spatial extent only
 - wheel/trackpad changes sphere spatial extent only
 - no movement-caused thumbnail reconstruction
-- Medium Focus navigation exact
-- Medium center circle → Large
-- Large Focus navigation exact
-- Large X → Medium
-- Medium X → sphere
-- stack change remains in same inspection level
+- canonical Focus navigation exact
+- canonical Focus controls unique
+- Explore-origin Focus outward/close → sphere on same valid `fileId`
+- stack change remains coherent and returns to the corresponding sphere context
 - favorite exact
-- trash exact
+- provider trash exact
 - Details exact
-- Explore Medium target fling after R4
-- Explore target → filtered Grid → exact return
+- no Explorer Medium state or DOM
+- no center-circle/enter-Large control
+- no Explorer tag targets
+- resume from sphere exact
+- resume from Explore-origin Focus exact
 
 ---
 
@@ -1195,8 +1213,9 @@ Must pass:
 
 Must pass:
 
-- Table opens current normal stack
-- stack selector changes working normal stack without exiting Table
+- Table opens current normal stack as working population
+- stack selector changes working normal stack without exposing stack targets on Table
+- no Inbox/Keep/Maybe/Recycle physical target appears on Table
 - only unprocessed-for-active-target-set images appear
 - default targets Yes / No / Maybe
 - zero through five targets supported
@@ -1205,22 +1224,23 @@ Must pass:
 - double-tap target does nothing special
 - target tap opens filtered Grid
 - long-press empty space opens manager
-- manager add/change/delete works
+- manager add/change/delete/rebind works
 - Restore defaults works
 - zero-target state persists
 - tag remains intact if target is removed
 - Table thumbnail fling applies tag without changing normal stack
+- tag is applied exactly once
 - tagged image completes animation then leaves Table
 - image does not reappear while its tag remains an active target
 - physics remain playful
+- image-to-image collision remains absent
 - rare effects remain cosmetic only
-- exact thumbnail tap → Medium
-- Medium Focus controls exact
-- Medium tag fling works
-- Medium center circle → Large
-- Large Focus controls exact
-- Large X → Medium
-- Medium X → Table
+- exact thumbnail tap → canonical Focus
+- canonical Focus controls exact
+- Focus contains no Table tag targets
+- Focus has no fling-to-tag behavior
+- Focus outward/close → Table on same valid `fileId` or deterministic fallback
+- no Table Medium or Table Large state exists
 
 ---
 
@@ -1232,25 +1252,23 @@ For each origin:
 2. modify ordering/filter if applicable;
 3. establish a known top-left tile;
 4. exit Grid;
-5. verify return surface and exact `fileId`.
+5. verify return surface/origin and exact `fileId`.
 
 Required origins:
 
 - Sort
-- Focus
+- ordinary Focus
 - Explore sphere
-- Explore Medium
-- Explore Large
+- Explore-origin Focus
 - Table thumbnails
-- Table Medium
-- Table Large
+- Table-origin Focus
 
 Repeat representative cases with:
 
 - no-op
 - reorder
 - search
-- tag filter
+- tag filter where applicable
 - delete
 - bulk mutation
 
@@ -1264,17 +1282,17 @@ Suspend/background and restore from:
 - Focus
 - Focus + Details
 - Explore sphere
-- Explore Medium
-- Explore Large
-- Explore Medium + Details
+- Explore-origin Focus
+- Explore-origin Focus + Details
 - Table thumbnails
-- Table Medium
-- Table Large
-- Table Medium + Details
+- Table-origin Focus
+- Table-origin Focus + Details
 - Grid
 - filtered Grid
 
 The application returns to the actual state the user left open, subject only to deterministic reconciliation if provider/file data changed.
+
+There are no Medium/Large resume states.
 
 ---
 
@@ -1289,16 +1307,20 @@ Do not:
 - create separate Explorer/Table inspection engines
 - create separate per-surface image caches
 - restore image identity by stale numeric index
+- create Explore Medium or Table Medium as compatibility layers
+- create Explorer Large/Table Large product states separate from canonical Focus
+- create a center-circle enter-Large control
 - make Table tags into normal stacks
 - expose normal-stack targets on the Table physics surface
-- expose tag targets on Explorer sphere
+- expose tag targets anywhere except Table thumbnails
 - introduce image-image collision physics
 - silently restore deleted Table targets
 - make tag values mutually exclusive
 - change Grid bulk-selection UX just to implement return identity
 - route all Grid exits through Sort
-- modify production during construction
 - create multiple competing plans
+- introduce a loader/wrapper/runtime reconstruction deployment path
+- use third-party hosting for owner test publication
 
 ---
 
@@ -1321,8 +1343,6 @@ Never copy an entire historical appended patch simply because one feature inside
 
 ## 42 · IMPLEMENTATION ORDER
 
-After this plan is approved:
-
 ### R1
 State identity + canonical Focus inspection ownership.
 
@@ -1330,14 +1350,14 @@ State identity + canonical Focus inspection ownership.
 Shared thumbnail/cache + provider recovery + resume.
 
 ### R3
-Explorer sphere + independent scaling + Medium/Large.
+Explorer sphere + independent scaling + direct canonical Focus inspection + exact return to sphere.
 
 **Owner gate.**
 
 ### R4
-Table tag-target architecture + manager + physics + Medium/Large.
+Table tag-target architecture + manager + thumbnail physics + direct canonical Focus inspection + exact return to Table.
 
-Then backport proven tag targets to Explore Medium.
+There is no Explore tag-target backport.
 
 **Owner gate.**
 
@@ -1354,7 +1374,7 @@ Exact final candidate, version stamp, final automated/device/provider gates.
 
 **Owner final gate.**
 
-Only after owner PASS is production repointed.
+Only after owner PASS is the final production candidate considered complete.
 
 ---
 
@@ -1364,28 +1384,29 @@ Production release contains no new functional work.
 
 The exact owner-approved final candidate becomes `ui-v2.html`.
 
-After publishing:
+During reconstruction, owner-test candidates may temporarily occupy `main/ui-v2.html` solely because the existing GitHub Pages configuration serves `main`; this does not waive the final-release rule.
 
-- verify production commit
-- verify exact blob
-- verify Pages serves that blob
+After any owner-test or final publication:
+
+- verify `main` commit
+- verify exact `ui-v2.html` blob
+- verify Pages serves the intended build
 - verify visible version identity
-- provide one cache-busted production test URL
+- provide one cache-busted Pages test URL
 
-No post-gate functional edit is permitted.
+No post-gate functional edit may be represented as the same passed candidate.
 
 ---
 
 ## 44 · PLAN APPROVAL EFFECT
 
-Approval of this document authorizes repository documentation governance only:
+Approval of this document authorizes repository documentation governance and execution according to this single plan.
 
 1. `UI-V2-MASTER-PLAN.md` is the execution authority;
 2. historical plans are retired from execution and preserved under `docs/retired-ui-v2-plans/`;
 3. their root-level filenames contain retirement notices pointing to this master plan;
-4. application code remains untouched by the plan-governance commit.
-
-Application reconstruction starts only after this canonical plan file exists and its recorded baseline/requirements are re-read mechanically.
+4. the reconstruction remains cumulative from the frozen baseline;
+5. explicit owner simplifications recorded here supersede the retired Medium/Large and Explore-tag requirements.
 
 ---
 
@@ -1395,27 +1416,32 @@ Application reconstruction starts only after this canonical plan file exists and
 **Baseline blob:** `1f3943655b157ccf10626d32bf4d1679e835867c`  
 **Normal stacks:** Inbox / Keep / Maybe / Recycle  
 **Current image:** stable `fileId`  
-**Inspection behavior:** canonical Focus  
-**Explore:** Sphere → Medium → Large  
-**Table:** Thumbnails → Medium → Large  
-**Medium → Large:** center circle  
-**Large → Medium:** top-center X  
-**Medium → parent surface:** top-center X  
+**Inspection behavior:** one canonical Focus implementation  
+**Explore:** Sphere → canonical Focus → Sphere  
+**Explore Medium:** does not exist  
+**Explore tag targets:** never  
+**Table:** tag-curation thumbnails → canonical Focus → Table thumbnails  
+**Table Medium/Large:** do not exist  
+**Table tagging location:** thumbnail surface only  
+**Table physical normal-stack targets:** never  
 **Table targets:** configurable folder tags, not stacks  
 **Default tags:** Yes / No / Maybe  
 **Maximum active tag targets:** 5  
 **Tag exclusivity:** none  
 **Processed Table image:** tagged, animated away, excluded while it carries any currently active target tag  
+**Normal stack after Table tag fling:** unchanged  
 **Target tap:** filtered Grid  
 **Target drag:** reposition  
 **Target long press:** nothing special  
 **Target double tap:** nothing special  
 **Empty Table long press:** Manage Tag Stacks  
-**Table/Explore positions:** shared tag identities; Table positions shared across Table thumbnail/Medium; Explore Medium has separate per-folder positions  
-**Grid return surface:** exact invoker and level  
+**Table target positions:** one per-folder Table layout  
+**Focus tag targets:** none  
+**Grid return surface:** exact invoker/origin  
 **Grid return image:** top-left visible Grid tile at exit  
 **Delete/missing fallback:** next neighbor → prior neighbor → empty state  
-**Resume:** exact open surface/modal context, including Grid and Details  
+**Resume:** exact open surface/Focus-origin/modal context, including Grid and Details  
 **Recycle stack:** logical app stack  
 **Trash icon:** provider deletion/recycle-bin action  
-**Production:** untouched until final approved candidate
+**Owner-test publication:** existing `main`/GitHub Pages only; exact candidate blob; no alternate deployment mechanism  
+**Final production:** exact final owner-approved candidate
