@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.5 canonical Focus referrer and isolated Explore chrome -->
+<!-- Orbital8 UI governed reconstruction · R4.6 unified Sort gesture navigation -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -392,7 +392,7 @@
         .loading-progress-bar { height: 100%; background: linear-gradient(45deg, var(--accent), #d97706); border-radius: 3px; transition: width 0.3s ease; width: 0%; }
 
         .app-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); overflow: hidden; }
-        .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; }
+        .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; touch-action: none; -webkit-tap-highlight-color: transparent; }
         .center-image {
             max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; user-select: none; pointer-events: none;
             transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.2s ease; transform-origin: center center; cursor: grab;
@@ -1539,7 +1539,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.5-canonical-focus-referrer-2026.08.20.1';
+        const APP_BUILD_ID = 'reconstruction-R4.6-unified-sort-gestures-2026.08.20.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -9208,7 +9208,7 @@ this.updateImageCounters();
                 const selection = { ...this.selection };
                 this.root.hidden = true;
                 this.selection = null;
-                Gestures.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
+                Gestures.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 const resolved = CurrentImage.set(selection.fileId, selection.stackName, { allowCrossStack: true });
                 if (!resolved) {
                     Utils.showToast('That image is no longer available.', 'info');
@@ -9418,12 +9418,13 @@ this.updateImageCounters();
             edgeElements: [],
             hubPressActive: false,
             overlay: null,
-            lastHubTap: { time: 0, x: 0, y: 0, fileId: null },
+            lastHubTap: { time: 0, x: 0, y: 0, fileId: null, stackName: null },
             tapHandled: false,
-            DOUBLE_TAP_MAX_INTERVAL: 320,
-            DOUBLE_TAP_MAX_DISTANCE: 28,
+            DOUBLE_TAP_MAX_INTERVAL: 450,
+            DOUBLE_TAP_MAX_DISTANCE: 48,
             focusDoubleTapExit: false,
             sortChoiceBound: false,
+            sortChoiceOwner: 'gestures',
             TAP_DISTANCE_THRESHOLD: 26,
             TAP_DURATION_THRESHOLD: 260,
             TRAIL_INTERVAL_MS: 12,
@@ -9449,22 +9450,36 @@ this.updateImageCounters();
             },
             bindSortChoice() {
                 if (this.sortChoiceBound) return;
-                ModeCenterTap.bind(Utils.elements.imageViewport, event => {
-                    const chooserClosed = !ModeChoiceModal.root || ModeChoiceModal.root.hidden;
-                    return chooserClosed
-                        && !state.isFocusMode
-                        && ModeNavigation.currentView() === 'sort'
-                        && state.currentScale <= 1.1
-                        && this.isInHub(event.clientX, event.clientY);
-                }, () => this.openSortModeChoice());
+                ModeCenterTap.reset();
                 this.sortChoiceBound = true;
             },
-            openSortModeChoice() {
-                const current = CurrentImage.current();
-                if (!current || state.isFocusMode || ModeNavigation.currentView() !== 'sort') return false;
-                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
+            openSortModeChoice(fileId = CurrentImage.current()?.id) {
+                if (state.isFocusMode || ModeNavigation.currentView() !== 'sort') return false;
+                const resolved = CurrentImage.set(fileId, state.currentStack, { allowCrossStack: false });
+                const current = resolved?.file;
+                if (!current) return false;
+                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 state.haptic?.triggerFeedback('buttonPress');
-                return ModeChoiceModal.open({ stackName: state.currentStack, fileId: current.id });
+                return ModeChoiceModal.open({ stackName: resolved.stackName, fileId: current.id });
+            },
+            registerSortHubTap(now, clientX, clientY) {
+                const chooserClosed = !ModeChoiceModal.root || ModeChoiceModal.root.hidden;
+                const current = CurrentImage.current();
+                if (!chooserClosed || !current || state.isFocusMode || ModeNavigation.currentView() !== 'sort' || state.currentScale > 1.1) {
+                    this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
+                    return false;
+                }
+                const previous = this.lastHubTap;
+                const sameFile = String(previous.fileId || '') === String(current.id) && previous.stackName === state.currentStack;
+                const withinTime = previous.time > 0 && now - previous.time <= this.DOUBLE_TAP_MAX_INTERVAL;
+                const withinDistance = Math.hypot(clientX - previous.x, clientY - previous.y) <= this.DOUBLE_TAP_MAX_DISTANCE;
+                if (sameFile && withinTime && withinDistance) {
+                    this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
+                    this.spawnRipple(clientX, clientY);
+                    return this.openSortModeChoice(current.id);
+                }
+                this.lastHubTap = { time: now, x: clientX, y: clientY, fileId: current.id, stackName: state.currentStack };
+                return false;
             },
             setupPinchZoom() {
                 Utils.elements.centerImage.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
@@ -9554,7 +9569,7 @@ this.updateImageCounters();
                 if (!rect.width || !rect.height) return false;
                 const cx = rect.left + rect.width / 2;
                 const cy = rect.top + rect.height / 2;
-                const radius = Math.min(rect.width, rect.height) * 0.12;
+                const radius = Math.min(rect.width, rect.height) * 0.22;
                 return Math.hypot(clientX - cx, clientY - cy) <= radius;
             },
             pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
@@ -9657,7 +9672,7 @@ this.updateImageCounters();
                 const point = e.touches ? e.touches[0] : e;
                 const hubInteraction = this.isInHub(point.clientX, point.clientY);
                 this.hubPressActive = hubInteraction && !state.isFocusMode;
-                if (!this.hubPressActive) this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
+                if (!this.hubPressActive) this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
                 this.startPos = { x: point.clientX, y: point.clientY };
                 this.currentPos = { x: point.clientX, y: point.clientY };
@@ -9718,12 +9733,18 @@ this.updateImageCounters();
                 const duration = now - this.startTimestamp;
                 const isTap = this.maxTapDistance < this.TAP_DISTANCE_THRESHOLD && duration < this.TAP_DURATION_THRESHOLD;
                 if (this.holdConsumed) { this.holdConsumed = false; this.hideAllEdgeGlows(); return; }
-                if (this.hubPressActive) {
-                    if (!isTap) ModeCenterTap.reset();
+                if (this.hubPressActive && isTap) {
+                    e.preventDefault?.();
+                    this.registerSortHubTap(now, this.currentPos.x, this.currentPos.y);
                     this.hideAllEdgeGlows();
                     this.hubPressActive = false;
                     this.gestureStarted = false;
                     return;
+                }
+                if (this.hubPressActive) {
+                    ModeCenterTap.reset();
+                    this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
+                    this.hubPressActive = false;
                 }
 
                 if (distance > 80) {
@@ -9795,7 +9816,7 @@ this.updateImageCounters();
                 if (state.isFocusMode) return CanonicalInspection.exit();
                 const current = CurrentImage.current();
                 if (!current) return false;
-                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
+                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 ModeCenterTap.reset();
                 return CanonicalInspection.enter(current.id, { surface: 'sort', stackName: state.currentStack, fileId: current.id });
             },
@@ -11938,7 +11959,8 @@ this.updateImageCounters();
                     atomicPresentation: typeof SharedImageResources.ensure === 'function' && typeof SharedImageResources.present === 'function',
                     surfaceSuspendResume: typeof SpatialGallery.center === 'function' && typeof PhotoTable.suspend === 'function' && typeof PhotoTable.resume === 'function',
                     modeChoiceValid: document.querySelectorAll('#mode-choice-modal').length === 1 && modeChoices.map(button => button.dataset.modeChoice).join(',') === 'focus,explore,table' && modeChoices[0]?.classList.contains('mode-choice-modal__choice--default'),
-                    sortCenterChoiceValid: Gestures.sortChoiceBound === true && typeof Gestures.openSortModeChoice === 'function',
+                    sortCenterChoiceValid: Gestures.sortChoiceBound === true && Gestures.sortChoiceOwner === 'gestures' && typeof Gestures.openSortModeChoice === 'function' && typeof Gestures.registerSortHubTap === 'function',
+                    sortCenterSwipeValid: Gestures.sortChoiceOwner === 'gestures' && Gestures.TAP_DISTANCE_THRESHOLD < 80,
                     exploreAdaptiveLayout: SpatialGallery.automaticLayout === true && SpatialGallery.extentHardLimits === false && SpatialGallery.maxImageLimit === 500 && typeof SpatialGallery.rebalanceLayout === 'function',
                     exploreVectorsEven: sphereVectorsEven,
                     focusExitValid: document.querySelectorAll('#focus-origin-close').length === 1 && typeof CanonicalInspection.exit === 'function' && typeof CanonicalInspection.syncExitControl === 'function' && Gestures.focusDoubleTapExit === false,
@@ -11950,7 +11972,7 @@ this.updateImageCounters();
                     movementChurnFree: SharedImageResources.snapshot().sourceReplacementsDuringMovement === 0 && SharedImageResources.snapshot().elementRecreationsDuringMovement === 0,
                     noIntermediateInspection: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level')
                 };
-                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.noImageCollisionEngine && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
+                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.sortCenterSwipeValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.noImageCollisionEngine && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
                 return result;
             },
             assert() {
