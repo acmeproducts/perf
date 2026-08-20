@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.1 interaction and performance correction -->
+<!-- Orbital8 UI governed reconstruction · R4.2 explicit mode entry and Focus exit correction -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1014,11 +1014,36 @@
         body.surface-grid-open #grid-modal { z-index: 17100; }
         body.surface-grid-open #action-modal, body.surface-grid-open #details-modal { z-index: 17200; }
         .focus-origin-close { position: fixed; z-index: 13020; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: 46px; height: 46px; border: 1px solid rgba(255,255,255,.38); border-radius: 999px; color: #fff; background: rgba(15,23,42,.82); box-shadow: 0 10px 32px rgba(0,0,0,.38); font: 700 28px/1 system-ui; cursor: pointer; }
-        body:not(.origin-focus) .focus-origin-close { display: none !important; }
+        .app-container:not(.focus-mode) .focus-origin-close { display: none !important; }
         body.origin-focus #spatial-gallery, body.origin-focus #photo-table { display: none !important; }
         body.origin-focus #back-button, body.origin-focus #normal-image-count, body.origin-focus #center-trash-btn, body.origin-focus .pill-counter { display: none !important; }
         body.origin-focus .app-container { z-index: 13000; }
         body.origin-focus .modal { z-index: 14050; }
+        .mode-choice-modal {
+            position: fixed; inset: 0; z-index: 18000; display: grid; place-items: center;
+            padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+            background: rgba(2, 6, 23, .72); backdrop-filter: blur(10px);
+        }
+        .mode-choice-modal[hidden] { display: none !important; }
+        .mode-choice-modal__panel {
+            position: relative; width: min(360px, calc(100vw - 40px)); padding: 24px;
+            border: 1px solid rgba(255,255,255,.22); border-radius: 22px;
+            color: #f8fafc; background: rgba(15,23,42,.97); box-shadow: 0 24px 70px rgba(0,0,0,.55);
+        }
+        .mode-choice-modal__title { margin: 0 48px 18px 0; font: 750 22px/1.2 system-ui; }
+        .mode-choice-modal__close {
+            position: absolute; top: 13px; right: 13px; width: 40px; height: 40px;
+            border: 1px solid rgba(255,255,255,.2); border-radius: 999px; color: #fff;
+            background: rgba(255,255,255,.08); font: 700 24px/1 system-ui; cursor: pointer;
+        }
+        .mode-choice-modal__choices { display: grid; gap: 10px; }
+        .mode-choice-modal__choice {
+            min-height: 54px; border: 1px solid rgba(255,255,255,.22); border-radius: 14px;
+            color: #f8fafc; background: rgba(255,255,255,.07); font: 750 17px/1 system-ui;
+            cursor: pointer; touch-action: manipulation;
+        }
+        .mode-choice-modal__choice--default { border-color: #60a5fa; background: #2563eb; }
+        .mode-choice-modal__choice:focus-visible, .mode-choice-modal__close:focus-visible { outline: 3px solid #fbbf24; outline-offset: 2px; }
         @media (prefers-reduced-motion: reduce) { .photo-table__print { transition-duration: 1ms; } }
         /* Explore sphere: an isolated, read-only spatial view of the active stack. */
         .spatial-gallery {
@@ -1214,7 +1239,7 @@
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
         <div class="gesture-layer" id="gesture-layer">
             <div id="gesture-screen-a" class="stage" role="application" tabindex="0"
-                 aria-label="Sort mode. Double tap for Focus.">
+                 aria-label="Sort mode. Double tap the center to choose Focus, Explore, or Table.">
                 <div id="gesture-tri-up" class="tri up"></div>
                 <div id="gesture-tri-right" class="tri right"></div>
                 <div id="gesture-tri-down" class="tri down"></div>
@@ -1222,7 +1247,7 @@
                 <div class="hub" id="gesture-hub-a"></div>
             </div>
             <div id="gesture-screen-b" class="stage" role="application"
-                 aria-label="Focus mode. Left/right review halves. Double tap center for Sort; tap footer for views." hidden>
+                 aria-label="Focus mode. Left/right review halves. Use the top-center close button to return to Sort; tap footer for views." hidden>
                 <div id="gesture-half-left" class="half left"></div>
                 <div id="gesture-half-right" class="half right"></div>
                 <div class="hub" id="gesture-hub-b"></div>
@@ -1263,13 +1288,25 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
             </svg>
         </button>
-        <button id="focus-origin-close" class="focus-origin-close" type="button" aria-label="Return to the invoking surface">×</button>
+        <button id="focus-origin-close" class="focus-origin-close" type="button" aria-label="Exit Focus to Sort">×</button>
 
         <div id="toast" class="toast"></div>
 
         <div class="app-footer">
             <span class="footer-baseline">Orbital8 UI</span>
         </div>
+    </div>
+
+    <div id="mode-choice-modal" class="mode-choice-modal" hidden>
+        <section class="mode-choice-modal__panel" role="dialog" aria-modal="true" aria-labelledby="mode-choice-title">
+            <h2 id="mode-choice-title" class="mode-choice-modal__title">Choose View</h2>
+            <button id="mode-choice-close" class="mode-choice-modal__close" type="button" aria-label="Close view chooser">×</button>
+            <div class="mode-choice-modal__choices">
+                <button class="mode-choice-modal__choice mode-choice-modal__choice--default" type="button" data-mode-choice="focus" aria-current="true">Focus</button>
+                <button class="mode-choice-modal__choice" type="button" data-mode-choice="explore">Explore</button>
+                <button class="mode-choice-modal__choice" type="button" data-mode-choice="table">Table</button>
+            </div>
+        </section>
     </div>
 
     <section id="photo-table" class="photo-table" role="dialog" aria-modal="true" aria-label="Photo Table" hidden>
@@ -1500,7 +1537,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.1-performance-2026.08.20.1';
+        const APP_BUILD_ID = 'reconstruction-R4.2-mode-entry-2026.08.20.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -9041,6 +9078,73 @@ this.updateImageCounters();
             }
         };
 
+        const ModeChoiceModal = {
+            root: null,
+            closeButton: null,
+            defaultButton: null,
+            selection: null,
+            initialized: false,
+
+            init() {
+                if (this.initialized) return;
+                this.root = document.getElementById('mode-choice-modal');
+                this.closeButton = document.getElementById('mode-choice-close');
+                this.defaultButton = this.root?.querySelector('[data-mode-choice="focus"]') || null;
+                if (!this.root || !this.closeButton || !this.defaultButton) throw new Error('Mode choice modal is incomplete.');
+                this.root.addEventListener('pointerdown', event => event.stopPropagation());
+                this.root.addEventListener('mousedown', event => event.stopPropagation());
+                this.root.addEventListener('touchstart', event => event.stopPropagation(), { passive: true });
+                this.root.addEventListener('click', event => {
+                    event.stopPropagation();
+                    const choice = event.target.closest('[data-mode-choice]');
+                    if (choice) return this.choose(choice.dataset.modeChoice);
+                    if (event.target === this.root || event.target.closest('#mode-choice-close')) this.close();
+                });
+                document.addEventListener('keydown', event => {
+                    if (this.root.hidden || event.key !== 'Escape') return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    this.close();
+                }, true);
+                this.initialized = true;
+            },
+
+            open({ stackName = state.currentStack, fileId = CurrentImage.current()?.id } = {}) {
+                this.init();
+                const resolved = CurrentImage.set(fileId, stackName, { allowCrossStack: true });
+                if (!resolved) {
+                    Utils.showToast('That image is no longer available.', 'info');
+                    return false;
+                }
+                this.selection = { stackName: resolved.stackName, fileId: resolved.file.id };
+                this.root.hidden = false;
+                requestAnimationFrame(() => this.defaultButton?.focus({ preventScroll: true }));
+                return CurrentImage.assert(resolved.file.id, 'mode chooser');
+            },
+
+            close() {
+                if (!this.root || this.root.hidden) return false;
+                this.root.hidden = true;
+                this.selection = null;
+                Utils.elements.gestureScreenA?.focus({ preventScroll: true });
+                return true;
+            },
+
+            choose(mode) {
+                if (!['focus', 'explore', 'table'].includes(mode) || !this.selection) return false;
+                const selection = { ...this.selection };
+                this.root.hidden = true;
+                this.selection = null;
+                Gestures.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
+                const resolved = CurrentImage.set(selection.fileId, selection.stackName, { allowCrossStack: true });
+                if (!resolved) {
+                    Utils.showToast('That image is no longer available.', 'info');
+                    return false;
+                }
+                return ModeNavigation.switchTo(mode);
+            }
+        };
+
         const ModeNavigation = {
             mode: null,
             entry: null,
@@ -9178,7 +9282,6 @@ this.updateImageCounters();
 
             exit() {
                 this.closeSwitcher();
-                if (CanonicalInspection.active()) return CanonicalInspection.exitToOrigin();
                 if (this.currentView() === 'sort') return;
                 const selection = this.selected();
                 returnSpatialModeToSort({
@@ -9231,10 +9334,11 @@ this.updateImageCounters();
             edgeElements: [],
             hubPressActive: false,
             overlay: null,
-            lastHubTap: { time: 0, x: 0, y: 0 },
+            lastHubTap: { time: 0, x: 0, y: 0, fileId: null },
             tapHandled: false,
             DOUBLE_TAP_MAX_INTERVAL: 320,
             DOUBLE_TAP_MAX_DISTANCE: 28,
+            focusDoubleTapExit: false,
             TAP_DISTANCE_THRESHOLD: 26,
             TAP_DURATION_THRESHOLD: 260,
             TRAIL_INTERVAL_MS: 12,
@@ -9447,6 +9551,8 @@ this.updateImageCounters();
                 if (state.currentScale > 1.1) return;
                 const point = e.touches ? e.touches[0] : e;
                 const hubInteraction = this.isInHub(point.clientX, point.clientY);
+                this.hubPressActive = hubInteraction && !state.isFocusMode;
+                if (!this.hubPressActive) this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
                 this.startPos = { x: point.clientX, y: point.clientY };
                 this.currentPos = { x: point.clientX, y: point.clientY };
@@ -9454,7 +9560,6 @@ this.updateImageCounters();
                 this.maxTapDistance = 0;
                 this.gestureStarted = false;
                 state.isDragging = true;
-                this.hubPressActive = false;
                 if (!hubInteraction) {
                     Utils.elements.centerImage.classList.add('dragging');
                 }
@@ -9508,42 +9613,25 @@ this.updateImageCounters();
                 const duration = now - this.startTimestamp;
                 const isTap = this.maxTapDistance < this.TAP_DISTANCE_THRESHOLD && duration < this.TAP_DURATION_THRESHOLD;
                 if (this.holdConsumed) { this.holdConsumed = false; this.hideAllEdgeGlows(); return; }
-                if (isTap) {
-                    const isDoubleTap = this.lastHubTap.time && now - this.lastHubTap.time <= this.DOUBLE_TAP_MAX_INTERVAL && Math.hypot(this.lastHubTap.x-this.currentPos.x,this.lastHubTap.y-this.currentPos.y)<=this.DOUBLE_TAP_MAX_DISTANCE;
-                    if (isDoubleTap) {
-                        const exactFileId = this.lastHubTap.fileId || CurrentImage.current()?.id;
-                        this.lastHubTap={time:0,x:0,y:0,fileId:null};
-                        if (state.isFocusMode) {
-                            CurrentImage.set(exactFileId, state.currentStack, { allowCrossStack: false });
-                            if (CanonicalInspection.active()) CanonicalInspection.exitToSort(exactFileId);
-                            else returnSpatialModeToSort({ stackName: state.currentStack, fileId: exactFileId, source: 'focus-double-tap' });
-                        } else {
-                            CurrentImage.set(exactFileId, state.currentStack, { allowCrossStack: true });
-                            this.toggleFocusMode();
-                            Core.displayCurrentImage();
-                        }
-                        state.haptic?.triggerFeedback('buttonPress'); this.hideAllEdgeGlows(); return;
-                    }
-                    this.lastHubTap={time:now,x:this.currentPos.x,y:this.currentPos.y,fileId:CurrentImage.current()?.id || null};
-                }
-
                 if (this.hubPressActive) {
                     if (isTap) {
                         if (this.lastHubTap.time && (now - this.lastHubTap.time) <= this.DOUBLE_TAP_MAX_INTERVAL) {
                             const tapDistance = Math.hypot(this.lastHubTap.x - this.currentPos.x, this.lastHubTap.y - this.currentPos.y);
                             if (tapDistance <= this.DOUBLE_TAP_MAX_DISTANCE) {
                                 this.spawnRipple(this.currentPos.x, this.currentPos.y);
-                                if (!state.isFocusMode) this.toggleFocusMode();
+                                const exactFileId = this.lastHubTap.fileId || CurrentImage.current()?.id;
+                                const resolved = CurrentImage.set(exactFileId, state.currentStack, { allowCrossStack: true });
+                                if (resolved) ModeChoiceModal.open({ stackName: resolved.stackName, fileId: resolved.file.id });
                                 if (state.haptic) { state.haptic.triggerFeedback('buttonPress'); }
-                                this.lastHubTap = { time: 0, x: 0, y: 0 };
+                                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
                             } else {
-                                this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y };
+                                this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y, fileId: CurrentImage.current()?.id || null };
                             }
                         } else {
-                            this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y };
+                            this.lastHubTap = { time: now, x: this.currentPos.x, y: this.currentPos.y, fileId: CurrentImage.current()?.id || null };
                         }
                     } else {
-                        this.lastHubTap = { time: 0, x: 0, y: 0 };
+                        this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
                     }
                     this.hideAllEdgeGlows();
                     this.hubPressActive = false;
@@ -9630,7 +9718,7 @@ this.updateImageCounters();
                 Core.updateImageCounters();
                 if (state.isFocusMode) ModeNavigation.show('focus');
                 else ModeNavigation.hide();
-                this.lastHubTap = { time: 0, x: 0, y: 0 };
+                this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null };
                 ModeCenterTap.reset();
             },
             async nextImage() {
@@ -11435,14 +11523,14 @@ this.updateImageCounters();
             },
 
             init() {
-                const back = document.getElementById('focus-origin-close');
+                const exitButton = document.getElementById('focus-origin-close');
                 const isolate = event => event.stopPropagation();
-                [back].forEach(button => {
+                [exitButton].forEach(button => {
                     button?.addEventListener('pointerdown', isolate);
                     button?.addEventListener('mousedown', isolate);
                     button?.addEventListener('touchstart', isolate, { passive: true });
                 });
-                back?.addEventListener('click', event => { event.stopPropagation(); this.back(); });
+                exitButton?.addEventListener('click', event => { event.stopPropagation(); this.exitToSort(); });
             },
 
             async enter(fileId, origin, options = {}) {
@@ -11470,7 +11558,7 @@ this.updateImageCounters();
                 state.isFocusMode = true;
                 Utils.elements.appContainer.classList.add('focus-mode');
                 document.body.classList.add('origin-focus');
-                document.getElementById('focus-origin-close')?.setAttribute('aria-label', `Return to ${origin === 'explore' ? 'Explore' : 'Table'}`);
+                document.getElementById('focus-origin-close')?.setAttribute('aria-label', 'Exit Focus to Sort');
                 ModeNavigation.show('focus');
                 Gestures.updateGestureOverlayMode();
                 await Core.displayCurrentImage({ immediateSrc });
@@ -11564,7 +11652,7 @@ this.updateImageCounters();
                 this.transitionToken++;
                 this.origin = null;
                 document.body.classList.remove('origin-focus');
-                return returnSpatialModeToSort({ stackName, fileId, source: 'focus-double-tap' });
+                return returnSpatialModeToSort({ stackName, fileId, source: 'focus-close' });
             }
         };
 
@@ -11609,6 +11697,8 @@ this.updateImageCounters();
                 const surfaceChromeIds = ['spatial-gallery-stack', 'spatial-gallery-close', 'spatial-gallery-controls-toggle', 'photo-table-close'];
                 const surfaceChromeValid = surfaceChromeIds.every(id => document.querySelectorAll(`#${id}`).length === 1);
                 const manager = document.getElementById('table-tag-manager');
+                const modeChoices = [...document.querySelectorAll('#mode-choice-modal [data-mode-choice]')];
+                const focusExit = document.getElementById('focus-origin-close');
                 const result = {
                     build: APP_BUILD.id,
                     r3,
@@ -11628,13 +11718,15 @@ this.updateImageCounters();
                     tableCountConsolidated: document.querySelectorAll('#photo-table-count').length === 0,
                     atomicPresentation: typeof SharedImageResources.ensure === 'function' && typeof SharedImageResources.present === 'function',
                     surfaceSuspendResume: typeof SpatialGallery.center === 'function' && typeof PhotoTable.suspend === 'function' && typeof PhotoTable.resume === 'function',
+                    modeChoiceValid: document.querySelectorAll('#mode-choice-modal').length === 1 && modeChoices.map(button => button.dataset.modeChoice).join(',') === 'focus,explore,table' && modeChoices[0]?.classList.contains('mode-choice-modal__choice--default'),
+                    focusExitValid: document.querySelectorAll('#focus-origin-close').length === 1 && focusExit?.getAttribute('aria-label') === 'Exit Focus to Sort' && Gestures.focusDoubleTapExit === false,
                     noImageCollisionEngine: typeof PhotoTable.resolveImageCollision === 'undefined',
                     assignmentExactlyOnce: assignmentCounts.every(count => count === 1),
                     rareEffectsNonConsecutive: TableEffects.rareCount <= Math.ceil(TableEffects.successfulCount / 2),
                     movementChurnFree: SharedImageResources.snapshot().sourceReplacementsDuringMovement === 0 && SharedImageResources.snapshot().elementRecreationsDuringMovement === 0,
                     noIntermediateInspection: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level')
                 };
-                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.noImageCollisionEngine && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
+                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.focusExitValid && result.noImageCollisionEngine && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
                 return result;
             },
             assert() {
@@ -11936,6 +12028,7 @@ this.updateImageCounters();
                 Utils.elements.detailsClose.addEventListener('click', () => Details.hide());
             },
             setupFocusMode() {
+                ModeChoiceModal.init();
                 ModeNavigation.init();
                 Utils.elements.centerTrashBtn.addEventListener('click', () => Core.deleteCurrentImage({ exitFocusIfEmpty: false, source: 'button:center-trash' }));
                 Utils.elements.focusStackName.addEventListener('click', () => SurfaceStackSelector.open('focus'));
@@ -12148,7 +12241,7 @@ this.updateImageCounters();
                     if (!Utils.elements.gridModal.classList.contains('hidden')) { if (e.key === 'Escape') Grid.close(); return; }
                     if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
                     if (CanonicalInspection.active()) {
-                        if (e.key === 'Escape') { e.preventDefault(); await CanonicalInspection.back(); }
+                        if (e.key === 'Escape') { e.preventDefault(); await CanonicalInspection.exitToSort(); }
                         if (e.key === 'ArrowRight') { e.preventDefault(); await Gestures.nextImage(); CanonicalInspection.syncCurrent(); App.persistViewContext(); }
                         if (e.key === 'ArrowLeft') { e.preventDefault(); await Gestures.prevImage(); CanonicalInspection.syncCurrent(); App.persistViewContext(); }
                         return;
@@ -12160,7 +12253,7 @@ this.updateImageCounters();
                         if (state.isFocusMode) {
                             if (e.key === 'ArrowRight') await Gestures.nextImage();
                             if (e.key === 'ArrowLeft') await Gestures.prevImage();
-                            if (e.key === 'Escape') Gestures.toggleFocusMode();
+                            if (e.key === 'Escape') CanonicalInspection.exitToSort();
                             return;
                         }
                         const keyMap = { 'ArrowUp': 'priority', 'ArrowDown': 'trash', 'ArrowLeft': 'in', 'ArrowRight': 'out' };
@@ -12242,6 +12335,7 @@ this.updateImageCounters();
                 window.SpatialGallery = SpatialGallery;
                 window.CanonicalInspection = CanonicalInspection;
                 window.SurfaceStackSelector = SurfaceStackSelector;
+                window.ModeChoiceModal = ModeChoiceModal;
                 window.__orbitalR3Engineering = R3EngineeringGate;
                 window.__orbitalR4Engineering = R4EngineeringGate;
                 Object.assign(getDebugSurface(), {
