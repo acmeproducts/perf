@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.6 unified Sort gesture navigation -->
+<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1539,7 +1539,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.6-unified-sort-gestures-2026.08.20.1';
+        const APP_BUILD_ID = 'reconstruction-R4.7-exact-explorer-anchor-table-counts-2026.08.21.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -10656,19 +10656,35 @@ this.updateImageCounters();
             },
             display(tag) { return String(TagService.normalizeTagValue(tag) || '#tag').replace(/^#+/, ''); },
             activeTags() { return this.load().map(item => item.tag.toLowerCase()); },
+            assignedTarget(file, targets = this.load()) {
+                const tags = new Set(TagService.normalizeTagList(file?.tags || []).map(tag => tag.toLowerCase()));
+                return targets.find(target => tags.has(target.tag.toLowerCase())) || null;
+            },
+            assignmentSummary(stackName = PhotoTable.stackName || state.currentStack) {
+                const targets = this.load();
+                const counts = new Map(targets.map(target => [target.tag, 0]));
+                const files = state.stacks[stackName] || [];
+                let untagged = 0;
+                files.forEach(file => {
+                    const target = this.assignedTarget(file, targets);
+                    if (!target) untagged += 1;
+                    else counts.set(target.tag, (counts.get(target.tag) || 0) + 1);
+                });
+                return { stackName, total: files.length, untagged, counts };
+            },
             isEligible(file) {
-                const active = new Set(this.activeTags());
-                if (!active.size) return true;
-                return !TagService.normalizeTagList(file?.tags || []).some(tag => active.has(tag.toLowerCase()));
+                return !this.assignedTarget(file);
             },
             taggedFiles(tag, stackName = PhotoTable.stackName || state.currentStack) {
                 const normalized = TagService.normalizeTagValue(tag).toLowerCase();
-                return (state.stacks[stackName] || []).filter(file => TagService.normalizeTagList(file.tags || []).some(value => value.toLowerCase() === normalized));
+                const targets = this.load();
+                return (state.stacks[stackName] || []).filter(file => this.assignedTarget(file, targets)?.tag.toLowerCase() === normalized);
             },
             render() {
                 const layer = document.getElementById('photo-table-targets');
                 if (!layer) return;
                 const targets = this.load();
+                const summary = this.assignmentSummary();
                 layer.replaceChildren();
                 targets.forEach((target, index) => {
                     const button = document.createElement('button');
@@ -10678,8 +10694,10 @@ this.updateImageCounters();
                     button.dataset.targetIndex = String(index);
                     button.style.left = `${target.x * 100}%`;
                     button.style.top = `${target.y * 100}%`;
-                    button.textContent = this.display(target.tag);
-                    button.setAttribute('aria-label', `${this.display(target.tag)} tag target`);
+                    const count = summary.counts.get(target.tag) || 0;
+                    button.dataset.count = String(count);
+                    button.textContent = `${this.display(target.tag)} · ${count}`;
+                    button.setAttribute('aria-label', `${this.display(target.tag)} tag stack, ${count} image${count === 1 ? '' : 's'}`);
                     button.addEventListener('pointerdown', event => this.targetDown(event, index));
                     button.addEventListener('pointermove', event => this.targetMove(event));
                     button.addEventListener('pointerup', event => this.targetUp(event));
@@ -10691,6 +10709,17 @@ this.updateImageCounters();
                     });
                     layer.appendChild(button);
                 });
+            },
+            refreshCounts() {
+                const summary = this.assignmentSummary();
+                document.querySelectorAll('#photo-table-targets .photo-table__target').forEach(button => {
+                    const count = summary.counts.get(button.dataset.tag) || 0;
+                    const label = this.display(button.dataset.tag);
+                    button.dataset.count = String(count);
+                    button.textContent = `${label} · ${count}`;
+                    button.setAttribute('aria-label', `${label} tag stack, ${count} image${count === 1 ? '' : 's'}`);
+                });
+                return summary;
             },
             targetDown(event, index) {
                 if (event.button !== undefined && event.button !== 0) return;
@@ -10756,11 +10785,19 @@ this.updateImageCounters();
             },
             clearHighlight() { this.geometry().forEach(target => target.el.classList.remove('attracting')); },
             applyTagOnce(fileId, tag) {
-                const key = `${fileId}::${tag.toLowerCase()}`;
+                const normalizedTag = TagService.normalizeTagValue(tag);
+                const key = `${fileId}::${normalizedTag.toLowerCase()}`;
                 if (this.pendingAssignments.has(key)) return this.pendingAssignments.get(key);
-                const operation = TagService.addTag(tag, [fileId]).then(result => {
+                const file = state.imageFiles.find(candidate => String(candidate.id) === String(fileId));
+                if (!file || !normalizedTag) return Promise.resolve([]);
+                const active = new Set(this.activeTags());
+                const nextTags = TagService.normalizeTagList(file.tags || []).filter(value => !active.has(value.toLowerCase()));
+                if (!nextTags.some(value => value.toLowerCase() === normalizedTag.toLowerCase())) nextTags.push(normalizedTag);
+                file.tags = nextTags;
+                state.tags.add(normalizedTag);
+                const operation = App.updateUserMetadata(file.id, { tags: nextTags }).then(() => {
                     this.assignmentCounts.set(key, (this.assignmentCounts.get(key) || 0) + 1);
-                    return result;
+                    return TagService.getDisplayTags([file.id]);
                 }).finally(() => this.pendingAssignments.delete(key));
                 this.pendingAssignments.set(key, operation);
                 return operation;
@@ -11107,9 +11144,9 @@ this.updateImageCounters();
             emptyLongPressMove(event) { if (this.emptyPress && this.emptyPress.id === event.pointerId && Math.hypot(event.clientX - this.emptyPress.x, event.clientY - this.emptyPress.y) > 8) this.emptyLongPressEnd(event); },
             emptyLongPressEnd(event) { if (this.emptyPress && (event?.pointerId == null || this.emptyPress.id === event.pointerId)) this.emptyPress = null; clearTimeout(this.emptyPressTimer); this.emptyPressTimer = null; },
             updateCount() {
-                const files = this.workingFiles();
-                this.elements.folder.textContent = `${STACK_NAMES[this.stackName] || this.stackName || 'Table'} · ${files.length}`;
-                this.elements.folder.setAttribute('aria-label', `Select stack or Grid. ${files.length} images available on Table.`);
+                const summary = TableTagTargets.refreshCounts();
+                this.elements.folder.textContent = `${STACK_NAMES[this.stackName] || this.stackName || 'Table'} · ${summary.total}`;
+                this.elements.folder.setAttribute('aria-label', `Select stack or Grid. ${summary.total} total images; ${summary.untagged} remain untagged.`);
                 state.inspection = { surface: 'table', origin: null, fileId: this.currentFileId };
             },
             exit() { returnSpatialModeToSort({ stackName: this.stackName || state.currentStack, fileId: this.currentFileId || CurrentImage.current()?.id, source: 'table' }); },
@@ -11352,6 +11389,25 @@ this.updateImageCounters();
                 this.scheduleNextPage();
             },
 
+            adoptPopulationOrder(nextFiles) {
+                const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
+                const canAdopt = nextFiles.length === this.files.length && nextFiles.every(file => existing.has(String(file.id)));
+                if (!canAdopt) {
+                    this.reconcilePopulation(nextFiles);
+                    return false;
+                }
+                this.files = nextFiles;
+                this.cards = nextFiles.map(file => existing.get(String(file.id)));
+                this.cards.forEach((card, index) => {
+                    card.element.classList.toggle('selected', index === this.selectedIndex);
+                    card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
+                });
+                this.updateVectors();
+                SharedImageResources.pinExplorer(nextFiles);
+                this.requestFrame();
+                return true;
+            },
+
             scheduleNextPage() {
                 clearTimeout(this.pageTimer);
                 if (this.elements.root.hidden || this.cards.length >= this.files.length) return;
@@ -11377,6 +11433,68 @@ this.updateImageCounters();
                 const z = Math.hypot(vector.x, vector.z);
                 this.rotationY = Math.atan2(vector.y, z);
                 this.select(index);
+                if (!this.elements.root.hidden) {
+                    if (this.frameId) cancelAnimationFrame(this.frameId);
+                    this.frameId = null;
+                    this.render(performance.now());
+                }
+            },
+
+            promoteFileId(fileId, stackName = state.currentStack) {
+                const requestedId = String(fileId || '');
+                const stack = state.stacks[stackName] || [];
+                const index = stack.findIndex(file => String(file.id) === requestedId);
+                if (!requestedId || index < 0) return null;
+                const file = stack[index];
+                if (index > 0) {
+                    const prefix = stack.slice(0, index);
+                    const rotated = stack.slice(index).concat(prefix);
+                    const sequences = stack.map(item => Number(item.stackSequence)).filter(Number.isFinite);
+                    const ceiling = sequences.length ? Math.max(...sequences) : Date.now();
+                    const floor = sequences.length ? Math.min(...sequences) : ceiling - stack.length;
+                    const updates = [];
+                    const nextSequence = ceiling + 1;
+                    if (Number(file.stackSequence) !== nextSequence) updates.push({ fileId: file.id, stackSequence: nextSequence });
+                    file.stackSequence = nextSequence;
+                    prefix.forEach((item, prefixIndex) => {
+                        const stackSequence = floor - prefixIndex - 1;
+                        if (Number(item.stackSequence) !== stackSequence) updates.push({ fileId: item.id, stackSequence });
+                        item.stackSequence = stackSequence;
+                    });
+                    state.stacks[stackName] = rotated;
+                    this.selectedIndex = 0;
+                    this.adoptPopulationOrder(this.populationFor(rotated, requestedId));
+                    CurrentImage.set(file.id, stackName, { allowCrossStack: false });
+                    Core.updateStackCounts();
+                    state.syncLog?.log({
+                        event: 'explore:promote',
+                        level: 'info',
+                        fileId: file.id,
+                        details: `Promoted ${file.name || file.id} to the Explore navigation anchor while preserving circular stack order.`,
+                        data: { stack: stackName, previousIndex: index, updates: updates.length }
+                    });
+                    if (updates.length) Utils.defer(async () => {
+                        const results = await Promise.allSettled(updates.map(update => App.updateUserMetadata(update.fileId, { stackSequence: update.stackSequence }, {
+                            skipDebounce: true,
+                            operationType: 'stack:reorder',
+                            origin: 'explore:activate',
+                            providerSilent: true,
+                            skipProviderSync: true
+                        })));
+                        const failed = results.filter(result => result.status === 'rejected').length;
+                        if (failed) state.syncLog?.log({
+                            event: 'explore:promote:error',
+                            level: 'error',
+                            fileId: file.id,
+                            details: `Failed to persist ${failed} Explore stack-order update${failed === 1 ? '' : 's'}.`,
+                            data: { stack: stackName, failed }
+                        });
+                    }, { priority: 'high', timeout: 32 });
+                } else {
+                    this.selectedIndex = Math.max(0, this.files.findIndex(item => String(item.id) === requestedId));
+                    CurrentImage.set(file.id, stackName, { allowCrossStack: false });
+                }
+                return { file, stackName, previousIndex: index, changed: index > 0 };
             },
 
             activateFileId(fileId, cardElement = null) {
@@ -11388,7 +11506,10 @@ this.updateImageCounters();
                 const file = this.files[index];
                 const img = card.element.querySelector('img');
                 const immediateSrc = String(img?.dataset.fileId) === requestedId ? (img.currentSrc || img.src || '') : '';
-                this.select(index);
+                const promotion = this.promoteFileId(file.id, state.currentStack);
+                if (!promotion) return false;
+                const promotedIndex = this.files.findIndex(item => String(item.id) === requestedId);
+                this.select(Math.max(0, promotedIndex));
                 if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;
                 this.focusTransitionFileId = file.id;
                 return Promise.resolve(CanonicalInspection.enter(file.id, {
@@ -11922,7 +12043,9 @@ this.updateImageCounters();
                 const targets = TableTagTargets.load();
                 const targetElements = [...document.querySelectorAll('#photo-table-targets .photo-table__target')];
                 const activeTags = new Set(targets.map(item => item.tag.toLowerCase()));
-                const workingFiles = PhotoTable.stackName ? PhotoTable.workingFiles() : [];
+                const tableStackName = PhotoTable.stackName || state.currentStack;
+                const workingFiles = PhotoTable.workingFiles(tableStackName);
+                const tableSummary = TableTagTargets.assignmentSummary(tableStackName);
                 const assignmentCounts = [...TableTagTargets.assignmentCounts.values()];
                 const canonicalIds = ['center-image', 'details-button', 'focus-stack-name', 'focus-image-count', 'focus-favorite-btn', 'focus-delete-btn'];
                 const canonicalControlsUnique = canonicalIds.every(id => document.querySelectorAll(`#${id}`).length === 1);
@@ -11967,12 +12090,15 @@ this.updateImageCounters();
                     focusGridFirstExact: !gridOrigin || gridOrigin.surface !== 'focus' || !originExistsInGrid || String(gridFiles[0]?.id) === String(gridOrigin.fileId),
                     gridCloseGuarded: typeof state.grid.closing === 'boolean',
                     noImageCollisionEngine: typeof PhotoTable.resolveImageCollision === 'undefined',
+                    tableCountsReconcile: tableSummary.untagged === workingFiles.length
+                        && tableSummary.untagged + [...tableSummary.counts.values()].reduce((sum, count) => sum + count, 0) === tableSummary.total
+                        && (!PhotoTable.isOpen() || targetElements.every(element => Number(element.dataset.count) === (tableSummary.counts.get(element.dataset.tag) || 0))),
                     assignmentExactlyOnce: assignmentCounts.every(count => count === 1),
                     rareEffectsNonConsecutive: TableEffects.rareCount <= Math.ceil(TableEffects.successfulCount / 2),
                     movementChurnFree: SharedImageResources.snapshot().sourceReplacementsDuringMovement === 0 && SharedImageResources.snapshot().elementRecreationsDuringMovement === 0,
                     noIntermediateInspection: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level')
                 };
-                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.sortCenterSwipeValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.noImageCollisionEngine && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
+                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.sortCenterSwipeValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.noImageCollisionEngine && result.tableCountsReconcile && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
                 return result;
             },
             assert() {
