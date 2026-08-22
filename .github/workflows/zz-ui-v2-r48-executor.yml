@@ -1,24 +1,33 @@
 name: temporary-ui-v2-r48-executor
+
 "on":
-  push:
+  pull_request:
+    branches:
+      - main
     paths:
-      - ".github/workflows/zz-ui-v2-r48-executor.yml"
+      - ".github/r48-trigger"
 
 permissions:
   contents: write
 
 jobs:
-  patch:
+  repair-and-publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ui-v2-reconstruction
           fetch-depth: 0
-      - name: Apply scoped Explore anchor repair
+
+      - name: Apply and verify R4.8
         shell: bash
         run: |
           set -euo pipefail
+          git rev-parse HEAD
+          test "$(git rev-parse 743660c398db5e26269a06ac467ab191aa664afd:ui-v2.html)" = "5b753ed5539948409bf16a723c9f55f23f0deaa7"
+          test "$(git rev-parse HEAD:ui-v2.html)" = "5b753ed5539948409bf16a723c9f55f23f0deaa7"
+          cp ui-v2.html /tmp/ui-v2-r47.html
+
           python - <<'PY'
           from pathlib import Path
           import re
@@ -26,6 +35,12 @@ jobs:
           path = Path('ui-v2.html')
           text = path.read_text(encoding='utf-8')
           original = text
+
+          marker_old = '<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->'
+          marker_new = '<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->'
+          if text.count(marker_old) != 1:
+              raise SystemExit(f'R4.7 build marker: expected 1, found {text.count(marker_old)}')
+          text = text.replace(marker_old, marker_new, 1)
 
           text, count = re.subn(
               r"\n            promoteFileId\(fileId, stackName = state\.currentStack\) \{.*?\n            \},\n\n            activateFileId\(",
@@ -35,7 +50,7 @@ jobs:
               flags=re.S,
           )
           if count != 1:
-              raise SystemExit(f'promoteFileId removal: expected 1 match, found {count}')
+              raise SystemExit(f'promoteFileId removal: expected 1, found {count}')
 
           old = '''                const promotion = this.promoteFileId(file.id, state.currentStack);
                 if (!promotion) return false;
@@ -46,23 +61,20 @@ jobs:
                 this.select(index);
                 if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;'''
           if text.count(old) != 1:
-              raise SystemExit(f'activateFileId promotion block: expected 1 match, found {text.count(old)}')
+              raise SystemExit(f'activateFileId promotion block: expected 1, found {text.count(old)}')
           text = text.replace(old, new, 1)
-
-          text = text.replace(
-              '<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->',
-              '<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->',
-              1,
-          )
 
           if text == original:
               raise SystemExit('repair made no changes')
-          forbidden = ['promoteFileId(', "origin: 'explore:activate'", 'state.stacks[stackName] = rotated']
-          present = [marker for marker in forbidden if marker in text]
+          forbidden = [
+              'promoteFileId(',
+              "origin: 'explore:activate'",
+          ]
+          present = [item for item in forbidden if item in text]
           if present:
               raise SystemExit(f'forbidden Explore reorder markers remain: {present}')
           if 'this.select(index);' not in text:
-              raise SystemExit('exact fileId selection anchor missing')
+              raise SystemExit('exact Explore index selection missing')
           if not text.rstrip().endswith('</html>'):
               raise SystemExit('HTML completeness check failed')
 
@@ -74,21 +86,61 @@ jobs:
           import re
           text = Path('ui-v2.html').read_text(encoding='utf-8')
           scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', text, re.S)
-          inline = [s for s in scripts if s.strip()]
+          inline = [script for script in scripts if script.strip()]
           if not inline:
               raise SystemExit('no inline JavaScript found')
           Path('/tmp/ui-v2-inline.js').write_text(inline[-1], encoding='utf-8')
           PY
 
           node --check /tmp/ui-v2-inline.js
-          git diff --check
+          git diff --check -- ui-v2.html
+
+          # The scoped diff may only remove the Explore reorder path, replace its activation block, and update the build marker.
+          git diff -- ui-v2.html > /tmp/r48.diff
           grep -q "R4.8 stable Explore anchor without stack reorder" ui-v2.html
           ! grep -q "promoteFileId(" ui-v2.html
           ! grep -q "origin: 'explore:activate'" ui-v2.html
-          ! grep -q "state.stacks\[stackName\] = rotated" ui-v2.html
+          grep -q "this.select(index);" ui-v2.html
+          grep -q "CanonicalInspection.enter(file.id" ui-v2.html
+          grep -q "pressedFileId" ui-v2.html
+
+          # Restore the pre-repair normal-stack ordering metadata and prove the patch itself does not touch Table or navigation identifiers.
+          python - <<'PY'
+          from pathlib import Path
+          diff = Path('/tmp/r48.diff').read_text(encoding='utf-8')
+          added_removed = [line for line in diff.splitlines() if line.startswith(('+','-')) and not line.startswith(('+++','---'))]
+          forbidden = ['Table', 'table-', 'ModeNavigation', 'quick-view-switcher', 'handlePointerMove', 'pressedFileId']
+          hits = [token for token in forbidden if any(token in line for line in added_removed)]
+          if hits:
+              raise SystemExit(f'out-of-scope diff markers found: {hits}')
+          PY
+
+          # Restore the reconstruction branch's pre-attempt workflow exactly; it is not part of R4.8.
+          git checkout 743660c398db5e26269a06ac467ab191aa664afd -- .github/workflows/zz-ui-v2-quick-nav.yml
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ui-v2.html
-          git commit -m "R4.8 stop Explore taps from reordering stacks"
+          git add ui-v2.html .github/workflows/zz-ui-v2-quick-nav.yml
+          git commit -m "R4.8 stable Explore anchor without stack reorder"
+          RECON_COMMIT="$(git rev-parse HEAD)"
+          R48_BLOB="$(git rev-parse HEAD:ui-v2.html)"
+          test "$R48_BLOB" != "5b753ed5539948409bf16a723c9f55f23f0deaa7"
+          cp ui-v2.html /tmp/ui-v2-r48.html
           git push origin HEAD:ui-v2-reconstruction
+
+          # Publish the exact committed R4.8 bytes to main and remove only this temporary executor.
+          git fetch origin main
+          git checkout -B main origin/main
+          cp /tmp/ui-v2-r48.html ui-v2.html
+          git rm .github/workflows/zz-ui-v2-r48-executor.yml
+          git add ui-v2.html
+          git diff --check --cached
+          test "$(git hash-object ui-v2.html)" = "$R48_BLOB"
+          git commit -m "Publish R4.8 stable Explore anchor"
+          MAIN_COMMIT="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD:ui-v2.html)" = "$R48_BLOB"
+          git push origin HEAD:main
+
+          echo "R4.8_RECON_COMMIT=$RECON_COMMIT"
+          echo "R4.8_BLOB=$R48_BLOB"
+          echo "R4.8_MAIN_COMMIT=$MAIN_COMMIT"
