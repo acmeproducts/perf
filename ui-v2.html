@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->
+<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11440,63 +11440,6 @@ this.updateImageCounters();
                 }
             },
 
-            promoteFileId(fileId, stackName = state.currentStack) {
-                const requestedId = String(fileId || '');
-                const stack = state.stacks[stackName] || [];
-                const index = stack.findIndex(file => String(file.id) === requestedId);
-                if (!requestedId || index < 0) return null;
-                const file = stack[index];
-                if (index > 0) {
-                    const prefix = stack.slice(0, index);
-                    const rotated = stack.slice(index).concat(prefix);
-                    const sequences = stack.map(item => Number(item.stackSequence)).filter(Number.isFinite);
-                    const ceiling = sequences.length ? Math.max(...sequences) : Date.now();
-                    const floor = sequences.length ? Math.min(...sequences) : ceiling - stack.length;
-                    const updates = [];
-                    const nextSequence = ceiling + 1;
-                    if (Number(file.stackSequence) !== nextSequence) updates.push({ fileId: file.id, stackSequence: nextSequence });
-                    file.stackSequence = nextSequence;
-                    prefix.forEach((item, prefixIndex) => {
-                        const stackSequence = floor - prefixIndex - 1;
-                        if (Number(item.stackSequence) !== stackSequence) updates.push({ fileId: item.id, stackSequence });
-                        item.stackSequence = stackSequence;
-                    });
-                    state.stacks[stackName] = rotated;
-                    this.selectedIndex = 0;
-                    this.adoptPopulationOrder(this.populationFor(rotated, requestedId));
-                    CurrentImage.set(file.id, stackName, { allowCrossStack: false });
-                    Core.updateStackCounts();
-                    state.syncLog?.log({
-                        event: 'explore:promote',
-                        level: 'info',
-                        fileId: file.id,
-                        details: `Promoted ${file.name || file.id} to the Explore navigation anchor while preserving circular stack order.`,
-                        data: { stack: stackName, previousIndex: index, updates: updates.length }
-                    });
-                    if (updates.length) Utils.defer(async () => {
-                        const results = await Promise.allSettled(updates.map(update => App.updateUserMetadata(update.fileId, { stackSequence: update.stackSequence }, {
-                            skipDebounce: true,
-                            operationType: 'stack:reorder',
-                            origin: 'explore:activate',
-                            providerSilent: true,
-                            skipProviderSync: true
-                        })));
-                        const failed = results.filter(result => result.status === 'rejected').length;
-                        if (failed) state.syncLog?.log({
-                            event: 'explore:promote:error',
-                            level: 'error',
-                            fileId: file.id,
-                            details: `Failed to persist ${failed} Explore stack-order update${failed === 1 ? '' : 's'}.`,
-                            data: { stack: stackName, failed }
-                        });
-                    }, { priority: 'high', timeout: 32 });
-                } else {
-                    this.selectedIndex = Math.max(0, this.files.findIndex(item => String(item.id) === requestedId));
-                    CurrentImage.set(file.id, stackName, { allowCrossStack: false });
-                }
-                return { file, stackName, previousIndex: index, changed: index > 0 };
-            },
-
             activateFileId(fileId, cardElement = null) {
                 const requestedId = String(fileId || '');
                 if (!requestedId || this.focusTransitionFileId) return false;
@@ -11506,10 +11449,8 @@ this.updateImageCounters();
                 const file = this.files[index];
                 const img = card.element.querySelector('img');
                 const immediateSrc = String(img?.dataset.fileId) === requestedId ? (img.currentSrc || img.src || '') : '';
-                const promotion = this.promoteFileId(file.id, state.currentStack);
-                if (!promotion) return false;
-                const promotedIndex = this.files.findIndex(item => String(item.id) === requestedId);
-                this.select(Math.max(0, promotedIndex));
+                // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
+                this.select(index);
                 if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;
                 this.focusTransitionFileId = file.id;
                 return Promise.resolve(CanonicalInspection.enter(file.id, {
