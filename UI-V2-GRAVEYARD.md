@@ -1,5 +1,5 @@
-<!-- UI-V2-GRAVEYARD v1.1.0 -->
-# UI-V2 GRAVEYARD v1.1.0
+<!-- UI-V2-GRAVEYARD v1.2.0 -->
+# UI-V2 GRAVEYARD v1.2.0
 
 **Location:** `UI-V2-GRAVEYARD.md` in `acmeproducts/perf`.
 **Purpose:** Hard veto list for approaches that failed, caused regressions, duplicated UI, destroyed known-good behavior, or created deployment ambiguity.
@@ -28,6 +28,10 @@
 | G15 | Hiding duplicate controls with CSS while leaving competing DOM/handlers in place as the intended architecture | Reduced symptoms but preserved duplicate semantics and future collision risk | Canonical control ownership must be explicit in source; legacy controls may remain only when required for compatibility and must not own behavior | BURIED |
 | G16 | Making an Explore thumbnail tap mutate normal-stack order / `stackSequence` in order to obtain continuity | R4.7 coupled a view-selection action to persistent data ordering through `promoteFileId()`. The follow-on R4.8 removed that mutation locally instead of rebuilding the complete pointer contract, producing a patch-on-patch regression in exact tap/Focus/return/Grid continuity | Explore selection is a stable `fileId` view anchor only. Never mutate normal-stack order merely because an Explore thumbnail was inspected. Maintain a canonical active `fileId` through Explore → Focus navigation → Explore/Grid, and derive Grid presentation order without persisting a stack reorder | BURIED |
 | G17 | Rebalancing/persisting Explore layout on every pinch-move sample | The pinch path recalculated automatic card scale, labels, persistence scheduling and layout logging for each touch movement while the same scale also affected both sphere radius and card scale. This made pinch zoom jumpy and inconsistent | During a pinch, update only continuous spatial extent in animation frames. Preserve rotation/selection, avoid per-sample persistence/logging/repopulation, and settle/persist once when the gesture ends. Thumbnail percentage remains an independent control | BURIED |
+| G18 | Publishing wrapper/test-loader HTML that fetches `ui-v2.html` and injects a runtime patch | R4.9.1 created a second transport path and made the tested behavior differ from the authoritative application artifact | All candidate behavior must live in the governed `ui-v2.html`; use the normal Pages URL only | BURIED |
+| G19 | Resolving an overlapping sphere tap by choosing the card whose projected center is nearest the pointer | The R4.9.1 wrapper could substitute a different card when projected rectangles overlap, violating exact stable `fileId` identity | Capture the exact visible card ownership at gesture start. A tap may activate only that captured `fileId`; blank/ambiguous space does not invent a nearest card | BURIED |
+| G20 | Fixing far-side selection by opacity alone | Raising opacity makes rear thumbnails easier to see but does not fix event ownership or overlap stealing | Keep rear cards identifiable and separately fix hit ownership; visual depth and input identity are independent concerns | BURIED |
+| G21 | Letting DOM z-order at pointer-up redefine the selected sphere image | Pointer capture, overlap and rotation can make the pointer-up target differ from the thumbnail deliberately pressed | Record stable `fileId` from the visible hit at pointer-down and retain it through a clean tap; movement cancels activation but never substitutes another file | BURIED |
 
 ---
 
@@ -63,6 +67,8 @@ A buried approach may only be revived when all are true:
 ---
 
 ## 4 · CHANGE LOG
+
+**v1.2.0 · 2026-08-22.** Buried the R4.9.1 wrapper/test-loader, nearest-center overlap resolver, opacity-only far-side repair, and pointer-up DOM retargeting as G18-G21. Exact sphere selection must retain the stable visible `fileId` captured at gesture start; the authoritative application is the only test artifact.
 
 **v1.1.0 · 2026-08-22.** Recorded the failed R4.7/R4.8 Explore anchoring strategy and pinch-layout coupling as G16-G17. Governance recovery is rollback to the R4.7 baseline, then rebuild the pointer and zoom behavior from the amended canonical plan rather than patching R4.8.
 
