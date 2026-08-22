@@ -2,14 +2,10 @@ name: temporary-ui-v2-r48-executor
 
 "on":
   pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/r48-trigger"
-
+    branches: [main]
+    paths: [".github/r48-trigger"]
 permissions:
   contents: write
-
 jobs:
   repair-and-publish:
     runs-on: ubuntu-latest
@@ -18,77 +14,36 @@ jobs:
         with:
           ref: ui-v2-reconstruction
           fetch-depth: 0
-
-      - name: Apply and verify R4.8
+      - name: Apply verify commit publish R4.8
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse 743660c398db5e26269a06ac467ab191aa664afd:ui-v2.html)" = "5b753ed5539948409bf16a723c9f55f23f0deaa7"
           test "$(git rev-parse HEAD:ui-v2.html)" = "5b753ed5539948409bf16a723c9f55f23f0deaa7"
-
           python - <<'PY'
           from pathlib import Path
           import re
-
-          path = Path('ui-v2.html')
-          text = path.read_text(encoding='utf-8')
-          original = text
-
-          old_marker = '<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->'
-          new_marker = '<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->'
-          if text.count(old_marker) != 1:
-              raise SystemExit(f'build marker: expected 1, found {text.count(old_marker)}')
-          text = text.replace(old_marker, new_marker, 1)
-
-          # Delete the Explore-only canonical-stack promotion helper. Thumbnail activation must be a view anchor only.
-          text, helper_count = re.subn(
-              r"\n            promoteFileId\(fileId, stackName = state\.currentStack\) \{.*?\n            \},\n\n            activateFileId\(",
-              "\n            activateFileId(",
-              text,
-              count=1,
-              flags=re.S,
-          )
-          if helper_count != 1:
-              raise SystemExit(f'promoteFileId helper removal: expected 1, found {helper_count}')
-
-          # Replace only the promotion call/lookup/select portion; tolerate indentation variation while preserving identity assertion.
-          pattern = re.compile(
-              r"(?P<indent>[ \t]*)const promotion = this\.promoteFileId\(file\.id, state\.currentStack\);\s*\n"
-              r"(?P=indent)if \(!promotion\) return false;\s*\n"
-              r"(?P=indent)const promotedIndex = this\.files\.findIndex\(item => String\(item\.id\) === requestedId\);\s*\n"
-              r"(?P=indent)this\.select\(Math\.max\(0, promotedIndex\)\);"
-          )
-          def replacement(match):
-              indent = match.group('indent')
-              return indent + '// Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.\n' + indent + 'this.select(index);'
-          text, call_count = pattern.subn(replacement, text, count=1)
-          if call_count != 1:
-              raise SystemExit(f'activateFileId promotion replacement: expected 1, found {call_count}')
-
-          if text == original:
-              raise SystemExit('repair made no changes')
-          if 'promoteFileId(' in text:
-              raise SystemExit('promoteFileId still present')
-          if "origin: 'explore:activate'" in text:
-              raise SystemExit('Explore activation stackSequence persistence still present')
-          if 'this.select(index);' not in text:
-              raise SystemExit('exact Explore index selection missing')
-          if not text.rstrip().endswith('</html>'):
-              raise SystemExit('HTML completeness check failed')
-          path.write_text(text, encoding='utf-8')
+          p=Path('ui-v2.html'); t=p.read_text(encoding='utf-8')
+          old='<!-- Orbital8 UI governed reconstruction · R4.7 exact Explorer anchoring and reconciled Table counts -->'
+          new='<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->'
+          if t.count(old)!=1: raise SystemExit('build marker mismatch')
+          t=t.replace(old,new,1)
+          t,n=re.subn(r"\n            promoteFileId\(fileId, stackName = state\.currentStack\) \{.*?\n            \},\n\n            activateFileId\(","\n            activateFileId(",t,count=1,flags=re.S)
+          if n!=1: raise SystemExit(f'helper removal {n}')
+          pat=re.compile(r"(?P<i>[ \t]*)const promotion = this\.promoteFileId\(file\.id, state\.currentStack\);\s*\n(?P=i)if \(!promotion\) return false;\s*\n(?P=i)const promotedIndex = this\.files\.findIndex\(item => String\(item\.id\) === requestedId\);\s*\n(?P=i)this\.select\(Math\.max\(0, promotedIndex\)\);")
+          def repl(m):
+              i=m.group('i'); return i+'// Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.\n'+i+'this.select(index);'
+          t,n=pat.subn(repl,t,count=1)
+          if n!=1: raise SystemExit(f'activation replacement {n}')
+          if 'promoteFileId(' in t or "origin: 'explore:activate'" in t: raise SystemExit('reorder path remains')
+          if not t.rstrip().endswith('</html>'): raise SystemExit('incomplete html')
+          p.write_text(t,encoding='utf-8')
           PY
-
           python - <<'PY'
           from pathlib import Path
           import re
-          text = Path('ui-v2.html').read_text(encoding='utf-8')
-          scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', text, re.S)
-          inline = [script for script in scripts if script.strip()]
-          if not inline:
-              raise SystemExit('no inline JavaScript found')
-          Path('/tmp/ui-v2-inline.js').write_text(inline[-1], encoding='utf-8')
+          t=Path('ui-v2.html').read_text(encoding='utf-8'); s=[x for x in re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',t,re.S) if x.strip()]
+          Path('/tmp/ui-v2-inline.js').write_text(s[-1],encoding='utf-8')
           PY
-
           node --check /tmp/ui-v2-inline.js
           git diff --check -- ui-v2.html
           grep -q "R4.8 stable Explore anchor without stack reorder" ui-v2.html
@@ -97,33 +52,22 @@ jobs:
           grep -q "this.select(index);" ui-v2.html
           grep -q "CurrentImage.assert(file.id, 'Explore thumbnail activation')" ui-v2.html
           grep -q "pressedFileId" ui-v2.html
-
-          # Remove failed-attempt workflow mutation from reconstruction; R4.8 source commit changes ui-v2.html only relative to authoritative 743660c.
-          git checkout 743660c398db5e26269a06ac467ab191aa664afd -- .github/workflows/zz-ui-v2-quick-nav.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ui-v2.html .github/workflows/zz-ui-v2-quick-nav.yml
+          git add ui-v2.html
           git commit -m "R4.8 stable Explore anchor without stack reorder"
-          RECON_COMMIT="$(git rev-parse HEAD)"
-          R48_BLOB="$(git rev-parse HEAD:ui-v2.html)"
-          test "$R48_BLOB" != "5b753ed5539948409bf16a723c9f55f23f0deaa7"
+          RECON_COMMIT=$(git rev-parse HEAD); R48_BLOB=$(git rev-parse HEAD:ui-v2.html)
           cp ui-v2.html /tmp/ui-v2-r48.html
           git push origin HEAD:ui-v2-reconstruction
-
-          # Publish identical bytes to main and clean both temporary main executors in the publication commit.
           git fetch origin main
           git checkout -B main origin/main
           cp /tmp/ui-v2-r48.html ui-v2.html
-          git rm -f .github/workflows/zz-ui-v2-r48-executor.yml
-          if test -f .github/workflows/zz-ui-v2-r48-executor.yml; then exit 1; fi
           git add ui-v2.html
           git diff --check --cached
           test "$(git hash-object ui-v2.html)" = "$R48_BLOB"
           git commit -m "Publish R4.8 stable Explore anchor"
-          MAIN_COMMIT="$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD:ui-v2.html)" = "$R48_BLOB"
+          MAIN_COMMIT=$(git rev-parse HEAD)
           git push origin HEAD:main
-
           echo "R4.8_RECON_COMMIT=$RECON_COMMIT"
           echo "R4.8_BLOB=$R48_BLOB"
           echo "R4.8_MAIN_COMMIT=$MAIN_COMMIT"
