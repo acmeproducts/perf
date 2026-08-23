@@ -7374,6 +7374,7 @@
                 const { source = 'ui', originStack = null, name = null } = options;
                 const sessionGeneration = state.folderSessionGeneration;
                 const folderId = state.currentFolder?.id;
+                const folderCacheBeforeDelete = state.imageFiles.slice();
                 const fileIndex = state.imageFiles.findIndex(f => String(f.id) === String(fileId));
                 let file = null;
                 let stackRemoval = null;
@@ -7392,24 +7393,26 @@
                 const stackBefore = originStack || file?.stack || null;
                 const stackLabel = stackBefore ? (STACK_NAMES[stackBefore] || stackBefore) : null;
                 const fileName = name || file?.name || '';
-                const persistState = async () => {
-                    if (sessionGeneration !== state.folderSessionGeneration || folderId !== state.currentFolder?.id) return;
-                    await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+                const persistFolderCache = async (files) => {
+                    if (!folderId) return;
+                    await state.dbManager.scheduleFolderCacheSave(folderId, files, { priority: 'high' });
                 };
                 const restoreState = async (reason) => {
-                    if (sessionGeneration !== state.folderSessionGeneration || folderId !== state.currentFolder?.id) return false;
                     if (!file) { return false; }
-                    if (fileIndex > -1) {
-                        state.imageFiles.splice(fileIndex, 0, file);
-                    } else {
-                        state.imageFiles.push(file);
+                    const originalFolderIsActive = sessionGeneration === state.folderSessionGeneration && folderId === state.currentFolder?.id;
+                    if (originalFolderIsActive) {
+                        if (fileIndex > -1) {
+                            state.imageFiles.splice(fileIndex, 0, file);
+                        } else {
+                            state.imageFiles.push(file);
+                        }
+                        if (stackRemoval && state.stacks[stackRemoval.name]) {
+                            state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
+                        } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
+                            state.stacks[file.stack].push(file);
+                        }
                     }
-                    if (stackRemoval && state.stacks[stackRemoval.name]) {
-                        state.stacks[stackRemoval.name].splice(stackRemoval.index, 0, file);
-                    } else if (file.stack && state.stacks[file.stack] && !stackRemoval) {
-                        state.stacks[file.stack].push(file);
-                    }
-                    await persistState();
+                    await persistFolderCache(originalFolderIsActive ? state.imageFiles : folderCacheBeforeDelete);
                     state.syncLog?.log({
                         event: 'provider:trash:rollback',
                         level: 'warn',
@@ -7419,7 +7422,7 @@
                     });
                     return true;
                 };
-                await persistState();
+                await persistFolderCache(state.imageFiles);
 
                 const provider = state.provider;
                 const providerName = state.providerType === 'onedrive' ? 'OneDrive' : state.providerType === 'googledrive' ? 'Google Drive' : 'provider';
