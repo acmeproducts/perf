@@ -109,6 +109,11 @@ test.describe('Focus navigation and grid selection sync', () => {
   test('keeps the selected Explore file and its image resource canonical across Focus transitions', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
+    await page.evaluate(() => {
+      (window as any).__retainedExploreCards = (window as any).SpatialGallery.cards.map((card: any) => card.element);
+      (window as any).__retainedExploreImages = (window as any).SpatialGallery.cards.map((card: any) => card.element.querySelector('img'));
+      (window as any).__retainedExploreInstrumentation = { ...(window as any).SharedImageResources.instrumentation };
+    });
 
     await activateExploreFile(page, 'file-y');
     await expect.poll(async () => (await focusSnapshot(page)).currentSrc).toBe(imageUrl('file-y', 'display'));
@@ -135,8 +140,12 @@ test.describe('Focus navigation and grid selection sync', () => {
     await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
     await expect.poll(() => page.evaluate(() => ({
       surface: (window as any).__orbitalAppState.inspection?.surface,
-      selectedFileId: (window as any).SpatialGallery.files[(window as any).SpatialGallery.selectedIndex]?.id
-    }))).toEqual({ surface: 'explore', selectedFileId: 'file-x' });
+      selectedFileId: (window as any).SpatialGallery.files[(window as any).SpatialGallery.selectedIndex]?.id,
+      cardsRetained: (window as any).SpatialGallery.cards.every((card: any, index: number) => card.element === (window as any).__retainedExploreCards[index]),
+      imagesRetained: (window as any).SpatialGallery.cards.every((card: any, index: number) => card.element.querySelector('img') === (window as any).__retainedExploreImages[index]),
+      recreationCount: (window as any).SharedImageResources.instrumentation.elementRecreationsDuringMovement,
+      sourceReplacementCount: (window as any).SharedImageResources.instrumentation.sourceReplacementsDuringMovement
+    }))).toEqual({ surface: 'explore', selectedFileId: 'file-x', cardsRetained: true, imagesRetained: true, recreationCount: 0, sourceReplacementCount: 0 });
 
     await activateExploreFile(page, 'file-x');
     await expect.poll(async () => focusSnapshot(page)).toMatchObject({
@@ -156,8 +165,8 @@ test.describe('Focus navigation and grid selection sync', () => {
     });
     await page.evaluate(() => (window as any).Gestures.prevImage());
     await expect.poll(async () => focusSnapshot(page)).toMatchObject({
-      currentFileId: 'file-z', stackPosition: 0, promotedFileId: 'file-z',
-      imageFileId: 'file-z', bindingFileId: 'file-z', currentSrc: imageUrl('file-z', 'display'), opacity: '1', naturalWidth: 2
+      currentFileId: 'file-x', stackPosition: 0, promotedFileId: 'file-x',
+      imageFileId: 'file-x', bindingFileId: 'file-x', currentSrc: imageUrl('file-x', 'display'), opacity: '1', naturalWidth: 2
     });
   });
 
@@ -207,6 +216,38 @@ test.describe('Focus navigation and grid selection sync', () => {
     expect(reset.currentSrc).not.toContain('file-y');
   });
 
+  test('removes a provider-trashed canonical file from Focus and retained surface populations', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await activateExploreFile(page, 'file-y');
+    await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      state.provider = { deleteFile: async () => true };
+      state.dbManager = { scheduleFolderCacheSave: async () => true };
+    });
+    await page.evaluate(() => (window as any).Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'test' }));
+    await page.evaluate(() => (window as any).Gestures.nextImage());
+    await page.evaluate(() => (window as any).Gestures.prevImage());
+    const result = await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      return {
+        currentFileId: state.currentFileId,
+        stackPosition: state.currentStackPosition,
+        stackFirst: state.stacks.in[0]?.id,
+        imageFiles: state.imageFiles.map((file: any) => file.id),
+        stackFiles: state.stacks.in.map((file: any) => file.id),
+        exploreFiles: (window as any).SpatialGallery.files.map((file: any) => file.id),
+        exploreCards: (window as any).SpatialGallery.cards.map((card: any) => card.fileId),
+        centerFileId: (document.querySelector('#center-image') as HTMLImageElement).dataset.fileId
+      };
+    });
+    expect(result.currentFileId).not.toBe('file-y');
+    expect(result.stackPosition).toBe(0);
+    expect(result.stackFirst).toBe(result.currentFileId);
+    expect([...result.imageFiles, ...result.stackFiles, ...result.exploreFiles, ...result.exploreCards]).not.toContain('file-y');
+    expect(result.centerFileId).toBe(result.currentFileId);
+  });
+
   test('iterates through images with grid selection and counters aligned', async ({ page }) => {
     await page.route('https://alcdn.msauth.net/**', route => {
       return route.fulfill({
@@ -236,7 +277,10 @@ test.describe('Focus navigation and grid selection sync', () => {
       const sample = [
         { id: 'file-alpha', name: 'Alpha', stack: 'in', stackSequence: baseSequence - 10 },
         { id: 'file-bravo', name: 'Bravo', stack: 'in', stackSequence: baseSequence - 20 },
-        { id: 'file-charlie', name: 'Charlie', stack: 'in', stackSequence: baseSequence - 30 }
+        { id: 'file-charlie', name: 'Charlie', stack: 'in', stackSequence: baseSequence - 30 },
+        { id: 'file-delta', name: 'Delta', stack: 'in', stackSequence: baseSequence - 40 },
+        { id: 'file-echo', name: 'Echo', stack: 'in', stackSequence: baseSequence - 50 },
+        { id: 'file-foxtrot', name: 'Foxtrot', stack: 'in', stackSequence: baseSequence - 60 }
       ];
 
       state.imageFiles = sample.map(file => ({
@@ -268,7 +312,7 @@ test.describe('Focus navigation and grid selection sync', () => {
       counter: string;
     }>;
 
-    for (let step = 0; step < 3; step += 1) {
+    for (let step = 0; step < 6; step += 1) {
       const snapshot = await page.evaluate(async () => {
         const Gestures = (window as any).__Gestures;
         const state = (window as any).__state;
@@ -295,7 +339,7 @@ test.describe('Focus navigation and grid selection sync', () => {
       forwardSnapshots.push(snapshot);
     }
 
-    expect(new Set(forwardSnapshots.map(item => item.displayedId)).size).toBeGreaterThan(1);
+    expect(forwardSnapshots.map(item => item.displayedId)).toEqual(['file-bravo', 'file-charlie', 'file-delta', 'file-echo', 'file-foxtrot', 'file-alpha']);
 
     const backwardSnapshots = [] as Array<{
       displayedId: string | null;
@@ -305,7 +349,7 @@ test.describe('Focus navigation and grid selection sync', () => {
       counter: string;
     }>;
 
-    for (let step = 0; step < 3; step += 1) {
+    for (let step = 0; step < 6; step += 1) {
       const snapshot = await page.evaluate(async () => {
         const Gestures = (window as any).__Gestures;
         const state = (window as any).__state;
@@ -332,7 +376,7 @@ test.describe('Focus navigation and grid selection sync', () => {
       backwardSnapshots.push(snapshot);
     }
 
-    expect(new Set(backwardSnapshots.map(item => item.displayedId)).size).toBeGreaterThan(1);
+    expect(backwardSnapshots.map(item => item.displayedId)).toEqual(['file-foxtrot', 'file-echo', 'file-delta', 'file-charlie', 'file-bravo', 'file-alpha']);
 
     const continuity = await page.evaluate(async () => {
       const state = (window as any).__state;
@@ -377,6 +421,14 @@ test.describe('Focus navigation and grid selection sync', () => {
       PhotoTable.open({ stackName: 'in', fileId: state.currentFileId });
       const tableActiveId = PhotoTable.currentFileId;
       const tableFirstId = PhotoTable.photos[0]?.fileId;
+      const tablePhoto = PhotoTable.photos[0];
+      const tableElement = tablePhoto?.element;
+      const tableX = tablePhoto?.x;
+      if (tablePhoto) { tablePhoto.state = 'thrown'; tablePhoto.velocityX = 6; tablePhoto.velocityY = 0; PhotoTable.animate(); }
+      const tablePhysicsMoved = Boolean(tablePhoto && tablePhoto.x > tableX && PhotoTable.frameId);
+      PhotoTable.adjustControl('scale', 10);
+      const tableResizeRetainedElement = tablePhoto?.element === tableElement && tablePhoto?.element.style.width !== '';
+      const tableControlValues = { scale: PhotoTable.thumbnailScale, limit: PhotoTable.imageLimit };
       App.resetViewState({ skipEmptyState: true });
 
       return {
@@ -391,6 +443,9 @@ test.describe('Focus navigation and grid selection sync', () => {
         gridFirstId,
         tableActiveId,
         tableFirstId,
+        tablePhysicsMoved,
+        tableResizeRetainedElement,
+        tableControlValues,
         folderCleared: state.currentFolder.id === null,
         modeCleared: state.inspection.surface === null && (window as any).SpatialGallery.elements.root.hidden
       };
@@ -406,6 +461,10 @@ test.describe('Focus navigation and grid selection sync', () => {
     expect(continuity.gridFirstId).toBe(continuity.requestedId);
     expect(continuity.tableActiveId).toBe(continuity.requestedId);
     expect(continuity.tableFirstId).toBe(continuity.requestedId);
+    expect(continuity.tablePhysicsMoved).toBe(true);
+    expect(continuity.tableResizeRetainedElement).toBe(true);
+    expect(continuity.tableControlValues.scale).toBeGreaterThan(1);
+    expect(continuity.tableControlValues.limit).toBe(24);
     expect(continuity.folderCleared).toBe(true);
     expect(continuity.modeCleared).toBe(true);
   });
