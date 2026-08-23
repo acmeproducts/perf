@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.11-canonical-active-stack-continuity-2026.08.23.1';
+        const APP_BUILD_ID = 'reconstruction-R4.11-canonical-focus-resource-identity-2026.08.23.2';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -2370,7 +2370,7 @@
 
             setImageSrc(img, file, options = {}) {
                 state.currentImageLoadId = file.id;
-                return SharedImageResources.present(img, file, { surface: 'focus', immediateSrc: options.immediateSrc || '' });
+                return SharedImageResources.present(img, file, { surface: 'focus', immediateResource: options.immediateResource || null });
             },
 
             defer(callback, options = {}) {
@@ -2572,7 +2572,7 @@
                 img.dataset.fileId = file.id;
                 img.dataset.sharedResourceKey = key;
                 img.alt = img.alt || file.name || 'Image';
-                this.bindings.set(img, { key, fileId: file.id, surface, movement: false });
+                this.bindings.set(img, { key, fileId: file.id, surface, movement: false, loadedKey: null });
                 const apply = value => {
                     if (img.dataset.sharedResourceKey !== key || !img.isConnected) return;
                     if (img.getAttribute('src') !== value) {
@@ -2590,6 +2590,8 @@
                     if (refreshed?.src) apply(refreshed.src);
                 };
                 img.addEventListener('load', () => {
+                    const binding = this.bindings.get(img);
+                    if (binding?.key === key && img.dataset.sharedResourceKey === key) binding.loadedKey = key;
                     if (this.instrumentation.firstUsefulThumbnailPaintMs == null) this.instrumentation.firstUsefulThumbnailPaintMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
@@ -2600,35 +2602,63 @@
             },
             present(img, file, options = {}) {
                 if (!img || !file?.id) return null;
-                const { immediateSrc = '', surface = 'focus' } = options;
+                const { immediateResource = null, surface = 'focus' } = options;
                 const token = ++this.presentationToken;
+                const sessionGeneration = state.folderSessionGeneration;
                 const fileId = String(file.id);
                 const displayEntry = this.resolve(file, 'display');
                 const thumbEntry = this.resolve(file, 'thumb');
-                const firstFrame = immediateSrc || thumbEntry?.src || displayEntry?.src || '';
-                img.dataset.fileId = fileId;
-                img.dataset.sharedResourceKey = displayEntry?.key || '';
-                img.alt = file.name || 'Image';
-                if (firstFrame && img.getAttribute('src') !== firstFrame) {
-                    img.src = firstFrame;
-                    this.instrumentation.providerRequestCount++;
-                }
-                img.style.opacity = '1';
-                this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
-                let recovered = false;
-                img.onerror = async () => {
-                    if (recovered || token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
-                    recovered = true;
-                    const fresh = await this.refreshFile(fileId);
-                    if (fresh && token === this.presentationToken) this.present(img, fresh, { surface });
-                };
-                this.ensure(file, 'display').then(entry => {
-                    if (!entry?.src || entry.readyState !== 'loaded') return;
-                    if (token !== this.presentationToken || String(state.currentFileId) !== fileId || !img.isConnected) return;
+                const immediateEntry = immediateResource?.key ? this.entries.get(immediateResource.key) : null;
+                const verifiedImmediate = immediateEntry
+                    && String(immediateResource.fileId) === fileId
+                    && String(immediateEntry.fileId) === fileId
+                    && immediateResource.key === immediateEntry.key
+                    && immediateResource.loadedKey === immediateEntry.key
+                    ? immediateEntry : null;
+                const firstEntry = verifiedImmediate || (thumbEntry?.readyState === 'loaded' ? thumbEntry : null) || (displayEntry?.readyState === 'loaded' ? displayEntry : null);
+                const firstFrame = firstEntry?.src || '';
+                const isCurrent = () => token === this.presentationToken
+                    && sessionGeneration === state.folderSessionGeneration
+                    && String(state.currentFileId) === fileId
+                    && img.isConnected;
+                const bind = entry => {
+                    if (!entry || String(entry.fileId) !== fileId || !isCurrent()) return false;
+                    img.style.opacity = '0';
+                    img.dataset.fileId = fileId;
+                    img.dataset.sharedResourceKey = entry.key;
+                    const binding = { key: entry.key, fileId, surface, movement: false, loadedKey: null };
+                    this.bindings.set(img, binding);
+                    img.onload = async () => {
+                        if (!isCurrent() || this.bindings.get(img) !== binding || img.dataset.sharedResourceKey !== entry.key) return;
+                        if (typeof img.decode === 'function') { try { await img.decode(); } catch (_) {} }
+                        if (!isCurrent() || this.bindings.get(img) !== binding) return;
+                        binding.loadedKey = entry.key;
+                        img.style.opacity = '1';
+                    };
                     if (img.getAttribute('src') !== entry.src) {
                         img.src = entry.src;
                         this.instrumentation.providerRequestCount++;
-                    }
+                    } else if (img.complete && img.naturalWidth) img.onload();
+                    return true;
+                };
+                img.style.opacity = '0';
+                img.removeAttribute('src');
+                img.dataset.fileId = fileId;
+                img.dataset.sharedResourceKey = '';
+                img.alt = file.name || 'Image';
+                this.bindings.set(img, { key: '', fileId, surface, movement: false, loadedKey: null });
+                let recovered = false;
+                img.onerror = async () => {
+                    if (recovered || !isCurrent()) return;
+                    recovered = true;
+                    const fresh = await this.refreshFile(fileId);
+                    if (fresh && isCurrent()) this.present(img, fresh, { surface });
+                };
+                if (firstEntry) bind(firstEntry);
+                this.ensure(file, 'display').then(entry => {
+                    if (!entry?.src || entry.readyState !== 'loaded') return;
+                    if (!isCurrent() || String(entry.fileId) !== fileId) return;
+                    bind(entry);
                 });
                 return { token, fileId, firstFrame, displayEntry };
             },
@@ -7541,7 +7571,7 @@
             },
 
             async displayCurrentImage(options = {}) {
-                const { immediateSrc = '' } = options;
+                const { immediateResource = null } = options;
                 const currentStackArray = state.stacks[state.currentStack];
                 if (!currentStackArray || currentStackArray.length === 0) {
                     this.showEmptyState();
@@ -7560,7 +7590,7 @@
                     Utils.elements.emptyState.classList.add('hidden');
                     this.updateImageCounters();
                     this.updateFavoriteButton();
-                    Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
+                    Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateResource });
                     this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
                     if (CanonicalInspection.active()) {
                         state.inspection.fileId = currentFile.id;
@@ -11506,7 +11536,16 @@ this.updateImageCounters();
                 if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
                 const file = this.files[index];
                 const img = card.element.querySelector('img');
-                const immediateSrc = String(img?.dataset.fileId) === requestedId ? (img.currentSrc || img.src || '') : '';
+                const binding = img ? SharedImageResources.bindings.get(img) : null;
+                const immediateResource = binding
+                    && String(card.fileId) === requestedId
+                    && String(card.element.dataset.fileId) === requestedId
+                    && String(img.dataset.fileId) === requestedId
+                    && String(binding.fileId) === requestedId
+                    && binding.key === img.dataset.sharedResourceKey
+                    && binding.loadedKey === binding.key
+                    ? { fileId: requestedId, key: binding.key, loadedKey: binding.loadedKey }
+                    : null;
                 // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
                 this.select(index);
                 if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;
@@ -11515,7 +11554,7 @@ this.updateImageCounters();
                     surface: 'explore',
                     stackName: state.currentStack,
                     fileId: file.id
-                }, { immediateSrc })).then(result => {
+                }, { immediateResource })).then(result => {
                     if (!result) this.focusTransitionFileId = null;
                     return result;
                 }).catch(error => {
@@ -11879,7 +11918,7 @@ this.updateImageCounters();
             },
 
             async enter(fileId, referrer = 'sort', options = {}) {
-                const { restoring = false, immediateSrc = '' } = options;
+                const { restoring = false, immediateResource = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
                 const resolved = CurrentImage.promote(fileId, requestedReferrer.stackName);
                 if (!resolved) {
@@ -11911,7 +11950,7 @@ this.updateImageCounters();
                 this.syncExitControl();
                 ModeNavigation.show('focus');
                 Gestures.updateGestureOverlayMode();
-                await Core.displayCurrentImage({ immediateSrc });
+                await Core.displayCurrentImage({ immediateResource });
                 if (token !== this.transitionToken) return false;
                 Core.updateImageCounters();
                 Core.updateFavoriteButton();

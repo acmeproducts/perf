@@ -80,12 +80,26 @@ async function focusSnapshot(page: import('@playwright/test').Page) {
     const state = (window as any).__orbitalAppState;
     const image = document.querySelector('#center-image') as HTMLImageElement;
     const binding = (window as any).SharedImageResources.bindings.get(image);
+    const selectedCard = (window as any).SpatialGallery.cards.find((card: any) => card.fileId === state.currentFileId);
+    const selectedThumbnail = selectedCard?.element.querySelector('img') as HTMLImageElement | undefined;
+    const thumbnailBinding = selectedThumbnail && (window as any).SharedImageResources.bindings.get(selectedThumbnail);
     return {
       currentFileId: state.currentFileId,
+      stackPosition: state.currentStackPosition,
       promotedFileId: state.stacks[state.currentStack]?.[0]?.id,
+      inspectionFileId: state.inspection?.fileId,
       imageFileId: image.dataset.fileId,
       bindingFileId: binding?.fileId,
+      bindingKey: binding?.key,
+      loadedKey: binding?.loadedKey,
       currentSrc: image.currentSrc || image.src,
+      opacity: image.style.opacity,
+      naturalWidth: image.naturalWidth,
+      selectedCardFileId: selectedCard?.fileId,
+      selectedCardDatasetFileId: selectedCard?.element.dataset.fileId,
+      thumbnailFileId: selectedThumbnail?.dataset.fileId,
+      thumbnailBindingFileId: thumbnailBinding?.fileId,
+      thumbnailLoadedKey: thumbnailBinding?.loadedKey,
       surface: state.inspection?.surface
     };
   });
@@ -103,10 +117,18 @@ test.describe('Focus navigation and grid selection sync', () => {
     await activateExploreFile(page, 'file-x');
     await expect.poll(async () => focusSnapshot(page)).toMatchObject({
       currentFileId: 'file-x',
+      stackPosition: 0,
       promotedFileId: 'file-x',
+      inspectionFileId: 'file-x',
       imageFileId: 'file-x',
       bindingFileId: 'file-x',
       currentSrc: imageUrl('file-x', 'display'),
+      opacity: '1',
+      naturalWidth: 2,
+      selectedCardFileId: 'file-x',
+      selectedCardDatasetFileId: 'file-x',
+      thumbnailFileId: 'file-x',
+      thumbnailBindingFileId: 'file-x',
       surface: 'focus'
     });
 
@@ -122,7 +144,20 @@ test.describe('Focus navigation and grid selection sync', () => {
       imageFileId: 'file-x',
       bindingFileId: 'file-x',
       currentSrc: imageUrl('file-x', 'display'),
+      opacity: '1',
+      naturalWidth: 2,
       surface: 'focus'
+    });
+
+    await page.evaluate(() => (window as any).Gestures.nextImage());
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-y', stackPosition: 0, promotedFileId: 'file-y',
+      imageFileId: 'file-y', bindingFileId: 'file-y', currentSrc: imageUrl('file-y', 'display'), opacity: '1', naturalWidth: 2
+    });
+    await page.evaluate(() => (window as any).Gestures.prevImage());
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-z', stackPosition: 0, promotedFileId: 'file-z',
+      imageFileId: 'file-z', bindingFileId: 'file-z', currentSrc: imageUrl('file-z', 'display'), opacity: '1', naturalWidth: 2
     });
   });
 
@@ -138,13 +173,20 @@ test.describe('Focus navigation and grid selection sync', () => {
     const loading = await focusSnapshot(page);
     expect(loading).toMatchObject({
       currentFileId: 'file-x',
+      stackPosition: 0,
       promotedFileId: 'file-x',
+      inspectionFileId: 'file-x',
       imageFileId: 'file-x',
       bindingFileId: 'file-x',
+      selectedCardFileId: 'file-x',
+      selectedCardDatasetFileId: 'file-x',
+      thumbnailFileId: 'file-x',
+      thumbnailBindingFileId: 'file-x',
       surface: 'focus'
     });
-    expect(loading.currentSrc).toBe(imageUrl('file-x', 'thumb'));
+    expect([imageUrl('file-x', 'thumb'), '']).toContain(loading.currentSrc);
     expect(loading.currentSrc).not.toContain('file-y');
+    expect(loading.opacity === '0' || loading.loadedKey === loading.bindingKey).toBe(true);
 
     await expect.poll(async () => (await focusSnapshot(page)).currentSrc).toBe(imageUrl('file-x', 'display'));
     await page.waitForTimeout(600);
@@ -152,8 +194,17 @@ test.describe('Focus navigation and grid selection sync', () => {
       currentFileId: 'file-x',
       imageFileId: 'file-x',
       bindingFileId: 'file-x',
-      currentSrc: imageUrl('file-x', 'display')
+      currentSrc: imageUrl('file-x', 'display'),
+      opacity: '1',
+      naturalWidth: 2
     });
+
+    await page.evaluate(() => (window as any).App.resetViewState({ skipEmptyState: true }));
+    await page.waitForTimeout(600);
+    const reset = await focusSnapshot(page);
+    expect(reset.surface).toBeNull();
+    expect(reset.currentSrc).toBe('');
+    expect(reset.currentSrc).not.toContain('file-y');
   });
 
   test('iterates through images with grid selection and counters aligned', async ({ page }) => {
