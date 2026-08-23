@@ -7,7 +7,155 @@ const __dirname = path.dirname(__filename);
 const uiPath = path.resolve(__dirname, '../ui-v2.html');
 const uiUrl = `file://${uiPath}`;
 
+const imageUrl = (fileId: string, rendition: 'thumb' | 'display') =>
+  `https://focus-navigation.test/${fileId}-${rendition}.svg`;
+
+const imageSvg = (color: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="${color}"/></svg>`;
+
+async function installDeterministicImages(page: import('@playwright/test').Page, delayedX = false) {
+  const colors: Record<string, string> = {
+    'file-x-thumb': '#ffaaaa',
+    'file-x-display': '#ff0000',
+    'file-y-thumb': '#aaffaa',
+    'file-y-display': '#00ff00',
+    'file-z-thumb': '#aaaaff',
+    'file-z-display': '#0000ff'
+  };
+
+  await page.route('https://focus-navigation.test/**', async route => {
+    const resource = path.basename(new URL(route.request().url()).pathname, '.svg');
+    if (delayedX && resource === 'file-x-display') await new Promise(resolve => setTimeout(resolve, 500));
+    await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: imageSvg(colors[resource]) });
+  });
+}
+
+async function prepareExplore(page: import('@playwright/test').Page) {
+  await page.goto(uiUrl);
+  await page.waitForFunction(() => typeof window !== 'undefined' && !!(window as any).__orbitalAppState);
+  await page.evaluate(({ resources }) => {
+    const state = (window as any).__orbitalAppState;
+    const Core = (window as any).Core;
+    const files = ['file-x', 'file-y', 'file-z'].map((id, index) => ({
+      id,
+      name: id.toUpperCase(),
+      stack: 'in',
+      stackSequence: 100 - index,
+      metadataStatus: 'loaded',
+      thumbnails: {
+        medium: { url: resources[id].thumb },
+        large: { url: resources[id].display }
+      },
+      downloadUrl: resources[id].display
+    }));
+
+    state.imageFiles = files;
+    state.currentFolder = { id: 'focus-resource-test', name: 'Focus resource test' };
+    state.providerType = 'test-provider';
+    state.currentStack = 'in';
+    state.currentStackPosition = 0;
+    state.stacks = { in: [], out: [], priority: [], trash: [] };
+    (window as any).SharedImageResources.clear();
+    Core.initializeStacks();
+    (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'file-y' });
+  }, {
+    resources: Object.fromEntries(['file-x', 'file-y', 'file-z'].map(id => [id, {
+      thumb: imageUrl(id, 'thumb'),
+      display: imageUrl(id, 'display')
+    }]))
+  });
+  await page.waitForSelector('#spatial-gallery:not([hidden]) .spatial-gallery__card');
+}
+
+async function activateExploreFile(page: import('@playwright/test').Page, fileId: string) {
+  return page.evaluate(async id => {
+    const gallery = (window as any).SpatialGallery;
+    const card = gallery.cards.find((candidate: any) => candidate.fileId === id);
+    return gallery.activateFileId(id, card.element);
+  }, fileId);
+}
+
+async function focusSnapshot(page: import('@playwright/test').Page) {
+  return page.evaluate(() => {
+    const state = (window as any).__orbitalAppState;
+    const image = document.querySelector('#center-image') as HTMLImageElement;
+    const binding = (window as any).SharedImageResources.bindings.get(image);
+    return {
+      currentFileId: state.currentFileId,
+      promotedFileId: state.stacks[state.currentStack]?.[0]?.id,
+      imageFileId: image.dataset.fileId,
+      bindingFileId: binding?.fileId,
+      currentSrc: image.currentSrc || image.src,
+      surface: state.inspection?.surface
+    };
+  });
+}
+
 test.describe('Focus navigation and grid selection sync', () => {
+  test('keeps the selected Explore file and its image resource canonical across Focus transitions', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    await activateExploreFile(page, 'file-y');
+    await expect.poll(async () => (await focusSnapshot(page)).currentSrc).toBe(imageUrl('file-y', 'display'));
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+
+    await activateExploreFile(page, 'file-x');
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-x',
+      promotedFileId: 'file-x',
+      imageFileId: 'file-x',
+      bindingFileId: 'file-x',
+      currentSrc: imageUrl('file-x', 'display'),
+      surface: 'focus'
+    });
+
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+    await expect.poll(() => page.evaluate(() => ({
+      surface: (window as any).__orbitalAppState.inspection?.surface,
+      selectedFileId: (window as any).SpatialGallery.files[(window as any).SpatialGallery.selectedIndex]?.id
+    }))).toEqual({ surface: 'explore', selectedFileId: 'file-x' });
+
+    await activateExploreFile(page, 'file-x');
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-x',
+      imageFileId: 'file-x',
+      bindingFileId: 'file-x',
+      currentSrc: imageUrl('file-x', 'display'),
+      surface: 'focus'
+    });
+  });
+
+  test('does not expose Y as X while X display loading or allow a stale callback to replace X', async ({ page }) => {
+    await installDeterministicImages(page, true);
+    await prepareExplore(page);
+
+    await activateExploreFile(page, 'file-y');
+    await expect.poll(async () => (await focusSnapshot(page)).currentSrc).toBe(imageUrl('file-y', 'display'));
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+
+    await activateExploreFile(page, 'file-x');
+    const loading = await focusSnapshot(page);
+    expect(loading).toMatchObject({
+      currentFileId: 'file-x',
+      promotedFileId: 'file-x',
+      imageFileId: 'file-x',
+      bindingFileId: 'file-x',
+      surface: 'focus'
+    });
+    expect(loading.currentSrc).toBe(imageUrl('file-x', 'thumb'));
+    expect(loading.currentSrc).not.toContain('file-y');
+
+    await expect.poll(async () => (await focusSnapshot(page)).currentSrc).toBe(imageUrl('file-x', 'display'));
+    await page.waitForTimeout(600);
+    expect(await focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-x',
+      imageFileId: 'file-x',
+      bindingFileId: 'file-x',
+      currentSrc: imageUrl('file-x', 'display')
+    });
+  });
+
   test('iterates through images with grid selection and counters aligned', async ({ page }) => {
     await page.route('https://alcdn.msauth.net/**', route => {
       return route.fulfill({
