@@ -248,6 +248,47 @@ test.describe('Focus navigation and grid selection sync', () => {
     expect(result.centerFileId).toBe(result.currentFileId);
   });
 
+  test('restores the original folder cache when provider trash fails after navigation', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const cacheWrites = await page.evaluate(async () => {
+      const state = (window as any).__orbitalAppState;
+      const writes: Array<{ folderId: string; fileIds: string[] }> = [];
+      let rejectDelete: (error: Error) => void = () => {};
+      state.provider = {
+        deleteFile: () => new Promise((_resolve: unknown, reject: (error: Error) => void) => {
+          rejectDelete = reject;
+        })
+      };
+      state.dbManager = {
+        scheduleFolderCacheSave: async (folderId: string, files: Array<{ id: string }>) => {
+          writes.push({ folderId, fileIds: files.map(file => file.id) });
+        }
+      };
+      const deletion = (window as any).App.deleteFile('file-y', { source: 'test' });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      state.folderSessionGeneration += 1;
+      state.currentFolder.id = 'another-folder';
+      state.imageFiles = [{ id: 'other-file', name: 'Other', stack: 'in' }];
+      state.stacks = { in: state.imageFiles, out: [], select: [], trash: [] };
+      rejectDelete(new Error('provider unavailable'));
+      await deletion;
+      return {
+        writes,
+        activeFolderId: state.currentFolder.id,
+        activeFileIds: state.imageFiles.map((file: { id: string }) => file.id)
+      };
+    });
+
+    expect(cacheWrites.writes).toHaveLength(2);
+    expect(cacheWrites.writes[0]).toMatchObject({ folderId: 'focus-resource-test' });
+    expect(cacheWrites.writes[0].fileIds).not.toContain('file-y');
+    expect(cacheWrites.writes[1]).toMatchObject({ folderId: 'focus-resource-test' });
+    expect(cacheWrites.writes[1].fileIds).toContain('file-y');
+    expect(cacheWrites.activeFolderId).toBe('another-folder');
+    expect(cacheWrites.activeFileIds).toEqual(['other-file']);
+  });
+
   test('iterates through images with grid selection and counters aligned', async ({ page }) => {
     await page.route('https://alcdn.msauth.net/**', route => {
       return route.fulfill({
