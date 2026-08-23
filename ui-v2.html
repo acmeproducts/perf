@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.8 stable Explore anchor without stack reorder -->
+<!-- Orbital8 UI governed reconstruction · R4.10 exact Explore continuity and iPhone usability -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1105,6 +1105,21 @@
             .spatial-gallery__card { transition: none; }
         }
         #details-modal { z-index: 13000; }
+        @media (max-width: 640px) {
+            .modal-content, .details-modal-content {
+                inset: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+                width: auto; height: auto; min-width: 0; min-height: 0; max-height: none; margin: 0; resize: none;
+            }
+            .details-header { min-height: 52px; padding: 10px 12px; }
+            #details-close { flex: 0 0 44px; width: 44px; height: 44px; padding: 10px; }
+            .grid-row-2, .grid-row-3, .grid-row-4 { padding-left: 12px; padding-right: 12px; }
+            .modal-title, .selection-count, #grid-size-value, #omni-search, .bulk-actions .btn,
+            .details-title, .tab-button, .details-content, .metadata-table,
+            .table-tag-manager__panel, .table-tag-manager input, .table-tag-manager button,
+            .photo-table__target, .photo-table__control { font-size: 16px; }
+            .metadata-table .key-cell { min-width: 96px; }
+            .table-tag-manager__panel { line-height: 1.4; }
+        }
 
     </style>
 </head>
@@ -1539,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.7-exact-explorer-anchor-table-counts-2026.08.21.1';
+        const APP_BUILD_ID = 'reconstruction-R4.10-exact-explore-continuity-iphone-usability-2026.08.23.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -11526,15 +11541,30 @@ this.updateImageCounters();
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 this.elements.scene.classList.remove('dragging');
-                if (pressedFileId && !moved && Math.hypot(dx, dy) <= 8) this.handleCardTap(pressedFileId, pressedCard);
+                if (!moved && Math.hypot(dx, dy) <= 8) {
+                    const hit = this.cardAtPoint(event.clientX, event.clientY) || (pressedFileId ? this.cards.find(card => String(card.fileId) === String(pressedFileId)) : null);
+                    if (hit) this.handleCardTap(hit.fileId, hit.element);
+                }
                 this.requestFrame();
+            },
+
+            cardAtPoint(x, y) {
+                let best = null, bestDistance = Infinity;
+                this.cards.forEach(card => {
+                    const rect = card.element.getBoundingClientRect();
+                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
+                    const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
+                    if (distance < bestDistance) { best = card; bestDistance = distance; }
+                });
+                return best;
             },
 
             onWheel(event) {
                 event.preventDefault();
                 const nextScale = this.sphereScale * Math.exp(-event.deltaY * 0.001);
                 if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = nextScale;
-                this.rebalanceLayout('wheel:extent');
+                this.updateControlLabels();
+                this.persistSettings();
                 this.requestFrame();
             },
 
@@ -11557,7 +11587,6 @@ this.updateImageCounters();
                 const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 const nextScale = this.pinchStartScale * (distance / this.pinchStartDistance);
                 if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = nextScale;
-                this.rebalanceLayout('pinch:extent');
                 this.requestFrame();
             },
 
@@ -11565,6 +11594,7 @@ this.updateImageCounters();
                 if (event.touches?.length >= 2) return;
                 this.pinchStartDistance = 0;
                 this.pinchStartScale = this.sphereScale;
+                this.persistSettings();
             },
 
             updateImageLimit() {
@@ -11573,7 +11603,7 @@ this.updateImageCounters();
 
             automaticCardScale() {
                 const population = Math.max(1, this.files.length || Math.min(this.imageLimit, (state.stacks[state.currentStack] || []).length) || 1);
-                return this.layoutBias * this.sphereScale * Math.sqrt(30 / population);
+                return this.layoutBias * Math.sqrt(30 / population);
             },
 
             rebalanceLayout(source = 'layout', options = {}) {
