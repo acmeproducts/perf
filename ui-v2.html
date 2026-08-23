@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.10 exact Explore continuity and iPhone usability -->
+<!-- Orbital8 UI governed reconstruction · R4.11 canonical active-stack continuity -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.10-exact-explore-continuity-iphone-usability-2026.08.23.1';
+        const APP_BUILD_ID = 'reconstruction-R4.11-canonical-active-stack-continuity-2026.08.23.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -1853,6 +1853,8 @@
             folderMoveMode: { active: false, files: [] },
             isReturningToFolders: false,
             navigationToken: null,
+            folderSessionGeneration: 0,
+            restoreViewContextOnLoad: true,
             activeRequests: new AbortController(),
             sessionVisitedFolders: new Set(),
             isImageTransitioning: false,
@@ -1897,6 +1899,13 @@
                 state.currentFileId = resolved.file.id;
                 state.focusTraversalIndex = resolved.index;
                 return resolved;
+            },
+            promote(fileId, stackName = state.currentStack) {
+                const files = this.stack(stackName);
+                const index = files.findIndex(file => String(file.id) === String(fileId));
+                if (index < 0) return null;
+                if (index > 0) state.stacks[stackName] = [files[index], ...files.slice(0, index), ...files.slice(index + 1)];
+                return this.set(fileId, stackName, { allowCrossStack: false });
             },
             syncFromIndex() {
                 const files = this.stack();
@@ -6285,6 +6294,7 @@
             },
             async initializeWithProvider(providerType, folderId, folderName, providerInstance) {
                 try {
+                    const folderSessionGeneration = state.folderSessionGeneration;
                     state.providerType = providerType;
                     state.provider = providerInstance;
                     state.currentFolder.id = folderId;
@@ -6294,7 +6304,7 @@
                     const navigationToken = Symbol('navigation');
                     state.navigationToken = navigationToken;
                     const loaded = await this.loadImages({ navigationToken });
-                    if (loaded) {
+                    if (loaded && folderSessionGeneration === state.folderSessionGeneration) {
                         this.switchToCommonUI();
                         if (state.syncManager) {
                             state.syncManager.setProviderContext({ provider: state.provider, providerType: state.providerType });
@@ -7111,6 +7121,8 @@
                 if (state.isReturningToFolders) return;
 
                 state.isReturningToFolders = true;
+                state.folderSessionGeneration++;
+                state.restoreViewContextOnLoad = false;
                 state.navigationToken = Symbol('navigation');
                 const { backButton, backButtonSpinner, emptyState } = Utils.elements;
 
@@ -7132,6 +7144,7 @@
                     state.activeRequests?.abort();
                     // Abort pending navigation/network calls; manifest persistence deliberately avoids this controller to finish saving.
                     state.activeRequests = new AbortController();
+                    this.clearFolderViewContext();
                     this.resetViewState({ skipEmptyState: true });
                     await Folders.load();
                 } catch (error) {
@@ -7149,11 +7162,28 @@
             },
             resetViewState(options = {}) {
                 const { skipEmptyState = false } = options;
+                CanonicalInspection.transitionToken++;
+                CanonicalInspection.clearReferrer();
+                SpatialGallery.close({ restoreFocus: false, force: true });
+                PhotoTable.close({ restoreFocus: false, force: true });
+                Grid.clearDragState();
+                Grid.destroyLazyLoad();
+                Utils.hideModal('grid-modal');
+                Utils.hideModal('details-modal');
+                ModeNavigation.hide();
+                state.inspection = { surface: null, origin: null, fileId: null };
+                state.isFocusMode = false;
+                Utils.elements.appContainer?.classList.remove('focus-mode');
+                document.body.classList.remove('origin-focus', 'surface-grid-open');
+                document.body.style.overflow = '';
+                state.grid = { ...state.grid, stack: null, selected: [], filtered: [], isDirty: false, origin: null, filterTag: null,
+                    entryFileId: null, orderChanged: false, closing: false, dragSession: createDefaultGridDragSession(), isDragging: false };
                 state.imageFiles = [];
                 state.stacks = { in: [], out: [], priority: [], trash: [] };
                 state.currentStack = 'in';
                 state.currentStackPosition = 0;
                 state.currentFileId = null;
+                state.currentFolder = { id: null, name: '' };
                 Core.updateStackCounts();
 
                 const { centerImage, emptyState, detailsButton } = Utils.elements;
@@ -7178,6 +7208,10 @@
                 if (detailsButton) {
                     detailsButton.style.display = 'none';
                 }
+            },
+            clearFolderViewContext() {
+                state.lastViewContext = null;
+                try { localStorage.removeItem(VIEW_CONTEXT_STORAGE_KEY); } catch (_) {}
             },
             async updateUserMetadata(fileId, updates, options = {}) {
                 const {
@@ -7478,7 +7512,14 @@
                 if (current) this.displayCurrentImage();
                 this.updateActiveProxTab();
                 this.updateStackCounts();
-                Utils.defer(() => App.restoreViewContext({ force: true }), { priority: 'high', timeout: 24 });
+                const generation = state.folderSessionGeneration;
+                const folderId = state.currentFolder?.id;
+                if (state.restoreViewContextOnLoad) {
+                    Utils.defer(() => {
+                        if (generation !== state.folderSessionGeneration || folderId !== state.currentFolder?.id) return;
+                        App.restoreViewContext({ force: true });
+                    }, { priority: 'high', timeout: 24 });
+                }
             },
 
             async displayTopImageFromStack(stackName) {
@@ -7771,10 +7812,7 @@ this.updateImageCounters();
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
                 const sourceFiles = Array.isArray(filesOverride) ? [...filesOverride] : [...(state.stacks[stack] || [])];
-                const preferredIndex = origin?.fileId == null ? -1 : sourceFiles.findIndex(file => String(file.id) === String(origin.fileId));
-                const orderedFiles = preferredIndex > 0
-                    ? [sourceFiles[preferredIndex], ...sourceFiles.slice(0, preferredIndex), ...sourceFiles.slice(preferredIndex + 1)]
-                    : sourceFiles;
+                const orderedFiles = sourceFiles;
                 state.grid.entryFileId = orderedFiles[0]?.id || null;
                 state.grid.selected = [];
                 state.grid.filtered = Array.isArray(filesOverride) ? [...orderedFiles] : [];
@@ -9838,8 +9876,11 @@ this.updateImageCounters();
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                const currentId = CurrentImage.current()?.id;
+                const currentIndex = Math.max(0, stack.findIndex(file => String(file.id) === String(currentId)));
+                const nextId = stack[(currentIndex + 1) % stack.length].id;
+                if (state.isFocusMode) CurrentImage.promote(nextId, state.currentStack);
+                else CurrentImage.set(nextId, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -9847,8 +9888,11 @@ this.updateImageCounters();
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                const currentId = CurrentImage.current()?.id;
+                const currentIndex = Math.max(0, stack.findIndex(file => String(file.id) === String(currentId)));
+                const previousId = stack[(currentIndex - 1 + stack.length) % stack.length].id;
+                if (state.isFocusMode) CurrentImage.promote(previousId, state.currentStack);
+                else CurrentImage.set(previousId, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -10940,8 +10984,7 @@ this.updateImageCounters();
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, stackName, { allowCrossStack: false });
                 const eligible = this.workingFiles(stackName);
-                const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
-                const ordered = eligible.slice(start).concat(eligible.slice(0, start));
+                const ordered = eligible;
                 const limit = this.displayLimit(ordered.length);
                 this.deck = ordered.slice(limit).map(file => file.id);
                 this.elements.root.hidden = false;
@@ -11534,27 +11577,24 @@ this.updateImageCounters();
             onPointerUp(event) {
                 if (event.pointerId !== this.pointerId) return;
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
-                const pressedCard = this.pressedCard;
-                const pressedFileId = this.pressedFileId;
                 const moved = this.maxPointerDistance > 3 || this.pressedCard?.dataset.moved === 'true';
                 this.dragging = false; this.pointerId = null;
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 this.elements.scene.classList.remove('dragging');
                 if (!moved && Math.hypot(dx, dy) <= 8) {
-                    const hit = this.cardAtPoint(event.clientX, event.clientY) || (pressedFileId ? this.cards.find(card => String(card.fileId) === String(pressedFileId)) : null);
+                    const hit = this.cardAtPoint(event.clientX, event.clientY);
                     if (hit) this.handleCardTap(hit.fileId, hit.element);
                 }
                 this.requestFrame();
             },
 
             cardAtPoint(x, y) {
-                let best = null, bestDistance = Infinity;
+                let best = null;
                 this.cards.forEach(card => {
                     const rect = card.element.getBoundingClientRect();
                     if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
-                    const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
-                    if (distance < bestDistance) { best = card; bestDistance = distance; }
+                    if (!best || (card.renderDepth ?? -Infinity) > (best.renderDepth ?? -Infinity)) best = card;
                 });
                 return best;
             },
@@ -11767,7 +11807,8 @@ this.updateImageCounters();
                     const y = y2 * sphereRadius * perspective;
                     card.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
-                    card.element.style.opacity = String(Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)));
+                    card.renderDepth = z2;
+                    card.element.style.opacity = '1';
                     card.element.style.zIndex = String(Math.round(depth * 1000));
                     const centerDistance = Math.hypot(x, y);
                     if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
@@ -11840,7 +11881,7 @@ this.updateImageCounters();
             async enter(fileId, referrer = 'sort', options = {}) {
                 const { restoring = false, immediateSrc = '' } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
-                const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
+                const resolved = CurrentImage.promote(fileId, requestedReferrer.stackName);
                 if (!resolved) {
                     Utils.showToast('That image is no longer available in this stack.', 'info');
                     return false;

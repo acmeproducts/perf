@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const uiPath = path.resolve(__dirname, '../ui.html');
+const uiPath = path.resolve(__dirname, '../ui-v2.html');
 const uiUrl = `file://${uiPath}`;
 
 test.describe('Focus navigation and grid selection sync', () => {
@@ -90,12 +90,13 @@ test.describe('Focus navigation and grid selection sync', () => {
       });
 
       expect(snapshot.displayedId).not.toBeNull();
+      expect(snapshot.displayedIndex).toBe(0);
       expect(snapshot.selectedIndex).toBe(snapshot.displayedIndex);
       expect(snapshot.counter).toContain(`${snapshot.traversalIndex + 1}`);
       forwardSnapshots.push(snapshot);
     }
 
-    expect(new Set(forwardSnapshots.map(item => item.displayedId))).toHaveSize(3);
+    expect(new Set(forwardSnapshots.map(item => item.displayedId)).size).toBeGreaterThan(1);
 
     const backwardSnapshots = [] as Array<{
       displayedId: string | null;
@@ -126,11 +127,87 @@ test.describe('Focus navigation and grid selection sync', () => {
       });
 
       expect(snapshot.displayedId).not.toBeNull();
+      expect(snapshot.displayedIndex).toBe(0);
       expect(snapshot.selectedIndex).toBe(snapshot.displayedIndex);
       expect(snapshot.counter).toContain(`${snapshot.traversalIndex + 1}`);
       backwardSnapshots.push(snapshot);
     }
 
-    expect(new Set(backwardSnapshots.map(item => item.displayedId))).toHaveSize(3);
+    expect(new Set(backwardSnapshots.map(item => item.displayedId)).size).toBeGreaterThan(1);
+
+    const continuity = await page.evaluate(async () => {
+      const state = (window as any).__state;
+      const Grid = (window as any).__Grid;
+      const Utils = (window as any).__Utils;
+      const SpatialGallery = (window as any).SpatialGallery;
+      const PhotoTable = (window as any).PhotoTable;
+      const CanonicalInspection = (window as any).CanonicalInspection;
+      const App = (window as any).App;
+
+      Utils.hideModal('grid-modal');
+      Grid.resetAfterClose();
+      state.isFocusMode = false;
+      const beforeRotation = state.stacks.in.map((file: any) => file.id);
+      SpatialGallery.open({ stackName: 'in', fileId: beforeRotation[0] });
+      SpatialGallery.render(performance.now());
+      const fullOpacity = SpatialGallery.cards.every((card: any) => card.element.style.opacity === '1');
+      SpatialGallery.rotationX += 1;
+      SpatialGallery.render(performance.now());
+      const rotationPreservedOrder = JSON.stringify(beforeRotation) === JSON.stringify(state.stacks.in.map((file: any) => file.id));
+
+      const [back, front] = SpatialGallery.cards;
+      const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100, x: 10, y: 10, toJSON() {} };
+      back.element.getBoundingClientRect = () => overlap;
+      front.element.getBoundingClientRect = () => overlap;
+      back.renderDepth = -0.8;
+      front.renderDepth = 0.8;
+      const topmostHitId = SpatialGallery.cardAtPoint(50, 50)?.fileId;
+      const requestedId = front.fileId;
+      await SpatialGallery.activateFileId(requestedId, front.element);
+      const focusId = state.currentFileId;
+      const promotedId = state.stacks.in[0]?.id;
+      CanonicalInspection.exitToReferrer({ persist: false });
+      const highlightedId = SpatialGallery.files[SpatialGallery.selectedIndex]?.id;
+      await SpatialGallery.activateFileId(highlightedId, SpatialGallery.cards.find((card: any) => card.fileId === highlightedId)?.element);
+      const reopenedId = state.currentFileId;
+      CanonicalInspection.exitToReferrer({ persist: false });
+      Grid.open('in', { origin: { surface: 'explore', stackName: 'in', fileId: state.currentFileId } });
+      const gridFirstId = state.grid.lazyLoadState.allFiles[0]?.id;
+      Utils.hideModal('grid-modal');
+      Grid.resetAfterClose();
+      PhotoTable.open({ stackName: 'in', fileId: state.currentFileId });
+      const tableActiveId = PhotoTable.currentFileId;
+      const tableFirstId = PhotoTable.photos[0]?.fileId;
+      App.resetViewState({ skipEmptyState: true });
+
+      return {
+        fullOpacity,
+        rotationPreservedOrder,
+        topmostHitId,
+        requestedId,
+        focusId,
+        promotedId,
+        highlightedId,
+        reopenedId,
+        gridFirstId,
+        tableActiveId,
+        tableFirstId,
+        folderCleared: state.currentFolder.id === null,
+        modeCleared: state.inspection.surface === null && (window as any).SpatialGallery.elements.root.hidden
+      };
+    });
+
+    expect(continuity.fullOpacity).toBe(true);
+    expect(continuity.rotationPreservedOrder).toBe(true);
+    expect(continuity.topmostHitId).toBe(continuity.requestedId);
+    expect(continuity.focusId).toBe(continuity.requestedId);
+    expect(continuity.promotedId).toBe(continuity.requestedId);
+    expect(continuity.highlightedId).toBe(continuity.requestedId);
+    expect(continuity.reopenedId).toBe(continuity.requestedId);
+    expect(continuity.gridFirstId).toBe(continuity.requestedId);
+    expect(continuity.tableActiveId).toBe(continuity.requestedId);
+    expect(continuity.tableFirstId).toBe(continuity.requestedId);
+    expect(continuity.folderCleared).toBe(true);
+    expect(continuity.modeCleared).toBe(true);
   });
 });
