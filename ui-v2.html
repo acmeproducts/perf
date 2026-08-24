@@ -11679,7 +11679,9 @@ this.updateImageCounters();
                 card.dataset.fileId = file.id;
                 const img = document.createElement('img');
                 img.alt = file.name || '';
-                img.loading = index < 18 ? 'eager' : 'lazy';
+                // Explore is a one-time population cost. Lazy images can remain
+                // unpainted behind the loader even after their preload settles.
+                img.loading = 'eager';
                 img.decoding = 'async';
                 img.draggable = false;
                 card.appendChild(img);
@@ -11713,11 +11715,19 @@ this.updateImageCounters();
 
             async revealWhenCardsReady(generation, sessionGeneration) {
                 let settled = 0;
-                const total = this.files.length;
-                await Promise.all(this.files.map(file => SharedImageResources.ensure(file, 'thumb', { pin: true }).then(() => {
+                const cards = [...this.cards];
+                const total = cards.length;
+                await Promise.all(cards.map(async card => {
+                    const file = this.files.find(candidate => String(candidate.id) === String(card.fileId));
+                    if (file) await SharedImageResources.ensure(file, 'thumb', { pin: true });
+                    const img = card.element.querySelector('img');
+                    if (img && (!img.complete || !img.currentSrc)) await new Promise(resolve => {
+                        img.addEventListener('load', resolve, { once: true });
+                        img.addEventListener('error', resolve, { once: true });
+                    });
                     settled++;
                     if (generation === this.loadGeneration && this.elements.loadingProgress) this.elements.loadingProgress.textContent = `Painting thumbnails ${settled} / ${total}`;
-                })));
+                }));
                 if (generation !== this.loadGeneration || sessionGeneration !== state.folderSessionGeneration || this.elements.root.hidden) return;
                 this.rememberGeometry();
                 this.elements.loading.hidden = true;
@@ -11742,10 +11752,9 @@ this.updateImageCounters();
             reconcilePopulation(nextFiles) {
                 if (this.dragging) SharedImageResources.instrumentation.elementRecreationsDuringMovement += 1;
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
-                const renderedCount = Math.min(nextFiles.length, Math.max(this.cards.length, Math.min(this.pageSize, nextFiles.length)));
                 const nextCards = [];
                 this.files = nextFiles;
-                for (let index = 0; index < renderedCount; index++) {
+                for (let index = 0; index < nextFiles.length; index++) {
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
                     const card = retained || this.createCard(file, index);
@@ -11759,7 +11768,10 @@ this.updateImageCounters();
                 this.cards = nextCards;
                 this.updateVectors();
                 this.requestFrame();
-                this.scheduleNextPage();
+                if (!this.elements.loading.hidden) {
+                    const generation = ++this.loadGeneration;
+                    this.revealWhenCardsReady(generation, this.sessionGeneration);
+                }
             },
 
             removeFile(fileId) {
@@ -11938,10 +11950,18 @@ this.updateImageCounters();
 
             cardAtPoint(x, y) {
                 let best = null;
+                let bestDistance = Infinity;
                 this.cards.forEach(card => {
                     const rect = card.element.getBoundingClientRect();
                     if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
-                    if (!best || (card.renderDepth ?? -Infinity) > (best.renderDepth ?? -Infinity)) best = card;
+                    const halfWidth = Math.max(1, rect.width / 2);
+                    const halfHeight = Math.max(1, rect.height / 2);
+                    const distance = Math.hypot((x - rect.left - halfWidth) / halfWidth, (y - rect.top - halfHeight) / halfHeight);
+                    const sameVisualTarget = Math.abs(distance - bestDistance) < 0.08;
+                    if (!best || distance < bestDistance - 0.08 || (sameVisualTarget && (card.renderDepth ?? -Infinity) > (best.renderDepth ?? -Infinity))) {
+                        best = card;
+                        bestDistance = distance;
+                    }
                 });
                 return best;
             },
