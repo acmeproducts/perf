@@ -402,6 +402,10 @@ test.describe('Focus navigation and grid selection sync', () => {
       const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100, x: 10, y: 10, toJSON() {} };
       back.element.getBoundingClientRect = () => overlap;
       front.element.getBoundingClientRect = () => overlap;
+      back.element.querySelector('img').getBoundingClientRect = () => overlap;
+      front.element.querySelector('img').getBoundingClientRect = () => overlap;
+      back.imageBounds = overlap;
+      front.imageBounds = overlap;
       back.renderDepth = -0.8;
       front.renderDepth = 0.8;
       const topmostHitId = SpatialGallery.cardAtPoint(50, 50)?.fileId;
@@ -467,5 +471,34 @@ test.describe('Focus navigation and grid selection sync', () => {
     expect(continuity.tableControlValues.limit).toBe(24);
     expect(continuity.folderCleared).toBe(true);
     expect(continuity.modeCleared).toBe(true);
+  });
+
+  test('picks visible pixels by depth and rejects pointer target changes', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      const [rear, front] = gallery.cards;
+      const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100 };
+      rear.imageBounds = overlap; front.imageBounds = overlap;
+      rear.renderDepth = -1; front.renderDepth = 1;
+      rear.alphaMask = { width: 1, height: 1, data: new Uint8Array([1]) };
+      front.alphaMask = { width: 1, height: 1, data: new Uint8Array([0]) };
+      const visibleRear = gallery.cardAtPoint(50, 50)?.fileId;
+
+      rear.imageBounds = { ...overlap, right: 55, width: 45 };
+      front.imageBounds = { ...overlap, left: 56, width: 54 };
+      front.alphaMask.data[0] = 1;
+      gallery.elements.scene.setPointerCapture = () => {};
+      let activations = 0;
+      const originalTap = gallery.handleCardTap;
+      gallery.handleCardTap = () => { activations++; };
+      gallery.onPointerDown({ button: 0, pointerId: 7, pointerType: 'touch', clientX: 25, clientY: 50 });
+      gallery.onPointerUp({ pointerId: 7, pointerType: 'touch', clientX: 75, clientY: 50 });
+      gallery.handleCardTap = originalTap;
+      return { visibleRear, rearId: rear.fileId, activations };
+    });
+    expect(result.visibleRear).toBe(result.rearId);
+    expect(result.activations).toBe(0);
   });
 });

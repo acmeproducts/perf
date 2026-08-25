@@ -1071,11 +1071,11 @@
         .spatial-gallery__loading-stage { display: grid; place-items: center; gap: 24px; perspective: 800px; }
         .spatial-gallery__fireflies { --accent: #67e8f9; position: relative; width: 150px; height: 150px; animation: explore-firefly-orbit 1.8s linear infinite; }
         .spatial-gallery__fireflies i { --angle: 0deg; --glow: var(--accent); position: absolute; left: 71px; top: 71px; width: 8px; height: 8px; border-radius: 50%; background: var(--glow); box-shadow: 0 0 16px 5px var(--glow); transform: rotate(var(--angle)) translateX(62px); animation: explore-firefly-pulse 1.8s ease-in-out infinite alternate; }
-        .spatial-gallery__fireflies i:nth-child(2) { --angle: 60deg; --glow: #f472b6; animation-delay: -.2s; }
-        .spatial-gallery__fireflies i:nth-child(3) { --angle: 120deg; --glow: #a78bfa; animation-delay: -.4s; }
+        .spatial-gallery__fireflies i:nth-child(2) { --angle: 60deg; animation-delay: -.2s; }
+        .spatial-gallery__fireflies i:nth-child(3) { --angle: 120deg; animation-delay: -.4s; }
         .spatial-gallery__fireflies i:nth-child(4) { --angle: 180deg; animation-delay: -.6s; }
-        .spatial-gallery__fireflies i:nth-child(5) { --angle: 240deg; --glow: #f472b6; animation-delay: -.8s; }
-        .spatial-gallery__fireflies i:nth-child(6) { --angle: 300deg; --glow: #a78bfa; animation-delay: -1s; }
+        .spatial-gallery__fireflies i:nth-child(5) { --angle: 240deg; animation-delay: -.8s; }
+        .spatial-gallery__fireflies i:nth-child(6) { --angle: 300deg; animation-delay: -1s; }
         .spatial-gallery__loading-copy { display: grid; gap: 7px; text-align: center; }
         .spatial-gallery__loading-copy strong { font: 750 13px/1 system-ui, sans-serif; letter-spacing: .18em; text-transform: uppercase; }
         .spatial-gallery__loading-copy span { color: #93c5fd; font: 500 12px/1.2 system-ui, sans-serif; letter-spacing: .05em; }
@@ -11483,8 +11483,8 @@ this.updateImageCounters();
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             pressedCard: null, pressedFileId: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
-            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
-            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, sessionGeneration: 0, populationKey: '', maxPointerDistance: 0, focusTransitionFileId: null,
+            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1,
+            persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, sessionGeneration: 0, populationKey: '', stackName: '', activeLoad: null, layout: null, maxPointerDistance: 0, focusTransitionFileId: null,
             geometryCache: new Map(), cacheLimit: 4,
 
             init() {
@@ -11530,6 +11530,8 @@ this.updateImageCounters();
             },
 
             open({ stackName = state.currentStack, fileId, preserveGeometry = false, suppressPersist = false } = {}) {
+                const generation = ++this.loadGeneration;
+                this.activeLoad = null;
                 state.currentStack = stackName;
                 const stack = state.stacks[stackName] || [];
                 this.restoreSettings();
@@ -11538,10 +11540,11 @@ this.updateImageCounters();
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
                 }
-                const nextIds = new Set(nextFiles.map(file => String(file.id)));
-                const samePopulation = nextFiles.length === this.files.length && this.files.every(file => nextIds.has(String(file.id)));
+                const nextKey = nextFiles.map(file => String(file.id)).join('\u001f');
+                const currentIds = new Set(this.files.map(file => String(file.id)));
+                const samePopulation = nextFiles.length === this.files.length && nextFiles.every(file => currentIds.has(String(file.id)));
                 const sameSession = this.sessionGeneration === state.folderSessionGeneration;
-                const canResume = this.cards.length > 0 && samePopulation && sameSession;
+                const canResume = this.cards.length > 0 && samePopulation && sameSession && this.stackName === stackName;
                 if (!canResume) this.files = nextFiles;
                 this.focusTransitionFileId = null;
                 this.rebalanceLayout('open', { persist: false, log: false });
@@ -11551,9 +11554,9 @@ this.updateImageCounters();
                 Utils.elements.appContainer.classList.remove('focus-mode');
                 document.body.classList.remove('origin-focus');
                 this.previousFocus = document.activeElement;
-                if (!canResume) this.loadGeneration++;
                 this.sessionGeneration = state.folderSessionGeneration;
-                this.populationKey = nextFiles.map(file => String(file.id)).sort().join('\u001f');
+                this.stackName = stackName;
+                this.populationKey = nextKey;
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId || state.currentFileId || stack[state.currentStackPosition]?.id)));
                 CurrentImage.set(this.files[this.selectedIndex].id, stackName, { allowCrossStack: false });
                 state.inspection = { surface: 'explore', origin: null, fileId: this.files[this.selectedIndex]?.id || null };
@@ -11565,11 +11568,12 @@ this.updateImageCounters();
                     SharedImageResources.pinExplorer(this.files);
                     this.select(this.selectedIndex);
                 } else {
-                    this.elements.root.hidden = true;
+                    this.elements.scene.replaceChildren();
+                    this.cards = [];
                     this.elements.loading.hidden = false;
-                    if (this.cards.length && sameSession) this.reconcilePopulation(nextFiles);
-                    else this.buildCards();
                     this.elements.root.hidden = false;
+                    if (this.elements.loadingProgress) this.elements.loadingProgress.textContent = `Painting thumbnails 0 / ${nextFiles.length}`;
+                    this.buildCards({ generation, folderSession: state.folderSessionGeneration, stackName, populationKey: nextKey, files: nextFiles });
                 }
                 document.body.style.overflow = 'hidden';
                 this.updateControlLabels();
@@ -11582,7 +11586,6 @@ this.updateImageCounters();
                 }
                 this.lastFrameTime = performance.now();
                 this.requestFrame();
-                this.scheduleNextPage();
                 if (!suppressPersist) App.persistViewContext();
             },
 
@@ -11614,7 +11617,8 @@ this.updateImageCounters();
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
-                clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
+                this.activeLoad = null;
+                clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
                 this.elements.scene.replaceChildren();
                 this.cards = [];
@@ -11634,13 +11638,14 @@ this.updateImageCounters();
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
-                clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
+                clearTimeout(this.tapTimer);
                 this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null;
                 if (restoreFocus) this.previousFocus?.focus?.();
             },
 
             cacheKey(stackName = state.currentStack, files = this.files) {
-                return `${state.folderSessionGeneration}:${stackName}:${this.layoutVersion}:${this.imageLimit}:${files.map(file => file.id).join('\u001f')}`;
+                const rect = this.elements.scene?.getBoundingClientRect?.() || { width: 0, height: 0 };
+                return `${state.folderSessionGeneration}:${stackName}:${this.layoutVersion}:${this.imageLimit}:${Math.round(rect.width)}x${Math.round(rect.height)}:${files.map(file => file.id).join('\u001f')}`;
             },
 
             rememberGeometry() {
@@ -11651,26 +11656,27 @@ this.updateImageCounters();
                 while (this.geometryCache.size > this.cacheLimit) this.geometryCache.delete(this.geometryCache.keys().next().value);
             },
 
-            buildCards() {
+            buildCards(seed = { generation: ++this.loadGeneration, folderSession: state.folderSessionGeneration, stackName: state.currentStack, populationKey: this.files.map(file => String(file.id)).join('\u001f'), files: this.files }) {
                 if (this.dragging && this.cards.length) SharedImageResources.instrumentation.elementRecreationsDuringMovement += this.cards.length;
                 this.elements.scene.replaceChildren();
                 SharedImageResources.pinExplorer(this.files);
                 this.cards = [];
-                const generation = this.loadGeneration;
-                const sessionGeneration = this.sessionGeneration;
-                this.files.forEach((file, index) => this.cards.push(this.createCard(file, index)));
+                this.files = [...seed.files];
+                this.files.forEach((file, index) => this.cards.push(this.createCard(file, index, seed.generation)));
                 this.updateVectors();
                 const cached = this.geometryCache.get(this.cacheKey());
                 if (cached?.vectors?.length === this.cards.length) {
                     this.cards.forEach((card, index) => { card.vector = { ...cached.vectors[index] }; });
                     this.rotationX = cached.rotationX; this.rotationY = cached.rotationY; this.sphereScale = cached.sphereScale;
                 }
-                if (this.elements.loadingProgress) this.elements.loadingProgress.textContent = `Painting thumbnails 0 / ${this.files.length}`;
-                this.revealWhenCardsReady(generation, sessionGeneration);
+                this.rebalanceLayout('population', { persist: false, log: false });
+                const context = Object.freeze({ generation: seed.generation, folderSession: seed.folderSession, stackName: seed.stackName, populationKey: seed.populationKey, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length });
+                this.activeLoad = context;
+                this.revealWhenCardsReady(context);
                 this.requestFrame();
             },
 
-            createCard(file, index) {
+            createCard(file, index, generation = this.loadGeneration) {
                 const card = document.createElement('button');
                 card.type = 'button';
                 card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`;
@@ -11691,65 +11697,65 @@ this.updateImageCounters();
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
-                const generation = this.loadGeneration;
                 SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: index < 18, generation });
                 return { element: card, vector: null, fileId: file.id };
             },
 
-            appendPage() {
-                if (this.sessionGeneration !== state.folderSessionGeneration) return;
-                const start = this.cards.length, end = Math.min(this.files.length, start + this.pageSize);
-                for (let index = start; index < end; index++) {
-                    const file = this.files[index];
-                    this.cards.push(this.createCard(file, index));
-                }
-                this.updateVectors();
-                if (this.cards.length) {
-                    const generation = this.loadGeneration;
-                    const sessionGeneration = this.sessionGeneration;
-                    if (!this.elements.loading.hidden) this.revealWhenInitialCardsReady(generation, sessionGeneration);
-                }
-                this.requestFrame();
-                this.scheduleNextPage();
+            loadIsActive(context) {
+                return this.activeLoad === context
+                    && context.generation === this.loadGeneration
+                    && context.folderSession === state.folderSessionGeneration
+                    && context.stackName === state.currentStack
+                    && context.populationKey === this.populationKey
+                    && context.files.length === this.files.length
+                    && context.files.every((file, index) => file === this.files[index] && String(file.id) === String(context.cards[index]?.fileId))
+                    && context.cards.length === this.cards.length
+                    && context.cards.every((card, index) => card === this.cards[index] && card.element.parentNode === this.elements.scene);
             },
 
-            async revealWhenCardsReady(generation, sessionGeneration) {
-                let settled = 0;
-                const cards = [...this.cards];
-                const total = cards.length;
-                await Promise.all(cards.map(async card => {
-                    const file = this.files.find(candidate => String(candidate.id) === String(card.fileId));
-                    if (file) await SharedImageResources.ensure(file, 'thumb', { pin: true });
+            async revealWhenCardsReady(context) {
+                let painted = 0, failed = 0;
+                const updateProgress = () => {
+                    if (!this.loadIsActive(context) || !this.elements.loadingProgress) return;
+                    const failures = failed ? ` · ${failed} failed` : '';
+                    this.elements.loadingProgress.textContent = `Painting thumbnails ${painted} / ${context.total}${failures}`;
+                };
+                await Promise.all(context.cards.map(async (card, index) => {
+                    const file = context.files[index];
                     const img = card.element.querySelector('img');
+                    const expectedKey = SharedImageResources.key(file, 'thumb');
+                    const entry = await SharedImageResources.ensure(file, 'thumb', { pin: true });
                     if (img && (!img.complete || !img.currentSrc)) await new Promise(resolve => {
                         img.addEventListener('load', resolve, { once: true });
                         img.addEventListener('error', resolve, { once: true });
                     });
-                    settled++;
-                    if (generation === this.loadGeneration && this.elements.loadingProgress) this.elements.loadingProgress.textContent = `Painting thumbnails ${settled} / ${total}`;
+                    let success = false;
+                    const binding = img && SharedImageResources.bindings.get(img);
+                    if (this.loadIsActive(context) && img?.complete && img.naturalWidth > 0
+                        && entry?.readyState === 'loaded'
+                        && String(card.element.dataset.fileId) === String(file.id)
+                        && String(img.dataset.fileId) === String(file.id)
+                        && String(binding?.fileId) === String(file.id)
+                        && binding?.key === expectedKey && binding.loadedKey === expectedKey
+                        && img.dataset.sharedResourceKey === expectedKey) {
+                        try { if (typeof img.decode === 'function') await img.decode(); success = true; } catch (_) {}
+                    }
+                    if (success) { painted++; this.cacheAlphaMask(card, img); } else failed++;
+                    updateProgress();
                 }));
-                if (generation !== this.loadGeneration || sessionGeneration !== state.folderSessionGeneration || this.elements.root.hidden) return;
+                if (!this.loadIsActive(context) || context.cards.length !== context.files.length) return;
+                this.updateVectors();
+                this.rebalanceLayout('ready', { persist: false, log: false });
+                this.render(performance.now());
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                if (!this.loadIsActive(context)) return;
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                if (!this.loadIsActive(context)) return;
                 this.rememberGeometry();
                 this.elements.loading.hidden = true;
             },
 
-            async revealWhenInitialCardsReady(generation, sessionGeneration) {
-                const images = this.cards.slice(0, Math.min(12, this.cards.length)).map(card => card.element.querySelector('img')).filter(Boolean);
-                const startedAt = performance.now();
-                const settled = images.map(img => img.complete ? Promise.resolve() : new Promise(resolve => {
-                    img.addEventListener('load', resolve, { once: true });
-                    img.addEventListener('error', resolve, { once: true });
-                }));
-                await Promise.race([
-                    Promise.all(settled),
-                    new Promise(resolve => setTimeout(resolve, 4500))
-                ]);
-                const minimumDisplayTime = Math.max(0, 420 - (performance.now() - startedAt));
-                if (minimumDisplayTime) await new Promise(resolve => setTimeout(resolve, minimumDisplayTime));
-                if (generation === this.loadGeneration && sessionGeneration === state.folderSessionGeneration && !this.elements.root.hidden) this.elements.loading.hidden = true;
-            },
-
-            reconcilePopulation(nextFiles) {
+            reconcilePopulation(nextFiles, seed = null) {
                 if (this.dragging) SharedImageResources.instrumentation.elementRecreationsDuringMovement += 1;
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
                 const nextCards = [];
@@ -11767,10 +11773,14 @@ this.updateImageCounters();
                 existing.forEach(card => card.element.remove());
                 this.cards = nextCards;
                 this.updateVectors();
+                this.rebalanceLayout('population', { persist: false, log: false });
                 this.requestFrame();
                 if (!this.elements.loading.hidden) {
-                    const generation = ++this.loadGeneration;
-                    this.revealWhenCardsReady(generation, this.sessionGeneration);
+                    const loadSeed = seed || { generation: this.loadGeneration, folderSession: state.folderSessionGeneration, stackName: state.currentStack, populationKey: nextFiles.map(file => String(file.id)).join('\u001f') };
+                    this.populationKey = loadSeed.populationKey;
+                    const context = Object.freeze({ ...loadSeed, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length });
+                    this.activeLoad = context;
+                    this.revealWhenCardsReady(context);
                 }
             },
 
@@ -11802,20 +11812,8 @@ this.updateImageCounters();
                 return true;
             },
 
-            scheduleNextPage() {
-                clearTimeout(this.pageTimer);
-                if (this.elements.root.hidden || this.cards.length >= this.files.length) return;
-                const loadGeneration = this.loadGeneration;
-                const sessionGeneration = this.sessionGeneration;
-                const populationKey = this.populationKey;
-                this.pageTimer = setTimeout(() => {
-                    if (loadGeneration !== this.loadGeneration || sessionGeneration !== state.folderSessionGeneration || populationKey !== this.populationKey) return;
-                    this.appendPage();
-                }, 80);
-            },
-
             updateVectors() {
-                const count = Math.max(1, this.files.length);
+                const count = Math.max(1, this.cards.length);
                 const goldenAngle = Math.PI * (3 - Math.sqrt(5));
                 this.cards.forEach((card, index) => {
                     const y = 1 - (2 * (index + 0.5) / count);
@@ -11903,11 +11901,11 @@ this.updateImageCounters();
                 if (event.button !== undefined && event.button !== 0) return;
                 this.dragging = true; this.pointerId = event.pointerId; this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = performance.now();
                 this.elements.scene.classList.add('dragging');
-                event.target.closest('.spatial-gallery__card')?.setAttribute('data-moved', 'false');
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
-                const card = event.target.closest('.spatial-gallery__card');
-                this.pressedCard = card; this.pressedFileId = card?.dataset.fileId || null;
+                const hit = this.cardAtPoint(event.clientX, event.clientY);
+                this.pressedCard = hit?.element || null; this.pressedFileId = hit?.fileId || null;
+                this.pressedCard?.setAttribute('data-moved', 'false');
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), true));
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
@@ -11933,6 +11931,7 @@ this.updateImageCounters();
                 if (event.pointerId !== this.pointerId) return;
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const tappedCard = this.pressedCard;
+                const pressedFileId = this.pressedFileId;
                 const tapSlop = this.tapSlop(event);
                 const moved = this.maxPointerDistance > tapSlop || tappedCard?.dataset.moved === 'true';
                 this.dragging = false; this.pointerId = null;
@@ -11941,35 +11940,52 @@ this.updateImageCounters();
                 this.elements.scene.classList.remove('dragging');
                 if (!moved && Math.hypot(dx, dy) <= tapSlop) {
                     const resolvedHit = this.cardAtPoint(event.clientX, event.clientY);
-                    const pressedHit = tappedCard ? this.cards.find(card => card.element === tappedCard) : null;
-                    const hit = pressedHit && resolvedHit?.element === pressedHit.element ? pressedHit : resolvedHit;
-                    if (hit) this.handleCardTap(hit.fileId, hit.element);
+                    if (resolvedHit && resolvedHit.fileId === pressedFileId && tappedCard === resolvedHit.element) this.handleCardTap(resolvedHit.fileId, resolvedHit.element);
                 }
                 this.requestFrame();
             },
 
             cardAtPoint(x, y) {
-                let best = null;
-                let bestDistance = Infinity;
-                this.cards.forEach(card => {
-                    const rect = card.element.getBoundingClientRect();
-                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
-                    const halfWidth = Math.max(1, rect.width / 2);
-                    const halfHeight = Math.max(1, rect.height / 2);
-                    const distance = Math.hypot((x - rect.left - halfWidth) / halfWidth, (y - rect.top - halfHeight) / halfHeight);
-                    const sameVisualTarget = Math.abs(distance - bestDistance) < 0.08;
-                    if (!best || distance < bestDistance - 0.08 || (sameVisualTarget && (card.renderDepth ?? -Infinity) > (best.renderDepth ?? -Infinity))) {
-                        best = card;
-                        bestDistance = distance;
+                const candidates = this.cards.filter(card => {
+                    const rect = card.imageBounds || card.element.querySelector('img')?.getBoundingClientRect();
+                    return rect && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+                }).sort((a, b) => (b.renderDepth ?? -Infinity) - (a.renderDepth ?? -Infinity));
+                for (const card of candidates) {
+                    const rect = card.imageBounds || card.element.querySelector('img').getBoundingClientRect();
+                    const u = (x - rect.left) / Math.max(1, rect.width), v = (y - rect.top) / Math.max(1, rect.height);
+                    const radius = Math.min(rect.width, rect.height) * (9 / 112);
+                    const dx = Math.max(radius - u * rect.width, 0, u * rect.width - (rect.width - radius));
+                    const dy = Math.max(radius - v * rect.height, 0, v * rect.height - (rect.height - radius));
+                    if (dx * dx + dy * dy > radius * radius) continue;
+                    if (card.alphaMask) {
+                        const px = Math.min(card.alphaMask.width - 1, Math.max(0, Math.floor(u * card.alphaMask.width)));
+                        const py = Math.min(card.alphaMask.height - 1, Math.max(0, Math.floor(v * card.alphaMask.height)));
+                        if (!card.alphaMask.data[py * card.alphaMask.width + px]) continue;
                     }
-                });
-                return best;
+                    return card;
+                }
+                return null;
+            },
+
+            cacheAlphaMask(card, img) {
+                try {
+                    const width = 32, height = 42;
+                    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+                    const context = canvas.getContext('2d', { willReadFrequently: true });
+                    const sourceRatio = img.naturalWidth / img.naturalHeight, targetRatio = width / height;
+                    let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+                    if (sourceRatio > targetRatio) { sw = img.naturalHeight * targetRatio; sx = (img.naturalWidth - sw) / 2; }
+                    else { sh = img.naturalWidth / targetRatio; sy = (img.naturalHeight - sh) / 2; }
+                    context.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
+                    const pixels = context.getImageData(0, 0, width, height).data;
+                    card.alphaMask = { width, height, data: Uint8Array.from({ length: width * height }, (_, index) => pixels[index * 4 + 3] > 16 ? 1 : 0) };
+                } catch (_) { card.alphaMask = null; }
             },
 
             onWheel(event) {
                 event.preventDefault();
                 const nextScale = this.sphereScale * Math.exp(-event.deltaY * 0.001);
-                if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = nextScale;
+                if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = Math.max(.45, Math.min(this.layout?.maxSphereScale || 1, nextScale));
                 this.updateControlLabels();
                 this.persistSettings();
                 this.requestFrame();
@@ -11993,7 +12009,7 @@ this.updateImageCounters();
                 const [a, b] = event.touches;
                 const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 const nextScale = this.pinchStartScale * (distance / this.pinchStartDistance);
-                if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = nextScale;
+                if (Number.isFinite(nextScale) && nextScale > 0) this.sphereScale = Math.max(.45, Math.min(this.layout?.maxSphereScale || 1, nextScale));
                 this.requestFrame();
             },
 
@@ -12010,13 +12026,29 @@ this.updateImageCounters();
 
             automaticCardScale() {
                 const population = Math.max(1, this.files.length || Math.min(this.imageLimit, (state.stacks[state.currentStack] || []).length) || 1);
-                return this.layoutBias * Math.sqrt(30 / population);
+                const bounds = this.usableSceneBounds();
+                const areaScale = Math.sqrt((bounds.width * bounds.height) / (population * 112 * 148));
+                return Math.max(.42, Math.min(1.15, areaScale * 1.5 * this.layoutBias));
+            },
+
+            usableSceneBounds() {
+                const rect = this.elements.scene?.getBoundingClientRect?.() || { left: 0, top: 0, width: innerWidth, height: innerHeight };
+                const header = this.elements.header?.getBoundingClientRect?.();
+                const top = Math.max(rect.top + 12, header?.bottom ? header.bottom + 12 : rect.top + 72);
+                const left = rect.left + 12, right = rect.left + rect.width - 12, bottom = rect.top + rect.height - 20;
+                return { left, top, right, bottom, width: Math.max(1, right - left), height: Math.max(1, bottom - top), centerX: (left + right) / 2, centerY: (top + bottom) / 2, sceneCenterX: rect.left + rect.width / 2, sceneCenterY: rect.top + rect.height / 2 };
             },
 
             rebalanceLayout(source = 'layout', options = {}) {
                 const { persist = true, log = true } = options;
                 const nextScale = this.automaticCardScale();
                 if (Number.isFinite(nextScale) && nextScale > 0) this.cardScale = nextScale;
+                const bounds = this.usableSceneBounds();
+                const maxPerspective = 1 / 1.35;
+                const maxCardScale = maxPerspective * 1.18 * this.cardScale;
+                const radius = Math.max(1, Math.min((bounds.width / 2 - 56 * maxCardScale) / maxPerspective, (bounds.height / 2 - 74 * maxCardScale) / maxPerspective));
+                this.layout = { bounds, radius, maxSphereScale: 1, offsetX: bounds.centerX - bounds.sceneCenterX, offsetY: bounds.centerY - bounds.sceneCenterY };
+                this.sphereScale = Math.max(.45, Math.min(this.layout.maxSphereScale, this.sphereScale));
                 this.updateControlLabels();
                 if (persist) this.persistSettings();
                 if (log) this.logLayout(source);
@@ -12070,7 +12102,8 @@ this.updateImageCounters();
             },
 
             sphereRadius() {
-                return Math.min(innerWidth, innerHeight) * .34 * this.density * this.sphereScale;
+                if (!this.layout) this.rebalanceLayout('radius', { persist: false, log: false });
+                return this.layout.radius * this.density * this.sphereScale;
             },
 
             updateControlLabels() {
@@ -12161,6 +12194,7 @@ this.updateImageCounters();
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
                 const sphereRadius = this.sphereRadius();
+                const offsetX = this.layout?.offsetX || 0, offsetY = this.layout?.offsetY || 0;
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
@@ -12170,13 +12204,14 @@ this.updateImageCounters();
                     const z2 = v.y * sinY + z1 * cosY;
                     const perspective = 1 / (1.8 - z2 * 0.45);
                     const scale = perspective * 1.18 * this.cardScale;
-                    const x = x1 * sphereRadius * perspective;
-                    const y = y2 * sphereRadius * perspective;
+                    const x = offsetX + x1 * sphereRadius * perspective;
+                    const y = offsetY + y2 * sphereRadius * perspective;
                     card.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
                     card.renderDepth = z2;
                     card.element.style.opacity = '1';
                     card.element.style.zIndex = String(Math.round(depth * 1000));
+                    card.imageBounds = card.element.querySelector('img')?.getBoundingClientRect() || null;
                     const centerDistance = Math.hypot(x, y);
                     if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                 });
@@ -12268,7 +12303,6 @@ this.updateImageCounters();
                     SpatialGallery.elements.root.hidden = true;
                     if (SpatialGallery.frameId) cancelAnimationFrame(SpatialGallery.frameId);
                     SpatialGallery.frameId = null;
-                    clearTimeout(SpatialGallery.pageTimer);
                 } else if (activeReferrer.surface === 'table') {
                     PhotoTable.stackName = resolved.stackName;
                     PhotoTable.currentFileId = resolved.file.id;
