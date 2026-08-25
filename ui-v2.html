@@ -1094,8 +1094,6 @@
             transition: border-color 160ms ease, box-shadow 160ms ease; overflow: hidden;
         }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
-        .spatial-gallery__card.thumbnail-error { background: linear-gradient(135deg, #334155, #0f172a); }
-        .spatial-gallery__card.thumbnail-error img { opacity: 0; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
         .spatial-gallery__chrome { position: absolute; z-index: 2000; display: flex; align-items: center; gap: 10px; }
@@ -2001,7 +1999,6 @@
             clear() {
                 this.stackName = null; this.ids = []; this.currentFileId = null;
                 state.focusTraversalIndex = 0;
-                SharedImageResources.prefetchFocus([]);
             },
             reconcile(stackName = state.currentStack) {
                 const eligible = CurrentImage.stack(stackName);
@@ -2030,23 +2027,10 @@
                 this.syncIndex();
                 return this.currentFileId;
             },
-            sync(fileId = this.currentFileId) { this.currentFileId = fileId; this.syncIndex(); this.prefetch(); },
+            sync(fileId = this.currentFileId) { this.currentFileId = fileId; this.syncIndex(); },
             syncIndex() {
                 const index = this.ids.findIndex(id => String(id) === String(this.currentFileId));
                 state.focusTraversalIndex = Math.max(0, index);
-            },
-            window(radius = 2) {
-                if (!this.ids.length) return [];
-                const center = Math.max(0, this.ids.findIndex(id => String(id) === String(this.currentFileId)));
-                const ordered = [0];
-                for (let distance = 1; distance <= radius; distance++) ordered.push(distance, -distance);
-                const seen = new Set();
-                return ordered.map(offset => this.ids[(center + offset + this.ids.length) % this.ids.length])
-                    .filter(id => !seen.has(String(id)) && seen.add(String(id)))
-                    .map(id => CurrentImage.stack(this.stackName).find(file => String(file.id) === String(id))).filter(Boolean);
-            },
-            prefetch() {
-                SharedImageResources.prefetchFocus(this.window(2));
             }
         };
         const GoogleDriveFolderCacheStore = {
@@ -2557,17 +2541,13 @@
             inFlight: new Map(),
             bindings: new WeakMap(),
             activeExplorerKeys: new Set(),
-            activeFocusKeys: new Set(),
             presentationToken: 0,
             instrumentation: {
                 startedAt: performance.now(), firstUsefulThumbnailPaintMs: null,
                 cacheHits: 0, cacheMisses: 0, pinnedCount: 0, residentCount: 0,
                 evictionCount: 0, providerResolutionCount: 0, providerRequestCount: 0,
                 sourceReplacementsDuringMovement: 0, elementRecreationsDuringMovement: 0,
-                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0,
-                explorerBuildMs: null, explorerTerminalCount: 0, explorerPlaceholderCount: 0, explorerMaxWorkers: 0,
-                explorerLastFrameMs: 0, explorerSlowFrames: 0, focusFirstFrameMs: null, focusNavigationFirstFrameMs: null,
-                explorerResumeMs: null, identityMismatches: 0, staleCompletions: 0
+                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0
             },
             version(file) {
                 return file?.modifiedTime || file?.version || file?.eTag || file?.size || 'v0';
@@ -2577,7 +2557,6 @@
                 this.entries.clear();
                 this.inFlight.clear();
                 this.activeExplorerKeys.clear();
-                this.activeFocusKeys.clear();
                 this.bindings = new WeakMap();
                 this.touch(null);
             },
@@ -2711,7 +2690,6 @@
             },
             present(img, file, options = {}) {
                 if (!img || !file?.id) return null;
-                const presentationStartedAt = performance.now();
                 const { immediateResource = null, surface = 'focus' } = options;
                 const token = ++this.presentationToken;
                 const sessionGeneration = state.folderSessionGeneration;
@@ -2744,9 +2722,6 @@
                         if (!isCurrent() || this.bindings.get(img) !== binding) return;
                         binding.loadedKey = entry.key;
                         img.style.opacity = '1';
-                        const elapsed = performance.now() - presentationStartedAt;
-                        if (this.instrumentation.focusFirstFrameMs == null) this.instrumentation.focusFirstFrameMs = elapsed;
-                        else this.instrumentation.focusNavigationFirstFrameMs = elapsed;
                     };
                     if (img.getAttribute('src') !== entry.src) {
                         img.src = entry.src;
@@ -2791,23 +2766,11 @@
                 });
                 this.touch(null);
             },
-            pinExplorer(files = [], { warm = true } = {}) {
+            pinExplorer(files = []) {
                 const next = new Set(files.map(file => this.key(file, 'thumb')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                if (warm) this.warm(files, 'thumb', { pin: true });
-            },
-            prefetchFocus(files = []) {
-                const next = new Set(files.filter(Boolean).map(file => this.key(file, 'display')));
-                this.activeFocusKeys.forEach(key => {
-                    if (!next.has(key) && !this.activeExplorerKeys.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false;
-                });
-                this.activeFocusKeys = next;
-                files.filter(Boolean).forEach((file, index) => {
-                    const entry = this.resolve(file, 'display', { pin: true });
-                    if (entry.readyState === 'idle' && entry.src) Utils.defer(() => this.ensure(file, 'display', { pin: true }), { priority: index < 3 ? 'high' : 'background', timeout: 80 });
-                });
-                this.touch(null);
+                this.warm(files, 'thumb', { pin: true });
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -11513,7 +11476,6 @@ this.updateImageCounters();
         };
 
         const SpatialGallery = {
-            thumbnailBuildBudgetMs: 12000,
             elements: {}, cards: [], files: [], selectedIndex: 0,
             maxImageLimit: 500, imageLimit: 500, density: 1, cardScale: 1, sphereScale: 1,
             layoutBias: 1, layoutVersion: 2, automaticLayout: true, extentHardLimits: false,
@@ -11521,9 +11483,9 @@ this.updateImageCounters();
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             pressedCard: null, pressedFileId: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
-            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, priorSelectedIndex: -1,
+            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1,
             persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, sessionGeneration: 0, populationKey: '', stackName: '', activeLoad: null, layout: null, maxPointerDistance: 0, focusTransitionFileId: null,
-            geometryCache: new Map(), cacheLimit: 4, cardWidth: 112, cardHeight: 148, viewportKey: '', suspendedViewportKey: '',
+            geometryCache: new Map(), cacheLimit: 4,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11672,7 +11634,6 @@ this.updateImageCounters();
             suspend({ restoreFocus = true } = {}) {
                 if (this.elements.root.hidden) return;
                 this.rememberGeometry();
-                this.suspendedViewportKey = `${innerWidth}x${innerHeight}`;
                 this.elements.root.hidden = true;
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
@@ -11680,30 +11641,6 @@ this.updateImageCounters();
                 clearTimeout(this.tapTimer);
                 this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null;
                 if (restoreFocus) this.previousFocus?.focus?.();
-            },
-
-            resumeFromFocus(fileId) {
-                const startedAt = performance.now();
-                const requestedId = String(fileId || '');
-                const index = this.files.findIndex(file => String(file.id) === requestedId);
-                const valid = requestedId && index >= 0 && this.cards.length === this.files.length
-                    && this.sessionGeneration === state.folderSessionGeneration && this.stackName === state.currentStack
-                    && this.suspendedViewportKey === `${innerWidth}x${innerHeight}`
-                    && this.cards.every((card, cardIndex) => card.element.isConnected && card.image?.isConnected && card.vector
-                        && String(card.fileId) === String(this.files[cardIndex]?.id)
-                        && String(card.element.dataset.fileId) === String(card.image.dataset.fileId));
-                if (!valid) return false;
-                this.elements.root.hidden = false;
-                this.elements.loading.hidden = true;
-                document.body.style.overflow = 'hidden';
-                this.focusTransitionFileId = null;
-                this.select(index);
-                state.inspection = { surface: 'explore', origin: null, fileId: this.files[index].id };
-                ModeNavigation.show('explore');
-                this.lastFrameTime = performance.now();
-                this.render(this.lastFrameTime);
-                SharedImageResources.instrumentation.explorerResumeMs = performance.now() - startedAt;
-                return true;
             },
 
             cacheKey(stackName = state.currentStack, files = this.files) {
@@ -11722,9 +11659,8 @@ this.updateImageCounters();
             buildCards(seed = { generation: ++this.loadGeneration, folderSession: state.folderSessionGeneration, stackName: state.currentStack, populationKey: this.files.map(file => String(file.id)).join('\u001f'), files: this.files }) {
                 if (this.dragging && this.cards.length) SharedImageResources.instrumentation.elementRecreationsDuringMovement += this.cards.length;
                 this.elements.scene.replaceChildren();
-                SharedImageResources.pinExplorer(this.files, { warm: false });
+                SharedImageResources.pinExplorer(this.files);
                 this.cards = [];
-                this.priorSelectedIndex = -1;
                 this.files = [...seed.files];
                 this.files.forEach((file, index) => this.cards.push(this.createCard(file, index, seed.generation)));
                 this.updateVectors();
@@ -11734,7 +11670,7 @@ this.updateImageCounters();
                     this.rotationX = cached.rotationX; this.rotationY = cached.rotationY; this.sphereScale = cached.sphereScale;
                 }
                 this.rebalanceLayout('population', { persist: false, log: false });
-                const context = Object.freeze({ generation: seed.generation, folderSession: seed.folderSession, stackName: seed.stackName, populationKey: seed.populationKey, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length, startedAt: performance.now() });
+                const context = Object.freeze({ generation: seed.generation, folderSession: seed.folderSession, stackName: seed.stackName, populationKey: seed.populationKey, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length });
                 this.activeLoad = context;
                 this.revealWhenCardsReady(context);
                 this.requestFrame();
@@ -11760,9 +11696,9 @@ this.updateImageCounters();
                     if (card.dataset.moved === 'true' || event.detail !== 0) return;
                     this.activateFileId(card.dataset.fileId, card);
                 });
-                img.dataset.fileId = file.id;
                 this.elements.scene.appendChild(card);
-                return { element: card, image: img, vector: null, fileId: file.id, terminal: false, placeholder: false, screen: null, renderDepth: -Infinity };
+                SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: index < 18, generation });
+                return { element: card, vector: null, fileId: file.id };
             },
 
             loadIsActive(context) {
@@ -11778,49 +11714,21 @@ this.updateImageCounters();
             },
 
             async revealWhenCardsReady(context) {
-                let painted = context.cards.filter(card => card.terminal && !card.placeholder).length;
-                let failed = context.cards.filter(card => card.terminal && card.placeholder).length;
-                let cursor = 0, activeWorkers = 0;
-                const deadlineResult = Symbol('thumbnail-build-deadline');
-                let deadlineExpired = false;
-                let deadlineTimer;
-                const deadline = new Promise(resolve => {
-                    deadlineTimer = setTimeout(() => { deadlineExpired = true; resolve(deadlineResult); }, this.thumbnailBuildBudgetMs);
-                });
-                const withinDeadline = promise => Promise.race([promise, deadline]);
+                let painted = 0, failed = 0;
                 const updateProgress = () => {
                     if (!this.loadIsActive(context) || !this.elements.loadingProgress) return;
                     const failures = failed ? ` · ${failed} failed` : '';
-                    this.elements.loadingProgress.textContent = `Loading thumbnails ${painted + failed} / ${context.total}${failures}`;
+                    this.elements.loadingProgress.textContent = `Painting thumbnails ${painted} / ${context.total}${failures}`;
                 };
-                const priority = context.cards.map((card, index) => ({ card, index })).filter(item => !item.card.terminal).sort((a, b) => {
-                    if (a.index === this.selectedIndex) return -1;
-                    if (b.index === this.selectedIndex) return 1;
-                    return (b.card.vector?.z || 0) - (a.card.vector?.z || 0);
-                });
-                const terminalPlaceholder = (card, file) => {
-                    card.placeholder = true; card.terminal = true;
-                    card.element.classList.add('thumbnail-error');
-                    card.image.dataset.fileId = file.id;
-                    card.image.dataset.sharedResourceKey = `placeholder:${file.id}`;
-                    SharedImageResources.bindings.set(card.image, { key: `placeholder:${file.id}`, loadedKey: `placeholder:${file.id}`, fileId: file.id, surface: 'explore', movement: false, placeholder: true });
-                };
-                const loadOne = async ({ card, index }) => {
+                await Promise.all(context.cards.map(async (card, index) => {
                     const file = context.files[index];
-                    const img = card.image;
+                    const img = card.element.querySelector('img');
                     const expectedKey = SharedImageResources.key(file, 'thumb');
-                    const entry = await withinDeadline(SharedImageResources.ensure(file, 'thumb', { pin: true }));
-                    if (!this.loadIsActive(context)) { SharedImageResources.instrumentation.staleCompletions++; return; }
-                    if (entry === deadlineResult) { failed++; terminalPlaceholder(card, file); updateProgress(); return; }
-                    if (entry?.readyState === 'loaded') {
-                        const attached = await withinDeadline(SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: true, generation: context.generation }));
-                        if (attached === deadlineResult) { failed++; terminalPlaceholder(card, file); updateProgress(); return; }
-                    }
-                    if (entry?.readyState === 'loaded' && (!img.complete || !img.currentSrc)) await Promise.race([
-                        new Promise(resolve => { img.addEventListener('load', resolve, { once: true }); img.addEventListener('error', resolve, { once: true }); }),
-                        new Promise(resolve => setTimeout(resolve, 4000)),
-                        deadline
-                    ]);
+                    const entry = await SharedImageResources.ensure(file, 'thumb', { pin: true });
+                    if (img && (!img.complete || !img.currentSrc)) await new Promise(resolve => {
+                        img.addEventListener('load', resolve, { once: true });
+                        img.addEventListener('error', resolve, { once: true });
+                    });
                     let success = false;
                     const binding = img && SharedImageResources.bindings.get(img);
                     if (this.loadIsActive(context) && img?.complete && img.naturalWidth > 0
@@ -11830,36 +11738,12 @@ this.updateImageCounters();
                         && String(binding?.fileId) === String(file.id)
                         && binding?.key === expectedKey && binding.loadedKey === expectedKey
                         && img.dataset.sharedResourceKey === expectedKey) {
-                        try {
-                            if (typeof img.decode === 'function' && await withinDeadline(img.decode()) === deadlineResult) throw new Error('Thumbnail build deadline expired');
-                            success = !deadlineExpired;
-                        } catch (_) {}
+                        try { if (typeof img.decode === 'function') await img.decode(); success = true; } catch (_) {}
                     }
-                    if (success) { painted++; card.terminal = true; this.cacheAlphaMask(card, img); }
-                    else { failed++; terminalPlaceholder(card, file); }
+                    if (success) { painted++; this.cacheAlphaMask(card, img); } else failed++;
                     updateProgress();
-                };
-                const worker = async () => {
-                    activeWorkers++;
-                    SharedImageResources.instrumentation.explorerMaxWorkers = Math.max(SharedImageResources.instrumentation.explorerMaxWorkers, activeWorkers);
-                    while (cursor < priority.length && !deadlineExpired && this.loadIsActive(context)) await loadOne(priority[cursor++]);
-                    activeWorkers--;
-                };
-                const concurrency = Math.max(2, Math.min(6, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
-                await Promise.all(Array.from({ length: Math.min(concurrency, priority.length) }, worker));
-                clearTimeout(deadlineTimer);
+                }));
                 if (!this.loadIsActive(context) || context.cards.length !== context.files.length) return;
-                priority.forEach(({ card, index }) => {
-                    if (card.terminal) return;
-                    failed++;
-                    terminalPlaceholder(card, context.files[index]);
-                });
-                updateProgress();
-                if (!context.cards.every((card, index) => card.terminal && card.vector && String(card.fileId) === String(context.files[index].id) && String(card.element.dataset.fileId) === String(card.image.dataset.fileId))) {
-                    SharedImageResources.instrumentation.identityMismatches++;
-                    return;
-                }
-                if (this.elements.loadingProgress) this.elements.loadingProgress.textContent = `Finalizing sphere ${context.total} / ${context.total}`;
                 this.updateVectors();
                 this.rebalanceLayout('ready', { persist: false, log: false });
                 this.render(performance.now());
@@ -11869,9 +11753,6 @@ this.updateImageCounters();
                 if (!this.loadIsActive(context)) return;
                 this.rememberGeometry();
                 this.elements.loading.hidden = true;
-                SharedImageResources.instrumentation.explorerTerminalCount = painted + failed;
-                SharedImageResources.instrumentation.explorerPlaceholderCount = failed;
-                SharedImageResources.instrumentation.explorerBuildMs = performance.now() - context.startedAt;
             },
 
             reconcilePopulation(nextFiles, seed = null) {
@@ -11891,15 +11772,13 @@ this.updateImageCounters();
                 }
                 existing.forEach(card => card.element.remove());
                 this.cards = nextCards;
-                this.priorSelectedIndex = this.selectedIndex;
                 this.updateVectors();
                 this.rebalanceLayout('population', { persist: false, log: false });
                 this.requestFrame();
-                if (!this.elements.loading.hidden || this.cards.some(card => !card.terminal)) {
-                    this.elements.loading.hidden = false;
-                    const loadSeed = seed || { generation: ++this.loadGeneration, folderSession: state.folderSessionGeneration, stackName: state.currentStack, populationKey: nextFiles.map(file => String(file.id)).join('\u001f') };
+                if (!this.elements.loading.hidden) {
+                    const loadSeed = seed || { generation: this.loadGeneration, folderSession: state.folderSessionGeneration, stackName: state.currentStack, populationKey: nextFiles.map(file => String(file.id)).join('\u001f') };
                     this.populationKey = loadSeed.populationKey;
-                    const context = Object.freeze({ ...loadSeed, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length, startedAt: performance.now() });
+                    const context = Object.freeze({ ...loadSeed, files: Object.freeze([...this.files]), cards: Object.freeze([...this.cards]), total: this.files.length });
                     this.activeLoad = context;
                     this.revealWhenCardsReady(context);
                 }
@@ -11966,7 +11845,7 @@ this.updateImageCounters();
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
                 if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
                 const file = this.files[index];
-                const img = card.image;
+                const img = card.element.querySelector('img');
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
                 const immediateResource = binding
                     && String(card.fileId) === requestedId
@@ -11986,7 +11865,7 @@ this.updateImageCounters();
                     stackName: state.currentStack,
                     fileId: file.id
                 }, { immediateResource })).then(result => {
-                    this.focusTransitionFileId = null;
+                    if (!result) this.focusTransitionFileId = null;
                     return result;
                 }).catch(error => {
                     this.focusTransitionFileId = null;
@@ -12002,21 +11881,12 @@ this.updateImageCounters();
             },
 
             select(index) {
-                if (!Number.isInteger(index) || index < 0 || index >= this.cards.length || String(this.cards[index]?.fileId) !== String(this.files[index]?.id)) {
-                    SharedImageResources.instrumentation.identityMismatches++;
-                    return false;
-                }
-                const previous = this.cards[this.priorSelectedIndex];
-                const next = this.cards[index];
-                if (previous && previous !== next) { previous.element.classList.remove('selected'); previous.element.setAttribute('aria-pressed', 'false'); }
                 this.selectedIndex = index;
-                this.priorSelectedIndex = index;
-                next.element.classList.add('selected'); next.element.setAttribute('aria-pressed', 'true');
+                this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });
                 this.updateChrome();
                 const file = this.files[index];
                 if (file) CurrentImage.set(file.id, state.currentStack, { allowCrossStack: false });
                 this.requestFrame();
-                return true;
             },
 
             clearCardTap() {
@@ -12036,7 +11906,7 @@ this.updateImageCounters();
                 const hit = this.cardAtPoint(event.clientX, event.clientY);
                 this.pressedCard = hit?.element || null; this.pressedFileId = hit?.fileId || null;
                 this.pressedCard?.setAttribute('data-moved', 'false');
-                this.cards.forEach(item => SharedImageResources.markMovement(item.image, true));
+                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), true));
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
             },
@@ -12065,7 +11935,7 @@ this.updateImageCounters();
                 const tapSlop = this.tapSlop(event);
                 const moved = this.maxPointerDistance > tapSlop || tappedCard?.dataset.moved === 'true';
                 this.dragging = false; this.pointerId = null;
-                this.cards.forEach(item => SharedImageResources.markMovement(item.image, false));
+                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 this.elements.scene.classList.remove('dragging');
                 if (!moved && Math.hypot(dx, dy) <= tapSlop) {
@@ -12077,13 +11947,13 @@ this.updateImageCounters();
 
             cardAtPoint(x, y) {
                 const candidates = this.cards.filter(card => {
-                    const rect = card.screen;
+                    const rect = card.imageBounds || card.element.querySelector('img')?.getBoundingClientRect();
                     return rect && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
                 }).sort((a, b) => (b.renderDepth ?? -Infinity) - (a.renderDepth ?? -Infinity));
                 for (const card of candidates) {
-                    const rect = card.screen;
+                    const rect = card.imageBounds || card.element.querySelector('img').getBoundingClientRect();
                     const u = (x - rect.left) / Math.max(1, rect.width), v = (y - rect.top) / Math.max(1, rect.height);
-                    const radius = rect.radius;
+                    const radius = Math.min(rect.width, rect.height) * (9 / 112);
                     const dx = Math.max(radius - u * rect.width, 0, u * rect.width - (rect.width - radius));
                     const dy = Math.max(radius - v * rect.height, 0, v * rect.height - (rect.height - radius));
                     if (dx * dx + dy * dy > radius * radius) continue;
@@ -12126,7 +11996,7 @@ this.updateImageCounters();
                 event.preventDefault();
                 this.dragging = false; this.pointerId = null; this.elements.scene.classList.remove('dragging');
                 this.clearCardTap();
-                this.cards.forEach(item => SharedImageResources.markMovement(item.image, false));
+                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 const [a, b] = event.touches;
                 this.pinchStartDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -12171,9 +12041,6 @@ this.updateImageCounters();
 
             rebalanceLayout(source = 'layout', options = {}) {
                 const { persist = true, log = true } = options;
-                const sampleStyle = this.cards[0] ? getComputedStyle(this.cards[0].element) : null;
-                this.cardWidth = sampleStyle ? Number.parseFloat(sampleStyle.width) || 112 : 112;
-                this.cardHeight = sampleStyle ? Number.parseFloat(sampleStyle.height) || 148 : 148;
                 const nextScale = this.automaticCardScale();
                 if (Number.isFinite(nextScale) && nextScale > 0) this.cardScale = nextScale;
                 const bounds = this.usableSceneBounds();
@@ -12315,7 +12182,6 @@ this.updateImageCounters();
             },
 
             render(time) {
-                const renderStartedAt = performance.now();
                 this.frameId = null;
                 const dt = Math.min(32, Math.max(1, time - (this.lastFrameTime || time)));
                 this.lastFrameTime = time;
@@ -12332,7 +12198,6 @@ this.updateImageCounters();
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
-                    if (!v) return;
                     const x1 = v.x * cosX + v.z * sinX;
                     const z1 = -v.x * sinX + v.z * cosX;
                     const y2 = v.y * cosY - z1 * sinY;
@@ -12341,29 +12206,19 @@ this.updateImageCounters();
                     const scale = perspective * 1.18 * this.cardScale;
                     const x = offsetX + x1 * sphereRadius * perspective;
                     const y = offsetY + y2 * sphereRadius * perspective;
+                    card.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
                     card.renderDepth = z2;
-                    const width = Math.max(1, (this.cardWidth - 10) * scale), height = Math.max(1, (this.cardHeight - 10) * scale);
-                    const centerX = (this.layout?.bounds?.sceneCenterX || innerWidth / 2) + x;
-                    const centerY = (this.layout?.bounds?.sceneCenterY || innerHeight / 2) + y;
-                    card.screen = { centerX, centerY, width, height, left: centerX - width / 2, right: centerX + width / 2, top: centerY - height / 2, bottom: centerY + height / 2, radius: Math.min(width, height) * (9 / 112), scale, transform: `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`, zIndex: String(Math.round(depth * 1000)) };
+                    card.element.style.opacity = '1';
+                    card.element.style.zIndex = String(Math.round(depth * 1000));
+                    card.imageBounds = card.element.querySelector('img')?.getBoundingClientRect() || null;
                     const centerDistance = Math.hypot(x, y);
                     if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                 });
-                this.cards.forEach(card => {
-                    if (!card.screen) return;
-                    card.element.style.transform = card.screen.transform;
-                    card.element.style.opacity = '1';
-                    card.element.style.zIndex = card.screen.zIndex;
-                });
                 if (nearestIndex !== this.focusedIndex) {
-                    this.cards[this.focusedIndex]?.element.classList.remove('focused');
                     this.focusedIndex = nearestIndex;
-                    this.cards[nearestIndex]?.element.classList.add('focused');
+                    this.cards.forEach((card, index) => card.element.classList.toggle('focused', index === nearestIndex));
                 }
-                const renderMs = performance.now() - renderStartedAt;
-                SharedImageResources.instrumentation.explorerLastFrameMs = renderMs;
-                if (renderMs > 16.7) SharedImageResources.instrumentation.explorerSlowFrames++;
                 if (this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015) this.requestFrame();
             }
         };
@@ -12444,8 +12299,10 @@ this.updateImageCounters();
                 FocusTraversal.sync(resolved.file.id);
                 if (activeReferrer.surface === 'explore') {
                     const selectedIndex = SpatialGallery.files.findIndex(file => String(file.id) === String(resolved.file.id));
-                    if (selectedIndex >= 0) SpatialGallery.select(selectedIndex);
-                    SpatialGallery.suspend({ restoreFocus: false });
+                    if (selectedIndex >= 0) SpatialGallery.selectedIndex = selectedIndex;
+                    SpatialGallery.elements.root.hidden = true;
+                    if (SpatialGallery.frameId) cancelAnimationFrame(SpatialGallery.frameId);
+                    SpatialGallery.frameId = null;
                 } else if (activeReferrer.surface === 'table') {
                     PhotoTable.stackName = resolved.stackName;
                     PhotoTable.currentFileId = resolved.file.id;
@@ -12458,8 +12315,7 @@ this.updateImageCounters();
                 ModeNavigation.show('focus');
                 Gestures.updateGestureOverlayMode();
                 await Core.displayCurrentImage({ immediateResource });
-                if (token !== this.transitionToken) { SpatialGallery.focusTransitionFileId = null; SharedImageResources.instrumentation.staleCompletions++; return false; }
-                SpatialGallery.focusTransitionFileId = null;
+                if (token !== this.transitionToken) return false;
                 Core.updateImageCounters();
                 Core.updateFavoriteButton();
                 if (!restoring) App.persistViewContext();
@@ -12502,7 +12358,7 @@ this.updateImageCounters();
                     return false;
                 }
                 if (referrer.surface === 'explore') {
-                    if (!SpatialGallery.resumeFromFocus(current.id)) SpatialGallery.open({ stackName: state.currentStack, fileId: current.id, preserveGeometry: true, suppressPersist: true });
+                    SpatialGallery.open({ stackName: state.currentStack, fileId: current.id, preserveGeometry: true, suppressPersist: true });
                 } else if (referrer.surface === 'table') {
                     const canResume = PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0;
                     if (canResume) PhotoTable.resume(current.id);
@@ -12584,16 +12440,13 @@ this.updateImageCounters();
                     canonicalControlUniqueness: Object.values(canonicalControls).every(count => count === 1),
                     sphereBrowseOnly: [...(sphere?.children || [])].every(child => child.id === 'spatial-gallery-scene' || child.id === 'spatial-gallery-loading' || child.classList.contains('spatial-gallery__header') || child.classList.contains('spatial-gallery__controls')),
                     exactCardIdentity: [...(sphere?.querySelectorAll('.spatial-gallery__card') || [])].every(card => Boolean(card.dataset.fileId) && String(card.querySelector('img')?.dataset.fileId) === String(card.dataset.fileId)),
-                    analyticalHitGeometry: SpatialGallery.cards.every(card => !card.vector || (card.image === card.element.querySelector('img') && card.screen && Number.isFinite(card.screen.left) && Number.isFinite(card.renderDepth))),
-                    terminalBuildComplete: SpatialGallery.elements.loading?.hidden !== true || (SpatialGallery.cards.length === SpatialGallery.files.length && SpatialGallery.cards.every(card => card.terminal)),
-                    boundedExplorerWorkers: SharedImageResources.instrumentation.explorerMaxWorkers <= 6,
                     sharedResources: resources,
                     movementChurnFree: resources.sourceReplacementsDuringMovement === 0 && resources.elementRecreationsDuringMovement === 0,
                     hierarchyValid: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level') && document.querySelectorAll('#focus-origin-close').length === 1,
                     canonicalReferrerValid: !CanonicalInspection.active() || (['sort', 'explore', 'table'].includes(CanonicalInspection.referrer?.surface) && String(CanonicalInspection.referrer?.fileId) === String(CurrentImage.current()?.id)),
                     exploreChromeIsolated: Number.parseInt(getComputedStyle(document.getElementById('spatial-gallery-scene')).zIndex, 10) < Number.parseInt(getComputedStyle(document.querySelector('.spatial-gallery__header')).zIndex, 10)
                 };
-                result.pass = result.canonicalControlUniqueness && result.sphereBrowseOnly && result.exactCardIdentity && result.analyticalHitGeometry && result.terminalBuildComplete && result.boundedExplorerWorkers && result.movementChurnFree && result.hierarchyValid && result.canonicalReferrerValid && result.exploreChromeIsolated;
+                result.pass = result.canonicalControlUniqueness && result.sphereBrowseOnly && result.exactCardIdentity && result.movementChurnFree && result.hierarchyValid && result.canonicalReferrerValid && result.exploreChromeIsolated;
                 return result;
             },
             assert() {

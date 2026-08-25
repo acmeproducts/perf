@@ -67,50 +67,6 @@ async function prepareExplore(page: import('@playwright/test').Page) {
   await page.waitForSelector('#spatial-gallery:not([hidden]) .spatial-gallery__card');
 }
 
-test('uses one deadline for the complete thumbnail population', async ({ page }) => {
-  await page.goto(uiUrl);
-  await page.waitForFunction(() => !!(window as any).SpatialGallery);
-
-  const startedAt = await page.evaluate(() => {
-    const state = (window as any).__orbitalAppState;
-    const Core = (window as any).Core;
-    const gallery = (window as any).SpatialGallery;
-    const resources = (window as any).SharedImageResources;
-    const files = Array.from({ length: 40 }, (_, index) => ({
-      id: `stalled-${index}`,
-      name: `Stalled ${index}`,
-      stack: 'in',
-      stackSequence: 1000 - index,
-      metadataStatus: 'loaded',
-      thumbnails: { medium: { url: `https://stalled.test/${index}.jpg` } }
-    }));
-
-    state.imageFiles = files;
-    state.currentFolder = { id: 'stalled-folder', name: 'Stalled folder' };
-    state.providerType = 'test-provider';
-    state.currentStack = 'in';
-    state.currentStackPosition = 0;
-    state.stacks = { in: [], out: [], priority: [], trash: [] };
-    resources.clear();
-    resources.ensure = () => new Promise(() => {});
-    gallery.thumbnailBuildBudgetMs = 50;
-    Core.initializeStacks();
-    gallery.open({ stackName: 'in', fileId: files[0].id });
-    return performance.now();
-  });
-
-  await page.waitForFunction(() => (document.querySelector('#spatial-gallery-loading') as HTMLElement)?.hidden);
-  const result = await page.evaluate(start => ({
-    elapsed: performance.now() - start,
-    terminal: (window as any).SpatialGallery.cards.filter((card: any) => card.terminal).length,
-    placeholders: (window as any).SpatialGallery.cards.filter((card: any) => card.placeholder).length
-  }), startedAt);
-
-  expect(result.elapsed).toBeLessThan(1000);
-  expect(result.terminal).toBe(40);
-  expect(result.placeholders).toBe(40);
-});
-
 async function activateExploreFile(page: import('@playwright/test').Page, fileId: string) {
   return page.evaluate(async id => {
     const gallery = (window as any).SpatialGallery;
@@ -448,8 +404,8 @@ test.describe('Focus navigation and grid selection sync', () => {
       front.element.getBoundingClientRect = () => overlap;
       back.element.querySelector('img').getBoundingClientRect = () => overlap;
       front.element.querySelector('img').getBoundingClientRect = () => overlap;
-      back.screen = { ...overlap, radius: 8 };
-      front.screen = { ...overlap, radius: 8 };
+      back.imageBounds = overlap;
+      front.imageBounds = overlap;
       back.renderDepth = -0.8;
       front.renderDepth = 0.8;
       const topmostHitId = SpatialGallery.cardAtPoint(50, 50)?.fileId;
@@ -524,14 +480,14 @@ test.describe('Focus navigation and grid selection sync', () => {
       const gallery = (window as any).SpatialGallery;
       const [rear, front] = gallery.cards;
       const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100 };
-      rear.screen = { ...overlap, radius: 8 }; front.screen = { ...overlap, radius: 8 };
+      rear.imageBounds = overlap; front.imageBounds = overlap;
       rear.renderDepth = -1; front.renderDepth = 1;
       rear.alphaMask = { width: 1, height: 1, data: new Uint8Array([1]) };
       front.alphaMask = { width: 1, height: 1, data: new Uint8Array([0]) };
       const visibleRear = gallery.cardAtPoint(50, 50)?.fileId;
 
-      rear.screen = { ...overlap, right: 55, width: 45, radius: 8 };
-      front.screen = { ...overlap, left: 56, width: 54, radius: 8 };
+      rear.imageBounds = { ...overlap, right: 55, width: 45 };
+      front.imageBounds = { ...overlap, left: 56, width: 54 };
       front.alphaMask.data[0] = 1;
       gallery.elements.scene.setPointerCapture = () => {};
       let activations = 0;
