@@ -404,8 +404,8 @@ test.describe('Focus navigation and grid selection sync', () => {
       front.element.getBoundingClientRect = () => overlap;
       back.element.querySelector('img').getBoundingClientRect = () => overlap;
       front.element.querySelector('img').getBoundingClientRect = () => overlap;
-      back.imageBounds = overlap;
-      front.imageBounds = overlap;
+      back.screen = { ...overlap, radius: 8 };
+      front.screen = { ...overlap, radius: 8 };
       back.renderDepth = -0.8;
       front.renderDepth = 0.8;
       const topmostHitId = SpatialGallery.cardAtPoint(50, 50)?.fileId;
@@ -480,14 +480,14 @@ test.describe('Focus navigation and grid selection sync', () => {
       const gallery = (window as any).SpatialGallery;
       const [rear, front] = gallery.cards;
       const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100 };
-      rear.imageBounds = overlap; front.imageBounds = overlap;
+      rear.screen = { ...overlap, radius: 8 }; front.screen = { ...overlap, radius: 8 };
       rear.renderDepth = -1; front.renderDepth = 1;
       rear.alphaMask = { width: 1, height: 1, data: new Uint8Array([1]) };
       front.alphaMask = { width: 1, height: 1, data: new Uint8Array([0]) };
       const visibleRear = gallery.cardAtPoint(50, 50)?.fileId;
 
-      rear.imageBounds = { ...overlap, right: 55, width: 45 };
-      front.imageBounds = { ...overlap, left: 56, width: 54 };
+      rear.screen = { ...overlap, right: 55, width: 45, radius: 8 };
+      front.screen = { ...overlap, left: 56, width: 54, radius: 8 };
       front.alphaMask.data[0] = 1;
       gallery.elements.scene.setPointerCapture = () => {};
       let activations = 0;
