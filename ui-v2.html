@@ -11715,6 +11715,30 @@ this.updateImageCounters();
 
             async revealWhenCardsReady(context) {
                 let painted = 0, failed = 0;
+                const readinessDeadline = performance.now() + (this.thumbnailReadyTimeoutMs || 12000);
+                const timedOut = Symbol('thumbnail-readiness-timeout');
+                const waitUntilDeadline = promise => new Promise(resolve => {
+                    const remaining = Math.max(0, readinessDeadline - performance.now());
+                    const timer = setTimeout(() => resolve(timedOut), remaining);
+                    Promise.resolve(promise).then(value => {
+                        clearTimeout(timer);
+                        resolve(value);
+                    }, () => {
+                        clearTimeout(timer);
+                        resolve(timedOut);
+                    });
+                });
+                const waitForImage = img => new Promise(resolve => {
+                    const finish = () => {
+                        clearTimeout(timer);
+                        img.removeEventListener('load', finish);
+                        img.removeEventListener('error', finish);
+                        resolve();
+                    };
+                    const timer = setTimeout(finish, Math.max(0, readinessDeadline - performance.now()));
+                    img.addEventListener('load', finish, { once: true });
+                    img.addEventListener('error', finish, { once: true });
+                });
                 const updateProgress = () => {
                     if (!this.loadIsActive(context) || !this.elements.loadingProgress) return;
                     const failures = failed ? ` · ${failed} failed` : '';
@@ -11724,11 +11748,8 @@ this.updateImageCounters();
                     const file = context.files[index];
                     const img = card.element.querySelector('img');
                     const expectedKey = SharedImageResources.key(file, 'thumb');
-                    const entry = await SharedImageResources.ensure(file, 'thumb', { pin: true });
-                    if (img && (!img.complete || !img.currentSrc)) await new Promise(resolve => {
-                        img.addEventListener('load', resolve, { once: true });
-                        img.addEventListener('error', resolve, { once: true });
-                    });
+                    const entry = await waitUntilDeadline(SharedImageResources.ensure(file, 'thumb', { pin: true }));
+                    if (entry !== timedOut && img && (!img.complete || !img.currentSrc)) await waitForImage(img);
                     let success = false;
                     const binding = img && SharedImageResources.bindings.get(img);
                     if (this.loadIsActive(context) && img?.complete && img.naturalWidth > 0
