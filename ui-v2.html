@@ -11780,6 +11780,13 @@ this.updateImageCounters();
                 let painted = context.cards.filter(card => card.terminal && !card.placeholder).length;
                 let failed = context.cards.filter(card => card.terminal && card.placeholder).length;
                 let cursor = 0, activeWorkers = 0;
+                const deadlineResult = Symbol('thumbnail-build-deadline');
+                let deadlineExpired = false;
+                let deadlineTimer;
+                const deadline = new Promise(resolve => {
+                    deadlineTimer = setTimeout(() => { deadlineExpired = true; resolve(deadlineResult); }, 12000);
+                });
+                const withinDeadline = promise => Promise.race([promise, deadline]);
                 const updateProgress = () => {
                     if (!this.loadIsActive(context) || !this.elements.loadingProgress) return;
                     const failures = failed ? ` · ${failed} failed` : '';
@@ -11801,13 +11808,17 @@ this.updateImageCounters();
                     const file = context.files[index];
                     const img = card.image;
                     const expectedKey = SharedImageResources.key(file, 'thumb');
-                    const timeout = new Promise(resolve => setTimeout(() => resolve(null), 12000));
-                    const entry = await Promise.race([SharedImageResources.ensure(file, 'thumb', { pin: true }), timeout]);
+                    const entry = await withinDeadline(SharedImageResources.ensure(file, 'thumb', { pin: true }));
                     if (!this.loadIsActive(context)) { SharedImageResources.instrumentation.staleCompletions++; return; }
-                    if (entry?.readyState === 'loaded') await SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: true, generation: context.generation });
+                    if (entry === deadlineResult) { failed++; terminalPlaceholder(card, file); updateProgress(); return; }
+                    if (entry?.readyState === 'loaded') {
+                        const attached = await withinDeadline(SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: true, generation: context.generation }));
+                        if (attached === deadlineResult) { failed++; terminalPlaceholder(card, file); updateProgress(); return; }
+                    }
                     if (entry?.readyState === 'loaded' && (!img.complete || !img.currentSrc)) await Promise.race([
                         new Promise(resolve => { img.addEventListener('load', resolve, { once: true }); img.addEventListener('error', resolve, { once: true }); }),
-                        new Promise(resolve => setTimeout(resolve, 4000))
+                        new Promise(resolve => setTimeout(resolve, 4000)),
+                        deadline
                     ]);
                     let success = false;
                     const binding = img && SharedImageResources.bindings.get(img);
@@ -11818,7 +11829,10 @@ this.updateImageCounters();
                         && String(binding?.fileId) === String(file.id)
                         && binding?.key === expectedKey && binding.loadedKey === expectedKey
                         && img.dataset.sharedResourceKey === expectedKey) {
-                        try { if (typeof img.decode === 'function') await img.decode(); success = true; } catch (_) {}
+                        try {
+                            if (typeof img.decode === 'function' && await withinDeadline(img.decode()) === deadlineResult) throw new Error('Thumbnail build deadline expired');
+                            success = !deadlineExpired;
+                        } catch (_) {}
                     }
                     if (success) { painted++; card.terminal = true; this.cacheAlphaMask(card, img); }
                     else { failed++; terminalPlaceholder(card, file); }
@@ -11827,12 +11841,19 @@ this.updateImageCounters();
                 const worker = async () => {
                     activeWorkers++;
                     SharedImageResources.instrumentation.explorerMaxWorkers = Math.max(SharedImageResources.instrumentation.explorerMaxWorkers, activeWorkers);
-                    while (cursor < priority.length && this.loadIsActive(context)) await loadOne(priority[cursor++]);
+                    while (cursor < priority.length && !deadlineExpired && this.loadIsActive(context)) await loadOne(priority[cursor++]);
                     activeWorkers--;
                 };
                 const concurrency = Math.max(2, Math.min(6, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
                 await Promise.all(Array.from({ length: Math.min(concurrency, priority.length) }, worker));
+                clearTimeout(deadlineTimer);
                 if (!this.loadIsActive(context) || context.cards.length !== context.files.length) return;
+                priority.forEach(({ card, index }) => {
+                    if (card.terminal) return;
+                    failed++;
+                    terminalPlaceholder(card, context.files[index]);
+                });
+                updateProgress();
                 if (!context.cards.every((card, index) => card.terminal && card.vector && String(card.fileId) === String(context.files[index].id) && String(card.element.dataset.fileId) === String(card.image.dataset.fileId))) {
                     SharedImageResources.instrumentation.identityMismatches++;
                     return;
