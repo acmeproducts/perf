@@ -399,9 +399,10 @@ test.describe('Focus navigation and grid selection sync', () => {
       const rotationPreservedOrder = JSON.stringify(beforeRotation) === JSON.stringify(state.stacks.in.map((file: any) => file.id));
 
       const [back, front] = SpatialGallery.cards;
-      const overlap = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100, x: 10, y: 10, toJSON() {} };
-      back.element.getBoundingClientRect = () => overlap;
-      front.element.getBoundingClientRect = () => overlap;
+      const backRect = { left: 10, right: 110, top: 10, bottom: 110, width: 100, height: 100, x: 10, y: 10, toJSON() {} };
+      const frontRect = { left: 45, right: 145, top: 45, bottom: 145, width: 100, height: 100, x: 45, y: 45, toJSON() {} };
+      back.element.getBoundingClientRect = () => backRect;
+      front.element.getBoundingClientRect = () => frontRect;
       back.renderDepth = -0.8;
       front.renderDepth = 0.8;
       const topmostHitId = SpatialGallery.cardAtPoint(50, 50)?.fileId;
