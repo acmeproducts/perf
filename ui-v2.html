@@ -2563,9 +2563,22 @@
                 img.dataset.fileId = file.id;
                 img.dataset.sharedResourceKey = key;
                 img.alt = img.alt || file.name || 'Image';
-                this.bindings.set(img, { key, fileId: file.id, surface, movement: false });
+                const expectedFileId = String(file.id);
+                const generation = options.generation;
+                const binding = { key, fileId: expectedFileId, surface, movement: false, loadedKey: null };
+                this.bindings.set(img, binding);
+                const isCurrent = (expectedKey = key) => img.isConnected
+                    && String(img.dataset.fileId) === expectedFileId
+                    && img.dataset.sharedResourceKey === expectedKey
+                    && this.bindings.get(img) === binding
+                    && binding.fileId === expectedFileId
+                    && binding.key === expectedKey
+                    && (surface !== 'explore' || (generation === SpatialGallery.loadGeneration
+                        && String(SpatialGallery.stackName) === String(state.currentStack)
+                        && String(SpatialGallery.folderId) === String(state.currentFolder?.id)
+                        && img.closest('.spatial-gallery__card')?.dataset.fileId === expectedFileId));
                 const apply = value => {
-                    if (img.dataset.sharedResourceKey !== key || !img.isConnected) return;
+                    if (!isCurrent()) return;
                     if (img.getAttribute('src') !== value) {
                         this.instrumentation.providerRequestCount++;
                         img.src = value;
@@ -2573,14 +2586,16 @@
                 };
                 let recovered = false;
                 img.onerror = async () => {
-                    if (recovered || img.dataset.sharedResourceKey !== key) return;
+                    if (recovered || !isCurrent()) return;
                     recovered = true;
                     const fresh = await this.refreshFile(file.id);
-                    if (!fresh || !img.isConnected) return;
+                    if (!fresh || !isCurrent()) return;
                     const refreshed = this.resolve(fresh, rendition);
-                    if (refreshed?.src) apply(refreshed.src);
+                    if (refreshed?.src && refreshed.key === key) apply(refreshed.src);
                 };
                 img.addEventListener('load', () => {
+                    if (!isCurrent()) return;
+                    binding.loadedKey = key;
                     if (this.instrumentation.firstUsefulThumbnailPaintMs == null) this.instrumentation.firstUsefulThumbnailPaintMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
@@ -2591,35 +2606,54 @@
             },
             present(img, file, options = {}) {
                 if (!img || !file?.id) return null;
-                const { immediateSrc = '', surface = 'focus' } = options;
+                const { surface = 'focus' } = options;
+                const immediateResource = options.immediateResource || options.immediateSrc || null;
                 const token = ++this.presentationToken;
                 const fileId = String(file.id);
                 const displayEntry = this.resolve(file, 'display');
                 const thumbEntry = this.resolve(file, 'thumb');
-                const firstFrame = immediateSrc || thumbEntry?.src || displayEntry?.src || '';
+                const immediateEntry = immediateResource?.key ? this.entries.get(immediateResource.key) : null;
+                const firstEntry = immediateEntry && String(immediateResource.fileId) === fileId
+                    && String(immediateEntry.fileId) === fileId && immediateResource.key === immediateEntry.key
+                    && immediateResource.loadedKey === immediateEntry.key ? immediateEntry
+                    : (thumbEntry?.readyState === 'loaded' ? thumbEntry : null);
+                const firstFrame = firstEntry?.src || '';
+                const binding = { key: firstEntry?.key || displayEntry?.key || '', fileId, surface, movement: false, loadedKey: firstEntry?.key || null, token };
+                const isCurrent = (entry, expectedKey = binding.key) => token === this.presentationToken
+                    && String(state.currentFileId) === fileId && img.isConnected
+                    && this.bindings.get(img) === binding && binding.fileId === fileId
+                    && String(entry?.fileId) === fileId && entry?.key === expectedKey
+                    && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey;
                 img.dataset.fileId = fileId;
-                img.dataset.sharedResourceKey = displayEntry?.key || '';
+                img.dataset.sharedResourceKey = binding.key;
                 img.alt = file.name || 'Image';
                 if (firstFrame && img.getAttribute('src') !== firstFrame) {
                     img.src = firstFrame;
                     this.instrumentation.providerRequestCount++;
                 }
                 img.style.opacity = '1';
-                this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
+                this.bindings.set(img, binding);
                 let recovered = false;
                 img.onerror = async () => {
-                    if (recovered || token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
+                    const activeEntry = this.entries.get(binding.key);
+                    if (recovered || !isCurrent(activeEntry)) return;
                     recovered = true;
                     const fresh = await this.refreshFile(fileId);
-                    if (fresh && token === this.presentationToken) this.present(img, fresh, { surface });
+                    if (fresh && token === this.presentationToken && String(state.currentFileId) === fileId) this.present(img, fresh, { surface });
                 };
                 this.ensure(file, 'display').then(entry => {
                     if (!entry?.src || entry.readyState !== 'loaded') return;
-                    if (token !== this.presentationToken || String(state.currentFileId) !== fileId || !img.isConnected) return;
+                    const priorKey = binding.key;
+                    const priorEntry = this.entries.get(priorKey);
+                    if (!isCurrent(priorEntry, priorKey) || String(entry.fileId) !== fileId || entry.key !== displayEntry?.key) return;
+                    binding.key = entry.key;
+                    binding.loadedKey = null;
+                    img.dataset.sharedResourceKey = entry.key;
                     if (img.getAttribute('src') !== entry.src) {
                         img.src = entry.src;
                         this.instrumentation.providerRequestCount++;
                     }
+                    binding.loadedKey = entry.key;
                 });
                 return { token, fileId, firstFrame, displayEntry };
             },
@@ -11207,6 +11241,7 @@ this.updateImageCounters();
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
             pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null,
+            stackName: '', folderId: null, transitionMoving: false, exitPointerGuard: null,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11218,7 +11253,10 @@ this.updateImageCounters();
                 this.elements.stack = document.getElementById('spatial-gallery-stack');
                 this.elements.controlsToggle = document.getElementById('spatial-gallery-controls-toggle');
                 this.elements.stack?.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('explore'); });
-                document.getElementById('spatial-gallery-close')?.addEventListener('click', event => { event.stopPropagation(); ModeNavigation.exit(); });
+                document.getElementById('spatial-gallery-close')?.addEventListener('click', event => {
+                    event.stopPropagation();
+                    if (!this.exitPointerGuard) ModeNavigation.exit();
+                });
                 this.elements.controlsToggle?.addEventListener('click', event => { event.stopPropagation(); this.toggleControls(); });
                 this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
                     event.stopPropagation(); this.adjustControl(button.closest('.spatial-gallery__stepper').dataset.control, Number(button.dataset.delta));
@@ -11257,7 +11295,11 @@ this.updateImageCounters();
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
                 }
-                const canResume = preserveGeometry && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
+                const sameSession = this.stackName === stackName && String(this.folderId) === String(state.currentFolder?.id);
+                const canResume = preserveGeometry && sameSession && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
+                if (!sameSession || !canResume) this.loadGeneration++;
+                this.stackName = stackName;
+                this.folderId = state.currentFolder?.id ?? null;
                 this.files = nextFiles;
                 this.focusTransitionFileId = null;
                 this.rebalanceLayout('open', { persist: false, log: false });
@@ -11267,7 +11309,6 @@ this.updateImageCounters();
                 Utils.elements.appContainer.classList.remove('focus-mode');
                 document.body.classList.remove('origin-focus');
                 this.previousFocus = document.activeElement;
-                this.loadGeneration++;
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId || state.currentFileId || stack[state.currentStackPosition]?.id)));
                 CurrentImage.set(this.files[this.selectedIndex].id, stackName, { allowCrossStack: false });
                 state.inspection = { surface: 'explore', origin: null, fileId: this.files[this.selectedIndex]?.id || null };
@@ -11312,7 +11353,7 @@ this.updateImageCounters();
                 this.files = next;
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
                 this.rebalanceLayout('population', { persist: false, log: false });
-                if (!unchanged) this.buildCards();
+                if (!unchanged) { this.loadGeneration++; this.buildCards(); }
                 else { this.select(this.selectedIndex); SharedImageResources.pinExplorer(this.files); }
                 this.updateChrome();
                 return this.files[this.selectedIndex] || null;
@@ -11329,7 +11370,7 @@ this.updateImageCounters();
                 this.lastTapIndex = -1; this.lastTapTime = 0;
                 this.elements.scene.replaceChildren();
                 this.cards = [];
-                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
+                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
                 SharedImageResources.pinExplorer([]);
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
@@ -11346,7 +11387,7 @@ this.updateImageCounters();
                 this.appendPage();
             },
 
-            createCard(file, index) {
+            createCard(file, index, generation = this.loadGeneration) {
                 const card = document.createElement('button');
                 card.type = 'button';
                 card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`;
@@ -11365,23 +11406,37 @@ this.updateImageCounters();
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
-                const generation = this.loadGeneration;
                 SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: index < 18, generation });
-                return { element: card, vector: null, fileId: file.id };
+                return { element: card, image: img, vector: null, fileId: file.id, generation };
             },
 
-            appendPage() {
+            populationIsCurrent(generation = this.loadGeneration) {
+                return generation === this.loadGeneration && this.stackName === state.currentStack
+                    && String(this.folderId) === String(state.currentFolder?.id) && this.elements.scene.isConnected;
+            },
+
+            populationPaused() {
+                return this.dragging || Boolean(this.pinchStartDistance) || this.transitionMoving
+                    || Boolean(this.focusTransitionFileId) || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015;
+            },
+
+            appendPage(generation = this.loadGeneration) {
+                if (!this.populationIsCurrent(generation)) return;
+                if (this.populationPaused()) { this.scheduleNextPage(generation); return; }
                 const start = this.cards.length, end = Math.min(this.files.length, start + this.pageSize);
                 for (let index = start; index < end; index++) {
                     const file = this.files[index];
-                    this.cards.push(this.createCard(file, index));
+                    if (!this.populationIsCurrent(generation) || this.populationPaused()) break;
+                    this.cards.push(this.createCard(file, index, generation));
                 }
                 this.updateVectors();
                 this.requestFrame();
-                this.scheduleNextPage();
+                this.scheduleNextPage(generation);
             },
 
             reconcilePopulation(nextFiles) {
+                this.loadGeneration++;
+                const generation = this.loadGeneration;
                 if (this.dragging) SharedImageResources.instrumentation.elementRecreationsDuringMovement += 1;
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
                 const renderedCount = Math.min(nextFiles.length, Math.max(this.cards.length, Math.min(this.pageSize, nextFiles.length)));
@@ -11390,7 +11445,7 @@ this.updateImageCounters();
                 for (let index = 0; index < renderedCount; index++) {
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
-                    const card = retained || this.createCard(file, index);
+                    const card = retained || this.createCard(file, index, generation);
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     this.elements.scene.appendChild(card.element);
@@ -11423,10 +11478,14 @@ this.updateImageCounters();
                 return true;
             },
 
-            scheduleNextPage() {
+            scheduleNextPage(generation = this.loadGeneration) {
                 clearTimeout(this.pageTimer);
                 if (this.elements.root.hidden || this.cards.length >= this.files.length) return;
-                this.pageTimer = setTimeout(() => this.appendPage(), 80);
+                this.pageTimer = setTimeout(() => {
+                    if (!this.populationIsCurrent(generation)) return;
+                    if (this.populationPaused()) return this.scheduleNextPage(generation);
+                    this.appendPage(generation);
+                }, 80);
             },
 
             updateVectors() {
@@ -11458,24 +11517,38 @@ this.updateImageCounters();
             activateFileId(fileId, cardElement = null) {
                 const requestedId = String(fileId || '');
                 if (!requestedId || this.focusTransitionFileId) return false;
+                const canonicalStack = state.stacks[state.currentStack] || [];
+                const canonicalIndex = canonicalStack.findIndex(file => String(file.id) === requestedId);
+                if (canonicalIndex < 0) return false;
                 const index = this.files.findIndex(file => String(file.id) === requestedId);
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
                 if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
                 const file = this.files[index];
-                const img = card.element.querySelector('img');
-                const immediateSrc = String(img?.dataset.fileId) === requestedId ? (img.currentSrc || img.src || '') : '';
+                const img = card.image || card.element.querySelector('img');
+                if (String(file.id) !== requestedId || String(card.fileId) !== requestedId
+                    || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
+                    || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
+                const binding = img ? SharedImageResources.bindings.get(img) : null;
+                const immediateResource = binding && String(binding.fileId) === requestedId
+                    && binding.key === img.dataset.sharedResourceKey && binding.loadedKey === binding.key
+                    ? { fileId: requestedId, key: binding.key, loadedKey: binding.loadedKey } : null;
                 // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
                 this.select(index);
-                if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;
-                this.focusTransitionFileId = file.id;
-                return Promise.resolve(CanonicalInspection.enter(file.id, {
+                const resolved = CurrentImage.set(requestedId, state.currentStack, { allowCrossStack: false });
+                if (!resolved || String(state.currentFileId) !== requestedId || String(CurrentImage.current()?.id) !== requestedId
+                    || String(canonicalStack[state.currentStackPosition]?.id) !== requestedId) return false;
+                this.focusTransitionFileId = requestedId;
+                this.transitionMoving = true;
+                return Promise.resolve(CanonicalInspection.enter(requestedId, {
                     surface: 'explore',
                     stackName: state.currentStack,
-                    fileId: file.id
-                }, { immediateSrc })).then(result => {
-                    if (!result) this.focusTransitionFileId = null;
+                    fileId: requestedId
+                }, { immediateSrc: immediateResource })).then(result => {
+                    this.transitionMoving = false;
+                    this.focusTransitionFileId = null;
                     return result;
                 }).catch(error => {
+                    this.transitionMoving = false;
                     this.focusTransitionFileId = null;
                     Utils.showToast(`Unable to inspect that image: ${error.message}`, 'error', true);
                     return false;
@@ -11784,6 +11857,7 @@ this.updateImageCounters();
             origin: null,
             referrer: null,
             transitionToken: 0,
+            exitPointerGuard: null,
 
             active() {
                 return state.inspection?.surface === 'focus' && ['sort', 'explore', 'table'].includes(this.referrer?.surface);
@@ -11823,7 +11897,29 @@ this.updateImageCounters();
                     button?.addEventListener('mousedown', isolate);
                     button?.addEventListener('touchstart', isolate, { passive: true });
                 });
-                exitButton?.addEventListener('click', event => { event.stopPropagation(); this.exit(); });
+                exitButton?.addEventListener('pointerdown', event => {
+                    if (!this.active() || this.exitPointerGuard) return;
+                    this.exitPointerGuard = { pointerId: event.pointerId };
+                    SpatialGallery.exitPointerGuard = this.exitPointerGuard;
+                });
+                const releaseExitGuard = event => {
+                    if (!this.exitPointerGuard || (event.pointerId != null && event.pointerId !== this.exitPointerGuard.pointerId)) return;
+                    const clear = () => {
+                        if (!SpatialGallery.elements.root.hidden) {
+                            this.exitPointerGuard = null;
+                            SpatialGallery.exitPointerGuard = null;
+                        }
+                    };
+                    setTimeout(clear, 0);
+                };
+                addEventListener('pointerup', releaseExitGuard, true);
+                addEventListener('pointercancel', releaseExitGuard, true);
+                exitButton?.addEventListener('click', event => {
+                    event.stopPropagation();
+                    if (exitButton.disabled) return;
+                    exitButton.disabled = true;
+                    this.exit();
+                });
             },
 
             syncExitControl() {
@@ -11838,7 +11934,7 @@ this.updateImageCounters();
             },
 
             async enter(fileId, referrer = 'sort', options = {}) {
-                const { restoring = false, immediateSrc = '' } = options;
+                const { restoring = false, immediateSrc = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
                 const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
                 if (!resolved) {
@@ -11865,6 +11961,8 @@ this.updateImageCounters();
                     PhotoTable.suspend();
                 }
                 state.isFocusMode = true;
+                const exitButton = document.getElementById('focus-origin-close');
+                if (exitButton) exitButton.disabled = false;
                 Utils.elements.appContainer.classList.add('focus-mode');
                 document.body.classList.add('origin-focus');
                 this.syncExitControl();
@@ -11913,7 +12011,11 @@ this.updateImageCounters();
                     return false;
                 }
                 if (referrer.surface === 'explore') {
+                    SpatialGallery.transitionMoving = true;
                     SpatialGallery.open({ stackName: state.currentStack, fileId: current.id, preserveGeometry: true, suppressPersist: true });
+                    SpatialGallery.transitionMoving = false;
+                    const exitButton = document.getElementById('focus-origin-close');
+                    if (exitButton) exitButton.disabled = false;
                 } else if (referrer.surface === 'table') {
                     const canResume = PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0;
                     if (canResume) PhotoTable.resume(current.id);
