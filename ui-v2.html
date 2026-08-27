@@ -2573,6 +2573,9 @@
                     && this.bindings.get(img) === binding
                     && binding.fileId === expectedFileId
                     && binding.key === expectedKey
+                    && (surface !== 'table' || (generation === PhotoTable.folderGeneration
+                        && String(options.stackName) === String(PhotoTable.stackName)
+                        && String(options.folderId) === String(state.currentFolder?.id)))
                     && (surface !== 'explore' || (generation === SpatialGallery.loadGeneration
                         && String(SpatialGallery.stackName) === String(state.currentStack)
                         && String(SpatialGallery.folderId) === String(state.currentFolder?.id)
@@ -10930,6 +10933,7 @@ this.updateImageCounters();
         const PhotoTable = {
             elements: {}, photos: [], deck: [], currentFileId: null, stackName: null, pointer: null,
             frameId: null, z: 1, reducedMotion: false, previousFocus: null, emptyPress: null, emptyPressTimer: null,
+            folderId: null, folderGeneration: 0, exitPointerGuard: null,
             shotStats: { attempts: 0, captures: 0, misses: 0 },
             init() {
                 this.elements.root = document.getElementById('photo-table');
@@ -10937,7 +10941,7 @@ this.updateImageCounters();
                 this.elements.folder = document.getElementById('photo-table-folder');
                 this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
                 this.elements.folder.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('table'); });
-                document.getElementById('photo-table-close')?.addEventListener('click', event => { event.stopPropagation(); this.exit(); });
+                document.getElementById('photo-table-close')?.addEventListener('click', event => { event.stopPropagation(); if (!this.exitPointerGuard) this.exit(); });
                 this.elements.surface.addEventListener('pointerdown', event => { this.down(event); this.emptyLongPressDown(event); });
                 this.elements.surface.addEventListener('pointermove', event => { this.move(event); this.emptyLongPressMove(event); });
                 this.elements.surface.addEventListener('pointerup', event => { this.up(event); this.emptyLongPressEnd(event); });
@@ -10965,9 +10969,11 @@ this.updateImageCounters();
             open({ stackName = state.currentStack, fileId = state.currentFileId } = {}) {
                 const full = state.stacks[stackName] || [];
                 if (!full.length) { Utils.showToast('No images in that stack.', 'info'); return false; }
-                if (this.stackName === stackName && this.photos.length && this.elements.root.hidden) return this.resume(fileId);
+                if (this.folderId === state.currentFolder?.id && this.folderGeneration === state.folderSessionGeneration && this.stackName === stackName && this.photos.length && this.elements.root.hidden) return this.resume(fileId);
                 this.previousFocus = document.activeElement;
                 this.stackName = stackName;
+                this.folderId = state.currentFolder?.id || null;
+                this.folderGeneration = state.folderSessionGeneration;
                 state.currentStack = stackName;
                 TableTagTargets.load();
                 const selected = this.resolveEligible(fileId, stackName);
@@ -11001,10 +11007,10 @@ this.updateImageCounters();
                 const y = Math.max(yBase, Math.min(innerHeight - height - 62, yBase + row * (height * .68) + (((seed >> 4) % 15) - 7)));
                 const rotation = ((seed % 13) - 6) * .7;
                 const element = document.createElement('button'); element.type = 'button'; element.className = 'photo-table__print'; element.dataset.fileId = file.id; element.setAttribute('aria-label', file.name || 'Photo');
-                const img = document.createElement('img'); img.alt = ''; img.draggable = false; element.appendChild(img); this.elements.surface.appendChild(element);
+                const img = document.createElement('img'); img.alt = ''; img.draggable = false; img.dataset.fileId = file.id; element.appendChild(img); this.elements.surface.appendChild(element);
                 const photo = { fileId: file.id, x, y, homeX: x, homeY: y, rotation, homeRotation: rotation, scale: 1, zIndex: ++this.z, velocityX: 0, velocityY: 0, angularVelocity: 0, state: 'resting', rimTarget: null, rimFrames: 0, rimAngle: 0, rimRadius: 0, rimSpin: 0, rimDrop: false, rimCooldown: 0, element };
                 this.photos.push(photo); this.paint(photo);
-                SharedImageResources.attach(img, file, 'thumb', { surface: 'table', visible: index < 18 });
+                SharedImageResources.attach(img, file, 'thumb', { surface: 'table', visible: index < 18, generation: this.folderGeneration, stackName: this.stackName, folderId: this.folderId });
                 element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.handleTap(photo); } });
                 return photo;
             },
@@ -11014,16 +11020,21 @@ this.updateImageCounters();
                 files.forEach((file, index) => this.spawn(file, index));
             },
             reconcilePopulation(preferredFileId = this.currentFileId) {
-                if (!this.isOpen()) return;
                 const eligible = this.workingFiles();
                 const selected = this.resolveEligible(preferredFileId, this.stackName);
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, this.stackName, { allowCrossStack: false });
-                const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
-                const ordered = eligible.slice(start).concat(eligible.slice(0, start));
-                const limit = this.displayLimit(ordered.length);
-                this.deck = ordered.slice(limit).map(file => file.id);
-                this.build(ordered.slice(0, limit));
+                const valid = new Set(eligible.map(file => String(file.id)));
+                this.photos.filter(photo => !valid.has(String(photo.fileId))).forEach(photo => photo.element.remove());
+                this.photos = this.photos.filter(photo => valid.has(String(photo.fileId)));
+                const mounted = new Set(this.photos.map(photo => String(photo.fileId)));
+                if (selected && !mounted.has(String(selected.id))) this.spawn(selected, this.photos.length);
+                const limit = this.displayLimit(eligible.length);
+                for (const file of eligible) {
+                    if (this.photos.length >= limit) break;
+                    if (!this.photos.some(photo => String(photo.fileId) === String(file.id))) this.spawn(file, this.photos.length);
+                }
+                this.deck = eligible.filter(file => !this.photos.some(photo => String(photo.fileId) === String(file.id))).map(file => file.id);
                 this.updateCount();
             },
             paint(photo) { photo.element.style.zIndex = photo.zIndex; photo.element.style.transform = `translate3d(${photo.x}px,${photo.y}px,0) rotate(${photo.rotation}deg) scale(${photo.scale})`; },
@@ -11076,15 +11087,20 @@ this.updateImageCounters();
                 this.pointer = null; TableTagTargets.clearHighlight(); this.paint(photo);
             },
             handleTap(photo) {
-                if (!photo || !CurrentImage.set(photo.fileId, this.stackName, { allowCrossStack: false })) return;
-                this.currentFileId = photo.fileId; this.updateCount();
+                const resolved = photo && CurrentImage.set(photo.fileId, this.stackName, { allowCrossStack: false });
+                if (!resolved || String(CurrentImage.current()?.id) !== String(resolved.file.id)) return;
+                this.currentFileId = resolved.file.id; this.updateCount();
                 const img = photo.element.querySelector('img');
-                const immediateSrc = String(img?.dataset.fileId) === String(photo.fileId) ? (img.currentSrc || img.src || '') : '';
-                CanonicalInspection.enter(photo.fileId, {
+                const binding = img && SharedImageResources.bindings.get(img);
+                const expectedKey = SharedImageResources.key(resolved.file, 'thumb');
+                const immediateResource = photo.fileId === resolved.file.id && photo.element.dataset.fileId === String(resolved.file.id)
+                    && img?.dataset.fileId === String(resolved.file.id) && binding?.fileId === String(resolved.file.id)
+                    && binding.key === expectedKey && binding.loadedKey === expectedKey ? { ...binding } : null;
+                CanonicalInspection.enter(resolved.file.id, {
                     surface: 'table',
                     stackName: this.stackName,
-                    fileId: photo.fileId
-                }, { immediateSrc });
+                    fileId: resolved.file.id
+                }, { immediateResource });
             },
             requestFrame() { if (!this.frameId && this.isOpen()) this.frameId = requestAnimationFrame(time => this.animate(time)); },
             startRim(photo, target) {
@@ -11226,6 +11242,7 @@ this.updateImageCounters();
                 if (!this.elements.root.hidden) this.suspend();
                 if (preserve) return;
                 this.elements.surface.replaceChildren(); this.photos = []; this.deck = [];
+                this.folderId = null; this.folderGeneration = 0;
                 document.body.style.overflow = '';
                 if (restoreFocus) this.previousFocus?.focus?.();
             }
@@ -11901,13 +11918,15 @@ this.updateImageCounters();
                     if (!this.active() || this.exitPointerGuard) return;
                     this.exitPointerGuard = { pointerId: event.pointerId };
                     SpatialGallery.exitPointerGuard = this.exitPointerGuard;
+                    PhotoTable.exitPointerGuard = this.exitPointerGuard;
                 });
                 const releaseExitGuard = event => {
                     if (!this.exitPointerGuard || (event.pointerId != null && event.pointerId !== this.exitPointerGuard.pointerId)) return;
                     const clear = () => {
-                        if (!SpatialGallery.elements.root.hidden) {
+                        if (!SpatialGallery.elements.root.hidden || !PhotoTable.elements.root.hidden || this.referrer?.surface === 'sort') {
                             this.exitPointerGuard = null;
                             SpatialGallery.exitPointerGuard = null;
+                            PhotoTable.exitPointerGuard = null;
                         }
                     };
                     setTimeout(clear, 0);
@@ -11934,7 +11953,7 @@ this.updateImageCounters();
             },
 
             async enter(fileId, referrer = 'sort', options = {}) {
-                const { restoring = false, immediateSrc = null } = options;
+                const { restoring = false, immediateResource = null, immediateSrc = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
                 const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
                 if (!resolved) {
@@ -11968,7 +11987,7 @@ this.updateImageCounters();
                 this.syncExitControl();
                 ModeNavigation.show('focus');
                 Gestures.updateGestureOverlayMode();
-                await Core.displayCurrentImage({ immediateSrc });
+                await Core.displayCurrentImage({ immediateSrc: immediateResource || immediateSrc });
                 if (token !== this.transitionToken) return false;
                 Core.updateImageCounters();
                 Core.updateFavoriteButton();
@@ -12017,7 +12036,9 @@ this.updateImageCounters();
                     const exitButton = document.getElementById('focus-origin-close');
                     if (exitButton) exitButton.disabled = false;
                 } else if (referrer.surface === 'table') {
-                    const canResume = PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0;
+                    const canResume = PhotoTable.folderId === state.currentFolder?.id && PhotoTable.folderGeneration === state.folderSessionGeneration
+                        && PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0
+                        && (state.stacks[state.currentStack] || []).some(file => String(file.id) === String(current.id));
                     if (canResume) PhotoTable.resume(current.id);
                     else PhotoTable.open({ stackName: state.currentStack, fileId: current.id });
                 } else {
