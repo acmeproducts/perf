@@ -67,6 +67,16 @@ async function prepareExplore(page: import('@playwright/test').Page) {
   await page.waitForSelector('#spatial-gallery:not([hidden]) .spatial-gallery__card');
 }
 
+async function prepareSort(page: import('@playwright/test').Page) {
+  await installDeterministicImages(page);
+  await prepareExplore(page);
+  await page.evaluate(() => {
+    (window as any).SpatialGallery.close({ restoreFocus: false, force: true });
+    (window as any).CurrentImage.set('file-y', 'in', { allowCrossStack: false });
+    (window as any).__orbitalAppState.inspection = { surface: null, origin: null, fileId: 'file-y' };
+  });
+}
+
 async function activateExploreFile(page: import('@playwright/test').Page, fileId: string) {
   return page.evaluate(async id => {
     const gallery = (window as any).SpatialGallery;
@@ -181,5 +191,60 @@ test.describe('Explorer Focus identity regressions', () => {
     await page.waitForTimeout(20);
     await page.evaluate(() => document.getElementById('spatial-gallery-close')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.elements.root.hidden)).toBe(true);
+  });
+});
+
+test.describe('Sort and Table Focus continuity', () => {
+  test('keeps Sort selection canonical through Focus paging without reordering the stack', async ({ page }) => {
+    await prepareSort(page);
+    const before = await page.evaluate(() => (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id));
+    await page.evaluate(async () => {
+      (window as any).CurrentImage.set('file-x', 'in', { allowCrossStack: false });
+      await (window as any).CanonicalInspection.enter('file-x', { surface: 'sort', stackName: 'in', fileId: 'file-x' });
+    });
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-x', inspectionFileId: 'file-x', imageFileId: 'file-x', bindingFileId: 'file-x', surface: 'focus'
+    });
+    await page.evaluate(async () => { await (window as any).Gestures.nextImage(); (window as any).CanonicalInspection.exitToReferrer({ persist: false }); });
+    await expect.poll(() => page.evaluate(() => ({
+      id: (window as any).__orbitalAppState.currentFileId,
+      position: (window as any).__orbitalAppState.currentStackPosition,
+      imageId: (document.getElementById('center-image') as HTMLImageElement).dataset.fileId,
+      order: (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id)
+    }))).toEqual({ id: 'file-y', position: 1, imageId: 'file-y', order: before });
+  });
+
+  test('opens an exact Table photo and retains unaffected nodes and physics on Focus return', async ({ page }) => {
+    await prepareSort(page);
+    const before = await page.evaluate(() => {
+      const table = (window as any).PhotoTable;
+      table.open({ stackName: 'in', fileId: 'file-y' });
+      const photo = table.photos.find((item: any) => item.fileId === 'file-x');
+      table.photos.forEach((item: any, index: number) => { item.velocityX = index + .25; item.velocityY = -index - .5; });
+      (window as any).__tableNodes = new Map(table.photos.map((item: any) => [item.fileId, { element: item.element, image: item.element.querySelector('img'), x: item.x, y: item.y, rotation: item.rotation, velocityX: item.velocityX, velocityY: item.velocityY }]));
+      table.handleTap(photo);
+      return (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id);
+    });
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-x', inspectionFileId: 'file-x', imageFileId: 'file-x', bindingFileId: 'file-x', surface: 'focus'
+    });
+    const identity = await page.evaluate(() => ({
+      tableId: (window as any).PhotoTable.currentFileId,
+      position: (window as any).__orbitalAppState.currentStackPosition,
+      order: (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id)
+    }));
+    expect(identity).toEqual({ tableId: 'file-x', position: 0, order: before });
+    await page.evaluate(async () => { await (window as any).Gestures.nextImage(); (window as any).CanonicalInspection.exitToReferrer({ persist: false }); });
+    expect(await page.evaluate(() => {
+      const table = (window as any).PhotoTable;
+      return table.currentFileId === 'file-y' && table.photos.every((item: any) => {
+        const old = (window as any).__tableNodes.get(item.fileId);
+        const image = item.element.querySelector('img');
+        const binding = (window as any).SharedImageResources.bindings.get(image);
+        return !old || (item.element === old.element && image === old.image && item.x === old.x && item.y === old.y
+          && item.rotation === old.rotation && item.velocityX === old.velocityX && item.velocityY === old.velocityY
+          && item.element.dataset.fileId === item.fileId && image.dataset.fileId === item.fileId && binding.fileId === item.fileId);
+      });
+    })).toBe(true);
   });
 });
