@@ -212,6 +212,73 @@ test.describe('Explorer Focus identity regressions', () => {
     await expect(page.locator('#spatial-gallery')).toBeVisible();
   });
 
+  test('coalesces warm resume events without rebuilding an unchanged surface', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const before = await page.evaluate(() => {
+      const App = (window as any).App;
+      const gallery = (window as any).SpatialGallery;
+      App.persistViewContext();
+      (window as any).__resumeCards = gallery.cards.map((card: any) => card.element);
+      (window as any).__resumeRestoreCount = 0;
+      (window as any).__resumeDisplayCount = 0;
+      const restore = App.restoreViewContext.bind(App);
+      const display = (window as any).Core.displayCurrentImage.bind((window as any).Core);
+      App.restoreViewContext = (...args: any[]) => {
+        (window as any).__resumeRestoreCount++;
+        return restore(...args);
+      };
+      (window as any).Core.displayCurrentImage = (...args: any[]) => {
+        (window as any).__resumeDisplayCount++;
+        return display(...args);
+      };
+      return {
+        generation: gallery.loadGeneration,
+        fileId: (window as any).__orbitalAppState.currentFileId,
+        stack: (window as any).__orbitalAppState.currentStack,
+        rotationX: gallery.rotationX,
+        rotationY: gallery.rotationY
+      };
+    });
+
+    await page.evaluate(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).__resumeRestoreCount)).toBe(1);
+    expect(await page.evaluate(({ before }) => {
+      const state = (window as any).__orbitalAppState;
+      const gallery = (window as any).SpatialGallery;
+      return (window as any).__resumeDisplayCount === 0
+        && gallery.loadGeneration === before.generation
+        && state.currentFileId === before.fileId && state.currentStack === before.stack
+        && gallery.rotationX === before.rotationX && gallery.rotationY === before.rotationY
+        && gallery.cards.every((card: any, index: number) => card.element === (window as any).__resumeCards[index]);
+    }, { before })).toBe(true);
+
+    await prepareSort(page);
+    await page.evaluate(() => {
+      const App = (window as any).App;
+      App.persistViewContext();
+      (window as any).__resumeDisplayCount = 0;
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => (window as any).__resumeDisplayCount)).toBe(0);
+
+    await page.evaluate(async () => {
+      await (window as any).CanonicalInspection.enter('file-y', 'sort');
+      const App = (window as any).App;
+      App.persistViewContext();
+      (window as any).__resumeDisplayCount = 0;
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => (window as any).__resumeDisplayCount)).toBe(0);
+  });
+
   test('reconciles deletion across canonical Focus and the retained Explorer population', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
