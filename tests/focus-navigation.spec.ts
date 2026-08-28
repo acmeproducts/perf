@@ -109,7 +109,9 @@ async function focusSnapshot(page: import('@playwright/test').Page) {
       selectedCardFileId: selectedCard?.fileId,
       selectedCardDatasetFileId: selectedCard?.element.dataset.fileId,
       thumbnailFileId: selectedThumbnail?.dataset.fileId,
+      thumbnailKey: selectedThumbnail?.dataset.sharedResourceKey,
       thumbnailBindingFileId: thumbnailBinding?.fileId,
+      thumbnailBindingKey: thumbnailBinding?.key,
       thumbnailLoadedKey: thumbnailBinding?.loadedKey,
       surface: state.inspection?.surface
     };
@@ -127,7 +129,10 @@ test.describe('Explorer Focus identity regressions', () => {
     await expect.poll(async () => focusSnapshot(page)).toMatchObject({
       currentFileId: 'file-x', stackPosition: before.indexOf('file-x'), inspectionFileId: 'file-x',
       imageFileId: 'file-x', bindingFileId: 'file-x', selectedCardFileId: 'file-x',
-      selectedCardDatasetFileId: 'file-x', surface: 'focus'
+      selectedCardDatasetFileId: 'file-x', thumbnailFileId: 'file-x',
+      thumbnailBindingFileId: 'file-x', thumbnailKey: 'test-provider:file-x:v0:thumb',
+      thumbnailBindingKey: 'test-provider:file-x:v0:thumb',
+      thumbnailLoadedKey: 'test-provider:file-x:v0:thumb', surface: 'focus'
     });
     expect(await page.evaluate(() => (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id))).toEqual(before);
   });
@@ -174,6 +179,60 @@ test.describe('Explorer Focus identity regressions', () => {
     await page.evaluate(() => { const gallery = (window as any).SpatialGallery; gallery.velocityX = 0; gallery.velocityY = 0; });
     await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.length)).toBeGreaterThan(initial.count);
     expect(await page.evaluate(() => (window as any).SpatialGallery.cards[0].element === (window as any).__stableCard)).toBe(true);
+  });
+
+  test('returns to the completed Explorer scene without rebuilding or changing its camera', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.every((card: any) => {
+      const image = card.image || card.element.querySelector('img');
+      const binding = (window as any).SharedImageResources.bindings.get(image);
+      return image.complete && image.naturalWidth > 0 && binding?.loadedKey === binding?.key;
+    }))).toBe(true);
+    await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.rotationX = .41; gallery.rotationY = -.23; gallery.render(performance.now());
+      (window as any).__exploreScene = {
+        cards: gallery.cards.map((card: any) => card.element),
+        images: gallery.cards.map((card: any) => card.image || card.element.querySelector('img')),
+        sources: gallery.cards.map((card: any) => (card.image || card.element.querySelector('img')).currentSrc),
+        rotationX: gallery.rotationX, rotationY: gallery.rotationY, generation: gallery.loadGeneration
+      };
+    });
+    await activateExploreFile(page, 'file-x');
+    await page.evaluate(async () => { await (window as any).Gestures.nextImage(); (window as any).CanonicalInspection.exitToReferrer({ persist: false }); });
+    expect(await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery; const saved = (window as any).__exploreScene;
+      return !gallery.elements.root.hidden && gallery.loadGeneration === saved.generation
+        && gallery.rotationX === saved.rotationX && gallery.rotationY === saved.rotationY
+        && gallery.cards.every((card: any, index: number) => card.element === saved.cards[index]
+          && (card.image || card.element.querySelector('img')) === saved.images[index]
+          && (card.image || card.element.querySelector('img')).currentSrc === saved.sources[index]);
+    })).toBe(true);
+    await expect(page.locator('#spatial-gallery')).toBeVisible();
+  });
+
+  test('reconciles deletion across canonical Focus and the retained Explorer population', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await activateExploreFile(page, 'file-y');
+    await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      state.provider = { deleteFile: async () => true };
+      state.dbManager = { scheduleFolderCacheSave: async () => true };
+    });
+    await page.evaluate(() => (window as any).Core.deleteCurrentImage({ source: 'test' }));
+    expect(await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      const deleted = 'file-y';
+      const ids = [
+        ...state.imageFiles.map((file: any) => file.id), ...state.stacks.in.map((file: any) => file.id),
+        ...(window as any).SpatialGallery.files.map((file: any) => file.id),
+        ...(window as any).SpatialGallery.cards.map((card: any) => card.fileId)
+      ];
+      return !ids.includes(deleted) && state.currentFileId === state.inspection.fileId
+        && state.stacks.in[state.currentStackPosition]?.id === state.currentFileId;
+    })).toBe(true);
   });
 
   test('one Focus X pointer sequence cannot also close the revealed Explorer', async ({ page }) => {
