@@ -251,6 +251,29 @@ test.describe('Explorer Focus identity regressions', () => {
     await page.evaluate(() => document.getElementById('spatial-gallery-close')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.elements.root.hidden)).toBe(true);
   });
+
+  test('clears the Focus exit guard when its pointer is canceled', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await activateExploreFile(page, 'file-x');
+    expect(await page.evaluate(() => {
+      const focusClose = document.getElementById('focus-origin-close')!;
+      focusClose.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 51 }));
+      dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 51 }));
+      const inspection = (window as any).CanonicalInspection;
+      return inspection.exitPointerGuard === null
+        && (window as any).ModeNavigation.transitionGuard === null
+        && (window as any).SpatialGallery.exitPointerGuard === null
+        && (window as any).PhotoTable.exitPointerGuard === null;
+    })).toBe(true);
+    await page.evaluate(() => {
+      const focusClose = document.getElementById('focus-origin-close')!;
+      focusClose.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 52 }));
+      focusClose.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 52 }));
+    });
+    await expect.poll(() => page.evaluate(() => !(window as any).SpatialGallery.elements.root.hidden)).toBe(true);
+  });
 });
 
 test.describe('Sort and Table Focus continuity', () => {
@@ -271,6 +294,20 @@ test.describe('Sort and Table Focus continuity', () => {
       imageId: (document.getElementById('center-image') as HTMLImageElement).dataset.fileId,
       order: (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id)
     }))).toEqual({ id: 'file-y', position: 1, imageId: 'file-y', order: before });
+  });
+
+  test('loads the next Sort display after returning from Focus with no cached thumbnail', async ({ page }) => {
+    await prepareSort(page);
+    await page.evaluate(async () => {
+      await (window as any).CanonicalInspection.enter('file-x', { surface: 'sort', stackName: 'in', fileId: 'file-x' });
+      await (window as any).CanonicalInspection.exitToReferrer({ persist: false });
+      (window as any).SharedImageResources.clear();
+      await (window as any).Gestures.nextImage();
+    });
+    await expect.poll(async () => focusSnapshot(page)).toMatchObject({
+      currentFileId: 'file-y', inspectionFileId: 'file-y', imageFileId: 'file-y', bindingFileId: 'file-y',
+      currentSrc: imageUrl('file-y', 'display'), opacity: '1', surface: null
+    });
   });
 
   test('opens an exact Table photo and retains unaffected nodes and physics on Focus return', async ({ page }) => {
