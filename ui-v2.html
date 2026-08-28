@@ -6997,11 +6997,38 @@
                 }
             },
             async restoreViewContext(options = {}) {
-                const { force = false } = options;
+                const { force = false, expectedContext = null } = options;
                 const persisted = state.lastViewContext || loadViewContextFromStorage();
                 if (!persisted) return false;
                 if (!state.currentFolder?.id || !state.providerType) return false;
                 if (persisted.providerType !== state.providerType || persisted.folderId !== state.currentFolder.id) return false;
+                if (expectedContext && (expectedContext.navigationToken !== state.navigationToken
+                    || expectedContext.providerType !== state.providerType
+                    || String(expectedContext.folderId) !== String(state.currentFolder.id))) return false;
+
+                const gridOpen = Boolean(Utils.elements.gridModal && !Utils.elements.gridModal.classList.contains('hidden'));
+                const detailsOpen = Boolean(Utils.elements.detailsModal && !Utils.elements.detailsModal.classList.contains('hidden'));
+                const liveSurface = gridOpen ? 'grid' : ModeNavigation.currentView();
+                const liveFileId = CurrentImage.current()?.id || null;
+                const persistedReferrer = persisted.focusReferrer || persisted.grid?.underlayFocusReferrer
+                    || (persisted.focusOrigin ? { surface: persisted.focusOrigin, stackName: persisted.stack, fileId: persisted.fileId } : null);
+                const liveReferrer = CanonicalInspection.active() ? CanonicalInspection.referrerSnapshot() : null;
+                const sameReferrer = !persistedReferrer && !liveReferrer || (
+                    String(persistedReferrer?.surface || 'sort') === String(liveReferrer?.surface || 'sort')
+                    && String(persistedReferrer?.stackName || persisted.stack) === String(liveReferrer?.stackName || state.currentStack)
+                    && String(persistedReferrer?.fileId || persisted.fileId) === String(liveReferrer?.fileId || liveFileId)
+                );
+                const liveContextMatches = String(persisted.stack) === String(state.currentStack)
+                    && String(persisted.fileId) === String(liveFileId)
+                    && persisted.surface === liveSurface
+                    && Boolean(persisted.detailsOpen) === detailsOpen
+                    && (persisted.surface === 'grid') === gridOpen
+                    && sameReferrer;
+                if (!force && liveContextMatches) {
+                    if (liveSurface === 'explore') SpatialGallery.requestFrame();
+                    else if (liveSurface === 'table') PhotoTable.requestFrame();
+                    return true;
+                }
 
                 const targetStack = STACKS.includes(persisted.stack) ? persisted.stack : state.currentStack;
                 const stackArray = state.stacks[targetStack] || [];
@@ -7122,9 +7149,22 @@
                 }
                 const persist = () => this.persistViewContext();
                 const restore = () => {
-                    if (document.visibilityState === 'visible') {
-                        this.restoreViewContext({ force: true });
-                    }
+                    if (document.visibilityState !== 'visible' || this._viewResumeScheduled || this._viewResumePromise) return;
+                    this._viewResumeScheduled = true;
+                    const expectedContext = {
+                        navigationToken: state.navigationToken,
+                        providerType: state.providerType,
+                        folderId: state.currentFolder?.id || null
+                    };
+                    queueMicrotask(() => {
+                        this._viewResumeScheduled = false;
+                        if (document.visibilityState !== 'visible' || expectedContext.navigationToken !== state.navigationToken
+                            || expectedContext.providerType !== state.providerType
+                            || String(expectedContext.folderId) !== String(state.currentFolder?.id || null)) return;
+                        this._viewResumePromise = Promise.resolve(this.restoreViewContext({ expectedContext }))
+                            .catch(error => console.warn('Failed to reconcile view context:', error))
+                            .finally(() => { this._viewResumePromise = null; });
+                    });
                 };
 
                 document.addEventListener('visibilitychange', () => {
