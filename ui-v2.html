@@ -2565,6 +2565,8 @@
                 img.alt = img.alt || file.name || 'Image';
                 const expectedFileId = String(file.id);
                 const generation = options.generation;
+                const expectedStackName = options.stackName;
+                const expectedFolderId = options.folderId;
                 const binding = { key, fileId: expectedFileId, surface, movement: false, loadedKey: null };
                 this.bindings.set(img, binding);
                 const isCurrent = (expectedKey = key) => img.isConnected
@@ -2574,11 +2576,14 @@
                     && binding.fileId === expectedFileId
                     && binding.key === expectedKey
                     && (surface !== 'table' || (generation === PhotoTable.folderGeneration
-                        && String(options.stackName) === String(PhotoTable.stackName)
-                        && String(options.folderId) === String(state.currentFolder?.id)))
+                        && String(expectedStackName) === String(PhotoTable.stackName)
+                        && String(expectedFolderId) === String(PhotoTable.folderId)
+                        && String(expectedFolderId) === String(state.currentFolder?.id)))
                     && (surface !== 'explore' || (generation === SpatialGallery.loadGeneration
-                        && String(SpatialGallery.stackName) === String(state.currentStack)
-                        && String(SpatialGallery.folderId) === String(state.currentFolder?.id)
+                        && String(expectedStackName) === String(SpatialGallery.stackName)
+                        && String(expectedStackName) === String(state.currentStack)
+                        && String(expectedFolderId) === String(SpatialGallery.folderId)
+                        && String(expectedFolderId) === String(state.currentFolder?.id)
                         && img.closest('.spatial-gallery__card')?.dataset.fileId === expectedFileId));
                 const apply = value => {
                     if (!isCurrent()) return;
@@ -2623,19 +2628,21 @@
                 const firstFrame = firstEntry?.src || '';
                 const binding = { key: firstEntry?.key || displayEntry?.key || '', fileId, surface, movement: false, loadedKey: firstEntry?.key || null, token };
                 const isCurrent = (entry, expectedKey = binding.key) => token === this.presentationToken
-                    && String(state.currentFileId) === fileId && img.isConnected
+                    && String(state.currentFileId) === fileId
+                    && (!state.inspection?.fileId || String(state.inspection.fileId) === fileId)
+                    && img.isConnected
                     && this.bindings.get(img) === binding && binding.fileId === fileId
                     && String(entry?.fileId) === fileId && entry?.key === expectedKey
                     && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey;
                 img.dataset.fileId = fileId;
                 img.dataset.sharedResourceKey = binding.key;
                 img.alt = file.name || 'Image';
+                this.bindings.set(img, binding);
                 if (firstFrame && img.getAttribute('src') !== firstFrame) {
                     img.src = firstFrame;
                     this.instrumentation.providerRequestCount++;
                 }
-                img.style.opacity = '1';
-                this.bindings.set(img, binding);
+                img.style.opacity = firstFrame ? '1' : '0';
                 let recovered = false;
                 img.onerror = async () => {
                     const activeEntry = this.entries.get(binding.key);
@@ -2657,6 +2664,7 @@
                         this.instrumentation.providerRequestCount++;
                     }
                     binding.loadedKey = entry.key;
+                    img.style.opacity = '1';
                 });
                 return { token, fileId, firstFrame, displayEntry };
             },
@@ -7743,6 +7751,14 @@
                         if (originFocus) CanonicalInspection.handleEmpty();
                     } else {
                         CurrentImage.fallback(previousOrder, fileId, currentStackName);
+                        const fallbackId = CurrentImage.current()?.id || null;
+                        if (SpatialGallery.stackName === currentStackName && SpatialGallery.files.length) {
+                            SpatialGallery.syncPopulation(fallbackId);
+                        }
+                        if (PhotoTable.stackName === currentStackName && PhotoTable.photos.length) {
+                            PhotoTable.reconcilePopulation(fallbackId);
+                        }
+                        CanonicalInspection.syncCurrent();
                         pendingDisplay = this.displayCurrentImage();
                     }
                     const movedToRecycle = await deleteRequest;
@@ -7754,6 +7770,12 @@
                             details: `Provider recycle move failed for ${currentFile.name || fileId}; item restored in ${STACK_NAMES[originalStack] || originalStack}.`,
                             data: { from: originalStack, source }
                         });
+                        if (SpatialGallery.stackName === currentStackName && SpatialGallery.files.length) {
+                            SpatialGallery.syncPopulation(CurrentImage.current()?.id);
+                        }
+                        if (PhotoTable.stackName === currentStackName && PhotoTable.photos.length) {
+                            PhotoTable.reconcilePopulation(CurrentImage.current()?.id);
+                        }
                         await this.displayCurrentImage();
                         return;
                     }
@@ -9275,6 +9297,7 @@ this.updateImageCounters();
             entry: null,
             switcherOpen: false,
             footerTrigger: null,
+            transitionGuard: null,
 
             init() {
                 const root = Utils.elements.submodeFooter;
@@ -9314,6 +9337,12 @@ this.updateImageCounters();
                         this.closeSwitcher();
                     }
                 });
+
+                document.addEventListener('click', event => {
+                    if (!this.transitionGuard || event.target.closest?.('#focus-origin-close')) return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                }, true);
 
                 this.syncButtons();
             },
@@ -11095,7 +11124,9 @@ this.updateImageCounters();
                 const expectedKey = SharedImageResources.key(resolved.file, 'thumb');
                 const immediateResource = photo.fileId === resolved.file.id && photo.element.dataset.fileId === String(resolved.file.id)
                     && img?.dataset.fileId === String(resolved.file.id) && binding?.fileId === String(resolved.file.id)
-                    && binding.key === expectedKey && binding.loadedKey === expectedKey ? { ...binding } : null;
+                    && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey
+                    && binding.loadedKey === expectedKey
+                    && (!this.currentFileId || String(this.currentFileId) === String(resolved.file.id)) ? { ...binding } : null;
                 CanonicalInspection.enter(resolved.file.id, {
                     surface: 'table',
                     stackName: this.stackName,
@@ -11346,7 +11377,8 @@ this.updateImageCounters();
                 ModeNavigation.show('explore');
                 Gestures.updateGestureOverlayMode();
                 if (this.cards[this.selectedIndex]) {
-                    this.center(this.selectedIndex);
+                    if (canResume) this.render(performance.now());
+                    else this.center(this.selectedIndex);
                     this.cards[this.selectedIndex].element.focus();
                 }
                 this.lastFrameTime = performance.now();
@@ -11423,7 +11455,10 @@ this.updateImageCounters();
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
-                SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: index < 18, generation });
+                SharedImageResources.attach(img, file, 'thumb', {
+                    surface: 'explore', visible: index < 18, generation,
+                    stackName: this.stackName, folderId: this.folderId
+                });
                 return { element: card, image: img, vector: null, fileId: file.id, generation };
             },
 
@@ -11546,8 +11581,10 @@ this.updateImageCounters();
                     || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
                     || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
+                const expectedKey = SharedImageResources.key(file, 'thumb');
                 const immediateResource = binding && String(binding.fileId) === requestedId
-                    && binding.key === img.dataset.sharedResourceKey && binding.loadedKey === binding.key
+                    && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey
+                    && binding.loadedKey === expectedKey
                     ? { fileId: requestedId, key: binding.key, loadedKey: binding.loadedKey } : null;
                 // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
                 this.select(index);
@@ -11917,6 +11954,7 @@ this.updateImageCounters();
                 exitButton?.addEventListener('pointerdown', event => {
                     if (!this.active() || this.exitPointerGuard) return;
                     this.exitPointerGuard = { pointerId: event.pointerId };
+                    ModeNavigation.transitionGuard = this.exitPointerGuard;
                     SpatialGallery.exitPointerGuard = this.exitPointerGuard;
                     PhotoTable.exitPointerGuard = this.exitPointerGuard;
                 });
@@ -11925,6 +11963,7 @@ this.updateImageCounters();
                     const clear = () => {
                         if (!SpatialGallery.elements.root.hidden || !PhotoTable.elements.root.hidden || this.referrer?.surface === 'sort') {
                             this.exitPointerGuard = null;
+                            ModeNavigation.transitionGuard = null;
                             SpatialGallery.exitPointerGuard = null;
                             PhotoTable.exitPointerGuard = null;
                         }
