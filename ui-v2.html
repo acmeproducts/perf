@@ -7492,6 +7492,8 @@
             }
         };
         const Core = {
+            neighborPrefetchGeneration: 0,
+            neighborPrefetchSignature: '',
             initializeStacks() {
                 const preservedFileId = state.currentFileId;
                 const preservedStack = state.currentStack;
@@ -7526,8 +7528,17 @@
                 const start = Math.max(0, index - windowSize);
                 const end = Math.min(stack.length, index + windowSize + 1);
                 const neighbors = stack.slice(start, end);
-                Utils.prefetchImages(neighbors);
-                SharedImageResources.warm(neighbors, 'display');
+                const signature = `${state.currentStack}:${neighbors.map(file => `${file.id}:${SharedImageResources.version(file)}`).join('|')}`;
+                if (signature === this.neighborPrefetchSignature) return;
+                this.neighborPrefetchSignature = signature;
+                const generation = ++this.neighborPrefetchGeneration;
+                // Sorting must only replace the focused image on the critical path. Coalesce
+                // speculative work so a run of quick flicks warms the final neighbourhood once.
+                Utils.defer(() => {
+                    if (generation !== this.neighborPrefetchGeneration || signature !== this.neighborPrefetchSignature) return;
+                    Utils.prefetchImages(neighbors);
+                    SharedImageResources.warm(neighbors, 'display');
+                }, { priority: 'background', timeout: 180 });
             },
 
             sortFiles(files) {
@@ -9166,8 +9177,13 @@ this.updateImageCounters();
         };
         const SurfaceStackSelector = {
             surface: null,
+            anchor: null,
             open(surface) {
                 this.surface = surface;
+                this.anchor = {
+                    stackName: state.currentStack,
+                    fileId: this.currentFileId(surface)
+                };
                 this.render();
                 const root = document.getElementById('surface-stack-selector');
                 if (root) { root.hidden = false; root.querySelector('button')?.focus(); }
@@ -9176,6 +9192,7 @@ this.updateImageCounters();
                 const root = document.getElementById('surface-stack-selector');
                 if (root) root.hidden = true;
                 this.surface = null;
+                this.anchor = null;
             },
             currentFileId(surface = this.surface) {
                 if (surface === 'explore') return SpatialGallery.files[SpatialGallery.selectedIndex]?.id || CurrentImage.current()?.id;
@@ -9216,10 +9233,11 @@ this.updateImageCounters();
             openGrid(stackName) {
                 const surface = this.surface;
                 if (!surface || !(state.stacks[stackName] || []).length) return false;
+                const anchor = this.anchor || { stackName: state.currentStack, fileId: this.currentFileId(surface) };
                 const origin = {
                     surface,
-                    stackName: state.currentStack,
-                    fileId: this.currentFileId(surface),
+                    stackName: anchor.stackName,
+                    fileId: anchor.fileId,
                     focusOrigin: CanonicalInspection.active() ? CanonicalInspection.origin : null,
                     focusReferrer: CanonicalInspection.active() ? CanonicalInspection.referrerSnapshot() : null,
                     gridStack: stackName
@@ -11406,6 +11424,12 @@ this.updateImageCounters();
                     this.elements.root.hidden = false;
                     SharedImageResources.pinExplorer(this.files);
                     this.select(this.selectedIndex);
+                } else if (sameSession && this.cards.length) {
+                    // Focus and Sort may change the population while Explore is suspended.
+                    // Reconcile by stable ID so already painted thumbnails and their decoded
+                    // image nodes survive instead of repainting the complete sphere.
+                    this.reconcilePopulation(nextFiles);
+                    this.elements.root.hidden = false;
                 } else {
                     this.elements.root.hidden = true;
                     this.buildCards();

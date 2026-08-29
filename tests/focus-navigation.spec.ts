@@ -212,6 +212,54 @@ test.describe('Explorer Focus identity regressions', () => {
     await expect(page.locator('#spatial-gallery')).toBeVisible();
   });
 
+  test('retains painted Explorer thumbnails when Focus sorting changes its population', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.length)).toBe(3);
+    await activateExploreFile(page, 'file-y');
+    await page.evaluate(async () => {
+      const state = (window as any).__orbitalAppState;
+      state.dbManager = { scheduleFolderCacheSave: async () => true };
+      (window as any).__retainedExploreNodes = new Map(
+        (window as any).SpatialGallery.cards.map((card: any) => [card.fileId, card.element])
+      );
+      await (window as any).Core.moveToStack('out', { source: 'test:focus-sort' });
+      (window as any).CanonicalInspection.exitToReferrer({ persist: false });
+    });
+
+    await expect(page.locator('#spatial-gallery')).toBeVisible();
+    expect(await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      const retained = (window as any).__retainedExploreNodes;
+      return gallery.files.map((file: any) => file.id).join(',') === 'file-x,file-z'
+        && gallery.cards.every((card: any) => card.element === retained.get(card.fileId));
+    })).toBe(true);
+  });
+
+  test('puts the Explorer-selected Focus image first when opening its Grid', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await activateExploreFile(page, 'file-y');
+    await page.evaluate(() => {
+      (window as any).SurfaceStackSelector.open('focus');
+      (window as any).SurfaceStackSelector.openGrid('in');
+    });
+
+    await expect(page.locator('#grid-modal')).toBeVisible();
+    expect(await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      const first = document.querySelector('#grid-container .grid-item') as HTMLElement | null;
+      return {
+        entryFileId: state.grid.entryFileId,
+        firstFileId: state.grid.lazyLoadState.allFiles[0]?.id,
+        firstTileFileId: first?.dataset.fileId,
+        firstTileCurrent: first?.classList.contains('current')
+      };
+    })).toEqual({
+      entryFileId: 'file-y', firstFileId: 'file-y', firstTileFileId: 'file-y', firstTileCurrent: true
+    });
+  });
+
   test('coalesces warm resume events without rebuilding an unchanged surface', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
