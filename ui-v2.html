@@ -6997,38 +6997,11 @@
                 }
             },
             async restoreViewContext(options = {}) {
-                const { force = false, expectedContext = null } = options;
+                const { force = false } = options;
                 const persisted = state.lastViewContext || loadViewContextFromStorage();
                 if (!persisted) return false;
                 if (!state.currentFolder?.id || !state.providerType) return false;
                 if (persisted.providerType !== state.providerType || persisted.folderId !== state.currentFolder.id) return false;
-                if (expectedContext && (expectedContext.navigationToken !== state.navigationToken
-                    || expectedContext.providerType !== state.providerType
-                    || String(expectedContext.folderId) !== String(state.currentFolder.id))) return false;
-
-                const gridOpen = Boolean(Utils.elements.gridModal && !Utils.elements.gridModal.classList.contains('hidden'));
-                const detailsOpen = Boolean(Utils.elements.detailsModal && !Utils.elements.detailsModal.classList.contains('hidden'));
-                const liveSurface = gridOpen ? 'grid' : ModeNavigation.currentView();
-                const liveFileId = CurrentImage.current()?.id || null;
-                const persistedReferrer = persisted.focusReferrer || persisted.grid?.underlayFocusReferrer
-                    || (persisted.focusOrigin ? { surface: persisted.focusOrigin, stackName: persisted.stack, fileId: persisted.fileId } : null);
-                const liveReferrer = CanonicalInspection.active() ? CanonicalInspection.referrerSnapshot() : null;
-                const sameReferrer = !persistedReferrer && !liveReferrer || (
-                    String(persistedReferrer?.surface || 'sort') === String(liveReferrer?.surface || 'sort')
-                    && String(persistedReferrer?.stackName || persisted.stack) === String(liveReferrer?.stackName || state.currentStack)
-                    && String(persistedReferrer?.fileId || persisted.fileId) === String(liveReferrer?.fileId || liveFileId)
-                );
-                const liveContextMatches = String(persisted.stack) === String(state.currentStack)
-                    && String(persisted.fileId) === String(liveFileId)
-                    && persisted.surface === liveSurface
-                    && Boolean(persisted.detailsOpen) === detailsOpen
-                    && (persisted.surface === 'grid') === gridOpen
-                    && sameReferrer;
-                if (!force && liveContextMatches) {
-                    if (liveSurface === 'explore') SpatialGallery.requestFrame();
-                    else if (liveSurface === 'table') PhotoTable.requestFrame();
-                    return true;
-                }
 
                 const targetStack = STACKS.includes(persisted.stack) ? persisted.stack : state.currentStack;
                 const stackArray = state.stacks[targetStack] || [];
@@ -7148,33 +7121,17 @@
                     return;
                 }
                 const persist = () => this.persistViewContext();
-                const restore = () => {
-                    if (document.visibilityState !== 'visible' || this._viewResumeScheduled || this._viewResumePromise) return;
-                    this._viewResumeScheduled = true;
-                    const expectedContext = {
-                        navigationToken: state.navigationToken,
-                        providerType: state.providerType,
-                        folderId: state.currentFolder?.id || null
-                    };
-                    queueMicrotask(() => {
-                        this._viewResumeScheduled = false;
-                        if (document.visibilityState !== 'visible' || expectedContext.navigationToken !== state.navigationToken
-                            || expectedContext.providerType !== state.providerType
-                            || String(expectedContext.folderId) !== String(state.currentFolder?.id || null)) return;
-                        this._viewResumePromise = Promise.resolve(this.restoreViewContext({ expectedContext }))
-                            .catch(error => console.warn('Failed to reconcile view context:', error))
-                            .finally(() => { this._viewResumePromise = null; });
-                    });
-                };
 
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'hidden') {
                         persist();
+                        SpatialGallery.suspendForVisibility();
+                        PhotoTable.suspendForVisibility();
                         return;
                     }
-                    restore();
+                    SpatialGallery.resumeForVisibility();
+                    PhotoTable.resumeForVisibility();
                 });
-                window.addEventListener('focus', restore);
                 window.addEventListener('blur', persist);
                 window.addEventListener('pagehide', persist);
                 window.addEventListener('beforeunload', persist);
@@ -11020,6 +10977,7 @@ this.updateImageCounters();
         const PhotoTable = {
             elements: {}, photos: [], deck: [], currentFileId: null, stackName: null, pointer: null,
             frameId: null, z: 1, reducedMotion: false, previousFocus: null, emptyPress: null, emptyPressTimer: null,
+            visibilityAnimationSuspended: false,
             folderId: null, folderGeneration: 0, exitPointerGuard: null,
             shotStats: { attempts: 0, captures: 0, misses: 0 },
             init() {
@@ -11033,7 +10991,6 @@ this.updateImageCounters();
                 this.elements.surface.addEventListener('pointermove', event => { this.move(event); this.emptyLongPressMove(event); });
                 this.elements.surface.addEventListener('pointerup', event => { this.up(event); this.emptyLongPressEnd(event); });
                 this.elements.surface.addEventListener('pointercancel', event => { this.cancelPointer(event); this.emptyLongPressEnd(event); });
-                document.addEventListener('visibilitychange', () => { if (document.hidden && this.frameId) { cancelAnimationFrame(this.frameId); this.frameId = null; } });
                 TableTagTargets.init();
             },
             isOpen() { return Boolean(this.elements.root && !this.elements.root.hidden); },
@@ -11191,7 +11148,18 @@ this.updateImageCounters();
                     fileId: resolved.file.id
                 }, { immediateResource });
             },
-            requestFrame() { if (!this.frameId && this.isOpen()) this.frameId = requestAnimationFrame(time => this.animate(time)); },
+            requestFrame() { if (!this.frameId && this.isOpen() && document.visibilityState !== 'hidden') this.frameId = requestAnimationFrame(time => this.animate(time)); },
+            suspendForVisibility() {
+                this.visibilityAnimationSuspended = this.visibilityAnimationSuspended || Boolean(this.frameId)
+                    || this.photos.some(photo => photo.state === 'thrown' || photo.state === 'rim');
+                if (this.frameId) cancelAnimationFrame(this.frameId);
+                this.frameId = null;
+            },
+            resumeForVisibility() {
+                if (!this.visibilityAnimationSuspended) return;
+                this.visibilityAnimationSuspended = false;
+                this.requestFrame();
+            },
             startRim(photo, target) {
                 const speed = Math.hypot(photo.velocityX, photo.velocityY);
                 photo.state = 'rim'; photo.rimTarget = target.tag;
@@ -11346,6 +11314,7 @@ this.updateImageCounters();
             pressedCard: null, pressedFileId: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
+            visibilityAnimationSuspended: false,
             pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null,
             stackName: '', folderId: null, transitionMoving: false, exitPointerGuard: null,
 
@@ -11929,7 +11898,20 @@ this.updateImageCounters();
             },
 
             requestFrame() {
-                if (!this.frameId && !this.elements.root.hidden) this.frameId = requestAnimationFrame(time => this.render(time));
+                if (!this.frameId && !this.elements.root.hidden && document.visibilityState !== 'hidden') this.frameId = requestAnimationFrame(time => this.render(time));
+            },
+
+            suspendForVisibility() {
+                this.visibilityAnimationSuspended = this.visibilityAnimationSuspended || Boolean(this.frameId) || this.dragging
+                    || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015;
+                if (this.frameId) cancelAnimationFrame(this.frameId);
+                this.frameId = null;
+            },
+
+            resumeForVisibility() {
+                if (!this.visibilityAnimationSuspended) return;
+                this.visibilityAnimationSuspended = false;
+                this.requestFrame();
             },
 
             render(time) {

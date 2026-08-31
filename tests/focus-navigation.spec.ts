@@ -260,71 +260,170 @@ test.describe('Explorer Focus identity regressions', () => {
     });
   });
 
-  test('coalesces warm resume events without rebuilding an unchanged surface', async ({ page }) => {
+  test('warm resume retains a stationary Explorer without restoration or rendering', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
     const before = await page.evaluate(() => {
       const App = (window as any).App;
+      const Core = (window as any).Core;
       const gallery = (window as any).SpatialGallery;
-      App.persistViewContext();
-      (window as any).__resumeCards = gallery.cards.map((card: any) => card.element);
-      (window as any).__resumeRestoreCount = 0;
-      (window as any).__resumeDisplayCount = 0;
+      if (gallery.frameId) cancelAnimationFrame(gallery.frameId);
+      gallery.frameId = null; gallery.velocityX = 0; gallery.velocityY = 0; gallery.dragging = false;
+      (window as any).__visibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window as any).__visibilityState });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => (window as any).__visibilityState === 'hidden' });
+      (window as any).__warmCounts = { restore: 0, display: 0, request: 0, render: 0 };
+      const counts = (window as any).__warmCounts;
       const restore = App.restoreViewContext.bind(App);
-      const display = (window as any).Core.displayCurrentImage.bind((window as any).Core);
-      App.restoreViewContext = (...args: any[]) => {
-        (window as any).__resumeRestoreCount++;
-        return restore(...args);
-      };
-      (window as any).Core.displayCurrentImage = (...args: any[]) => {
-        (window as any).__resumeDisplayCount++;
-        return display(...args);
-      };
+      const display = Core.displayCurrentImage.bind(Core);
+      const request = gallery.requestFrame.bind(gallery);
+      const render = gallery.render.bind(gallery);
+      App.restoreViewContext = (...args: any[]) => { counts.restore++; return restore(...args); };
+      Core.displayCurrentImage = (...args: any[]) => { counts.display++; return display(...args); };
+      gallery.requestFrame = (...args: any[]) => { counts.request++; return request(...args); };
+      gallery.render = (...args: any[]) => { counts.render++; return render(...args); };
+      (window as any).__warmCards = gallery.cards.map((card: any) => card.element);
+      (window as any).__warmImages = gallery.cards.map((card: any) => card.image || card.element.querySelector('img'));
+      (window as any).__warmBindings = gallery.cards.map((card: any) => (window as any).SharedImageResources.bindings.get(card.image || card.element.querySelector('img')));
+      (window as any).__warmFiles = gallery.files.slice();
       return {
-        generation: gallery.loadGeneration,
+        generation: gallery.loadGeneration, selectedIndex: gallery.selectedIndex,
         fileId: (window as any).__orbitalAppState.currentFileId,
         stack: (window as any).__orbitalAppState.currentStack,
-        rotationX: gallery.rotationX,
-        rotationY: gallery.rotationY
+        rotationX: gallery.rotationX, rotationY: gallery.rotationY
       };
     });
 
-    await page.evaluate(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-      window.dispatchEvent(new Event('focus'));
-    });
-    await expect.poll(() => page.evaluate(() => (window as any).__resumeRestoreCount)).toBe(1);
+    await page.evaluate(() => { (window as any).__visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(0);
+    await page.evaluate(() => { (window as any).__visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(0);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(50);
+
     expect(await page.evaluate(({ before }) => {
       const state = (window as any).__orbitalAppState;
       const gallery = (window as any).SpatialGallery;
-      return (window as any).__resumeDisplayCount === 0
-        && gallery.loadGeneration === before.generation
-        && state.currentFileId === before.fileId && state.currentStack === before.stack
-        && gallery.rotationX === before.rotationX && gallery.rotationY === before.rotationY
-        && gallery.cards.every((card: any, index: number) => card.element === (window as any).__resumeCards[index]);
-    }, { before })).toBe(true);
+      const bindings = (window as any).SharedImageResources.bindings;
+      return {
+        counts: (window as any).__warmCounts,
+        retained: gallery.cards.every((card: any, index: number) => card.element === (window as any).__warmCards[index]
+          && (card.image || card.element.querySelector('img')) === (window as any).__warmImages[index]
+          && bindings.get(card.image || card.element.querySelector('img')) === (window as any).__warmBindings[index]),
+        state: [gallery.loadGeneration, gallery.selectedIndex, state.currentFileId, state.currentStack, gallery.rotationX, gallery.rotationY],
+        filesRetained: gallery.files.every((file: any, index: number) => file === (window as any).__warmFiles[index])
+      };
+    }, { before })).toEqual({
+      counts: { restore: 0, display: 0, request: 0, render: 0 }, retained: true,
+      state: [before.generation, before.selectedIndex, before.fileId, before.stack, before.rotationX, before.rotationY],
+      filesRetained: true
+    });
+  });
 
+  test('warm resume restarts exactly one moving Explorer loop and focus does not duplicate it', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.velocityX = .02;
+      if (!gallery.frameId) gallery.requestFrame();
+      (window as any).__movingFrame = gallery.frameId;
+      (window as any).__visibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window as any).__visibilityState });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => (window as any).__visibilityState === 'hidden' });
+      (window as any).__movingRequests = 0;
+      const request = gallery.requestFrame.bind(gallery);
+      gallery.requestFrame = (...args: any[]) => { (window as any).__movingRequests++; return request(...args); };
+    });
+    await page.evaluate(() => { (window as any).__visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+    expect(await page.evaluate(() => (window as any).SpatialGallery.frameId)).toBeNull();
+    await page.waitForTimeout(0);
+    await page.evaluate(() => { (window as any).__visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+    expect(await page.evaluate(() => ({ requests: (window as any).__movingRequests, frame: (window as any).SpatialGallery.frameId }))).toMatchObject({ requests: 1 });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect(await page.evaluate(() => (window as any).__movingRequests)).toBe(1);
+  });
+
+  test('Table warm resume retains physics and only restarts a moving loop', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      (window as any).SpatialGallery.close({ restoreFocus: false, force: true });
+      (window as any).PhotoTable.open({ stackName: 'in', fileId: 'file-y' });
+      const table = (window as any).PhotoTable;
+      if (table.frameId) cancelAnimationFrame(table.frameId);
+      table.frameId = null;
+      table.photos.forEach((photo: any) => { photo.state = 'resting'; });
+      (window as any).__tableNodes = table.photos.map((photo: any) => photo.element);
+      (window as any).__tablePhysics = table.photos.map((photo: any) => [photo.x, photo.y, photo.velocityX, photo.velocityY, photo.rotation]);
+      (window as any).__visibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window as any).__visibilityState });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => (window as any).__visibilityState === 'hidden' });
+      (window as any).__tableCounts = { request: 0, animate: 0, paint: 0 };
+      for (const method of ['requestFrame', 'animate', 'paint']) {
+        const original = table[method].bind(table);
+        table[method] = (...args: any[]) => { (window as any).__tableCounts[method === 'requestFrame' ? 'request' : method]++; return original(...args); };
+      }
+    });
+    await page.evaluate(() => { (window as any).__visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(0);
+    await page.evaluate(() => { (window as any).__visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(30);
+    expect(await page.evaluate(() => {
+      const table = (window as any).PhotoTable;
+      return {
+        counts: (window as any).__tableCounts,
+        nodes: table.photos.every((photo: any, index: number) => photo.element === (window as any).__tableNodes[index]),
+        physics: table.photos.map((photo: any) => [photo.x, photo.y, photo.velocityX, photo.velocityY, photo.rotation])
+      };
+    })).toEqual({ counts: { request: 0, animate: 0, paint: 0 }, nodes: true, physics: await page.evaluate(() => (window as any).__tablePhysics) });
+
+    await page.evaluate(() => {
+      const table = (window as any).PhotoTable;
+      let nextFrame = 1000;
+      window.requestAnimationFrame = () => ++nextFrame;
+      window.cancelAnimationFrame = () => {};
+      const photo = table.photos[0]; photo.state = 'thrown'; photo.velocityX = 3; photo.velocityY = 2;
+      table.requestFrame(); (window as any).__tableCounts.request = 0;
+    });
+    await page.evaluate(() => { (window as any).__visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+    expect(await page.evaluate(() => (window as any).PhotoTable.frameId)).toBeNull();
+    await page.waitForTimeout(0);
+    await page.evaluate(() => { (window as any).__visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+    expect(await page.evaluate(() => (window as any).__tableCounts.request)).toBe(1);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect(await page.evaluate(() => (window as any).__tableCounts.request)).toBe(1);
+  });
+
+  test('Sort and canonical Focus do no restoration or display work on warm resume', async ({ page }) => {
     await prepareSort(page);
     await page.evaluate(() => {
-      const App = (window as any).App;
-      App.persistViewContext();
-      (window as any).__resumeDisplayCount = 0;
-      document.dispatchEvent(new Event('visibilitychange'));
-      window.dispatchEvent(new Event('focus'));
+      const App = (window as any).App; const Core = (window as any).Core;
+      (window as any).__visibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window as any).__visibilityState });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => (window as any).__visibilityState === 'hidden' });
+      (window as any).__plainCounts = { restore: 0, display: 0 };
+      const restore = App.restoreViewContext.bind(App); const display = Core.displayCurrentImage.bind(Core);
+      App.restoreViewContext = (...args: any[]) => { (window as any).__plainCounts.restore++; return restore(...args); };
+      Core.displayCurrentImage = (...args: any[]) => { (window as any).__plainCounts.display++; return display(...args); };
     });
-    await page.waitForTimeout(50);
-    expect(await page.evaluate(() => (window as any).__resumeDisplayCount)).toBe(0);
-
-    await page.evaluate(async () => {
-      await (window as any).CanonicalInspection.enter('file-y', 'sort');
-      const App = (window as any).App;
-      App.persistViewContext();
-      (window as any).__resumeDisplayCount = 0;
-      document.dispatchEvent(new Event('visibilitychange'));
-      window.dispatchEvent(new Event('focus'));
-    });
-    await page.waitForTimeout(50);
-    expect(await page.evaluate(() => (window as any).__resumeDisplayCount)).toBe(0);
+    for (const focus of [false, true]) {
+      if (focus) await page.evaluate(() => (window as any).CanonicalInspection.enter('file-y', 'sort'));
+      if (focus) await expect.poll(async () => (await focusSnapshot(page)).bindingKey).toBe('test-provider:file-y:v0:display');
+      else await page.waitForTimeout(100);
+      await page.evaluate(() => { (window as any).__plainCounts = { restore: 0, display: 0 }; });
+      const before = await focusSnapshot(page);
+      const referrer = await page.evaluate(() => (window as any).CanonicalInspection.referrerSnapshot?.() || null);
+      await page.evaluate(() => { (window as any).__visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+      await page.waitForTimeout(0);
+      await page.evaluate(() => { (window as any).__visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+      await page.waitForTimeout(0);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      expect(await focusSnapshot(page)).toEqual(before);
+      expect(await page.evaluate(() => (window as any).CanonicalInspection.referrerSnapshot?.() || null)).toEqual(referrer);
+    }
+    expect(await page.evaluate(() => (window as any).__plainCounts)).toEqual({ restore: 0, display: 0 });
   });
 
   test('reconciles deletion across canonical Focus and the retained Explorer population', async ({ page }) => {
