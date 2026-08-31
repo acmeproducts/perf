@@ -212,6 +212,46 @@ test.describe('Explorer Focus identity regressions', () => {
     await expect(page.locator('#spatial-gallery')).toBeVisible();
   });
 
+  test('measures an unchanged warm Focus return with zero card or thumbnail churn', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.length)).toBe(3);
+    const before = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      (window as any).__warmFocusCards = gallery.cards.map((card: any) => card.element);
+      (window as any).__warmFocusImages = gallery.cards.map((card: any) => card.image);
+      return {
+        order: gallery.files.map((file: any) => file.id),
+        rotation: [gallery.rotationX, gallery.rotationY]
+      };
+    });
+
+    await activateExploreFile(page, 'file-y');
+    expect(await page.evaluate(() => {
+      const root = (window as any).SpatialGallery.elements.root;
+      return { inert: root.inert, ariaHidden: root.getAttribute('aria-hidden'), pointerEvents: root.style.pointerEvents };
+    })).toEqual({ inert: true, ariaHidden: 'true', pointerEvents: 'none' });
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.warmResumeMetrics?.interactiveExploreMs)).not.toBeNull();
+
+    const result = await page.evaluate(({ order, rotation }) => {
+      const gallery = (window as any).SpatialGallery;
+      return {
+        metrics: gallery.warmResumeMetrics,
+        cardsRetained: gallery.cards.every((card: any, index: number) => card.element === (window as any).__warmFocusCards[index]
+          && card.image === (window as any).__warmFocusImages[index]),
+        order: gallery.files.map((file: any) => file.id),
+        rotation: [gallery.rotationX, gallery.rotationY],
+        inert: gallery.elements.root.inert,
+        ariaHidden: gallery.elements.root.hasAttribute('aria-hidden')
+      };
+    }, before);
+    expect(result.metrics).toMatchObject({ cardRecreationCount: 0, imageRequestCount: 0, layoutWorkCount: 0, animationFrameCount: 2 });
+    expect(result.metrics.firstExplorePaintMs).toBeGreaterThanOrEqual(0);
+    expect(result.metrics.interactiveExploreMs).toBeGreaterThanOrEqual(result.metrics.firstExplorePaintMs);
+    expect(result).toMatchObject({ cardsRetained: true, order: before.order, rotation: before.rotation, inert: false, ariaHidden: false });
+  });
+
   test('retains painted Explorer thumbnails when Focus sorting changes its population', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
