@@ -521,3 +521,56 @@ test.describe('Sort and Table Focus continuity', () => {
     })).toBe(true);
   });
 });
+
+test.describe('Explorer pointer hit targeting', () => {
+  test('overlapping cards preserve the exact touch, pen, and mouse down target and reject drags', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      if (gallery.frameId) cancelAnimationFrame(gallery.frameId);
+      gallery.frameId = null;
+      gallery.velocityX = 0;
+      gallery.velocityY = 0;
+      gallery.requestFrame = () => {};
+      gallery.elements.scene.setPointerCapture = () => {};
+      gallery.elements.scene.releasePointerCapture = () => {};
+
+      const positions = [100, 180, 260];
+      gallery.cards.forEach((card: any, index: number) => {
+        card.element.style.cssText = `position: fixed; left: ${positions[index]}px; top: 180px; width: 160px; height: 120px; margin: 0; transform: none !important; z-index: ${index + 1};`;
+      });
+
+      const activations: Array<{ fileId: string, cardFileId: string }> = [];
+      gallery.activateFileId = (fileId: string, element: HTMLElement) => {
+        activations.push({ fileId, cardFileId: gallery.cards.find((card: any) => card.element === element)?.fileId });
+        return true;
+      };
+
+      const pointer = (type: string, pointerId: number, x: number, jitter: number, mutateId = false) => {
+        const target = document.elementFromPoint(x, 220)!;
+        const card = target.closest('.spatial-gallery__card') as HTMLElement;
+        const originalId = card.dataset.fileId!;
+        target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerId, pointerType: type, button: 0, clientX: x, clientY: 220 }));
+        if (mutateId) card.dataset.fileId = 'changed-after-down';
+        target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, composed: true, pointerId, pointerType: type, button: 0, clientX: x + jitter, clientY: 220 }));
+        target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId, pointerType: type, button: 0, clientX: x + jitter, clientY: 220 }));
+        card.dataset.fileId = originalId;
+      };
+
+      // Each point is the exposed portion of a different member of the overlapping stack.
+      pointer('touch', 11, 130, 8, true);
+      pointer('pen', 12, 210, 6);
+      pointer('mouse', 13, 290, 2);
+      pointer('touch', 14, 290, 30);
+      return activations;
+    });
+
+    expect(result).toEqual([
+      { fileId: 'file-x', cardFileId: 'file-x' },
+      { fileId: 'file-y', cardFileId: 'file-y' },
+      { fileId: 'file-z', cardFileId: 'file-z' }
+    ]);
+  });
+});
