@@ -260,6 +260,54 @@ test.describe('Explorer Focus identity regressions', () => {
     });
   });
 
+  test('keeps a non-first Grid activation canonical across close, Focus, sort, filter, and return', async ({ page }) => {
+    await prepareSort(page);
+    await page.evaluate(() => (window as any).Grid.open('in'));
+    await expect(page.locator('#grid-modal')).toBeVisible();
+
+    await page.locator('.grid-item[data-file-id="file-z"] .grid-focus-button').dispatchEvent('click');
+    await expect.poll(() => page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe('file-z');
+    await expect(page.locator('#grid-modal')).toBeHidden();
+    await expect(page.locator('#app-container')).toHaveClass(/focus-mode/);
+
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+    await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      state.stacks.in.find((file: any) => file.id === 'file-x').stackSequence = 1;
+      state.stacks.in.find((file: any) => file.id === 'file-y').stackSequence = 3;
+      state.stacks.in.find((file: any) => file.id === 'file-z').stackSequence = 2;
+      state.stacks.in = (window as any).Core.sortFiles(state.stacks.in);
+      (window as any).Grid.open('in');
+      const search = document.querySelector('#omni-search') as HTMLInputElement;
+      search.value = 'FILE-Z';
+      (window as any).Grid.performSearch();
+    });
+
+    expect(await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      const tile = document.querySelector('.grid-item[data-file-id="file-z"]');
+      return {
+        order: state.stacks.in.map((file: any) => file.id),
+        currentFileId: state.currentFileId,
+        bulkSelected: state.grid.selected,
+        currentClass: tile?.classList.contains('current'),
+        ariaCurrent: tile?.getAttribute('aria-current')
+      };
+    })).toEqual({
+      order: ['file-y', 'file-z', 'file-x'], currentFileId: 'file-z', bulkSelected: ['file-z'],
+      currentClass: true, ariaCurrent: 'true'
+    });
+
+    await page.evaluate(() => (window as any).Grid.close());
+    await expect.poll(() => page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe('file-z');
+    await page.evaluate(() => (window as any).CanonicalInspection.enter('file-z', {
+      surface: 'sort', stackName: 'in', fileId: 'file-z'
+    }));
+    await expect.poll(async () => (await focusSnapshot(page)).currentFileId).toBe('file-z');
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+    expect(await page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe('file-z');
+  });
+
   test('warm resume retains a stationary Explorer without restoration or rendering', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
