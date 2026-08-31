@@ -613,6 +613,12 @@
         .grid-drag-handle:focus { outline: 2px solid #bfdbfe; outline-offset: 2px; }
         .grid-drag-handle:active { cursor: grabbing; }
         .grid-item.dragging .grid-drag-handle { background: rgba(59, 130, 246, 0.9); }
+        .grid-focus-button {
+            position: absolute; bottom: 6px; left: 6px; padding: 5px 8px; border: none; border-radius: 6px;
+            background: rgba(17, 24, 39, 0.76); color: #f9fafb; font-size: 12px; cursor: pointer; z-index: 3;
+        }
+        .grid-focus-button:hover { background: rgba(245, 158, 11, 0.92); }
+        .grid-focus-button:focus { outline: 2px solid #fde68a; outline-offset: 2px; }
 .details-modal-content {
             max-width: 800px; max-height: 95vh; height: 95vh; display: flex; flex-direction: column;
             resize: both; overflow: auto; min-width: 400px; min-height: 400px;
@@ -7856,10 +7862,8 @@ this.updateImageCounters();
                 state.grid.closing = true;
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
-                const visibleFirstId = state.grid.lazyLoadState.allFiles[0]?.id
-                    || Utils.elements.gridContainer.querySelector('.grid-item')?.dataset.fileId
-                    || origin?.fileId
-                    || null;
+                const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
+                const entryFileId = state.grid.entryFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
@@ -7869,14 +7873,10 @@ this.updateImageCounters();
                     if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
-                    const stackFirstId = (state.stacks[gridStack] || [])[0]?.id || null;
-                    const exitFileId = reordered || state.grid.orderChanged ? stackFirstId : visibleFirstId;
-                    let resolved = CurrentImage.set(exitFileId, gridStack, { allowCrossStack: false });
-                    if (!resolved && origin?.fileId) resolved = CurrentImage.set(origin.fileId, origin.stackName, { allowCrossStack: false });
-                    if (!resolved) {
-                        const fallbackStack = state.stacks[gridStack] || [];
-                        resolved = CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
-                    }
+                    const fallbackStack = state.stacks[gridStack] || [];
+                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
@@ -7963,13 +7963,14 @@ this.updateImageCounters();
                 }
 
                 const selectedIds = new Set(state.grid.selected);
+                const currentId = CurrentImage.current()?.id;
                 const fragment = document.createDocumentFragment();
                 const newImages = [];
                 filesToRender.forEach(file => {
                     const div = document.createElement('div');
                     div.className = 'grid-item'; div.dataset.fileId = file.id;
                     if (selectedIds.has(file.id)) { div.classList.add('selected'); }
-                    if (String(file.id) === String(state.grid.entryFileId)) {
+                    if (currentId != null && String(file.id) === String(currentId)) {
                         div.classList.add('current');
                         div.setAttribute('aria-current', 'true');
                     }
@@ -7979,6 +7980,7 @@ this.updateImageCounters();
                     img.onload = () => img.classList.add('loaded');
                     div.addEventListener('click', e => this.toggleSelection(e, file.id));
                     div.appendChild(img);
+                    div.appendChild(this.createFocusButton(file));
                     div.appendChild(this.createDragHandle(div, file.id));
                     fragment.appendChild(div);
                     newImages.push({ img, file });
@@ -7994,6 +7996,47 @@ this.updateImageCounters();
                     container.appendChild(sentinel);
                     if (lazyState.observer) { lazyState.observer.observe(sentinel); }
                 }
+            },
+
+            createFocusButton(file) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'grid-focus-button';
+                button.textContent = 'Focus';
+                button.setAttribute('aria-label', `Focus ${file.name || 'image'}`);
+                button.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.activateFileId(event.currentTarget.closest('.grid-item')?.dataset.fileId);
+                });
+                return button;
+            },
+
+            async activateFileId(fileId) {
+                const stackName = state.grid.stack;
+                const resolved = CurrentImage.set(fileId, stackName, { allowCrossStack: false });
+                if (!resolved) return false;
+                this.updateCurrentTile();
+                const origin = state.grid.origin ? { ...state.grid.origin } : null;
+                const referrer = origin?.surface === 'focus'
+                    ? (origin.focusReferrer || { surface: origin.focusOrigin || 'sort', stackName, fileId: resolved.file.id })
+                    : { surface: ['explore', 'table'].includes(origin?.surface) ? origin.surface : 'sort', stackName, fileId: resolved.file.id };
+                this.clearDragState();
+                Utils.hideModal('grid-modal');
+                document.body.classList.remove('surface-grid-open');
+                ModeCenterTap.reset();
+                this.resetAfterClose();
+                return CanonicalInspection.enter(resolved.file.id, { ...referrer, stackName, fileId: resolved.file.id });
+            },
+
+            updateCurrentTile() {
+                const currentId = CurrentImage.current()?.id;
+                Utils.elements.gridContainer.querySelectorAll('.grid-item').forEach(tile => {
+                    const isCurrent = currentId != null && String(tile.dataset.fileId) === String(currentId);
+                    tile.classList.toggle('current', isCurrent);
+                    if (isCurrent) tile.setAttribute('aria-current', 'true');
+                    else tile.removeAttribute('aria-current');
+                });
             },
 
             createDragHandle(gridItem, fileId) {
@@ -8326,11 +8369,9 @@ this.updateImageCounters();
 
                 if (resultCount === 0) {
                     state.grid.selected = [];
-                    state.grid.entryFileId = null;
                     Utils.elements.gridEmptyState.classList.remove('hidden');
                 } else {
                     state.grid.selected = results.map(file => file.id);
-                    state.grid.entryFileId = results[0].id;
                     Utils.elements.gridEmptyState.classList.add('hidden');
                 }
 
@@ -8339,26 +8380,6 @@ this.updateImageCounters();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                this.updateFocusAfterSearch(results);
-            },
-
-            updateFocusAfterSearch(results = []) {
-                if (!Array.isArray(results) || results.length === 0) { return; }
-                const stackName = state.grid.stack;
-                if (!stackName || stackName !== state.currentStack) { return; }
-
-                const firstResult = results[0];
-                const firstId = firstResult?.id;
-                if (!firstId) { return; }
-
-                const stackArray = state.stacks[stackName] || [];
-                const targetIndex = stackArray.findIndex(file => file.id === firstId);
-                if (targetIndex === -1) { return; }
-
-                CurrentImage.set(firstId, stackName, { allowCrossStack: false });
-
-                Core.displayCurrentImage();
-                Core.updateImageCounters();
             },
 
             resetSearch() {
@@ -8385,7 +8406,6 @@ this.updateImageCounters();
                 const files = TableTagTargets.taggedFiles(state.grid.filterTag, state.grid.stack);
                 state.grid.filtered = files;
                 state.grid.selected = [];
-                state.grid.entryFileId = files[0]?.id || null;
                 Utils.elements.gridContainer.innerHTML = '';
                 Utils.elements.gridEmptyState.classList.toggle('hidden', files.length > 0);
                 this.initializeLazyLoad(state.grid.stack, files);
