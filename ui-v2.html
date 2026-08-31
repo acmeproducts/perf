@@ -11671,6 +11671,7 @@ this.updateImageCounters();
                 this.elements.scene.classList.add('dragging');
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
+                this.dragIntent = false;
                 const card = event.target.closest('.spatial-gallery__card');
                 card?.setAttribute('data-moved', 'false');
                 // Keep the browser's exact down target and a primitive snapshot of its stable ID.
@@ -11684,12 +11685,16 @@ this.updateImageCounters();
             onPointerMove(event) {
                 if (!this.dragging || event.pointerId !== this.pointerId) return;
                 const now = performance.now();
-                const dx = event.clientX - this.lastX, dy = event.clientY - this.lastY;
                 const totalDx = event.clientX - this.startX, totalDy = event.clientY - this.startY;
                 this.maxPointerDistance = Math.max(this.maxPointerDistance, Math.hypot(totalDx, totalDy));
-                if (this.maxPointerDistance > this.tapSlop(this.pressedPointerType) && this.pressedCard?.dataset.moved !== 'true') {
+                if (this.maxPointerDistance <= this.tapSlop(this.pressedPointerType)) return;
+                if (!this.dragIntent) {
+                    this.dragIntent = true;
                     this.pressedCard?.setAttribute('data-moved', 'true'); this.clearCardTap();
+                    this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = now;
+                    return;
                 }
+                const dx = event.clientX - this.lastX, dy = event.clientY - this.lastY;
                 const elapsed = Math.max(8, now - this.lastTime);
                 this.rotationX += dx * 0.006; this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY - dy * 0.006));
                 this.velocityX = dx * 0.006 / elapsed * 16; this.velocityY = -dy * 0.006 / elapsed * 16;
@@ -11704,7 +11709,7 @@ this.updateImageCounters();
                 const pressedFileId = this.pressedFileId;
                 const tapSlop = this.tapSlop(this.pressedPointerType || event.pointerType);
                 const moved = this.maxPointerDistance > tapSlop || pressedCard?.dataset.moved === 'true';
-                this.dragging = false; this.pointerId = null;
+                this.dragging = false; this.dragIntent = false; this.pointerId = null;
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
                 this.elements.scene.classList.remove('dragging');
