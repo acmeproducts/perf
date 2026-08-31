@@ -523,6 +523,47 @@ test.describe('Sort and Table Focus continuity', () => {
 });
 
 test.describe('Explorer pointer hit targeting', () => {
+  test('touch jitter below tap slop preserves sphere geometry and activates the pressed card', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      if (gallery.frameId) cancelAnimationFrame(gallery.frameId);
+      gallery.frameId = null;
+      gallery.velocityX = .17;
+      gallery.velocityY = -.11;
+      gallery.requestFrame = () => {};
+      gallery.elements.scene.setPointerCapture = () => {};
+      gallery.elements.scene.releasePointerCapture = () => {};
+
+      const card = gallery.cards[0].element as HTMLElement;
+      card.style.cssText = 'position: fixed; left: 100px; top: 180px; width: 160px; height: 120px; margin: 0; transform: none !important; z-index: 10;';
+      const before = {
+        rotationX: gallery.rotationX,
+        rotationY: gallery.rotationY,
+        velocityX: gallery.velocityX,
+        velocityY: gallery.velocityY
+      };
+      const activations: string[] = [];
+      gallery.activateFileId = (fileId: string) => { activations.push(fileId); return true; };
+
+      card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerId: 21, pointerType: 'touch', button: 0, clientX: 130, clientY: 220 }));
+      card.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, composed: true, pointerId: 21, pointerType: 'touch', button: 0, clientX: 138, clientY: 226 }));
+      const afterMove = {
+        rotationX: gallery.rotationX,
+        rotationY: gallery.rotationY,
+        velocityX: gallery.velocityX,
+        velocityY: gallery.velocityY
+      };
+      card.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 21, pointerType: 'touch', button: 0, clientX: 138, clientY: 226 }));
+      return { before, afterMove, activations, pressedFileId: gallery.cards[0].fileId };
+    });
+
+    expect(result.afterMove).toEqual(result.before);
+    expect(result.activations).toEqual([result.pressedFileId]);
+  });
+
   test('overlapping cards preserve the exact touch, pen, and mouse down target and reject drags', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
