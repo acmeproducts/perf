@@ -212,6 +212,26 @@ test.describe('Explorer Focus identity regressions', () => {
     await expect(page.locator('#spatial-gallery')).toBeVisible();
   });
 
+  test('continues incremental mounting after returning from Focus', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const mountedBeforeFocus = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      clearTimeout(gallery.pageTimer);
+      gallery.pageSize = 1;
+      gallery.loadGeneration++;
+      gallery.buildCards();
+      return gallery.cards.length;
+    });
+    expect(mountedBeforeFocus).toBe(1);
+
+    await activateExploreFile(page, 'file-x');
+    expect(await page.evaluate(() => (window as any).SpatialGallery.cards.length)).toBe(mountedBeforeFocus);
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.length)).toBe(3);
+  });
+
   test('measures an unchanged warm Focus return with zero card or thumbnail churn', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
