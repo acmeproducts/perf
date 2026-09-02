@@ -252,6 +252,47 @@ test.describe('Explorer Focus identity regressions', () => {
     expect(result).toMatchObject({ cardsRetained: true, order: before.order, rotation: before.rotation, inert: false, ariaHidden: false });
   });
 
+  test('finishes an interrupted 500-image population after returning from Focus', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const initial = await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      const Core = (window as any).Core;
+      const gallery = (window as any).SpatialGallery;
+      const template = state.imageFiles[0];
+      gallery.close({ restoreFocus: false, force: true });
+      state.imageFiles = Array.from({ length: 500 }, (_, index) => ({
+        ...template,
+        id: `bulk-${index}`,
+        name: `Bulk ${index}`,
+        stackSequence: 500 - index,
+        thumbnails: { ...template.thumbnails }
+      }));
+      (window as any).SharedImageResources.clear();
+      Core.initializeStacks();
+      gallery.pageSize = 30;
+      gallery.open({ stackName: 'in', fileId: 'bulk-0' });
+      clearTimeout(gallery.pageTimer);
+      const first = gallery.cards[0];
+      (window as any).__bulkFirstCard = first.element;
+      (window as any).__bulkFirstImage = first.image;
+      return { mounted: gallery.cards.length, requested: gallery.files.length };
+    });
+
+    expect(initial).toEqual({ mounted: 30, requested: 500 });
+    await activateExploreFile(page, 'bulk-0');
+    await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+    await expect.poll(() => page.evaluate(() => (window as any).SpatialGallery.cards.length), { timeout: 10_000 }).toBe(500);
+    expect(await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      return gallery.cards[0].element === (window as any).__bulkFirstCard
+        && gallery.cards[0].image === (window as any).__bulkFirstImage
+        && gallery.cards.every((card: any) => card.element.dataset.fileId === String(card.fileId)
+          && card.image.dataset.fileId === String(card.fileId));
+    })).toBe(true);
+    await expect(page.locator('#spatial-gallery-loading')).toBeHidden();
+  });
+
   test('retains painted Explorer thumbnails when Focus sorting changes its population', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
