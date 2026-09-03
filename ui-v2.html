@@ -1028,8 +1028,8 @@
         body.surface-grid-open #action-modal, body.surface-grid-open #details-modal { z-index: 17200; }
         .focus-origin-close { position: fixed; z-index: 13020; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: 46px; height: 46px; border: 1px solid rgba(255,255,255,.38); border-radius: 999px; color: #fff; background: rgba(15,23,42,.82); box-shadow: 0 10px 32px rgba(0,0,0,.38); font: 700 28px/1 system-ui; cursor: pointer; }
         .app-container:not(.focus-mode) .focus-origin-close { display: none !important; }
-        /* Focus is opaque: retain the warm Explore layer, but remove all input. */
-        body.origin-focus #spatial-gallery { pointer-events: none !important; }
+        /* Focus is opaque: retain the warm Explore DOM and resources without painting it. */
+        body.origin-focus #spatial-gallery { display: none !important; }
         body.origin-focus #photo-table { display: none !important; }
         body.origin-focus #back-button, body.origin-focus #normal-image-count, body.origin-focus #center-trash-btn, body.origin-focus .pill-counter { display: none !important; }
         body.origin-focus .app-container { z-index: 13000; }
@@ -11570,6 +11570,7 @@ this.updateImageCounters();
                     populationComplete: this.cards.length === this.files.length,
                     wasAnimating: Boolean(this.frameId) || this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015
                 };
+                this.elements.root.hidden = true;
                 this.elements.root.inert = true;
                 this.elements.root.setAttribute('aria-hidden', 'true');
                 this.elements.root.style.pointerEvents = 'none';
@@ -11598,13 +11599,8 @@ this.updateImageCounters();
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
                 CurrentImage.set(this.files[this.selectedIndex].id, this.stackName, { allowCrossStack: false });
                 state.inspection = { surface: 'explore', origin: null, fileId: this.files[this.selectedIndex].id };
-                this.elements.root.inert = false;
-                this.elements.root.removeAttribute('aria-hidden');
-                this.elements.root.style.pointerEvents = '';
                 this.select(this.selectedIndex);
                 this.updateChrome();
-                ModeNavigation.show('explore');
-                this.cards[this.selectedIndex]?.element.focus();
                 const populationIncomplete = !saved.populationComplete || this.cards.length < this.files.length;
                 if (populationIncomplete) {
                     this.beginPopulationLoading();
@@ -11622,6 +11618,18 @@ this.updateImageCounters();
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
                 this.render(performance.now());
+                // Keep Explore hidden through the complete synchronous restoration. Remove
+                // the Focus paint layer before making Explore interactive or revealable.
+                state.isFocusMode = false;
+                Utils.elements.appContainer.classList.remove('focus-mode');
+                document.body.classList.remove('origin-focus');
+                ModeNavigation.show('explore');
+                this.elements.root.inert = false;
+                this.elements.root.removeAttribute('aria-hidden');
+                this.elements.root.style.pointerEvents = '';
+                this.elements.root.hidden = false;
+                this.cards[this.selectedIndex]?.element.focus();
+                if (populationIncomplete) this.scheduleNextPage(this.loadGeneration);
                 if (wasAnimating) this.requestFrame();
                 const metrics = this.warmResumeMetrics = {
                     focusCloseAt: startedAt, firstExplorePaintMs: null, interactiveExploreMs: null,

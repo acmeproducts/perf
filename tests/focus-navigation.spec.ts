@@ -119,6 +119,62 @@ async function focusSnapshot(page: import('@playwright/test').Page) {
 }
 
 test.describe('Explorer Focus identity regressions', () => {
+  test('atomically hides Explore during Focus and retains its DOM across repeated transitions', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      document.querySelector('#app-container')?.classList.remove('hidden');
+      const gallery = (window as any).SpatialGallery;
+      (window as any).__surfaceCards = gallery.cards.map((card: any) => card.element);
+      (window as any).__surfaceImages = gallery.cards.map((card: any) => card.image || card.element.querySelector('img'));
+      (window as any).__surfaceOverlap = false;
+      const sample = () => {
+        const explore = document.querySelector('#spatial-gallery') as HTMLElement;
+        const focus = document.querySelector('#app-container') as HTMLElement;
+        const painted = (element: HTMLElement) => {
+          const style = getComputedStyle(element);
+          return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+        };
+        if (painted(explore) && focus.classList.contains('focus-mode') && painted(focus)) {
+          (window as any).__surfaceOverlap = true;
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+
+    await expect(page.locator('#spatial-gallery')).toBeVisible();
+    await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
+    await expect(page.locator('.focus-mode-ui').first()).toHaveCSS('display', 'none');
+
+    for (let iteration = 0; iteration < 3; iteration++) {
+      await activateExploreFile(page, iteration % 2 ? 'file-x' : 'file-y');
+      const gallery = page.locator('#spatial-gallery');
+      await expect(gallery).toHaveCSS('display', 'none');
+      await expect(gallery).toBeHidden();
+      await expect(gallery).toHaveAttribute('inert', '');
+      await expect(gallery).toHaveAttribute('aria-hidden', 'true');
+      expect(await gallery.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const target = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return target === element || element.contains(target);
+      })).toBe(false);
+
+      await page.evaluate(() => (window as any).CanonicalInspection.exitToReferrer({ persist: false }));
+      await expect(gallery).toBeVisible();
+      expect(await page.evaluate(() => ({
+        originFocus: document.body.classList.contains('origin-focus'),
+        focusMode: document.querySelector('#app-container')?.classList.contains('focus-mode'),
+        retained: (window as any).SpatialGallery.cards.every((card: any, index: number) =>
+          card.element === (window as any).__surfaceCards[index]
+          && (card.image || card.element.querySelector('img')) === (window as any).__surfaceImages[index])
+      }))).toEqual({ originFocus: false, focusMode: false, retained: true });
+      await page.waitForTimeout(20);
+    }
+
+    expect(await page.evaluate(() => (window as any).__surfaceOverlap)).toBe(false);
+  });
+
   test('activates the requested stable ID without changing canonical order', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
