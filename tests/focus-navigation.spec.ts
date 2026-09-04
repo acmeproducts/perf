@@ -866,6 +866,36 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('vertical spin is unclamped: free trackball rotation continues past the old pitch limit', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const fingerprints = await page.evaluate(async () => {
+      const gallery = (window as any).SpatialGallery;
+      const scene = gallery.elements.scene;
+      scene.setPointerCapture = () => {};
+      scene.releasePointerCapture = () => {};
+      if (gallery.frameId) { cancelAnimationFrame(gallery.frameId); gallery.frameId = null; }
+      gallery.requestFrame = () => {};
+      const dispatch = (type: string, id: number, x: number, y: number) =>
+        scene.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, pointerType: 'mouse', button: 0, clientX: x, clientY: y }));
+      const dragUp = (id: number, dyTotal: number) => {
+        dispatch('pointerdown', id, 600, 500);
+        for (let step = 1; step <= 5; step++) dispatch('pointermove', id, 600, 500 - (dyTotal * step) / 5);
+        dispatch('pointerup', id, 600, 500 - dyTotal);
+        gallery.velocityX = 0; gallery.velocityY = 0;
+        if (gallery.frameId) { cancelAnimationFrame(gallery.frameId); gallery.frameId = null; }
+        gallery.render(performance.now());
+        return gallery.cards.map((card: any) => `${card.element.style.zIndex}|${card.element.style.transform}`).join('~');
+      };
+      // First drag pushes total pitch to ~2.7rad — far past the old ±1.35 clamp. Under the
+      // clamp, the second drag produced zero further rotation; free rotation must keep moving.
+      const afterBigDrag = dragUp(71, 450);
+      const afterFollowUp = dragUp(72, 100);
+      return { afterBigDrag, afterFollowUp };
+    });
+    expect(fingerprints.afterFollowUp).not.toEqual(fingerprints.afterBigDrag);
+  });
+
   test('deleting an image in Focus pops the retained sphere back without a rebuild', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);

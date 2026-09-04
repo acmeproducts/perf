@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.18 immediate pop-back resume and sphere render economy -->
+<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.18-popback-render-economy-2026.09.04.1';
+        const APP_BUILD_ID = 'reconstruction-R4.19-free-spin-instant-exit-2026.09.04.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -7030,6 +7030,7 @@
                     explorer: (underlaySurface === 'explore' || focusOrigin === 'explore') ? {
                         rotationX: SpatialGallery.rotationX,
                         rotationY: SpatialGallery.rotationY,
+                        orientation: SpatialGallery.orient.slice(),
                         cardScale: SpatialGallery.cardScale,
                         layoutBias: SpatialGallery.layoutBias,
                         layoutVersion: SpatialGallery.layoutVersion,
@@ -7126,6 +7127,13 @@
                             SpatialGallery.syncPopulation(resumeFileId);
                             if (Number.isFinite(persisted.explorer.rotationX)) SpatialGallery.rotationX = persisted.explorer.rotationX;
                             if (Number.isFinite(persisted.explorer.rotationY)) SpatialGallery.rotationY = persisted.explorer.rotationY;
+                            const savedOrient = persisted.explorer.orientation;
+                            if (Array.isArray(savedOrient) && savedOrient.length === 9 && savedOrient.every(Number.isFinite)) {
+                                SpatialGallery.orient = savedOrient.slice();
+                            } else if (Number.isFinite(persisted.explorer.rotationX) || Number.isFinite(persisted.explorer.rotationY)) {
+                                SpatialGallery.orient = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+                                SpatialGallery.applyViewRotation(SpatialGallery.rotationY || 0, SpatialGallery.rotationX || 0);
+                            }
                             SpatialGallery.updateControlLabels();
                             SpatialGallery.requestFrame();
                         }
@@ -11459,7 +11467,7 @@ this.updateImageCounters();
             elements: {}, cards: [], files: [], selectedIndex: 0,
             maxImageLimit: 500, imageLimit: 500, density: 1, cardScale: 1, sphereScale: 1,
             layoutBias: 1, layoutVersion: 2, automaticLayout: true, extentHardLimits: false,
-            rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0,
+            rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0, orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             pressedCard: null, pressedFileId: null, pressedPointerType: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
@@ -11561,7 +11569,7 @@ this.updateImageCounters();
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId || state.currentFileId || stack[state.currentStackPosition]?.id)));
                 CurrentImage.set(this.files[this.selectedIndex].id, stackName, { allowCrossStack: false });
                 state.inspection = { surface: 'explore', origin: null, fileId: this.files[this.selectedIndex]?.id || null };
-                if (!preserveGeometry) { this.rotationX = 0; this.rotationY = 0; }
+                if (!preserveGeometry) { this.rotationX = 0; this.rotationY = 0; this.orient = [1, 0, 0, 0, 1, 0, 0, 0, 1]; }
                 this.velocityX = 0; this.velocityY = 0;
                 if (canResume) {
                     this.cancelPopulationLoading();
@@ -11900,10 +11908,52 @@ this.updateImageCounters();
                 });
             },
 
+            mulOrient(a, b) {
+                const out = new Array(9);
+                for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+                    out[row * 3 + col] = a[row * 3] * b[col] + a[row * 3 + 1] * b[3 + col] + a[row * 3 + 2] * b[6 + col];
+                }
+                return out;
+            },
+            // Free trackball rotation: any swipe direction (including all four diagonals)
+            // rotates the sphere about the perpendicular axis in view space; no pitch clamp.
+            applyViewRotation(pitch, yaw) {
+                const cp = Math.cos(pitch), sp = Math.sin(pitch);
+                const cy = Math.cos(yaw), sy = Math.sin(yaw);
+                const rx = [1, 0, 0, 0, cp, -sp, 0, sp, cp];
+                const ry = [cy, 0, sy, 0, 1, 0, -sy, 0, cy];
+                this.orient = this.mulOrient(this.mulOrient(rx, ry), this.orient);
+            },
+            orthonormalizeOrient() {
+                const m = this.orient;
+                let r0 = [m[0], m[1], m[2]];
+                const n0 = Math.hypot(...r0) || 1; r0 = r0.map(value => value / n0);
+                let r1 = [m[3], m[4], m[5]];
+                const d01 = r0[0] * r1[0] + r0[1] * r1[1] + r0[2] * r1[2];
+                r1 = r1.map((value, index) => value - d01 * r0[index]);
+                const n1 = Math.hypot(...r1) || 1; r1 = r1.map(value => value / n1);
+                const r2 = [r0[1] * r1[2] - r0[2] * r1[1], r0[2] * r1[0] - r0[0] * r1[2], r0[0] * r1[1] - r0[1] * r1[0]];
+                this.orient = [...r0, ...r1, ...r2];
+            },
+            orientFacing(vector) {
+                // Rotation taking `vector` to the front of the sphere (0, 0, 1).
+                const ax = vector.y, ay = -vector.x, az = 0;
+                const sinAngle = Math.hypot(ax, ay);
+                const cosAngle = Math.max(-1, Math.min(1, vector.z));
+                if (sinAngle < 1e-6) return cosAngle > 0 ? [1, 0, 0, 0, 1, 0, 0, 0, 1] : [1, 0, 0, 0, -1, 0, 0, 0, -1];
+                const ux = ax / sinAngle, uy = ay / sinAngle;
+                const c = cosAngle, sVal = sinAngle, t = 1 - c;
+                return [
+                    c + ux * ux * t, ux * uy * t, uy * sVal,
+                    ux * uy * t, c + uy * uy * t, -ux * sVal,
+                    -uy * sVal, ux * sVal, c
+                ];
+            },
             center(index) {
                 const vector = this.cards[index]?.vector;
                 if (!vector) return;
                 this.velocityX = 0; this.velocityY = 0;
+                this.orient = this.orientFacing(vector);
                 this.rotationX = Math.atan2(-vector.x, vector.z);
                 const z = Math.hypot(vector.x, vector.z);
                 this.rotationY = Math.atan2(vector.y, z);
@@ -12012,14 +12062,17 @@ this.updateImageCounters();
                 }
                 const dx = event.clientX - this.lastX, dy = event.clientY - this.lastY;
                 const elapsed = Math.max(8, now - this.lastTime);
-                this.rotationX += dx * 0.006; this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY - dy * 0.006));
-                this.velocityX = dx * 0.006 / elapsed * 16; this.velocityY = -dy * 0.006 / elapsed * 16;
+                const yaw = dx * 0.006, pitch = -dy * 0.006;
+                this.applyViewRotation(pitch, yaw);
+                this.rotationX += yaw; this.rotationY += pitch;
+                this.velocityX = yaw / elapsed * 16; this.velocityY = pitch / elapsed * 16;
                 this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = now;
                 this.requestFrame();
             },
 
             onPointerUp(event) {
                 if (event.pointerId !== this.pointerId) return;
+                this.orthonormalizeOrient();
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const pressedCard = this.pressedCard;
                 const pressedFileId = this.pressedFileId;
@@ -12252,22 +12305,22 @@ this.updateImageCounters();
                 const dt = Math.min(32, Math.max(1, time - (this.lastFrameTime || time)));
                 this.lastFrameTime = time;
                 if (!this.dragging) {
-                    this.rotationX += this.velocityX * dt / 16;
-                    this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY + this.velocityY * dt / 16));
+                    if (this.velocityX || this.velocityY) {
+                        this.applyViewRotation(this.velocityY * dt / 16, this.velocityX * dt / 16);
+                        this.rotationX += this.velocityX * dt / 16; this.rotationY += this.velocityY * dt / 16;
+                    }
                     const damping = Math.pow(0.94, dt / 16);
                     this.velocityX *= damping; this.velocityY *= damping;
                 }
-                const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
-                const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
+                const m = this.orient;
                 const sphereRadius = this.sphereRadius();
                 const cullDepth = 0.22;
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
-                    const x1 = v.x * cosX + v.z * sinX;
-                    const z1 = -v.x * sinX + v.z * cosX;
-                    const y2 = v.y * cosY - z1 * sinY;
-                    const z2 = v.y * sinY + z1 * cosY;
+                    const x1 = m[0] * v.x + m[1] * v.y + m[2] * v.z;
+                    const y2 = m[3] * v.x + m[4] * v.y + m[5] * v.z;
+                    const z2 = m[6] * v.x + m[7] * v.y + m[8] * v.z;
                     const perspective = 1 / (1.8 - z2 * 0.45);
                     const scale = perspective * 1.18 * this.cardScale;
                     const x = x1 * sphereRadius * perspective;
@@ -12373,6 +12426,15 @@ this.updateImageCounters();
                 };
                 addEventListener('pointerup', releaseExitGuard, true);
                 addEventListener('pointercancel', releaseExitGuard, true);
+                exitButton?.addEventListener('pointerup', event => {
+                    if (exitButton.disabled) return;
+                    if (event.button !== undefined && event.button !== 0) return;
+                    // Exit at finger-lift: Safari's synthetic click can lag behind the tap on a
+                    // busy page, which made the Focus X feel slow. Disabling here also suppresses
+                    // the trailing click below.
+                    exitButton.disabled = true;
+                    this.exit();
+                });
                 exitButton?.addEventListener('click', event => {
                     event.stopPropagation();
                     if (exitButton.disabled) return;
