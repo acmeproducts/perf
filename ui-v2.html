@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.20-exit-hardening-prefetch-economy-diag-2026.09.04.3';
+        const APP_BUILD_ID = 'reconstruction-R4.21-failed-image-backoff-2026.09.04.4';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -1635,7 +1635,7 @@
                     'longtasks ms: ' + (this.longTasks.join(',') || '-'),
                     'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
                     'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
-                    'img recoveries: ' + i.recoveryAttempts + ' attempted / ' + i.recoverySuccesses + ' ok',
+                    'img errors: ' + i.imageErrorCount + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
                     'image requests: ' + i.providerRequestCount
                 ].join('\n');
             }
@@ -2527,7 +2527,7 @@
                 cacheHits: 0, cacheMisses: 0, pinnedCount: 0, residentCount: 0,
                 evictionCount: 0, providerResolutionCount: 0, providerRequestCount: 0,
                 sourceReplacementsDuringMovement: 0, elementRecreationsDuringMovement: 0,
-                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0
+                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0, imageErrorCount: 0
             },
             version(file) {
                 return file?.modifiedTime || file?.version || file?.eTag || file?.size || 'v0';
@@ -2582,6 +2582,16 @@
                 const entry = this.resolve(file, rendition, options);
                 if (!entry?.src || entry.readyState === 'loaded') return Promise.resolve(entry);
                 if (entry.ready) return entry.ready;
+                // Failure memory + backoff: without this a URL that errors nulls entry.ready and
+                // gets re-requested on the very next frame/attach. On the sphere that compounds
+                // into hundreds of duplicate requests that jam the connection pool and make even
+                // good thumbnails appear to take tens of seconds. Give up after a few tries and
+                // don't retry until a cooldown has elapsed.
+                if (entry.readyState === 'error') {
+                    const attempts = entry.loadFailures || 0;
+                    const nextAllowed = entry.retryAfter || 0;
+                    if (attempts >= 3 || performance.now() < nextAllowed) return Promise.resolve(entry);
+                }
                 entry.readyState = 'loading';
                 entry.ready = new Promise(resolve => {
                     const preload = new Image();
@@ -2592,7 +2602,13 @@
                             try { await preload.decode(); } catch (_) {}
                         }
                         entry.readyState = loaded ? 'loaded' : 'error';
-                        if (!loaded) { entry.ready = null; entry.preload = null; }
+                        if (loaded) { entry.loadFailures = 0; entry.retryAfter = 0; }
+                        else {
+                            entry.loadFailures = (entry.loadFailures || 0) + 1;
+                            this.instrumentation.imageErrorCount++;
+                            entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
+                            entry.ready = null; entry.preload = null;
+                        }
                         resolve(entry);
                     };
                     preload.addEventListener('load', () => settle(true), { once: true });

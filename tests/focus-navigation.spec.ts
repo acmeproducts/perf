@@ -866,6 +866,64 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('a failing image URL is capped and backed off, not re-requested every frame', async ({ page }) => {
+    await installDeterministicImages(page);
+    let requestCount = 0;
+    // file-y's thumb always 404s; count how many times the browser actually asks for it.
+    await page.route(imageUrl('file-y', 'thumb'), async route => {
+      requestCount++;
+      await route.fulfill({ status: 404, contentType: 'text/plain', body: 'nope' });
+    });
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(({ resources }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = ['file-x', 'file-y', 'file-z'].map((id, index) => ({
+        id, name: id, stack: 'in', stackSequence: 100 - index, metadataStatus: 'loaded',
+        thumbnails: { medium: { url: resources[id].thumb }, large: { url: resources[id].display } },
+        downloadUrl: resources[id].display
+      }));
+      state.imageFiles = files;
+      state.currentFolder = { id: 'error-cap-test', name: 'Error cap test' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in'; state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+      return (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'file-x' });
+    }, {
+      resources: Object.fromEntries(['file-x', 'file-y', 'file-z'].map(id => [id, {
+        thumb: imageUrl(id, 'thumb'), display: imageUrl(id, 'display')
+      }]))
+    });
+    await page.waitForFunction(() => (window as any).SpatialGallery.cards.length === 3);
+    // Drive many render frames and repeated warms — the kind of churn that previously
+    // produced hundreds of duplicate requests for a single bad URL.
+    await page.evaluate(async () => {
+      const gallery = (window as any).SpatialGallery;
+      const shared = (window as any).SharedImageResources;
+      const files = (window as any).__orbitalAppState.stacks.in;
+      for (let frame = 0; frame < 40; frame++) {
+        gallery.rotationX += 0.05;
+        gallery.render(performance.now());
+        shared.warm(files, 'thumb');
+        await new Promise(r => setTimeout(r, 10));
+      }
+    });
+    await page.waitForTimeout(200);
+    // The internal request counter is what blew up to ~1043 on device. With the cap it must
+    // stay tiny for one bad URL; without it every frame re-requests.
+    const internalRequests = await page.evaluate(() => {
+      const shared = (window as any).SharedImageResources;
+      const entry = Array.from(shared.entries.values()).find((e: any) => String(e.fileId) === 'file-y' && String(e.key).includes('thumb')) as any;
+      return { failures: entry?.loadFailures ?? null, readyState: entry?.readyState ?? null };
+    });
+    expect(internalRequests.failures).not.toBeNull();
+    expect(internalRequests.failures).toBeLessThanOrEqual(3);
+    expect(internalRequests.readyState).toBe('error');
+  });
+
   test('tapping the Focus X returns to the resumed sphere, never falling through to Sort', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
