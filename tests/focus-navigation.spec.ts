@@ -865,4 +865,66 @@ test.describe('Explorer pointer hit targeting', () => {
       { fileId: 'file-z', cardFileId: 'file-z' }
     ]);
   });
+
+  test('coordinate picking overrides a misleading event target for down and release', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      if (gallery.frameId) cancelAnimationFrame(gallery.frameId);
+      gallery.frameId = null;
+      gallery.velocityX = 0;
+      gallery.velocityY = 0;
+      gallery.requestFrame = () => {};
+      gallery.elements.scene.setPointerCapture = () => {};
+      gallery.elements.scene.releasePointerCapture = () => {};
+
+      // Fully overlapping, transformed cards sharing one point; file-z is painted frontmost.
+      gallery.cards.forEach((card: any, index: number) => {
+        card.element.style.cssText = `position: fixed; left: 120px; top: 180px; width: 160px; height: 120px; margin: 0; transform: rotate(${index}deg) !important; z-index: ${index + 1};`;
+      });
+
+      const activations: Array<{ fileId: string, cardFileId: string }> = [];
+      const originalActivate = gallery.activateFileId.bind(gallery);
+      gallery.activateFileId = (fileId: string, element: HTMLElement) => {
+        activations.push({ fileId, cardFileId: gallery.cards.find((card: any) => card.element === element)?.fileId });
+        return true;
+      };
+
+      const frontHit = gallery.cardAtPoint(200, 240);
+      const backElement = gallery.cards[0].element as HTMLElement;
+      const frontElement = gallery.cards[2].element as HTMLElement;
+
+      // 1. Down dispatched on the BACK card element while the coordinates sit on the front card:
+      //    the pressed card must be the one cardAtPoint returns, not the event target.
+      backElement.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerId: 31, pointerType: 'mouse', button: 0, clientX: 200, clientY: 240 }));
+      const pressed = {
+        fileId: gallery.pressedFileId,
+        cardFileId: gallery.cards.find((card: any) => card.element === gallery.pressedCard)?.fileId
+      };
+      backElement.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 31, pointerType: 'mouse', button: 0, clientX: 201, clientY: 240 }));
+
+      // 2. Down on the front card, then raise a different card above the release point.
+      //    composedPath still contains the pressed card, but it is no longer frontmost — no activation.
+      frontElement.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerId: 32, pointerType: 'mouse', button: 0, clientX: 200, clientY: 240 }));
+      gallery.cards[1].element.style.zIndex = '9';
+      frontElement.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 32, pointerType: 'mouse', button: 0, clientX: 200, clientY: 240 }));
+      gallery.cards[1].element.style.zIndex = '2';
+
+      // 3. Real activation path: the front card's exact stable ID enters Focus.
+      gallery.activateFileId = originalActivate;
+      backElement.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerId: 33, pointerType: 'mouse', button: 0, clientX: 200, clientY: 240 }));
+      backElement.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 33, pointerType: 'mouse', button: 0, clientX: 200, clientY: 240 }));
+
+      return { frontFileId: frontHit?.fileId, pressed, activations };
+    });
+
+    expect(result.frontFileId).toBe('file-z');
+    expect(result.pressed).toEqual({ fileId: 'file-z', cardFileId: 'file-z' });
+    expect(result.activations).toEqual([{ fileId: 'file-z', cardFileId: 'file-z' }]);
+
+    await page.waitForFunction(() => (window as any).__orbitalAppState.inspection?.fileId === 'file-z');
+    expect(await page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe('file-z');
+  });
 });
