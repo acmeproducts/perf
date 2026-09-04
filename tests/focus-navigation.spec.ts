@@ -866,6 +866,29 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('tapping the Focus X returns to the resumed sphere, never falling through to Sort', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await activateExploreFile(page, 'file-y');
+    await expect(page.locator('#app-container')).toHaveClass(/focus-mode/);
+    // Real tap sequence on the X: pointer-up exits to the sphere; the same tap's trailing
+    // click must not fire a second exit that drops to Sort.
+    await page.evaluate(() => {
+      const button = document.getElementById('focus-origin-close') as HTMLButtonElement;
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 91, pointerType: 'touch', button: 0, clientX: 640, clientY: 30 }));
+      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 91, pointerType: 'touch', button: 0, clientX: 640, clientY: 30 }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 640, clientY: 30 }));
+    });
+    await expect(page.locator('#spatial-gallery')).toBeVisible();
+    await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
+    await page.waitForTimeout(80);
+    expect(await page.evaluate(() => ({
+      galleryHidden: (document.getElementById('spatial-gallery') as any).hidden,
+      focusMode: document.querySelector('#app-container')!.classList.contains('focus-mode'),
+      inspectionSurface: (window as any).__orbitalAppState.inspection?.surface
+    }))).toEqual({ galleryHidden: false, focusMode: false, inspectionSurface: 'explore' });
+  });
+
   test('vertical spin is unclamped: free trackball rotation continues past the old pitch limit', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
