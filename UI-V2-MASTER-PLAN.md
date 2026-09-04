@@ -1464,3 +1464,15 @@ Approval of this document authorizes repository documentation governance and exe
 - Existing "one Focus X pointer sequence cannot also close the revealed Explorer" assertion must remain green unweakened (Explore-return guard semantics unchanged).
 - Full `tests/focus-navigation.spec.ts` suite green; `git diff --check`; build; inline-JS syntax gate.
 - Publish to `main`, verify commit/blob/Pages per §43, provide the owner test URL.
+
+---
+
+## 47 · R4.14 — DEVICE GATE FIXES + COORDINATE-PICKING RE-LAND (2026-09-04)
+
+Owner device test of `f51c469` reported three failures. Dispositions:
+
+1. **Explorer tap opens the wrong image.** This is the original pointer-selection regression; its fix (`12e45d8`) had been reverted during the G16 incident and the defect was live again. The owner's device report authorizes the re-land. `12e45d8` is reapplied on top of R4.13; the coordinate-authority regression test returns with it.
+2. **Grid tiles all show the word "Focus".** The per-tile Focus button keeps its behavior, class, and accessible name but renders as a compact 30px "⤢" glyph instead of a text label. No interaction change.
+3. **Explore X feels dead / laggy.** The X exited only on the synthetic `click`, which Safari can delay or drop after taps on a busy 3D scene; repeated missed taps also spun the sphere. The X now exits on `pointerup` of a tap that started on the button (≤24px slop), with the `click` handler retained for keyboard/AT and suppressed for 700ms after a pointer exit; the exit-pointer guard is respected on both paths. The visual button is unchanged; its touch target is enlarged 12px on every side via an `::after` overlay.
+
+Gates: full `tests/focus-navigation.spec.ts` green including the restored coordinate-authority test and the R4.13 guard-release test; diff/build/syntax gates; publish and verify per §43.

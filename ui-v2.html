@@ -614,8 +614,8 @@
         .grid-drag-handle:active { cursor: grabbing; }
         .grid-item.dragging .grid-drag-handle { background: rgba(59, 130, 246, 0.9); }
         .grid-focus-button {
-            position: absolute; bottom: 6px; left: 6px; padding: 5px 8px; border: none; border-radius: 6px;
-            background: rgba(17, 24, 39, 0.76); color: #f9fafb; font-size: 12px; cursor: pointer; z-index: 3;
+            position: absolute; bottom: 6px; left: 6px; width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px;
+            background: rgba(17, 24, 39, 0.62); color: #f9fafb; font-size: 16px; line-height: 30px; text-align: center; cursor: pointer; z-index: 3;
         }
         .grid-focus-button:hover { background: rgba(245, 158, 11, 0.92); }
         .grid-focus-button:focus { outline: 2px solid #fde68a; outline-offset: 2px; }
@@ -1101,7 +1101,8 @@
         .spatial-gallery__header { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); z-index: 2100; display: grid; grid-template-columns: minmax(0,1fr) 46px minmax(0,1fr); align-items: start; pointer-events: none; isolation: isolate; }
         .spatial-gallery__header > * { pointer-events: auto; }
         .spatial-gallery__stack { justify-self: start; max-width: min(46vw,300px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .spatial-gallery__close { position: static; justify-self: center; translate: none; }
+        .spatial-gallery__close { position: relative; justify-self: center; translate: none; }
+        .spatial-gallery__close::after { content: ""; position: absolute; inset: -12px; border-radius: 999px; }
         .spatial-gallery__controls-toggle { justify-self: end; width: 46px; height: 46px; padding: 0; font-size: 24px; transition: rotate 140ms ease; }
         .spatial-gallery__controls-toggle[aria-expanded="true"] { rotate: 180deg; }
         .spatial-gallery__title { font: 700 16px/1.2 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; text-shadow: 0 2px 8px #000; }
@@ -8034,8 +8035,9 @@ this.updateImageCounters();
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'grid-focus-button';
-                button.textContent = 'Focus';
+                button.textContent = '⤢';
                 button.setAttribute('aria-label', `Focus ${file.name || 'image'}`);
+                button.title = 'Focus';
                 button.addEventListener('click', event => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -11437,9 +11439,27 @@ this.updateImageCounters();
                 this.elements.loadingProgress = document.getElementById('spatial-gallery-loading-progress');
                 this.elements.controlsToggle = document.getElementById('spatial-gallery-controls-toggle');
                 this.elements.stack?.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('explore'); });
-                document.getElementById('spatial-gallery-close')?.addEventListener('click', event => {
+                const closeButton = document.getElementById('spatial-gallery-close');
+                closeButton?.addEventListener('pointerdown', event => {
+                    if (event.button !== undefined && event.button !== 0) return;
+                    this.closeTap = { id: event.pointerId, x: event.clientX, y: event.clientY };
+                });
+                closeButton?.addEventListener('pointerup', event => {
+                    const tap = this.closeTap; this.closeTap = null;
+                    if (!tap || event.pointerId !== tap.id || this.exitPointerGuard) return;
+                    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 24) return;
+                    // Exit on pointer-up: Safari can delay or drop the synthetic click after a tap on a
+                    // busy scene, which made the Explore X feel dead. The click handler below stays as a
+                    // keyboard/AT fallback and is suppressed briefly after a pointer exit.
+                    this.closeTapExitedAt = performance.now();
+                    ModeNavigation.exit();
+                });
+                closeButton?.addEventListener('pointercancel', () => { this.closeTap = null; });
+                closeButton?.addEventListener('click', event => {
                     event.stopPropagation();
-                    if (!this.exitPointerGuard) ModeNavigation.exit();
+                    if (this.exitPointerGuard) return;
+                    if (this.closeTapExitedAt && performance.now() - this.closeTapExitedAt < 700) return;
+                    ModeNavigation.exit();
                 });
                 this.elements.controlsToggle?.addEventListener('click', event => { event.stopPropagation(); this.toggleControls(); });
                 this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
