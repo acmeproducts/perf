@@ -708,6 +708,72 @@ test.describe('Sort and Table Focus continuity', () => {
 });
 
 test.describe('Explorer pointer hit targeting', () => {
+  test('Focus exit guard releases after Sort-origin round trips and the mode chooser stays live', async ({ page }) => {
+    await installDeterministicImages(page);
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => typeof window !== 'undefined' && !!(window as any).__orbitalAppState);
+    await page.evaluate(({ resources }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = ['file-x', 'file-y', 'file-z'].map((id, index) => ({
+        id, name: id.toUpperCase(), stack: 'in', stackSequence: 100 - index, metadataStatus: 'loaded',
+        thumbnails: { medium: { url: resources[id].thumb }, large: { url: resources[id].display } },
+        downloadUrl: resources[id].display
+      }));
+      state.imageFiles = files;
+      state.currentFolder = { id: 'guard-release-test', name: 'Guard release test' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+    }, {
+      resources: Object.fromEntries(['file-x', 'file-y', 'file-z'].map(id => [id, {
+        thumb: imageUrl(id, 'thumb'), display: imageUrl(id, 'display')
+      }]))
+    });
+
+    const guardState = () => page.evaluate(() => ({
+      inspGuard: !!(window as any).CanonicalInspection?.exitPointerGuard
+    }));
+    const openChooser = async () => {
+      const opened = await page.evaluate(() => (window as any).Gestures.openSortModeChoice((window as any).CurrentImage.current()?.id));
+      expect(opened).toBeTruthy();
+      await expect(page.locator('#mode-choice-modal')).toBeVisible();
+    };
+
+    const roundTrip = async (mode: 'explore' | 'focus', iteration: number) => {
+      await openChooser();
+      await page.locator(`[data-mode-choice="${mode}"]`).click();
+      if (mode === 'explore') {
+        await page.waitForSelector('#spatial-gallery:not([hidden]) .spatial-gallery__card');
+        await page.locator('#spatial-gallery-close').click();
+        await expect(page.locator('#spatial-gallery')).toBeHidden();
+      } else {
+        await expect(page.locator('#app-container')).toHaveClass(/focus-mode/);
+        await page.locator('#focus-origin-close').click();
+        await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
+      }
+      await page.waitForTimeout(30);
+      const guards = await guardState();
+      expect(guards.inspGuard, `exit pointer guard released (iteration ${iteration}, ${mode})`).toBe(false);
+      expect(await page.evaluate(() => !!(window as any).SpatialGallery.exitPointerGuard), `gallery guard released (iteration ${iteration})`).toBe(false);
+    };
+
+    // The historical leak: Sort → Focus → X left the guard set forever, killing all clicks.
+    await roundTrip('explore', 1);
+    await roundTrip('focus', 2);
+    await roundTrip('explore', 3);
+    await roundTrip('focus', 4);
+    await roundTrip('explore', 5);
+
+    // Document clicks must still be fully live after every round trip.
+    await openChooser();
+    await page.locator('#mode-choice-close').click();
+    await expect(page.locator('#mode-choice-modal')).toBeHidden();
+  });
+
   test('touch jitter below tap slop preserves sphere geometry and activates the pressed card', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);

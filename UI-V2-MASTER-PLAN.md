@@ -1445,3 +1445,22 @@ Approval of this document authorizes repository documentation governance and exe
 **Trash icon:** provider deletion/recycle-bin action  
 **Owner-test publication:** existing `main`/GitHub Pages only; exact candidate blob; no alternate deployment mechanism  
 **Final production:** exact final owner-approved candidate
+
+---
+
+## 46 · R4.13 — FOCUS EXIT GUARD RELEASE (2026-09-04)
+
+**Defect (graveyard G16).** After entering Focus from Sort via the double-tap mode chooser and exiting with the Focus X, `CanonicalInspection`'s exit-pointer guard is never released: its clear routine re-reads `referrer.surface` on a `setTimeout(0)` after the exit click has already cleared the referrer. The leaked `ModeNavigation.transitionGuard` then suppresses every document click. Symptoms: Sort stack taps inert; the mode chooser still opens (pointer-event path) but no mode can ever be selected again (click path).
+
+**Rollback record.** `12e45d8` (coordinate-authoritative Explorer picking) was reverted to `02ccb84` per Failure Protocol when the symptom was first observed on device. A/B reproduction subsequently showed the identical failure on the pre-`12e45d8` build; `12e45d8` is cleared as the cause. Its revert stands; re-landing it is a separate owner decision after R4.13 ships and passes the device gate.
+
+**Required implementation (smallest complete change).**
+1. On Focus-X pointer-down, snapshot the release decision into the guard itself: `{ pointerId, returnsToSort }`, where `returnsToSort` is true unless the referrer surface at that moment is `explore` or `table`.
+2. In the pointer-up release path, decide from the captured guard object, never from post-exit state: clear when Explore or Table is visible **or** `guard.returnsToSort` is true. Guard identity must be checked so a stale timeout cannot clear a newer guard.
+3. No other change to the guard's purpose (swallowing the exit tap's own click) or to Explore/Table return semantics.
+
+**Gates.**
+- New browser-driven regression in `tests/focus-navigation.spec.ts`: repeated Sort → chooser → Explore → X → Sort and Sort → chooser → Focus → X → Sort round trips using trusted pointer input; after every round trip the chooser's mode buttons must still work and `ModeNavigation.transitionGuard` must be null.
+- Existing "one Focus X pointer sequence cannot also close the revealed Explorer" assertion must remain green unweakened (Explore-return guard semantics unchanged).
+- Full `tests/focus-navigation.spec.ts` suite green; `git diff --check`; build; inline-JS syntax gate.
+- Publish to `main`, verify commit/blob/Pages per §43, provide the owner test URL.
