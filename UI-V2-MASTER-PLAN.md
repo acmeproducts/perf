@@ -1488,3 +1488,15 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** New live-sphere regression: a trusted tap at the visual center of the painted frontmost card (winner derived independently from rects + inline z-index) must put exactly that stable fileId into Focus, including the rendered `#center-image`. All prior pointer, guard, isolation, and population tests remain green unweakened.
 
 **Discipline.** Explorer input decisions must never depend on browser hit-testing APIs over the 3D card field; painted geometry recomputed from the gallery's own state (or browser-computed rects) is the only acceptable source.
+
+---
+
+## 49 · R4.18 — IMMEDIATE POP-BACK RESUME + SPHERE RENDER ECONOMY (2026-09-04)
+
+**Owner requirement.** Exiting Focus back to Explore must render the globe immediately — a POP — even when the population changed while in Focus (delete, move, writeback). Stack writebacks are applied to the retained sphere as inserts/removals, never a full re-write.
+
+**Implementation.**
+1. `resumeFromFocus` now separates context validity (folder/generation/stack/layout) from membership equality. Same context with changed membership routes through `reconcilePopulation` on the retained scene — every surviving card element is reused, only the delta is created/removed — inside the strict warm-resume ordering (Focus paint removed only after the scene is fully restored). A full `open()` happens only when the context itself changed or the stack emptied.
+2. Render economy: per-card style writes (transform/opacity/z-index/far class) happen only when the value changed, eliminating most main-thread style churn each frame; far-hemisphere cards (depth < 0.22, never the selected card) are visibility-culled, roughly halving live compositor layers; cards below depth 0.45 drop their box-shadow; `will-change` reduced to transform. `cardAtPoint` skips culled cards.
+
+**Gates.** New regressions: (a) delete-in-Focus round trip pops back with every surviving card element identical (insert/remove, not rebuild) and no loading overlay; (b) with 40 cards, culling hides some far cards, never the selected card, applies the far shadow class, and culled cards are unpickable. Full suite green; the culling gate fails on the prior renderer.

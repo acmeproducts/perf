@@ -866,6 +866,86 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('deleting an image in Focus pops the retained sphere back without a rebuild', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    // Mark every card element so we can prove the survivors are the same DOM nodes.
+    await page.evaluate(() => {
+      (window as any).SpatialGallery.cards.forEach((card: any, index: number) => { card.element.dataset.retainedMark = `mark-${index}`; });
+    });
+    await activateExploreFile(page, 'file-y');
+    // While in Focus, remove file-y from the stack (simulates delete/move writeback) and
+    // advance the current image, then exit back to the sphere.
+    const result = await page.evaluate(async () => {
+      const w = window as any;
+      const state = w.__orbitalAppState;
+      state.stacks[state.currentStack] = state.stacks[state.currentStack].filter((file: any) => file.id !== 'file-y');
+      w.CurrentImage.set('file-x', state.currentStack, { allowCrossStack: false });
+      state.inspection.fileId = 'file-x';
+      await w.CanonicalInspection.exitToReferrer({ persist: false });
+      const gallery = w.SpatialGallery;
+      return {
+        galleryHidden: document.getElementById('spatial-gallery')!.hidden,
+        cardIds: gallery.cards.map((card: any) => card.fileId),
+        marks: gallery.cards.map((card: any) => card.element.dataset.retainedMark || null),
+        loadingHidden: (document.querySelector('#spatial-gallery .spatial-gallery__loading') as HTMLElement)?.hidden ?? true
+      };
+    });
+    expect(result.galleryHidden).toBe(false);
+    expect(result.cardIds.sort()).toEqual(['file-x', 'file-z']);
+    // Every surviving card kept its original element: the resume was an insert/remove, not a rebuild.
+    expect(result.marks.every(mark => typeof mark === 'string' && mark.startsWith('mark-'))).toBe(true);
+    expect(result.loadingHidden).toBe(true);
+  });
+
+  test('far-hemisphere cards are culled from layers but the selected card never is', async ({ page }) => {
+    await installDeterministicImages(page);
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(({ base }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = Array.from({ length: 40 }, (_, index) => {
+        const id = `bulk-${index}`;
+        return {
+          id, name: id, stack: 'in', stackSequence: 1000 - index, metadataStatus: 'loaded',
+          thumbnails: { medium: { url: `${base}/${id}-thumb.svg` }, large: { url: `${base}/${id}-display.svg` } },
+          downloadUrl: `${base}/${id}-display.svg`
+        };
+      });
+      state.imageFiles = files;
+      state.currentFolder = { id: 'cull-test', name: 'Cull test' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+      return (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'bulk-0' });
+    }, { base: 'https://focus-navigation.test' });
+    await page.waitForFunction(() => (window as any).SpatialGallery.cards.length === 40);
+    const cull = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.render(performance.now());
+      const hidden = gallery.cards.filter((card: any) => card.element.style.visibility === 'hidden');
+      const far = gallery.cards.filter((card: any) => card.element.classList.contains('far'));
+      const pick = gallery.cardAtPoint(
+        hidden[0] ? hidden[0].element.getBoundingClientRect().left + 1 : -1,
+        hidden[0] ? hidden[0].element.getBoundingClientRect().top + 1 : -1
+      );
+      return {
+        hiddenCount: hidden.length,
+        farCount: far.length,
+        selectedHidden: gallery.cards[gallery.selectedIndex]?.element.style.visibility === 'hidden',
+        hiddenPickedId: pick && hidden.some((card: any) => card === pick) ? pick.fileId : null
+      };
+    });
+    expect(cull.hiddenCount).toBeGreaterThan(0);
+    expect(cull.farCount).toBeGreaterThan(0);
+    expect(cull.selectedHidden).toBe(false);
+    expect(cull.hiddenPickedId).toBeNull();
+  });
+
   test('sphere population fetches all thumbnails eagerly with visible-first priority', async ({ page }) => {
     await installDeterministicImages(page);
     await page.goto(uiUrl);

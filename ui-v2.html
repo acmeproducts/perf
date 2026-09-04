@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.17 parallel thumbnail population -->
+<!-- Orbital8 UI governed reconstruction · R4.18 immediate pop-back resume and sphere render economy -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1091,10 +1091,11 @@
         .spatial-gallery__card {
             position: absolute; left: 50%; top: 50%; width: 112px; height: 148px; margin: -74px 0 0 -56px;
             padding: 5px; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92);
-            box-shadow: 0 12px 32px rgba(0,0,0,.38); transform-origin: center; will-change: transform, opacity;
+            box-shadow: 0 12px 32px rgba(0,0,0,.38); transform-origin: center; will-change: transform;
             transition: border-color 160ms ease, box-shadow 160ms ease; overflow: hidden;
         }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
+        .spatial-gallery__card.far { box-shadow: none; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
         .spatial-gallery__chrome { position: absolute; z-index: 2000; display: flex; align-items: center; gap: 10px; }
@@ -1590,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.17-parallel-population-2026.09.04.1';
+        const APP_BUILD_ID = 'reconstruction-R4.18-popback-render-economy-2026.09.04.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -11648,13 +11649,21 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack] || [];
                 const nextFiles = this.populationFor(stack, fileId);
                 const saved = this.focusSuspension;
-                const unchanged = Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
+                const sameContext = Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
                     && saved.folderGeneration === state.folderSessionGeneration && saved.stackName === state.currentStack
-                    && saved.layout === this.focusLayoutSignature() && nextFiles.length === saved.populationIds.length
+                    && saved.layout === this.focusLayoutSignature();
+                const unchanged = sameContext && nextFiles.length === saved.populationIds.length
                     && nextFiles.every((file, index) => String(file.id) === saved.populationIds[index]);
-                if (!unchanged) {
+                if (!sameContext || !nextFiles.length) {
                     this.focusSuspension = null;
                     return this.open({ stackName: state.currentStack, fileId, preserveGeometry: true, suppressPersist: true });
+                }
+                if (!unchanged) {
+                    // Membership or order changed while in Focus (delete, move, writeback). Apply the
+                    // delta to the retained scene — reuse every surviving card element — so the globe
+                    // pops back immediately instead of rebuilding and re-fetching the whole sphere.
+                    this.reconcilePopulation(nextFiles);
+                    SharedImageResources.pinExplorer(nextFiles);
                 }
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
                 CurrentImage.set(this.files[this.selectedIndex].id, this.stackName, { allowCrossStack: false });
@@ -12035,7 +12044,7 @@ this.updateImageCounters();
                 let best = null, bestZ = -Infinity;
                 for (const card of this.cards) {
                     const element = card.element;
-                    if (!element?.isConnected) continue;
+                    if (!element?.isConnected || element.style.visibility === 'hidden') continue;
                     const rect = element.getBoundingClientRect();
                     if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
                     const z = Number(element.style.zIndex) || 0;
@@ -12251,6 +12260,7 @@ this.updateImageCounters();
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
                 const sphereRadius = this.sphereRadius();
+                const cullDepth = 0.22;
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
@@ -12262,12 +12272,28 @@ this.updateImageCounters();
                     const scale = perspective * 1.18 * this.cardScale;
                     const x = x1 * sphereRadius * perspective;
                     const y = y2 * sphereRadius * perspective;
-                    card.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
-                    card.element.style.opacity = String(Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)));
-                    card.element.style.zIndex = String(Math.round(depth * 1000));
-                    const centerDistance = Math.hypot(x, y);
-                    if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
+                    const style = card.element.style;
+                    const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
+                    // Far-hemisphere cards are barely visible but each costs a full compositor
+                    // layer; hiding them halves GPU layer pressure on tablets.
+                    const hidden = depth < cullDepth && index !== this.selectedIndex;
+                    if (hidden !== cache.hidden) { cache.hidden = hidden; style.visibility = hidden ? 'hidden' : ''; }
+                    if (!hidden) {
+                        // Only write styles that actually changed: redundant writes on hundreds of
+                        // cards per frame dominate main-thread time, and z-index writes force
+                        // stacking recalculation.
+                        const transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
+                        if (transform !== cache.transform) { cache.transform = transform; style.transform = transform; }
+                        const opacity = Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)).toFixed(2);
+                        if (opacity !== cache.opacity) { cache.opacity = opacity; style.opacity = opacity; }
+                        const zIndex = String(Math.round(depth * 1000));
+                        if (zIndex !== cache.zIndex) { cache.zIndex = zIndex; style.zIndex = zIndex; }
+                        const far = depth < 0.45;
+                        if (far !== cache.far) { cache.far = far; card.element.classList.toggle('far', far); }
+                        const centerDistance = Math.hypot(x, y);
+                        if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
+                    }
                 });
                 if (nearestIndex !== this.focusedIndex) {
                     this.focusedIndex = nearestIndex;
