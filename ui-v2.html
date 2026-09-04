@@ -11984,13 +11984,20 @@ this.updateImageCounters();
             },
 
             cardAtPoint(x, y) {
-                const cardsByElement = new Map(this.cards.map(card => [card.element, card]));
-                for (const element of document.elementsFromPoint(x, y)) {
-                    const cardElement = element.closest?.('.spatial-gallery__card');
-                    const card = cardsByElement.get(cardElement);
-                    if (card) return card;
+                // Rect + paint-order picking. DOM hit-testing (elementsFromPoint) is unreliable in
+                // WebKit for 3D-transformed compositor layers inside a perspective scene, which made
+                // iPad taps resolve the wrong card. Bounding rects and the inline z-index written by
+                // render() are computed geometry, consistent across engines, and match what was painted.
+                let best = null, bestZ = -Infinity;
+                for (const card of this.cards) {
+                    const element = card.element;
+                    if (!element?.isConnected) continue;
+                    const rect = element.getBoundingClientRect();
+                    if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+                    const z = Number(element.style.zIndex) || 0;
+                    if (z >= bestZ) { bestZ = z; best = card; }
                 }
-                return null;
+                return best;
             },
 
             onWheel(event) {

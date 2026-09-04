@@ -866,6 +866,37 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('a real tap on the live sphere activates exactly the painted frontmost card', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.velocityX = 0; gallery.velocityY = 0;
+      if (gallery.frameId) { cancelAnimationFrame(gallery.frameId); gallery.frameId = null; }
+    });
+    // Derive the expected winner from painted geometry only (rect + inline z-index),
+    // independent of the implementation under test, at the visual center of the front card.
+    const target = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      const painted = gallery.cards.map((card: any) => ({
+        fileId: card.fileId,
+        rect: card.element.getBoundingClientRect(),
+        z: Number(card.element.style.zIndex) || 0
+      })).filter((c: any) => c.rect.width > 0);
+      painted.sort((a: any, b: any) => b.z - a.z);
+      const front = painted[0];
+      const x = front.rect.left + front.rect.width / 2;
+      const y = front.rect.top + front.rect.height / 2;
+      const covering = painted.filter((c: any) => x >= c.rect.left && x <= c.rect.right && y >= c.rect.top && y <= c.rect.bottom);
+      covering.sort((a: any, b: any) => b.z - a.z);
+      return { fileId: covering[0].fileId, x, y };
+    });
+    await page.mouse.click(target.x, target.y);
+    await page.waitForFunction(expected => (window as any).__orbitalAppState.inspection?.fileId === expected, target.fileId);
+    expect(await page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe(target.fileId);
+    expect(await page.evaluate(() => document.querySelector('#center-image')?.getAttribute('data-file-id'))).toBe(target.fileId);
+  });
+
   test('coordinate picking overrides a misleading event target for down and release', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);

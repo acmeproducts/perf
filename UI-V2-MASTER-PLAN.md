@@ -1476,3 +1476,15 @@ Owner device test of `f51c469` reported three failures. Dispositions:
 3. **Explore X feels dead / laggy.** The X exited only on the synthetic `click`, which Safari can delay or drop after taps on a busy 3D scene; repeated missed taps also spun the sphere. The X now exits on `pointerup` of a tap that started on the button (≤24px slop), with the `click` handler retained for keyboard/AT and suppressed for 700ms after a pointer exit; the exit-pointer guard is respected on both paths. The visual button is unchanged; its touch target is enlarged 12px on every side via an `::after` overlay.
 
 Gates: full `tests/focus-navigation.spec.ts` green including the restored coordinate-authority test and the R4.13 guard-release test; diff/build/syntax gates; publish and verify per §43.
+
+---
+
+## 48 · R4.15 — ENGINE-INDEPENDENT POINTER PICKING (2026-09-04)
+
+**Defect.** After R4.14 the owner still saw every sphere tap open the wrong image on device. The coordinate authority was correct but its implementation — `document.elementsFromPoint` — relies on DOM hit-testing, which WebKit resolves unreliably for 3D-transformed compositor layers (`translate3d` + `will-change: transform`) inside a `perspective` scene. Chromium (the automated gate) hit-tests these correctly, so the suite stayed green while iPad taps resolved wrongly.
+
+**Required implementation.** `SpatialGallery.cardAtPoint` picks from computed geometry, never DOM hit-testing: each card's `getBoundingClientRect()` (transform-inclusive and engine-consistent) filtered to rects containing the point, winner by the inline z-index that `render()` painted, later DOM order breaking ties to match paint order. No change to the pointer-down/up authority contract from §46's re-land.
+
+**Gates.** New live-sphere regression: a trusted tap at the visual center of the painted frontmost card (winner derived independently from rects + inline z-index) must put exactly that stable fileId into Focus, including the rendered `#center-image`. All prior pointer, guard, isolation, and population tests remain green unweakened.
+
+**Discipline.** Explorer input decisions must never depend on browser hit-testing APIs over the 3D card field; painted geometry recomputed from the gallery's own state (or browser-computed rects) is the only acceptable source.
