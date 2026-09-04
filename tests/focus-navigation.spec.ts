@@ -882,11 +882,24 @@ test.describe('Explorer pointer hit targeting', () => {
     await expect(page.locator('#spatial-gallery')).toBeVisible();
     await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
     await page.waitForTimeout(80);
+    // A second and third tap on the (now stale, disabled, hidden) X must be completely
+    // inert: no exit to Sort, and the retained sphere must survive with its cards.
+    await page.evaluate(() => {
+      const button = document.getElementById('focus-origin-close') as HTMLButtonElement;
+      for (const id of [92, 93]) {
+        button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: id, pointerType: 'touch', button: 0, clientX: 640, clientY: 30 }));
+        button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: id, pointerType: 'touch', button: 0, clientX: 640, clientY: 30 }));
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 640, clientY: 30 }));
+      }
+    });
+    await page.waitForTimeout(80);
     expect(await page.evaluate(() => ({
       galleryHidden: (document.getElementById('spatial-gallery') as any).hidden,
       focusMode: document.querySelector('#app-container')!.classList.contains('focus-mode'),
-      inspectionSurface: (window as any).__orbitalAppState.inspection?.surface
-    }))).toEqual({ galleryHidden: false, focusMode: false, inspectionSurface: 'explore' });
+      inspectionSurface: (window as any).__orbitalAppState.inspection?.surface,
+      cards: (window as any).SpatialGallery.cards.length,
+      exitDisabled: (document.getElementById('focus-origin-close') as HTMLButtonElement).disabled
+    }))).toEqual({ galleryHidden: false, focusMode: false, inspectionSurface: 'explore', cards: 3, exitDisabled: true });
   });
 
   test('vertical spin is unclamped: free trackball rotation continues past the old pitch limit', async ({ page }) => {

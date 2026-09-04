@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.19.1-focus-exit-single-fire-2026.09.04.2';
+        const APP_BUILD_ID = 'reconstruction-R4.20-exit-hardening-prefetch-economy-diag-2026.09.04.3';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -1600,6 +1600,46 @@
             document.documentElement.dataset.build = APP_BUILD.id;
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
+        const PerfBeacon = {
+            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [],
+            enabled: /[?&]debug=1/.test(location.search),
+            init() {
+                if (!this.enabled || this.el) return;
+                const el = document.createElement('div');
+                el.id = 'perf-beacon';
+                el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
+                document.body.appendChild(el); this.el = el;
+                try {
+                    new PerformanceObserver(list => {
+                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); });
+                    }).observe({ entryTypes: ['longtask'] });
+                } catch (error) { /* longtask unsupported (Safari): heartbeat below covers it */ }
+                let last = performance.now();
+                setInterval(() => {
+                    const now = performance.now(); const drift = Math.round(now - last - 400); last = now;
+                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); }
+                    this.render();
+                }, 400);
+                document.addEventListener('pointerup', () => {
+                    const at = performance.now();
+                    requestAnimationFrame(() => { this.taps.push(Math.round(performance.now() - at)); if (this.taps.length > 5) this.taps.shift(); });
+                }, true);
+            },
+            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); } },
+            render() {
+                if (!this.el) return;
+                const i = SharedImageResources.instrumentation;
+                this.el.textContent = [
+                    'build ' + APP_BUILD.id,
+                    'mainthread stalls ms: ' + (this.stalls.join(',') || '-'),
+                    'longtasks ms: ' + (this.longTasks.join(',') || '-'),
+                    'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
+                    'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
+                    'img recoveries: ' + i.recoveryAttempts + ' attempted / ' + i.recoverySuccesses + ' ok',
+                    'image requests: ' + i.providerRequestCount
+                ].join('\n');
+            }
+        };
         const APP_STORAGE_KEYS = {
             lastFolder: `${APP_IDENTITY.storagePrefix}:last_folder`,
             onedriveRoot: `${APP_IDENTITY.storagePrefix}:onedrive_root`,
@@ -2638,9 +2678,11 @@
                     const refreshed = this.resolve(fresh, rendition);
                     if (refreshed?.src && refreshed.key === key) apply(refreshed.src);
                 };
+                const attachStartedAt = performance.now();
                 img.addEventListener('load', () => {
                     if (!isCurrent()) return;
                     binding.loadedKey = key;
+                    if (typeof PerfBeacon !== 'undefined') PerfBeacon.imgLoaded(performance.now() - attachStartedAt);
                     if (this.instrumentation.firstUsefulThumbnailPaintMs == null) this.instrumentation.firstUsefulThumbnailPaintMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
@@ -7560,10 +7602,7 @@
                     STACKS.forEach(name => {
                         if (name === state.currentStack) return;
                         const heads = (state.stacks[name] || []).slice(0, count);
-                        if (heads.length) {
-                            SharedImageResources.warm(heads, 'thumb');
-                            SharedImageResources.warm(heads.slice(0, 1), 'display');
-                        }
+                        if (heads.length) SharedImageResources.warm(heads, 'thumb');
                     });
                 }, { priority: 'background', timeout: 300 });
             },
@@ -7582,7 +7621,13 @@
                 Utils.defer(() => {
                     if (generation !== this.neighborPrefetchGeneration || signature !== this.neighborPrefetchSignature) return;
                     Utils.prefetchImages(neighbors);
-                    SharedImageResources.warm(neighbors, 'display');
+                    // Full-res warming only for the immediate neighbors: wider full-res prefetch
+                    // saturated bandwidth and decode on tablets, starving thumbnail painting.
+                    const currentPosition = neighbors.findIndex(file => String(file.id) === String(state.currentFileId));
+                    const immediate = currentPosition >= 0
+                        ? neighbors.slice(Math.max(0, currentPosition - 1), currentPosition + 2)
+                        : neighbors.slice(0, 2);
+                    SharedImageResources.warm(immediate, 'display');
                 }, { priority: 'background', timeout: 180 });
             },
 
@@ -12534,8 +12579,8 @@ this.updateImageCounters();
                     SpatialGallery.transitionMoving = true;
                     SpatialGallery.resumeFromFocus(current.id);
                     SpatialGallery.transitionMoving = false;
-                    const exitButton = document.getElementById('focus-origin-close');
-                    if (exitButton) exitButton.disabled = false;
+                    // The X stays disabled until the next Focus enter re-enables it; a queued or
+                    // repeated tap on a stale button must never fire a second exit to Sort.
                 } else if (referrer.surface === 'table') {
                     const canResume = PhotoTable.folderId === state.currentFolder?.id && PhotoTable.folderGeneration === state.folderSessionGeneration
                         && PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0
@@ -13247,6 +13292,7 @@ this.updateImageCounters();
             try {
                 Utils.init();
                 applyBuildIdentity();
+                PerfBeacon.init();
                 state.syncLog = new SyncActivityLogger();
                 state.syncLog.init();
                 state.visualCues = new VisualCueManager();
