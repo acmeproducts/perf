@@ -866,6 +866,50 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('sphere population fetches all thumbnails eagerly with visible-first priority', async ({ page }) => {
+    await installDeterministicImages(page);
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(({ base }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = Array.from({ length: 40 }, (_, index) => {
+        const id = `bulk-${index}`;
+        return {
+          id, name: id, stack: 'in', stackSequence: 1000 - index, metadataStatus: 'loaded',
+          thumbnails: { medium: { url: `${base}/${id}-thumb.svg` }, large: { url: `${base}/${id}-display.svg` } },
+          downloadUrl: `${base}/${id}-display.svg`
+        };
+      });
+      state.imageFiles = files;
+      state.currentFolder = { id: 'bulk-population-test', name: 'Bulk population test' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+      return (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'bulk-0' });
+    }, { base: 'https://focus-navigation.test' });
+    await page.waitForFunction(() => (window as any).SpatialGallery.cards.length === 40);
+    // Give deferred paths a beat, then require every card — including indices past the old
+    // 18-card eager window — to be eager with its src already assigned.
+    await page.waitForTimeout(150);
+    const policy = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      return gallery.cards.map((card: any, index: number) => ({
+        index,
+        loading: card.image.loading,
+        hasSrc: !!card.image.getAttribute('src')
+      }));
+    });
+    expect(policy.length).toBe(40);
+    for (const card of policy) {
+      expect(card.loading, `card ${card.index} loading mode`).toBe('eager');
+      expect(card.hasSrc, `card ${card.index} src assigned`).toBe(true);
+    }
+  });
+
   test('an uncached current image paints its thumb instead of holding a blank screen', async ({ page }) => {
     await installDeterministicImages(page);
     // Make the display rendition slow so the blank window would be visible without the thumb-first path.

@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.16 thumb-first display and stack-head warming -->
+<!-- Orbital8 UI governed reconstruction · R4.17 parallel thumbnail population -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1590,7 +1590,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.16-thumb-first-stack-warming-2026.09.04.1';
+        const APP_BUILD_ID = 'reconstruction-R4.17-parallel-population-2026.09.04.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -11776,7 +11776,11 @@ this.updateImageCounters();
                 card.dataset.fileId = file.id;
                 const img = document.createElement('img');
                 img.alt = file.name || '';
-                img.loading = index < 18 ? 'eager' : 'lazy';
+                // All sphere cards are conceptually visible; lazy loading + deferred src assignment
+                // made the browser trickle-load them. Eager + async decode + fetchPriority lets the
+                // network stack fetch in full parallel while visible cards still go first.
+                img.loading = 'eager';
+                if ('fetchPriority' in img) img.fetchPriority = index < 18 ? 'high' : 'low';
                 img.decoding = 'async';
                 img.draggable = false;
                 card.appendChild(img);
@@ -11788,7 +11792,7 @@ this.updateImageCounters();
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
                 SharedImageResources.attach(img, file, 'thumb', {
-                    surface: 'explore', visible: index < 18, generation,
+                    surface: 'explore', visible: true, generation,
                     stackName: this.stackName, folderId: this.folderId
                 }).then(entry => { if (!entry?.src) settlePopulationImage(); });
                 return { element: card, image: img, vector: null, fileId: file.id, generation };
@@ -11873,7 +11877,7 @@ this.updateImageCounters();
                     if (!this.populationIsCurrent(generation)) return;
                     if (this.populationPaused()) return this.scheduleNextPage(generation);
                     this.appendPage(generation);
-                }, 80);
+                }, 16);
             },
 
             updateVectors() {
