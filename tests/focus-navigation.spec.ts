@@ -866,6 +866,64 @@ test.describe('Explorer pointer hit targeting', () => {
     ]);
   });
 
+  test('an uncached current image paints its thumb instead of holding a blank screen', async ({ page }) => {
+    await installDeterministicImages(page);
+    // Make the display rendition slow so the blank window would be visible without the thumb-first path.
+    await page.route(imageUrl('file-y', 'display'), async route => {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: imageSvg('#00ff00') });
+    });
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(({ resources }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = ['file-x', 'file-y'].map((id, index) => ({
+        id, name: id.toUpperCase(), stack: index === 0 ? 'in' : 'out', stackSequence: 100 - index, metadataStatus: 'loaded',
+        thumbnails: { medium: { url: resources[id].thumb }, large: { url: resources[id].display } },
+        downloadUrl: resources[id].display
+      }));
+      state.imageFiles = files;
+      state.currentFolder = { id: 'blank-screen-test', name: 'Blank screen test' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+    }, {
+      resources: Object.fromEntries(['file-x', 'file-y'].map(id => [id, {
+        thumb: imageUrl(id, 'thumb'), display: imageUrl(id, 'display')
+      }]))
+    });
+
+    // Switch to the 'out' stack whose head is uncached and whose display is slow.
+    await page.evaluate(() => {
+      const w = window as any;
+      w.CurrentImage.set('file-y', 'out', { allowCrossStack: true });
+      return w.Core.displayCurrentImage();
+    });
+
+    // Within well under the display delay, the center image must be visible showing the thumb.
+    await page.waitForFunction(() => {
+      const img = document.querySelector('#center-image') as HTMLImageElement;
+      return img && img.style.opacity === '1' && (img.getAttribute('src') || '').includes('file-y-thumb');
+    }, undefined, { timeout: 1000 });
+
+    // The slow display rendition still arrives and replaces the thumb.
+    await page.waitForFunction(() => {
+      const img = document.querySelector('#center-image') as HTMLImageElement;
+      return img && img.style.opacity === '1' && (img.getAttribute('src') || '').includes('file-y-display');
+    }, undefined, { timeout: 4000 });
+
+    // Stack-head warming: the other stack's head thumb has been requested into the shared cache.
+    await page.waitForFunction(() => {
+      const shared = (window as any).SharedImageResources;
+      return Array.from(shared.entries.values()).some((entry: any) =>
+        String(entry.fileId) === 'file-x' && entry.readyState !== 'idle');
+    }, undefined, { timeout: 3000 });
+  });
+
   test('a real tap on the live sphere activates exactly the painted frontmost card', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);

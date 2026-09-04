@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.15 engine-independent pointer picking -->
+<!-- Orbital8 UI governed reconstruction · R4.16 thumb-first display and stack-head warming -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1590,7 +1590,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.15-engine-independent-picking-2026.09.04.1';
+        const APP_BUILD_ID = 'reconstruction-R4.16-thumb-first-stack-warming-2026.09.04.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -2679,6 +2679,26 @@
                     this.instrumentation.providerRequestCount++;
                 }
                 img.style.opacity = firstFrame ? '1' : '0';
+                if (!firstFrame) {
+                    // No cached frame: show the thumb the moment it loads instead of holding the
+                    // screen blank until the full display rendition finishes downloading.
+                    const initialKey = binding.key;
+                    this.ensure(file, 'thumb').then(entry => {
+                        if (!entry?.src || entry.readyState !== 'loaded') return;
+                        if (token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
+                        const activeBinding = this.bindings.get(img);
+                        if (activeBinding !== binding || binding.key !== initialKey || binding.loadedKey) return;
+                        if (String(entry.fileId) !== fileId) return;
+                        binding.key = entry.key;
+                        binding.loadedKey = entry.key;
+                        img.dataset.sharedResourceKey = entry.key;
+                        if (img.getAttribute('src') !== entry.src) {
+                            img.src = entry.src;
+                            this.instrumentation.providerRequestCount++;
+                        }
+                        img.style.opacity = '1';
+                    });
+                }
                 let recovered = false;
                 img.onerror = async () => {
                     const activeEntry = this.entries.get(binding.key);
@@ -7520,6 +7540,25 @@
                 this.updateStackCounts();
             },
 
+            prefetchStackHeads(count = 2) {
+                // Warm the first images of the other stacks so switching stacks paints
+                // immediately instead of cold-loading into a blank screen.
+                const signature = STACKS.map(name => `${name}:${(state.stacks[name] || []).slice(0, count).map(file => file.id).join(',')}`).join('|');
+                if (signature === this.stackHeadPrefetchSignature) return;
+                this.stackHeadPrefetchSignature = signature;
+                Utils.defer(() => {
+                    if (signature !== this.stackHeadPrefetchSignature) return;
+                    STACKS.forEach(name => {
+                        if (name === state.currentStack) return;
+                        const heads = (state.stacks[name] || []).slice(0, count);
+                        if (heads.length) {
+                            SharedImageResources.warm(heads, 'thumb');
+                            SharedImageResources.warm(heads.slice(0, 1), 'display');
+                        }
+                    });
+                }, { priority: 'background', timeout: 300 });
+            },
+
             prefetchNeighborImages(stack, index, windowSize = 3) {
                 if (!Array.isArray(stack) || stack.length === 0) return;
                 const start = Math.max(0, index - windowSize);
@@ -7617,6 +7656,7 @@
                     this.applyTransform();
                     Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
                     this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
+                    this.prefetchStackHeads();
                     if (CanonicalInspection.active()) {
                         state.inspection.fileId = currentFile.id;
                     }
