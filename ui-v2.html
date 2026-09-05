@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.32 second-tap authority -->
+<!-- Orbital8 UI governed reconstruction · R4.34 the live session is sacred -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.32-second-tap-authority-2026.09.05.8';
+        const APP_BUILD_ID = 'reconstruction-R4.34-live-session-is-sacred-2026.09.05.10';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -6819,10 +6819,26 @@
                     await state.dbManager.saveFolderCache(folderId, mergedFiles);
                     state.imageFiles = mergedFiles;
                     this.repairDriveIdentityFields(state.imageFiles);
+                    // A live session is sacred. This refresh used to rebuild the stacks and
+                    // unconditionally repaint the displayed photo mid-session: the person taps
+                    // image A, A opens, this lands seconds later, re-sorts the stacks, and
+                    // swaps the screen to whatever now sits at the current position — "tap A,
+                    // get B" — then the disturbed state routed their X to Sort. The data still
+                    // refreshes; the picture the person is looking at does not change, and
+                    // the current image stays anchored by ID, never by position.
+                    const anchorId = state.currentFileId;
+                    const anchorStack = state.currentStack;
                     Core.initializeStacks();
+                    if (anchorId) CurrentImage.set(anchorId, anchorStack, { allowCrossStack: true });
                     Core.updateStackCounts();
-                    if (state.imageFiles.length > 0) Core.displayCurrentImage();
-                    else Core.showEmptyState();
+                    const surfaceLive = state.isFocusMode
+                        || !SpatialGallery.elements?.root?.hidden
+                        || !PhotoTable.elements?.root?.hidden;
+                    if (state.imageFiles.length > 0) {
+                        if (!surfaceLive) Core.displayCurrentImage();
+                    } else if (!surfaceLive) {
+                        Core.showEmptyState();
+                    }
                     Utils.showToast('Folder updated in background', 'info');
                 } catch (error) {
                     console.warn("Background refresh failed:", error.message);
@@ -11341,7 +11357,10 @@ this.updateImageCounters();
                 this.focusTransitionFileId = null;
                 this.rebalanceLayout('open', { persist: false, log: false });
                 CanonicalInspection.transitionToken++;
-                CanonicalInspection.clearReferrer?.();
+                // Never erase a live Focus session's return address: background refreshes can
+                // re-run open() while the person is viewing a photo, and a cleared referrer
+                // makes their X fall through to Sort and destroy the retained sphere.
+                if (!state.isFocusMode) CanonicalInspection.clearReferrer?.();
                 state.isFocusMode = false;
                 Utils.elements.appContainer.classList.remove('focus-mode');
                 document.body.classList.remove('origin-focus');
@@ -11599,8 +11618,13 @@ this.updateImageCounters();
                 event.target.closest('.spatial-gallery__card')?.setAttribute('data-moved', 'false');
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
-                const card = event.target.closest('.spatial-gallery__card');
-                this.pressedCard = card; this.pressedFileId = card?.dataset.fileId || null;
+                // §46 contract (finally landed here): the card under the finger at DOWN is
+                // authoritative. Background syncs re-render the sphere between down and up,
+                // so an up-time pick resolves whatever card slid under the finger — the
+                // owner's "tap A, get B". The DOM event target is equally untrustworthy.
+                const downHit = this.cardAtPoint(event.clientX, event.clientY);
+                const card = downHit?.element || null;
+                this.pressedCard = card; this.pressedFileId = downHit ? String(downHit.fileId || '') : null;
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), true));
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
@@ -11634,7 +11658,9 @@ this.updateImageCounters();
                 this.pressedCard = null; this.pressedFileId = null;
                 this.elements.scene.classList.remove('dragging');
                 if (!moved && Math.hypot(dx, dy) <= Math.max(8, tapSlop)) {
-                    const hit = this.cardAtPoint(event.clientX, event.clientY) || (pressedFileId ? this.cards.find(card => String(card.fileId) === String(pressedFileId)) : null);
+                    // Activate the DOWN-time pick. Re-picking at up hands the tap to whatever
+                    // card a background re-render moved under the finger.
+                    const hit = pressedFileId ? this.cards.find(card => String(card.fileId) === String(pressedFileId)) : null;
                     if (hit) this.handleCardTap(hit.fileId, hit.element);
                 }
                 this.requestFrame();
@@ -11951,6 +11977,13 @@ this.updateImageCounters();
             },
 
             exit() {
+                // Belt and braces: the enter() call recorded the return address on the
+                // inspection record. If anything cleared the live referrer mid-session,
+                // restore it from that record instead of falling through to Sort.
+                if (!this.active() && state.inspection?.surface === 'focus'
+                    && ['sort', 'explore', 'table'].includes(state.inspection?.referrer?.surface)) {
+                    this.setReferrer({ ...state.inspection.referrer });
+                }
                 return this.active() ? this.exitToReferrer() : this.exitToSort();
             },
 

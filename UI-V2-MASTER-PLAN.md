@@ -1620,3 +1620,15 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** New regressions: a real touch tap with 9px wobble activates exactly the tapped card with an Explore referrer; a second tap after a Focus round trip succeeds with an Explore referrer; the gesture toggle is inert on a live sphere (this and the wobble test proven failing on R4.31). Full relevant suites green (12 passed); the two era-suite failures remain A/B-verified as inherited from the pristine pin. Syntax/diff; publish per §43.
 
 **Discipline.** Exactly one activation authority per surface: any fallback path that can open Focus with a different file or referrer than the person's tap is a defect, not a safety net.
+
+---
+
+## 60 · R4.34 — THE LIVE SESSION IS SACRED (2026-09-05)
+
+**Root cause, finally proven end-to-end.** A real-input WebKit harness driving the full user loop (screenshot pixel ground truth → real tap → Focus → real X tap → sphere) stayed green on every build — until it simulated the one thing only the owner's devices have: **`refreshFolderInBackground` landing mid-session.** That refresh fires seconds after every load and, on real Drive, always finds changes (the app's own writebacks guarantee it). It then (a) rebuilt the stacks mid-gesture — cards remap under a finger between down and up, so an up-time pick resolves a different card; (b) **unconditionally called `Core.displayCurrentImage()`**, and when the merge flips the viewed file's stack (cloud lagging the app's own recent writeback), the ID lookup misses and position fallback silently replaces the photo on screen — "tap A, get B" while the tap itself was correct; (c) disturbed surface/referrer state so the X fell to Sort and destroyed the retained sphere. Invisible to every previous gate because no harness had a Drive backend. This mechanism has stomped every build all night; the input-layer fixes were aimed at innocent code.
+
+**Shipped (R4.33 + R4.34, minimal deltas on the pinned base).** Down-point pick authority (the card under the finger at pointer-down is what a tap opens; no up-time re-pick); `SpatialGallery.open` never clears a live Focus referrer, and `exit()` restores the referrer from the inspection record if anything cleared it; the background refresh applies DATA only during a live session — stacks re-anchored to the current image by ID across stacks, and `displayCurrentImage`/empty-state repaints suppressed whenever Focus, Explore, or Table is live.
+
+**Gates.** WebKit full-loop churn harness (wk-flow.mjs): 5/5 rounds green — mid-gesture re-render between down and up, refresh applied between tap and X, tapped image still on screen after the refresh, X returns to the live sphere. Stack-flip stomp regression (refresh-stomp.spec.ts) green; input, identity, smoke, era suites green (2 known inherited era failures unchanged). Syntax/diff; publish per §43.
+
+**Discipline.** Background synchronization may refresh data, never presentation: while any surface is live, nothing repaints, remaps, or re-anchors what the person is looking at, and the current image binds by ID across stacks, never by position.
