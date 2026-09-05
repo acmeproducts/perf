@@ -1588,3 +1588,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** Base = b47b602 blob + G19 edits only (all anchors matched verbatim); Aug-29 build's own suite 11/11 green against it; identity regressions 3/3 green; boot/populate smoke green with zero page errors; syntax/diff; publish per §43.
 
 **Discipline going forward (owner-directed).** No speculative rewrites of working subsystems: device symptoms get diagnosed to a proven root cause (probe or counter-proof) before any implementation, and fixes are minimal deltas against the known-good base, one at a time.
+
+---
+
+## 57 · R4.30 — OWNER-PINNED R4.10 RESTORED + IDENTITY INTEGRITY (2026-09-05)
+
+**Evidence-based candidate selection (owner-directed).** Full history survey of ui-v2.html. The decisive fact: on 2026-08-25 the owner personally committed `6383573` ("Add snapshot of ui-v2.html"), which restored ui-v2.html to exactly the R4.10 blob `fa9c0fb` (a7b472d, Aug 22) — the owner's own recorded judgment discarding the Aug 23–24 sphere fix storm. Everything after (Aug 26–29 "Focus identity" stabilizations, the Sep 4–5 R4.13–R4.29 line) was layered on top of that pin while chasing a symptom later proven to be G19 data corruption, not code. R4.29's failure on device is consistent: it restored Aug 29, which already carried four days of post-pin changes.
+
+**Shipped.** ui-v2.html = the owner-pinned R4.10 blob plus exactly two additions: (1) the device-confirmed G19 identity fixes (metadata-store whitelist both directions, cloud-authoritative merge, per-hydration repair) — the corruption machinery predates Aug 24, so the guard is required on any candidate; (2) a one-time purge of persisted explore/table layout settings, because the discarded R4.13–R4.29 builds wrote layout values (sphere scale, card scale, limits) into the same storage keys this build reads, and replaying them degrades the restored layout.
+
+**Gates.** Blob verified: base = `fa9c0fb` + the two additions only; era suite: focus-navigation + stack-sequence 7/8 green — the single failure ("picks visible pixels by depth") reproduces identically on the pristine owner-pinned blob, i.e., it is an inherited era mismatch between the Aug-25 test file and the owner's chosen Aug-22 code, not a regression introduced here (verified by A/B run); identity regressions 3/3; boot smoke clean; syntax/diff; publish per §43.
