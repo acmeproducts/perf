@@ -1538,3 +1538,18 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Implementation.** `?tapcheck=1` overlays, on every sphere tap: a clone of the tapped card's exact pixels with its file name/id; on Focus entry, the opened file's name/id with SAME/DIFFERENT verdict and whether the Focus image src was set; on rejection, the exact guard that refused (busy, not-in-stack, population mismatch, identity chain). `activateFileId`'s guard returns route through `TapCheck.reject` (returns `false`, behavior identical when disabled).
 
 **Gates.** Full suite + churn spec 36/36 green; syntax/diff; publish per §43.
+
+---
+
+## 53 · R4.26 — FILE IDENTITY INTEGRITY (2026-09-05)
+
+**Defect (owner tap-check evidence).** Sphere taps opened a different photo than the tapped card showed, on Chrome for iPhone and Android, with every id-based identity check green. The R4.25.1 probes proved the record itself was crossed: one file object carried its own id and thumbnailLink but another file's name and identity-bearing display URL. Root class (graveyard G19): the metadata store saved full `{ ...file }` snapshots and hydration `Object.assign`ed rows wholesale onto live files, so one wrong row Frankensteined two files; `{ ...cached, ...cloud }` merges and pure cache hydration then preserved the corruption in IndexedDB indefinitely on every device.
+
+**Implementation.**
+1. Metadata store boundary: a USER_METADATA_FIELDS whitelist (stack, tags, ratings, notes, stackSequence, favorite, extractedMetadata, metadataStatus, prompt, localUpdatedAt) is enforced on write (schedule + direct save) and on read (hydration assign). Identity and URL fields can no longer enter or leave the store.
+2. `mergeCloudWithCache`: merged record = cloud record + sanitized user metadata from cache. Provider identity always comes from the cloud.
+3. `repairDriveIdentityFields`, run at every hydration point (cache-first paint, pure cache mode, post-merge): rebuilds targetFileId and all id-derivable URLs strictly from the file's own id (shortcuts from shortcutDetails.targetId), drops thumbnailLinks embedding a different id, logs, resaves the folder cache, and clears the image cache — healing already-poisoned devices automatically on next load.
+
+**Gates.** New regressions, poisoned-row and repair cases proven failing on unfixed code: a full-snapshot row under another file's key cannot alter identity/URLs while user metadata still flows; repair rebuilds crossed fields, respects shortcut targets, and leaves clean records untouched; merge preserves only user metadata from cache. Full suite + churn + relist + identity: 40/40 green; syntax/diff; publish per §43. Tap-check overlay retained for on-device verification.
+
+**Discipline.** Identity-bearing fields (ids, names, provider URLs) have exactly one source of truth — the provider — and never round-trip through local persistence.

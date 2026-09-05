@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.25 tap-check diagnostic -->
+<!-- Orbital8 UI governed reconstruction · R4.26 file identity integrity -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.25.1-tapcheck-url-probes-2026.09.05.1';
+        const APP_BUILD_ID = 'reconstruction-R4.26-file-identity-integrity-2026.09.05.2';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -3777,10 +3777,25 @@
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
             }
+            // The metadata store carries USER metadata only. Full file snapshots were being
+            // saved and later Object.assign'd back onto live files, so a single row containing
+            // another file's identity/URLs permanently crossed two files (owner-reported wrong
+            // tap targets; graveyard G19). Identity and provider URL fields are stripped at the
+            // store boundary in both directions.
+            USER_METADATA_FIELDS = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes',
+                'stackSequence', 'favorite', 'extractedMetadata', 'metadataStatus', 'prompt', 'localUpdatedAt'];
+            sanitizeStoredMetadata(metadata) {
+                if (!metadata || typeof metadata !== 'object') return {};
+                const clean = {};
+                this.USER_METADATA_FIELDS.forEach(field => {
+                    if (field in metadata) clean[field] = metadata[field];
+                });
+                return clean;
+            }
             scheduleMetadataSave(fileId, metadata, context = {}, options = {}) {
                 if (!this.db) return Promise.resolve();
                 const pending = this.pendingMetadataWrites.get(fileId) || { resolvers: [], rejecters: [] };
-                pending.metadata = metadata;
+                pending.metadata = this.sanitizeStoredMetadata(metadata);
                 pending.context = context;
                 const promise = new Promise((resolve, reject) => {
                     pending.resolvers.push(resolve);
@@ -3938,7 +3953,7 @@
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
+                    const record = { id: fileId, metadata: this.sanitizeStoredMetadata(metadata) };
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -6638,6 +6653,7 @@
                     if (!canUseCache) {
                         if (cachedFiles.length > 0 && !options.forceFullResync) {
                             state.imageFiles = cachedFiles;
+                            this.repairDriveIdentityFields(state.imageFiles);
                             const remainingFiles = await this.prepareFolderForFirstPaint(state.imageFiles, { navigationToken });
                             if (!this.isNavigationActive(navigationToken)) {
                                 return false;
@@ -6662,6 +6678,7 @@
                     }
 
                     state.imageFiles = cachedFiles;
+                    this.repairDriveIdentityFields(state.imageFiles);
                     const remainingFiles = await this.prepareFolderForFirstPaint(state.imageFiles, { navigationToken });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
@@ -6708,8 +6725,50 @@
                 await this.processAllMetadata(criticalFiles, true, { navigationToken });
                 return files.slice(criticalFiles.length);
             },
-            mergeCloudWithCache(cloudFiles, cachedFiles) {
-                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
+            repairDriveIdentityFields(files = []) {
+                // Poisoned local caches (G19) left file records whose URL/identity fields belong
+                // to a different file, and pure cache hydration replays them forever. Every
+                // id-derivable field is rebuilt strictly from the file's own id (or its
+                // shortcut target), which makes taps land on the photo they show again even
+                // before the next cloud listing heals names.
+                if (state.providerType !== 'googledrive' || !Array.isArray(files)) return 0;
+                let repaired = 0;
+                files.forEach(file => {
+                    if (!file?.id) return;
+                    const effectiveId = (file.isShortcut && (file.shortcutDetails?.targetId || file.shortcutDetails?.targetFileId))
+                        ? (file.shortcutDetails.targetId || file.shortcutDetails.targetFileId)
+                        : file.id;
+                    const resourceKey = file.resourceKey || file.shortcutDetails?.targetResourceKey || null;
+                    const expected = {
+                        targetFileId: effectiveId,
+                        permanentThumbnailUrl: DriveLinkHelper.buildThumbnailUrl(effectiveId, 1000, resourceKey),
+                        permanentThumbnailUrlSmall: DriveLinkHelper.buildThumbnailUrl(effectiveId, 800, resourceKey)
+                    };
+                    let changed = false;
+                    Object.entries(expected).forEach(([field, value]) => {
+                        if (value && file[field] !== value) { file[field] = value; changed = true; }
+                    });
+                    ['downloadUrl', 'permanentImageUrl', 'driveApiDownloadUrl'].forEach(field => {
+                        const embedded = DriveLinkHelper.extractFileId(file[field]);
+                        if (embedded && String(embedded) !== String(effectiveId)) {
+                            file[field] = field === 'driveApiDownloadUrl'
+                                ? DriveLinkHelper.buildApiDownloadUrl(effectiveId, resourceKey)
+                                : DriveLinkHelper.buildUcDownloadUrl(effectiveId, resourceKey);
+                            changed = true;
+                        }
+                    });
+                    const linkedId = DriveLinkHelper.extractFileId(file.thumbnailLink);
+                    if (linkedId && String(linkedId) !== String(effectiveId)) { file.thumbnailLink = null; changed = true; }
+                    if (changed) repaired++;
+                });
+                if (repaired > 0) {
+                    state.syncLog?.log?.({ event: 'identity:repair', level: 'warn', details: `Rebuilt identity/URL fields on ${repaired} file record(s) from their own ids (G19).` });
+                    if (state.currentFolder?.id) state.dbManager?.scheduleFolderCacheSave?.(state.currentFolder.id, files, { priority: 'high' });
+                    SharedImageResources.clear();
+                }
+                return repaired;
+            },
+            mergeCloudWithCache(cloudFiles, cachedFiles) {                const cachedMap = new Map(cachedFiles.map(file => [file.id, file]));
                 const merged = [];
                 const newIds = [];
                 const updatedIds = [];
@@ -6765,7 +6824,10 @@
                         merged.push({ ...cloudFile });
                         newIds.push(cloudFile.id);
                     } else {
-                        const mergedFile = { ...cached, ...cloudFile };
+                        // Cached rows may be corrupted with another file's identity/URL fields
+                        // (G19). The cloud record is authoritative for everything except user
+                        // metadata, so only that whitelist survives from cache.
+                        const mergedFile = { ...cloudFile, ...state.dbManager.sanitizeStoredMetadata(cached) };
                         if (hasProviderDifferences(cached, cloudFile)) {
                             updatedIds.push(cloudFile.id);
                         }
@@ -6883,6 +6945,7 @@
                     }
 
                     state.imageFiles = mergedFiles;
+                    this.repairDriveIdentityFields(state.imageFiles);
                     const remainingFiles = await this.prepareFolderForFirstPaint(state.imageFiles, { navigationToken });
                     if (!this.isNavigationActive(navigationToken)) {
                         return false;
@@ -7030,6 +7093,7 @@
                     }
                     await state.dbManager.saveFolderCache(folderId, mergedFiles);
                     state.imageFiles = mergedFiles;
+                    this.repairDriveIdentityFields(state.imageFiles);
                     Core.initializeStacks();
                     Core.updateStackCounts();
                     if (state.imageFiles.length > 0) Core.displayCurrentImage();
@@ -7065,7 +7129,9 @@
                             ? await state.dbManager.getMetadata(file.id)
                             : cachedMetadata.get(file.id);
                         if (metadata) {
-                            Object.assign(file, metadata);
+                            // Rows may predate sanitized writes and can contain another file's
+                            // full snapshot; only user metadata may cross this boundary (G19).
+                            Object.assign(file, state.dbManager.sanitizeStoredMetadata(metadata));
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);
