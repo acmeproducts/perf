@@ -186,9 +186,10 @@ test.describe('Explorer Focus identity regressions', () => {
       currentFileId: 'file-x', stackPosition: before.indexOf('file-x'), inspectionFileId: 'file-x',
       imageFileId: 'file-x', bindingFileId: 'file-x', selectedCardFileId: 'file-x',
       selectedCardDatasetFileId: 'file-x', thumbnailFileId: 'file-x',
-      thumbnailBindingFileId: 'file-x', thumbnailKey: 'test-provider:file-x:v0:thumb',
-      thumbnailBindingKey: 'test-provider:file-x:v0:thumb',
-      thumbnailLoadedKey: 'test-provider:file-x:v0:thumb', surface: 'focus'
+      // Sphere cards bind the right-sized 'sphere' rendition as of R4.23.
+      thumbnailBindingFileId: 'file-x', thumbnailKey: 'test-provider:file-x:v0:sphere',
+      thumbnailBindingKey: 'test-provider:file-x:v0:sphere',
+      thumbnailLoadedKey: 'test-provider:file-x:v0:sphere', surface: 'focus'
     });
     expect(await page.evaluate(() => (window as any).__orbitalAppState.stacks.in.map((file: any) => file.id))).toEqual(before);
   });
@@ -1263,5 +1264,75 @@ test.describe('Explorer pointer hit targeting', () => {
 
     await page.waitForFunction(() => (window as any).__orbitalAppState.inspection?.fileId === 'file-z');
     expect(await page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe('file-z');
+  });
+});
+
+test.describe('Sphere memory and load discipline (R4.23)', () => {
+  test('sphere rendition resolves a 300px Drive thumbnail, not the 800px thumb', async ({ page }) => {
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const urls = await page.evaluate(() => {
+      const state = (window as any).__orbitalAppState;
+      const prior = state.providerType;
+      state.providerType = 'googledrive';
+      const file = { id: 'drive-file-1', name: 'Drive file' };
+      const resources = (window as any).SharedImageResources;
+      const result = {
+        sphere: resources.source(file, 'sphere'),
+        thumb: resources.source(file, 'thumb')
+      };
+      state.providerType = prior;
+      return result;
+    });
+    expect(urls.sphere).toContain('sz=w300');
+    expect(urls.sphere).toContain('drive-file-1');
+    expect(urls.thumb).not.toContain('sz=w300');
+  });
+
+  test('a loaded cache entry releases its decoded preload image', async ({ page }) => {
+    await installDeterministicImages(page);
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const entryState = await page.evaluate(async ({ base }) => {
+      const state = (window as any).__orbitalAppState;
+      state.providerType = 'test-provider';
+      const resources = (window as any).SharedImageResources;
+      resources.clear();
+      const file = {
+        id: 'file-x', name: 'X', metadataStatus: 'loaded',
+        thumbnails: { medium: { url: `${base}/file-x-thumb.svg` }, large: { url: `${base}/file-x-display.svg` } }
+      };
+      const entry = await resources.ensure(file, 'thumb');
+      return { readyState: entry.readyState, preloadReleased: entry.preload === null };
+    }, { base: 'https://focus-navigation.test' });
+    expect(entryState.readyState).toBe('loaded');
+    expect(entryState.preloadReleased).toBe(true);
+  });
+
+  test('preload traffic is capped: 60 simultaneous ensures never exceed the slot limit in flight', async ({ page }) => {
+    let inFlight = 0;
+    let peak = 0;
+    await page.route('https://slot-cap.test/**', async route => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 40));
+      inFlight--;
+      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: imageSvg('#123456') });
+    });
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(async ({ base }) => {
+      const state = (window as any).__orbitalAppState;
+      state.providerType = 'test-provider';
+      const resources = (window as any).SharedImageResources;
+      resources.clear();
+      const files = Array.from({ length: 60 }, (_, index) => ({
+        id: `slot-${index}`, name: `slot-${index}`, metadataStatus: 'loaded',
+        thumbnails: { medium: { url: `${base}/slot-${index}.svg` } }
+      }));
+      await Promise.all(files.map(file => resources.ensure(file, 'thumb')));
+    }, { base: 'https://slot-cap.test' });
+    expect(peak).toBeGreaterThan(0);
+    expect(peak).toBeLessThanOrEqual(16);
   });
 });

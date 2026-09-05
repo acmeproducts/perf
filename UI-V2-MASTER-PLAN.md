@@ -1500,3 +1500,19 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 2. Render economy: per-card style writes (transform/opacity/z-index/far class) happen only when the value changed, eliminating most main-thread style churn each frame; far-hemisphere cards (depth < 0.22, never the selected card) are visibility-culled, roughly halving live compositor layers; cards below depth 0.45 drop their box-shadow; `will-change` reduced to transform. `cardAtPoint` skips culled cards.
 
 **Gates.** New regressions: (a) delete-in-Focus round trip pops back with every surviving card element identical (insert/remove, not rebuild) and no loading overlay; (b) with 40 cards, culling hides some far cards, never the selected card, applies the far shadow class, and culled cards are unpickable. Full suite green; the culling gate fails on the prior renderer.
+
+---
+
+## 50 · R4.23 — SPHERE MEMORY AND LOAD DISCIPLINE (2026-09-04)
+
+**Defect (owner device report, R4.22).** Sphere taps inaccurate again; sphere population slow; the app crashes and restarts repeatedly. All three share one cause (graveyard G17): sphere cards fetched the 800px "small" thumbnail for a ~112×148px card, and the shared image cache kept every decoded preload `Image` alive after load. Hundreds of oversized decoded bitmaps exceeded iPad Safari's per-tab memory budget (tab jetsam = the crash/restart), decode work janked the main thread (the slowness), and under that jank the painted frame lagged the layout the rect-picker reads, so taps resolved against positions newer than the pixels on screen (the inaccuracy).
+
+**Implementation.**
+1. New `sphere` rendition in `SharedImageResources.source`: Google Drive resolves `buildThumbnailUrl(id, 300)` (covers 2× DPR for the card size); other providers prefer `thumbnails.small`. `SpatialGallery.createCard` and `pinExplorer` use it; Focus/Grid/Table keep `thumb`/`display` unchanged.
+2. `ensure()` releases `entry.preload` after a successful decode. On-screen `<img>` elements own their pixels; re-attachment is served by the HTTP cache. (Failure path already released it.)
+3. Preload traffic runs through a bounded FIFO slot queue (16 concurrent). Card `<img>` src assignment stays direct and eager per §R4.17 — the cap governs warm/preload only, so population never trickles.
+4. `clear()` flushes the pending slot queue so folder/stack switches don't run stale loads.
+
+**Gates.** Three new regressions, each proven failing on R4.22: sphere rendition URL contains `sz=w300`; a loaded entry has `preload === null`; 60 simultaneous ensures never exceed 16 in flight. Existing identity test updated to the `sphere` binding key (fileId identity assertions unweakened). Full suite 33/33 green; diff/syntax gates; publish and verify per §43.
+
+**Discipline.** Renditions are sized to their painted surface; nothing retains decoded bitmaps beyond the elements that display them; unbounded parallel preloading is buried alongside unbounded lazy trickling — both extremes fail on tablets.

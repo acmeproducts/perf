@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
+<!-- Orbital8 UI governed reconstruction · R4.23 sphere memory and load discipline -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
+        const APP_BUILD_ID = 'reconstruction-R4.23-sphere-memory-and-load-discipline-2026.09.04.6';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -2534,6 +2534,7 @@
             },
             clear() {
                 this.presentationToken++;
+                this.loadQueue.length = 0;
                 this.entries.clear();
                 this.inFlight.clear();
                 this.activeExplorerKeys.clear();
@@ -2548,11 +2549,19 @@
                 if (!file) return '';
                 if (state.providerType === 'googledrive') {
                     const urls = DriveLinkHelper.resolveAssetUrls(file);
+                    // Sphere cards paint at ~112x148 CSS px; an 800px thumbnail per card decodes to
+                    // ~2.5MB, and hundreds of them exhaust iPad Safari's per-tab memory budget
+                    // (tab jetsam = the "crash and restart"). 300px covers 2x DPR with headroom.
+                    if (rendition === 'sphere') {
+                        return (urls.fileId ? DriveLinkHelper.buildThumbnailUrl(urls.fileId, 300, urls.resourceKey) : null)
+                            || urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '';
+                    }
                     return rendition === 'display'
                         ? (urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '')
                         : (urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '');
                 }
                 const thumbnails = file.thumbnails || {};
+                if (rendition === 'sphere') return (thumbnails.small?.url || thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
                 return rendition === 'display'
                     ? (thumbnails.large?.url || file.downloadUrl || file.webContentLink || '')
                     : (thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
@@ -2594,29 +2603,55 @@
                 }
                 entry.readyState = 'loading';
                 entry.ready = new Promise(resolve => {
-                    const preload = new Image();
-                    preload.decoding = 'async';
-                    entry.preload = preload;
-                    const settle = async loaded => {
-                        if (loaded && typeof preload.decode === 'function') {
-                            try { await preload.decode(); } catch (_) {}
-                        }
-                        entry.readyState = loaded ? 'loaded' : 'error';
-                        if (loaded) { entry.loadFailures = 0; entry.retryAfter = 0; }
-                        else {
-                            entry.loadFailures = (entry.loadFailures || 0) + 1;
-                            this.instrumentation.imageErrorCount++;
-                            entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
-                            entry.ready = null; entry.preload = null;
-                        }
-                        resolve(entry);
+                    const start = () => {
+                        const preload = new Image();
+                        preload.decoding = 'async';
+                        entry.preload = preload;
+                        const settle = async loaded => {
+                            if (loaded && typeof preload.decode === 'function') {
+                                try { await preload.decode(); } catch (_) {}
+                            }
+                            entry.readyState = loaded ? 'loaded' : 'error';
+                            if (loaded) {
+                                entry.loadFailures = 0; entry.retryAfter = 0;
+                                // Do not retain the decoded preload: keeping an Image per cache entry
+                                // pinned every decoded bitmap (up to maxResident of them) in memory,
+                                // which is what exhausted iPad Safari's tab budget. On-screen <img>
+                                // elements hold their own pixels; re-attach hits the HTTP cache.
+                                entry.preload = null;
+                            } else {
+                                entry.loadFailures = (entry.loadFailures || 0) + 1;
+                                this.instrumentation.imageErrorCount++;
+                                entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
+                                entry.ready = null; entry.preload = null;
+                            }
+                            this.releaseLoadSlot();
+                            resolve(entry);
+                        };
+                        preload.addEventListener('load', () => settle(true), { once: true });
+                        preload.addEventListener('error', () => settle(false), { once: true });
+                        preload.src = entry.src;
+                        this.instrumentation.providerRequestCount++;
                     };
-                    preload.addEventListener('load', () => settle(true), { once: true });
-                    preload.addEventListener('error', () => settle(false), { once: true });
-                    preload.src = entry.src;
-                    this.instrumentation.providerRequestCount++;
+                    // Bounded concurrency: firing hundreds of preloads at once saturates the
+                    // connection pool and stacks decodes on the main thread, which is the jank
+                    // that made taps land on stale-painted positions. A short FIFO keeps the
+                    // sphere filling fast without the stampede.
+                    this.acquireLoadSlot(start);
                 });
                 return entry.ready;
+            },
+            loadSlotsInUse: 0,
+            loadSlotLimit: 16,
+            loadQueue: [],
+            acquireLoadSlot(start) {
+                if (this.loadSlotsInUse < this.loadSlotLimit) { this.loadSlotsInUse++; start(); }
+                else this.loadQueue.push(start);
+            },
+            releaseLoadSlot() {
+                const next = this.loadQueue.shift();
+                if (next) next();
+                else this.loadSlotsInUse = Math.max(0, this.loadSlotsInUse - 1);
             },
             async refreshFile(fileId) {
                 this.instrumentation.recoveryAttempts++;
@@ -2804,10 +2839,10 @@
                 this.touch(null);
             },
             pinExplorer(files = []) {
-                const next = new Set(files.map(file => this.key(file, 'thumb')));
+                const next = new Set(files.map(file => this.key(file, 'sphere')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                this.warm(files, 'thumb', { pin: true });
+                this.warm(files, 'sphere', { pin: true });
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -11869,7 +11904,7 @@ this.updateImageCounters();
                 });
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
-                SharedImageResources.attach(img, file, 'thumb', {
+                SharedImageResources.attach(img, file, 'sphere', {
                     surface: 'explore', visible: true, generation,
                     stackName: this.stackName, folderId: this.folderId
                 }).then(entry => { if (!entry?.src) settlePopulationImage(); });
