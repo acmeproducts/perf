@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.36 instant X return -->
+<!-- Orbital8 UI governed reconstruction · R4.37 tap-check restored + pick candidates -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.36-instant-x-return-2026.09.05.12';
+        const APP_BUILD_ID = 'reconstruction-R4.37-tapcheck-restored-2026.09.05.13';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -1573,6 +1573,87 @@
             document.documentElement.dataset.build = APP_BUILD.id;
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
+        const TapCheck = {
+            enabled: /[?&]tapcheck=1/.test(location.search),
+            el: null,
+            ensure() {
+                if (this.el) return this.el;
+                const el = document.createElement('div');
+                el.id = 'tap-check';
+                el.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.92);color:#e2e8f0;font:10px/1.45 ui-monospace,monospace;padding:8px;border-radius:10px;pointer-events:none;max-width:94vw;';
+                document.body.appendChild(el);
+                this.el = el;
+                return el;
+            },
+            describeUrl(src) {
+                if (!src) return 'EMPTY';
+                try {
+                    const url = new URL(src, location.href);
+                    const id = url.searchParams.get('id');
+                    return `${url.hostname}${id ? ' id=' + id.slice(0, 10) + '…' : url.pathname.slice(0, 16) + '…'}${url.searchParams.get('sz') ? ' ' + url.searchParams.get('sz') : ''}`;
+                } catch (error) { return String(src).slice(0, 36); }
+            },
+            probe(label, srcValue) {
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px;';
+                const img = document.createElement('img');
+                img.src = srcValue || '';
+                img.style.cssText = 'width:50px;height:66px;object-fit:cover;border-radius:5px;border:1px solid #94a3b8;background:#1e293b;';
+                img.onerror = () => { img.style.borderColor = '#f87171'; };
+                const cap = document.createElement('div');
+                cap.textContent = label;
+                cap.style.cssText = 'color:#93c5fd;';
+                wrap.appendChild(img); wrap.appendChild(cap);
+                return wrap;
+            },
+            // Called from pointer-down with the pick candidates: top z-index rect winners.
+            pick(x, y, candidates) {
+                if (!this.enabled) return;
+                this.lastPick = { x, y, candidates };
+            },
+            begin(fileId, cardElement, gallery) {
+                if (!this.enabled) return;
+                const el = this.ensure();
+                const id = String(fileId);
+                const card = gallery.cards.find(item => String(item.fileId) === id) || null;
+                const cardImg = card?.element?.querySelector('img') || cardElement?.querySelector?.('img') || null;
+                const cardSrc = cardImg?.getAttribute('src') || '';
+                const file = state.imageFiles.find(f => String(f.id) === id) || null;
+                el.innerHTML = '';
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;';
+                row.appendChild(this.probe('card', cardSrc));
+                if (file?.id) row.appendChild(this.probe('id-thumb', DriveLinkHelper.buildThumbnailUrl(file.id, 300, file.resourceKey)));
+                el.appendChild(row);
+                const candidateLines = (this.lastPick?.candidates || []).map(c => `  z${c.z} ${String(c.fileId).slice(0, 10)}… img:${this.describeUrl(c.src)}`).join('\n');
+                const text = document.createElement('div');
+                text.id = 'tap-check-text';
+                text.style.whiteSpace = 'pre-wrap';
+                text.textContent = [
+                    `tapped fileId: ${id.slice(0, 12)}…  name: ${(file?.name || '?').slice(0, 28)}`,
+                    `card img: ${this.describeUrl(cardSrc)}  imgDataset: ${String(cardImg?.dataset.fileId || '?').slice(0, 10)}…`,
+                    `pick candidates (top z first):`,
+                    candidateLines || '  (none recorded)',
+                    'waiting for Focus…'
+                ].join('\n');
+                el.appendChild(text);
+            },
+            opened(requestedId) {
+                if (!this.enabled) return;
+                const text = document.getElementById('tap-check-text');
+                if (!text) return;
+                const report = () => {
+                    const openedId = String(state.inspection?.fileId || state.currentFileId || '');
+                    const center = document.getElementById('center-image');
+                    const centerSrc = center?.getAttribute('src') || '';
+                    text.textContent = text.textContent.replace(/waiting for Focus…[\s\S]*$/,
+                        `opened id ${openedId === String(requestedId) ? 'SAME' : 'DIFFERENT: ' + openedId.slice(0, 12)}\nfocus img: ${this.describeUrl(centerSrc)}  centerDataset: ${String(center?.dataset.fileId || '?').slice(0, 10)}…`);
+                    const row = this.el?.querySelector('div');
+                    if (row && centerSrc) row.appendChild(this.probe('focus', centerSrc));
+                };
+                setTimeout(report, 900);
+            }
+        };
         const APP_STORAGE_KEYS = {
             lastFolder: `${APP_IDENTITY.storagePrefix}:last_folder`,
             onedriveRoot: `${APP_IDENTITY.storagePrefix}:onedrive_root`,
@@ -11606,6 +11687,7 @@ this.updateImageCounters();
 
             activateFileId(fileId, cardElement = null) {
                 const requestedId = String(fileId || '');
+                if (TapCheck.enabled) TapCheck.begin(requestedId, cardElement, this);
                 if (!requestedId || this.focusTransitionFileId) return false;
                 const index = this.files.findIndex(file => String(file.id) === requestedId);
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
@@ -11622,6 +11704,7 @@ this.updateImageCounters();
                     stackName: state.currentStack,
                     fileId: file.id
                 }, { immediateSrc })).then(result => {
+                    if (TapCheck.enabled) TapCheck.opened(requestedId);
                     // The flag must clear on SUCCESS too: left set, every later sphere tap
                     // silently returns false and falls through to the Sort-origin gesture
                     // toggle — wrong image opens, and its X exits to Sort.
@@ -11674,6 +11757,13 @@ this.updateImageCounters();
                 // so an up-time pick resolves whatever card slid under the finger — the
                 // owner's "tap A, get B". The DOM event target is equally untrustworthy.
                 const downHit = this.cardAtPoint(event.clientX, event.clientY);
+                if (TapCheck.enabled) {
+                    const candidates = this.cards
+                        .filter(card => { const r = card.element.getBoundingClientRect(); return r.width && event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom; })
+                        .map(card => ({ fileId: card.fileId, z: Number(card.element.style.zIndex) || 0, src: card.element.querySelector('img')?.getAttribute('src') || '' }))
+                        .sort((a, b) => b.z - a.z).slice(0, 3);
+                    TapCheck.pick(event.clientX, event.clientY, candidates);
+                }
                 const card = downHit?.element || null;
                 this.pressedCard = card; this.pressedFileId = downHit ? String(downHit.fileId || '') : null;
                 this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), true));
