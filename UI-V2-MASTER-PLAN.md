@@ -1516,3 +1516,15 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** Three new regressions, each proven failing on R4.22: sphere rendition URL contains `sz=w300`; a loaded entry has `preload === null`; 60 simultaneous ensures never exceed 16 in flight. Existing identity test updated to the `sphere` binding key (fileId identity assertions unweakened). Full suite 33/33 green; diff/syntax gates; publish and verify per §43.
 
 **Discipline.** Renditions are sized to their painted surface; nothing retains decoded bitmaps beyond the elements that display them; unbounded parallel preloading is buried alongside unbounded lazy trickling — both extremes fail on tablets.
+
+---
+
+## 51 · R4.24 — GLIDING-SPHERE TAP CATCH (2026-09-04)
+
+**Defect (owner device report).** Tapping a sphere thumbnail opens the wrong image; the owner reports it worked three releases earlier. Reproduced in a real WebKit engine with pixel-level ground truth (screenshot color at the tap point mapped to fileId, real WebDriver touch input): with the sphere at rest, 6/6 taps opened exactly the tapped image; while gliding on momentum, 6/6 opened the wrong one. The picking implementation is correct — the sphere keeps rotating between the frame the person reacted to and the pointer-down, so the right answer to "what is under this point now" is the wrong answer to "what did I tap." R4.19's free-trackball momentum lengthened glides, promoting this from occasional to constant. Graveyard G18.
+
+**Implementation.** `SpatialGallery.onPointerDown`: if `|velocityX| + |velocityY| > catchThreshold` (0.0006 rad/frame ≈ visually perceptible glide), the pointer-down zeroes momentum and suppresses card picking for that pointer sequence — the tap catches the globe, exactly like grabbing a spinning physical one. Selection only ever resolves against a still sphere. Below the threshold (imperceptible drift) taps select normally, so a settled sphere never feels dead. The sequence can still become a drag. Also: `activateFileId`'s warm first-frame key updated from `thumb` to the `sphere` rendition the cards bind since §50, restoring the instant Focus first paint.
+
+**Gates.** New regressions, catch case proven failing on unfixed code: (a) trusted tap on a gliding sphere kills momentum, does not enter Focus, and the follow-up tap opens exactly the independently derived painted front card; (b) a below-threshold sphere selects on the first tap. The touch-jitter test updated to assert on a still sphere per the new contract (its slop-tolerance assertions unweakened). Full suite 35/35 green; WebKit pixel-ground-truth verification 12/12 (6 settled select, 6 catch-then-select); diff/syntax gates; publish per §43.
+
+**Discipline.** Selection input against a moving 3D field is never resolved at the moment of contact; motion must be stopped (or provably imperceptible) before a pick may bind to a fileId.

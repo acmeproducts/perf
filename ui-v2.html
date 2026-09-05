@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.23 sphere memory and load discipline -->
+<!-- Orbital8 UI governed reconstruction · R4.24 gliding tap catch -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.23-sphere-memory-and-load-discipline-2026.09.04.6';
+        const APP_BUILD_ID = 'reconstruction-R4.24-gliding-tap-catch-2026.09.04.7';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -12076,7 +12076,7 @@ this.updateImageCounters();
                     || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
                     || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
-                const expectedKey = SharedImageResources.key(file, 'thumb');
+                const expectedKey = SharedImageResources.key(file, 'sphere');
                 const immediateResource = binding && String(binding.fileId) === requestedId
                     && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey
                     && binding.loadedKey === expectedKey
@@ -12123,18 +12123,30 @@ this.updateImageCounters();
                 clearTimeout(this.tapTimer); this.lastTapIndex = -1; this.lastTapTime = 0;
             },
 
+            // Glide speed above which a tap catches the sphere instead of selecting.
+            // ~0.0006 rad/frame ≈ 5°/s ≈ a few px of card drift during human reaction time;
+            // below it the sphere is visually still and selection is safe.
+            catchThreshold: 0.0006,
+
             tapSlop(pointerType) {
                 return pointerType === 'touch' ? 12 : pointerType === 'pen' ? 8 : 3;
             },
 
             onPointerDown(event) {
                 if (event.button !== undefined && event.button !== 0) return;
+                // A tap on a gliding sphere catches and stops it, never selects. While momentum
+                // glides, the card painted under the finger at the moment the person decided to
+                // tap has already rotated away by pointer-down (human reaction + paint latency),
+                // so any selection here picks the wrong image — verified in WebKit: 6/6 wrong
+                // mid-glide, 6/6 correct at rest. Selection is only meaningful on a still sphere.
+                const gliding = Math.abs(this.velocityX) + Math.abs(this.velocityY) > this.catchThreshold;
+                this.velocityX = 0; this.velocityY = 0;
                 this.dragging = true; this.pointerId = event.pointerId; this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = performance.now();
                 this.elements.scene.classList.add('dragging');
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const hit = this.cardAtPoint(event.clientX, event.clientY);
+                const hit = gliding ? null : this.cardAtPoint(event.clientX, event.clientY);
                 const card = hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
                 // Coordinate-based picking: the visually frontmost card at the down point is authoritative.

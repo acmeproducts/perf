@@ -783,8 +783,11 @@ test.describe('Explorer pointer hit targeting', () => {
       const gallery = (window as any).SpatialGallery;
       if (gallery.frameId) cancelAnimationFrame(gallery.frameId);
       gallery.frameId = null;
-      gallery.velocityX = .17;
-      gallery.velocityY = -.11;
+      // R4.24: taps on a gliding sphere catch-and-stop instead of selecting (see the
+      // gliding-sphere catch suite). Jitter tolerance is asserted on a still sphere,
+      // which is the only state where selection occurs.
+      gallery.velocityX = 0;
+      gallery.velocityY = 0;
       gallery.requestFrame = () => {};
       gallery.elements.scene.setPointerCapture = () => {};
       gallery.elements.scene.releasePointerCapture = () => {};
@@ -1334,5 +1337,72 @@ test.describe('Sphere memory and load discipline (R4.23)', () => {
     }, { base: 'https://slot-cap.test' });
     expect(peak).toBeGreaterThan(0);
     expect(peak).toBeLessThanOrEqual(16);
+  });
+});
+
+test.describe('Gliding-sphere tap catch (R4.24)', () => {
+  test('a tap on a gliding sphere stops it without selecting; the next tap selects exactly the front card', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    // Put the sphere into a visible glide, well above the catch threshold.
+    const front = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.velocityX = 0.004; gallery.velocityY = 0.0025;
+      gallery.requestFrame();
+      const painted = gallery.cards.map((card: any) => ({
+        fileId: card.fileId,
+        rect: card.element.getBoundingClientRect(),
+        z: Number(card.element.style.zIndex) || 0
+      })).filter((c: any) => c.rect.width > 0);
+      painted.sort((a: any, b: any) => b.z - a.z);
+      const target = painted[0];
+      return { x: target.rect.left + target.rect.width / 2, y: target.rect.top + target.rect.height / 2 };
+    });
+    await page.mouse.click(front.x, front.y);
+    // The tap must catch: momentum dead, no Focus navigation.
+    await page.waitForFunction(() => {
+      const gallery = (window as any).SpatialGallery;
+      return Math.abs(gallery.velocityX) + Math.abs(gallery.velocityY) === 0;
+    });
+    expect(await page.evaluate(() => (window as any).__orbitalAppState.inspection?.surface || null)).not.toBe('focus');
+
+    // Now still: derive the painted front card independently and tap it — must select exactly it.
+    const target = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      const painted = gallery.cards.map((card: any) => ({
+        fileId: card.fileId,
+        rect: card.element.getBoundingClientRect(),
+        z: Number(card.element.style.zIndex) || 0
+      })).filter((c: any) => c.rect.width > 0);
+      painted.sort((a: any, b: any) => b.z - a.z);
+      const frontCard = painted[0];
+      const x = frontCard.rect.left + frontCard.rect.width / 2;
+      const y = frontCard.rect.top + frontCard.rect.height / 2;
+      const covering = painted.filter((c: any) => x >= c.rect.left && x <= c.rect.right && y >= c.rect.top && y <= c.rect.bottom);
+      covering.sort((a: any, b: any) => b.z - a.z);
+      return { fileId: covering[0].fileId, x, y };
+    });
+    await page.mouse.click(target.x, target.y);
+    await page.waitForFunction(expected => (window as any).__orbitalAppState.inspection?.fileId === expected, target.fileId);
+    expect(await page.evaluate(() => (window as any).__orbitalAppState.currentFileId)).toBe(target.fileId);
+  });
+
+  test('a below-threshold (visually still) sphere selects on the first tap', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const target = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.velocityX = 0.0002; gallery.velocityY = 0; // under catchThreshold: imperceptible drift
+      const painted = gallery.cards.map((card: any) => ({
+        fileId: card.fileId,
+        rect: card.element.getBoundingClientRect(),
+        z: Number(card.element.style.zIndex) || 0
+      })).filter((c: any) => c.rect.width > 0);
+      painted.sort((a: any, b: any) => b.z - a.z);
+      const frontCard = painted[0];
+      return { fileId: frontCard.fileId, x: frontCard.rect.left + frontCard.rect.width / 2, y: frontCard.rect.top + frontCard.rect.height / 2 };
+    });
+    await page.mouse.click(target.x, target.y);
+    await page.waitForFunction(expected => (window as any).__orbitalAppState.inspection?.fileId === expected, target.fileId);
   });
 });
