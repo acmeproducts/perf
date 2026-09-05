@@ -1578,3 +1578,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Rolled back (implementations buried by owner order; graveyard knowledge entries G17, G18, G20 stand, revival per §3):** R4.22 spinner recolor, R4.23 sphere rendition/preload-release/slot queue, R4.24 gliding tap catch, R4.25/R4.25.1 tap-check diagnostics, R4.27 paced population and painted-only picking. Tests restored to the R4.21 suite; identity, churn, and relist regressions retained.
 
 **Gates.** ui-v2.html = R4.21 blob + G19 edits only (verified by construction); R4.21 suite + churn + relist + identity: 35/35 green; syntax/diff; publish per §43.
+
+---
+
+## 56 · R4.29 — RESTORE THE AUG-29 STABLE + IDENTITY INTEGRITY (2026-09-05)
+
+**Owner ruling.** The app worked correctly at 500+ scale over a week ago; the entire R4.13–R4.28 line was regression-chasing on top of it. Restored ui-v2.html to `b47b602` (2026-08-29, "Speed up UI-V2 sorting and preserve focus identity"), the last commit before the Aug-30 pointer-targeting churn began, with exactly one addition: the G19 file-identity fixes (metadata-store whitelist both directions, cloud-authoritative merge, per-hydration identity repair). The wrong-image symptom that kicked off the whole chase was G19 record corruption, not picking — the Aug-29 code was never the problem, but pure restoration would re-apply the poisoned local rows, so the guards ride along.
+
+**Gates.** Base = b47b602 blob + G19 edits only (all anchors matched verbatim); Aug-29 build's own suite 11/11 green against it; identity regressions 3/3 green; boot/populate smoke green with zero page errors; syntax/diff; publish per §43.
+
+**Discipline going forward (owner-directed).** No speculative rewrites of working subsystems: device symptoms get diagnosed to a proven root cause (probe or counter-proof) before any implementation, and fixes are minimal deltas against the known-good base, one at a time.
