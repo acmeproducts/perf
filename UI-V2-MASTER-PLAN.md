@@ -1568,3 +1568,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** New regressions, both proven failing on unfixed code: a blank frontmost card cannot steal the pick from the painted card beneath; a 120-card population never exceeds the slot limit in flight and fully paints. The R4.17 anti-trickle test updated to poll for full src coverage (eager, no lazy/idle deferral — pacing is bounded concurrency, not trickling). Full suite 42/42 green; syntax/diff; publish per §43.
 
 **Discipline.** Request concurrency to providers is always bounded, exactly one in-flight fetch exists per rendition key, and pointer picking only ever resolves to painted content.
+
+---
+
+## 55 · R4.28 — OWNER-ORDERED ROLLBACK TO R4.21 + IDENTITY INTEGRITY (2026-09-05)
+
+**Owner ruling.** On 500+ item device testing of R4.27 (slow load, >90% wrong tap targets, Focus round-trip lag), the owner ordered the current line trashed and a return to the pre-neon-spinner build — R4.21 — as the best-performing version. Complied in full with one retained exception: the §53/G19 file-identity fixes (metadata-store whitelist both directions, cloud-authoritative merge, per-hydration identity repair), because the owner device-confirmed them fixing the crossed-record wrong-image defect, and a pure R4.21 would re-apply the poisoned local rows on every load and bring that defect straight back.
+
+**Rolled back (implementations buried by owner order; graveyard knowledge entries G17, G18, G20 stand, revival per §3):** R4.22 spinner recolor, R4.23 sphere rendition/preload-release/slot queue, R4.24 gliding tap catch, R4.25/R4.25.1 tap-check diagnostics, R4.27 paced population and painted-only picking. Tests restored to the R4.21 suite; identity, churn, and relist regressions retained.
+
+**Gates.** ui-v2.html = R4.21 blob + G19 edits only (verified by construction); R4.21 suite + churn + relist + identity: 35/35 green; syntax/diff; publish per §43.
