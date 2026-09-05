@@ -1684,3 +1684,5 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 3. `exitDestination` is write-once per session: assigned at enter only when no session holds one; cleared only by completed exit. Nothing else may read or write it.
 
 **Binary gate (pass = publish, fail = discard the patch, stop, and return to this section).** One end-to-end regression driving the full loop: tap a specific card → exactly that image in Focus → next shows exactly the id-neighbor → prev returns → X lands on the visible globe on its own stack. Plus: all existing suites green and the WebKit full-loop churn harness 5/5. Any red = the patch is discarded unshipped.
+
+**§64 EXECUTION RESULT (R4.39).** Gate PASSED: the §64 end-to-end regression (tap g4 → g4 in Focus → next → g5 → prev → g4 → X → visible globe on 'in') green; all suites green (18 passed, the two inherited era failures unchanged); WebKit full-loop churn harness 5/5. Published.

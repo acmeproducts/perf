@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.38 deterministic by construction -->
+<!-- Orbital8 UI governed reconstruction · R4.39 focus state machine complete -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.38-deterministic-by-construction-2026.09.05.14';
+        const APP_BUILD_ID = 'reconstruction-R4.39-focus-state-machine-complete-2026.09.05.15';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -10054,23 +10054,31 @@ this.updateImageCounters();
                 ModeCenterTap.reset();
                 return CanonicalInspection.enter(current.id, { surface: 'sort', stackName: state.currentStack, fileId: current.id });
             },
+            neighborOfSubject(offset) {
+                // §64: neighbors are computed BY ID from the pin — never by arithmetic on
+                // a mutable position counter.
+                const stack = state.stacks[state.currentStack] || [];
+                if (!stack.length) return null;
+                const pin = String((state.inspection?.surface === 'focus' && state.inspection?.fileId) || state.currentFileId || '');
+                const index = stack.findIndex(file => String(file.id) === pin);
+                const base = index >= 0 ? index : 0;
+                return stack[(base + offset + stack.length) % stack.length] || null;
+            },
             async nextImage() {
-                const stack = state.stacks[state.currentStack];
-                if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                const next = this.neighborOfSubject(1);
+                if (!next) return;
+                if (state.inspection?.surface === 'focus') { await CanonicalInspection.setSubject(next.id); return; }
+                CurrentImage.set(next.id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
-                if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
             },
             async prevImage() {
-                const stack = state.stacks[state.currentStack];
-                if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                const previous = this.neighborOfSubject(-1);
+                if (!previous) return;
+                if (state.inspection?.surface === 'focus') { await CanonicalInspection.setSubject(previous.id); return; }
+                CurrentImage.set(previous.id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
-                if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
@@ -12139,6 +12147,24 @@ this.updateImageCounters();
                 exitButton.setAttribute('aria-label', destination === 'Sort' ? 'Exit Focus to Sort' : `Return to ${destination}`);
             },
 
+            // §64: the ONE lawful writer of the pinned Focus subject. Updates the pin,
+            // derives currentFileId/stack/position FROM the id, then displays. All Focus
+            // navigation goes through here; nothing else may move the subject.
+            async setSubject(fileId) {
+                const id = String(fileId || '');
+                if (!id || state.inspection?.surface !== 'focus') return false;
+                const file = state.imageFiles.find(entry => String(entry.id) === id);
+                if (!file) return false;
+                state.inspection = { ...state.inspection, fileId: file.id };
+                const located = CurrentImage.locate(file.id, state.currentStack);
+                state.currentFileId = file.id;
+                if (located) { state.currentStack = located.stackName; state.currentStackPosition = located.index; state.focusTraversalIndex = located.index; }
+                await Core.displayCurrentImage();
+                Grid.syncSelectionWithFocus();
+                App.persistViewContext();
+                return true;
+            },
+
             exit() {
                 // Deterministic exit: the destination was computed once at enter and is
                 // immutable for the session. Nothing re-derives it here.
@@ -12162,7 +12188,7 @@ this.updateImageCounters();
                     return false;
                 }
                 const token = ++this.transitionToken;
-                this.exitDestination = Object.freeze({ surface: requestedReferrer.surface, stackName: resolved.stackName, fileId: resolved.file.id });
+                if (!this.exitDestination) this.exitDestination = Object.freeze({ surface: requestedReferrer.surface, stackName: resolved.stackName, fileId: resolved.file.id });
                 const activeReferrer = this.setReferrer({
                     surface: requestedReferrer.surface,
                     stackName: resolved.stackName,
