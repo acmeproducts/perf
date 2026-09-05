@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.34 the live session is sacred -->
+<!-- Orbital8 UI governed reconstruction · R4.35 provider-truth rebuild -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.34-live-session-is-sacred-2026.09.05.10';
+        const APP_BUILD_ID = 'reconstruction-R4.35-provider-truth-rebuild-2026.09.05.11';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -6350,6 +6350,27 @@
                 }
 
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
+                // One-time recovery (G19): the local file-record cache contains records
+                // stitched from two different files — including possibly-crossed ids that
+                // per-field repair cannot detect. Discard the cached records once and rebuild
+                // from the provider listing, which is keyed correctly at the source. Writes
+                // are sanitized now, so the corruption cannot re-form. User sorting data
+                // lives in the separate metadata store and is untouched.
+                try {
+                    const purgeFlag = 'orbital8:file-record-purge:R4.35';
+                    if (!localStorage.getItem(purgeFlag)) {
+                        await new Promise(resolve => {
+                            try {
+                                const transaction = state.dbManager.db.transaction('folderCache', 'readwrite');
+                                transaction.objectStore('folderCache').clear();
+                                transaction.oncomplete = resolve;
+                                transaction.onerror = resolve;
+                            } catch (error) { resolve(); }
+                        });
+                        localStorage.setItem(purgeFlag, '1');
+                        state.syncLog?.log?.({ event: 'identity:cache-purge', level: 'warn', details: 'Discarded local file records once (G19); rebuilding from provider truth.' });
+                    }
+                } catch (error) { /* storage unavailable */ }
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;

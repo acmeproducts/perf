@@ -1632,3 +1632,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** WebKit full-loop churn harness (wk-flow.mjs): 5/5 rounds green — mid-gesture re-render between down and up, refresh applied between tap and X, tapped image still on screen after the refresh, X returns to the live sphere. Stack-flip stomp regression (refresh-stomp.spec.ts) green; input, identity, smoke, era suites green (2 known inherited era failures unchanged). Syntax/diff; publish per §43.
 
 **Discipline.** Background synchronization may refresh data, never presentation: while any surface is live, nothing repaints, remaps, or re-anchors what the person is looking at, and the current image binds by ID across stacks, never by position.
+
+---
+
+## 61 · R4.35 — PROVIDER-TRUTH REBUILD (2026-09-05)
+
+**Owner directive: apply the diagnostics' own conclusion.** The R4.25.1 tap-check evidence showed local file records stitched from two different files — potentially including crossed ids, which per-field repair cannot even detect. Wrong thumbnails persist because the poisoned records themselves persist. Field repair was treating symptoms in data that cannot be trusted record-by-record.
+
+**Shipped.** One-time (per device, flag-guarded) discard of the entire local file-record cache (`folderCache`, all folders), forcing a clean full rebuild from the provider listing — which is keyed correctly at the source. The sanitized store boundary and cloud-authoritative merge (§53) guarantee the corruption cannot re-form. User sorting data (stacks, favorites, notes, ratings) lives in the separate metadata store and is untouched; identity repair remains as a standing guard for any record that slips through.
+
+**Gates.** Full suites green (14 passed incl. refresh-stomp); WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.
