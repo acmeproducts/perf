@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.37 tap-check restored + pick candidates -->
+<!-- Orbital8 UI governed reconstruction · R4.38 deterministic by construction -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.37-tapcheck-restored-2026.09.05.13';
+        const APP_BUILD_ID = 'reconstruction-R4.38-deterministic-by-construction-2026.09.05.14';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -7699,8 +7699,21 @@
                     return;
                 }
 
-                const resolved = CurrentImage.syncFromIndex();
-                const currentFile = resolved?.file;
+                // Deterministic subject: while Focus is live, the displayed file is the id
+                // Focus was entered with — a pure lookup. Position-based resolution is a
+                // race: any concurrent mutation of currentStackPosition (merges, gestures,
+                // sorting) silently swaps the subject, which is the "off by one" defect.
+                let currentFile = null;
+                if (state.inspection?.surface === 'focus' && state.inspection?.fileId != null) {
+                    const pinnedId = String(state.inspection.fileId);
+                    currentFile = state.imageFiles.find(file => String(file.id) === pinnedId) || null;
+                    if (currentFile) {
+                        state.currentFileId = currentFile.id;
+                        const located = CurrentImage.locate(currentFile.id, state.currentStack);
+                        if (located) { state.currentStack = located.stackName; state.currentStackPosition = located.index; state.focusTraversalIndex = located.index; }
+                    }
+                }
+                if (!currentFile) currentFile = CurrentImage.syncFromIndex()?.file || null;
                 if (!currentFile) {
                     this.showEmptyState();
                     return;
@@ -9759,13 +9772,22 @@ this.updateImageCounters();
             },
             updateGestureOverlayMode() {
                 if (!this.overlay) return;
+                // Deterministic input ownership: exactly one surface may receive pointer
+                // input, decided here structurally — not guarded inside handlers. While
+                // Explore or Table is live, the Sort gesture screens do not exist for
+                // input at all. Racing handlers were the source of every off-by-one Focus
+                // subject and every X that fell to Sort.
                 const focus = state.isFocusMode;
+                const spatialLive = !SpatialGallery.elements?.root?.hidden || !PhotoTable.elements?.root?.hidden;
                 if (this.overlay.screenA) {
-                    this.overlay.screenA.toggleAttribute('hidden', focus);
-                    this.overlay.screenA.setAttribute('aria-hidden', focus ? 'true' : 'false');
+                    const activeA = !focus && !spatialLive;
+                    this.overlay.screenA.toggleAttribute('hidden', !activeA);
+                    this.overlay.screenA.style.pointerEvents = activeA ? '' : 'none';
+                    this.overlay.screenA.setAttribute('aria-hidden', activeA ? 'false' : 'true');
                 }
                 if (this.overlay.screenB) {
                     this.overlay.screenB.toggleAttribute('hidden', !focus);
+                    this.overlay.screenB.style.pointerEvents = focus ? '' : 'none';
                     this.overlay.screenB.setAttribute('aria-hidden', focus ? 'false' : 'true');
                 }
             },
@@ -12118,12 +12140,15 @@ this.updateImageCounters();
             },
 
             exit() {
-                // Belt and braces: the enter() call recorded the return address on the
-                // inspection record. If anything cleared the live referrer mid-session,
-                // restore it from that record instead of falling through to Sort.
-                if (!this.active() && state.inspection?.surface === 'focus'
-                    && ['sort', 'explore', 'table'].includes(state.inspection?.referrer?.surface)) {
-                    this.setReferrer({ ...state.inspection.referrer });
+                // Deterministic exit: the destination was computed once at enter and is
+                // immutable for the session. Nothing re-derives it here.
+                const destination = this.exitDestination;
+                this.exitDestination = null;
+                if (destination && ['sort', 'explore', 'table'].includes(destination.surface)) {
+                    this.setReferrer({ ...destination });
+                    state.inspection = state.inspection || {};
+                    if (state.inspection.surface !== 'focus') state.inspection = { surface: 'focus', origin: this.origin, referrer: { ...destination }, fileId: destination.fileId };
+                    return this.exitToReferrer();
                 }
                 return this.active() ? this.exitToReferrer() : this.exitToSort();
             },
@@ -12137,6 +12162,7 @@ this.updateImageCounters();
                     return false;
                 }
                 const token = ++this.transitionToken;
+                this.exitDestination = Object.freeze({ surface: requestedReferrer.surface, stackName: resolved.stackName, fileId: resolved.file.id });
                 const activeReferrer = this.setReferrer({
                     surface: requestedReferrer.surface,
                     stackName: resolved.stackName,

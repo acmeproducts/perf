@@ -1652,3 +1652,18 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Shipped.** Explore exits return to the sphere's OWN stack (referrer stackName), with the current image re-anchored into it; same-context returns with changed membership route through a new `reconcilePopulation` (keyed element reuse, delta create/remove, sphere never hidden, no loading state) instead of `buildCards`. Full rebuild remains only for genuine context changes.
 
 **Gates.** New regression (proven failing on R4.35): after an in-Focus membership change plus a cross-stack re-anchor, the X returns to the visible sphere on its own stack with ≥10 of 12 card elements reused. All suites green (14 passed); WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.
+
+---
+
+## 63 · R4.38 — DETERMINISTIC BY CONSTRUCTION (2026-09-05)
+
+**Owner architectural ruling, accepted in full.** Trapping and patching races is wrong; behavior not determined mathematically will never be right. The night's recurring defects were all the same shape: multiple independent systems answering one input (sphere pointer path, Sort gesture screens, mode toggles, background refresh) and truth resolved through mutable position instead of identity. Guards referee races; refereed races are non-deterministic by definition. The owner's "off by one position" report was the proof: the Sort layer's advance handler fired on the same tap that opened Focus.
+
+**The three functions now enforced by construction:**
+1. **Input → surface.** Exactly one surface owns pointer input, decided structurally in `updateGestureOverlayMode`: while Explore or Table is live, the Sort gesture screens are hidden and pointer-inert — they do not exist for input. No handler-level guards; racing is impossible, not policed.
+2. **Id → display.** While Focus is live, `displayCurrentImage` renders `state.inspection.fileId` — a pure lookup over `imageFiles` — and position is derived FROM the id. Position-based subject resolution (mutated concurrently by merges/gestures/sorting) is gone from the Focus path; the off-by-one class cannot exist.
+3. **Enter → exit.** `enter()` computes a frozen `exitDestination` once; `exit()` consumes only it. Nothing re-derives the destination at exit time, so no mid-session mutation can route the X anywhere but where the person came from.
+
+**Gates.** Three new regressions, all proven failing on R4.37: gesture screens structurally inert with the sphere live; concurrent position/currentFileId mutation during and after enter cannot change the displayed subject; clobbering the referrer and current stack after enter cannot send the X to Sort. Full suites 16 green; WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.
+
+**Discipline (constitutional, owner-directed).** Every user-visible outcome must be a pure function of the user's input and pinned session state: one input owner per surface, identity over position everywhere, single-assignment session constants. Any conditional guard added to referee concurrent writers is prima facie evidence of an architecture defect and is rejected at review.
