@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.25-tapcheck-diagnostic-2026.09.04.8';
+        const APP_BUILD_ID = 'reconstruction-R4.25.1-tapcheck-url-probes-2026.09.05.1';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -1647,27 +1647,59 @@
                 if (this.el) return this.el;
                 const el = document.createElement('div');
                 el.id = 'tap-check';
-                el.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.88);color:#e2e8f0;font:11px/1.5 ui-monospace,monospace;padding:8px;border-radius:10px;pointer-events:none;max-width:70vw;display:flex;gap:8px;align-items:flex-start;';
+                el.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.92);color:#e2e8f0;font:10px/1.45 ui-monospace,monospace;padding:8px;border-radius:10px;pointer-events:none;max-width:92vw;';
                 document.body.appendChild(el);
                 this.el = el;
                 return el;
             },
+            describeUrl(src) {
+                if (!src) return 'EMPTY';
+                try {
+                    const url = new URL(src, location.href);
+                    const id = url.searchParams.get('id');
+                    return `${url.hostname}${id ? ' id=' + id.slice(0, 10) + '…' : url.pathname.slice(0, 18) + '…'}${url.searchParams.get('sz') ? ' ' + url.searchParams.get('sz') : ''}`;
+                } catch (_) { return src.slice(0, 40); }
+            },
+            probe(label, src) {
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px;';
+                const img = document.createElement('img');
+                img.src = src || '';
+                img.style.cssText = 'width:52px;height:68px;object-fit:cover;border-radius:5px;border:1px solid #94a3b8;background:#1e293b;';
+                img.onerror = () => { img.style.borderColor = '#f87171'; };
+                const cap = document.createElement('div');
+                cap.textContent = label;
+                cap.style.cssText = 'color:#93c5fd;';
+                wrap.appendChild(img); wrap.appendChild(cap);
+                return wrap;
+            },
             begin(fileId, cardElement, gallery) {
                 const el = this.ensure();
-                const card = gallery.cards.find(item => String(item.fileId) === String(fileId)) || null;
-                const src = card?.image?.getAttribute('src') || cardElement?.querySelector?.('img')?.getAttribute('src') || '';
-                const name = (state.imageFiles.find(f => String(f.id) === String(fileId))?.name) || '?';
+                const id = String(fileId);
+                const card = gallery.cards.find(item => String(item.fileId) === id) || null;
+                const cardSrc = card?.image?.getAttribute('src') || cardElement?.querySelector?.('img')?.getAttribute('src') || '';
+                const inFiles = state.imageFiles.filter(f => String(f.id) === id);
+                const file = inFiles[0] || null;
+                const stackFile = (state.stacks[state.currentStack] || []).find(f => String(f.id) === id) || null;
+                const galleryFile = gallery.files.find(f => String(f.id) === id) || null;
                 el.innerHTML = '';
-                if (src) {
-                    const thumb = document.createElement('img');
-                    thumb.src = src;
-                    thumb.style.cssText = 'width:56px;height:74px;object-fit:cover;border-radius:6px;border:1px solid #94a3b8;';
-                    el.appendChild(thumb);
-                }
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
+                row.appendChild(this.probe('card', cardSrc));
+                if (file?.id) row.appendChild(this.probe('id-thumb', DriveLinkHelper.buildThumbnailUrl(file.id, 300, file.resourceKey)));
+                if (file?.thumbnailLink) row.appendChild(this.probe('tLink', file.thumbnailLink));
+                el.appendChild(row);
                 const text = document.createElement('div');
                 text.id = 'tap-check-text';
-                text.textContent = `tapped card: ${name}\nid ${String(fileId).slice(0, 12)}…\nwaiting for Focus…`;
-                text.style.whiteSpace = 'pre';
+                text.style.whiteSpace = 'pre-wrap';
+                text.textContent = [
+                    `name: ${(file?.name || '?').slice(0, 34)}`,
+                    `card src: ${this.describeUrl(cardSrc)}`,
+                    `dup ids in imageFiles: ${inFiles.length}`,
+                    `same object stack/files/sphere: ${stackFile === file} ${galleryFile === file}`,
+                    `shortcut: ${!!file?.isShortcut}  permThumb: ${!!file?.permanentThumbnailUrl}`,
+                    'waiting for Focus…'
+                ].join('\n');
                 el.appendChild(text);
             },
             reject(reason) {
@@ -1681,10 +1713,15 @@
                 const text = document.getElementById('tap-check-text');
                 if (!text) return;
                 const openedId = String(state.inspection?.fileId || state.currentFileId || '');
-                const openedName = (state.imageFiles.find(f => String(f.id) === openedId)?.name) || '?';
                 const centerSrc = document.getElementById('center-image')?.getAttribute('src') || '';
-                text.textContent = text.textContent.replace('waiting for Focus…',
-                    `opened: ${openedName}\nid ${openedId.slice(0, 12)}… ${openedId === String(requestedId) ? 'SAME' : 'DIFFERENT!'}\nfocus img set: ${centerSrc ? 'yes' : 'no'}${result === false ? '\nenter returned false' : ''}`);
+                const report = () => {
+                    const src = document.getElementById('center-image')?.getAttribute('src') || '';
+                    text.textContent = text.textContent.replace(/waiting for Focus…[\s\S]*$/,
+                        `opened id ${openedId === String(requestedId) ? 'SAME' : 'DIFFERENT: ' + openedId.slice(0, 12)}\nfocus src: ${this.describeUrl(src)}${result === false ? '\nenter returned false' : ''}`);
+                    const row = this.el?.querySelector('div');
+                    if (row && src) row.appendChild(this.probe('focus', src));
+                };
+                if (centerSrc) report(); else setTimeout(report, 900);
             }
         };
         const APP_STORAGE_KEYS = {
