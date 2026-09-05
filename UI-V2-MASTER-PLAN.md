@@ -1608,3 +1608,15 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Shipped (minimal deltas on the pinned base, re-landing only device-proven remedies).** `cardAtPoint` = §48 rect + inline-z-index frontmost winner, later DOM order breaking ties; Focus X = §47 finger-lift exit with 700ms trailing-click suppression and single-fire until the next Focus enter re-enables it.
 
 **Gates.** New regressions: overlapping-cards pick resolves the top card over the nearest-center card; a second impatient X tap plus the trailing click cannot fire a second exit. Both green; identity 3/3; smoke clean; era suite unchanged — its two failures reproduce identically on the pristine pinned blob (A/B verified, inherited test/code mismatch). Syntax/diff; publish per §43.
+
+---
+
+## 59 · R4.32 — SECOND-TAP AUTHORITY: KILLING THE GHOST ACTIVATION PATH (2026-09-05)
+
+**Owner correction accepted.** The recurring wrong-image and X-to-Sort symptoms were never new bugs — they were one never-removed mechanism the fixes kept dancing around. On the pinned base, three cooperating defects: (1) a fingertip's natural wobble exceeds the mouse-sized 3px tap slop, so the sphere rejected most real touch taps; (2) after any successful activation, `focusTransitionFileId` never cleared on success, silently disabling the sphere's tap path; (3) every rejected/disabled tap fell through to `Gestures.toggleFocusMode`, which opens the CURRENT image (not the tapped one) with a Sort referrer — the wrong picture, whose X exits to Sort and destroys the retained sphere. First tap sometimes right, later taps wrong, X to Sort, full repaint: the owner's report verbatim.
+
+**Shipped (minimal deltas).** Touch-aware tap slop (12px touch / 8 pen / 3 mouse; re-land of 31314ca); the transition flag clears on success; `toggleFocusMode` is inert while Explore or Table is live — those surfaces own their taps.
+
+**Gates.** New regressions: a real touch tap with 9px wobble activates exactly the tapped card with an Explore referrer; a second tap after a Focus round trip succeeds with an Explore referrer; the gesture toggle is inert on a live sphere (this and the wobble test proven failing on R4.31). Full relevant suites green (12 passed); the two era-suite failures remain A/B-verified as inherited from the pristine pin. Syntax/diff; publish per §43.
+
+**Discipline.** Exactly one activation authority per surface: any fallback path that can open Focus with a different file or referrer than the person's tap is a defect, not a safety net.

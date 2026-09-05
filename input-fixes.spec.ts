@@ -63,3 +63,65 @@ test('a second impatient tap on the Focus X cannot fire a second exit', async ({
   expect(out.exits).toBe(1);
   expect(out.disabledAfter).toBe(true);
 });
+
+test('the SECOND sphere tap still opens exactly the tapped file with an Explore origin', async ({ page }) => {
+  await setup(page);
+  const out = await page.evaluate(async () => {
+    const g = (window as any).SpatialGallery;
+    const CI = (window as any).CanonicalInspection;
+    const first = await g.activateFileId(String(g.cards[2].fileId), g.cards[2].element);
+    // Exit Focus back to the sphere.
+    const btn = document.getElementById('focus-origin-close') as HTMLButtonElement;
+    btn.disabled = false;
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 11, button: 0 }));
+    await new Promise(r => setTimeout(r, 300));
+    const backOnSphere = !g.elements.root.hidden;
+    // Second tap on a DIFFERENT card must succeed and carry the Explore referrer.
+    const second = await g.activateFileId(String(g.cards[5].fileId), g.cards[5].element);
+    return {
+      first: first !== false, backOnSphere, second: second !== false,
+      openedId: String((window as any).__orbitalAppState.inspection?.fileId || ''),
+      tappedId: String(g.cards[5].fileId),
+      referrer: CI.referrer?.surface || null
+    };
+  });
+  expect(out.first).toBe(true);
+  expect(out.backOnSphere).toBe(true);
+  expect(out.second).toBe(true);
+  expect(out.openedId).toBe(out.tappedId);
+  expect(out.referrer).toBe('explore');
+});
+
+test('the Sort-origin gesture toggle is inert while the sphere is live', async ({ page }) => {
+  await setup(page);
+  const out = await page.evaluate(() => {
+    const result = (window as any).Gestures.toggleFocusMode();
+    return { result, surface: (window as any).__orbitalAppState.inspection?.surface || null, sphereVisible: !(window as any).SpatialGallery.elements.root.hidden };
+  });
+  expect(out.result).toBe(false);
+  expect(out.surface).not.toBe('focus');
+  expect(out.sphereVisible).toBe(true);
+});
+
+test('a real touch tap with 9px of wobble still activates the tapped card, not the gesture toggle', async ({ page }) => {
+  await setup(page);
+  const out = await page.evaluate(async () => {
+    const g = (window as any).SpatialGallery;
+    g.velocityX = 0; g.velocityY = 0;
+    const card = g.cards[3];
+    card.element.style.cssText += ';position:fixed;left:300px;top:300px;width:112px;height:148px;margin:0;transform:none;z-index:500;visibility:visible;';
+    const scene = g.elements.scene;
+    const fire = (type: string, x: number, y: number) => scene.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, composed: true, pointerId: 31, pointerType: 'touch', button: 0, clientX: x, clientY: y
+    }));
+    fire('pointerdown', 350, 370);
+    fire('pointermove', 356, 377); // ~9px wobble: over the old 3px slop, under touch slop
+    fire('pointerup', 356, 377);
+    await new Promise(r => setTimeout(r, 400));
+    const state = (window as any).__orbitalAppState;
+    return { surface: state.inspection?.surface || null, openedId: String(state.inspection?.fileId || ''), tappedId: String(card.fileId), referrer: (window as any).CanonicalInspection.referrer?.surface || null };
+  });
+  expect(out.surface).toBe('focus');
+  expect(out.openedId).toBe(out.tappedId);
+  expect(out.referrer).toBe('explore');
+});
