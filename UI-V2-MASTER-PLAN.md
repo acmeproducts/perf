@@ -1696,3 +1696,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Standing rule (constitutional).** Every release is a candidate until ratified on the owner's device. Device regression ⇒ immediate rollback to the last ratified state, then G-entry, then plan, then at most one defined patch with a binary gate — whose pass still only makes the next candidate.
 
 **Next patch: not defined until the owner ratifies that R4.40 restores R4.38's device behavior (tap→image correct).** Then §64's state-machine completion gets re-attempted as a new, smaller definition informed by whatever the R4.39 device failure teaches.
+
+---
+
+## 66 · R4.41 — THE ONE PATCH: NAVIGATION FOLLOWS THE PIN (2026-09-05)
+
+**Owner ratified R4.40** (tap→image correct on device). Per §65, one patch is now defined.
+
+**Definition (before implementation).** Two one-line insertions, nothing else: in `Gestures.nextImage` and `Gestures.prevImage`, after the era's own position advance and `CurrentImage.set`, when a Focus session is live, update the pinned subject to the file just navigated to (`state.inspection.fileId`). The era's arithmetic, ordering, and side effects are untouched. No new functions, no re-anchoring, no persistence calls, no destination changes — every element R4.39 added and the device rejected is excluded. The known X-to-Sort defect (G21) remains open for a separate future patch.
+
+**Binary gate.** Tap → exactly that image; next → the adjacent image displayed; prev → back to the tapped image; all suites; WebKit churn harness. Pass ⇒ publish as CANDIDATE (per G22, only owner device ratification makes it good). Fail ⇒ discard, return here.
