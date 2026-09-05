@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.24 gliding tap catch -->
+<!-- Orbital8 UI governed reconstruction · R4.25 tap-check diagnostic -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.24-gliding-tap-catch-2026.09.04.7';
+        const APP_BUILD_ID = 'reconstruction-R4.25-tapcheck-diagnostic-2026.09.04.8';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -1638,6 +1638,53 @@
                     'img errors: ' + i.imageErrorCount + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
                     'image requests: ' + i.providerRequestCount
                 ].join('\n');
+            }
+        };
+        const TapCheck = {
+            enabled: /[?&]tapcheck=1/.test(location.search),
+            el: null,
+            ensure() {
+                if (this.el) return this.el;
+                const el = document.createElement('div');
+                el.id = 'tap-check';
+                el.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.88);color:#e2e8f0;font:11px/1.5 ui-monospace,monospace;padding:8px;border-radius:10px;pointer-events:none;max-width:70vw;display:flex;gap:8px;align-items:flex-start;';
+                document.body.appendChild(el);
+                this.el = el;
+                return el;
+            },
+            begin(fileId, cardElement, gallery) {
+                const el = this.ensure();
+                const card = gallery.cards.find(item => String(item.fileId) === String(fileId)) || null;
+                const src = card?.image?.getAttribute('src') || cardElement?.querySelector?.('img')?.getAttribute('src') || '';
+                const name = (state.imageFiles.find(f => String(f.id) === String(fileId))?.name) || '?';
+                el.innerHTML = '';
+                if (src) {
+                    const thumb = document.createElement('img');
+                    thumb.src = src;
+                    thumb.style.cssText = 'width:56px;height:74px;object-fit:cover;border-radius:6px;border:1px solid #94a3b8;';
+                    el.appendChild(thumb);
+                }
+                const text = document.createElement('div');
+                text.id = 'tap-check-text';
+                text.textContent = `tapped card: ${name}\nid ${String(fileId).slice(0, 12)}…\nwaiting for Focus…`;
+                text.style.whiteSpace = 'pre';
+                el.appendChild(text);
+            },
+            reject(reason) {
+                if (this.enabled) {
+                    const text = document.getElementById('tap-check-text');
+                    if (text) text.textContent += `\nREJECTED: ${reason}`;
+                }
+                return false;
+            },
+            opened(requestedId, result) {
+                const text = document.getElementById('tap-check-text');
+                if (!text) return;
+                const openedId = String(state.inspection?.fileId || state.currentFileId || '');
+                const openedName = (state.imageFiles.find(f => String(f.id) === openedId)?.name) || '?';
+                const centerSrc = document.getElementById('center-image')?.getAttribute('src') || '';
+                text.textContent = text.textContent.replace('waiting for Focus…',
+                    `opened: ${openedName}\nid ${openedId.slice(0, 12)}… ${openedId === String(requestedId) ? 'SAME' : 'DIFFERENT!'}\nfocus img set: ${centerSrc ? 'yes' : 'no'}${result === false ? '\nenter returned false' : ''}`);
             }
         };
         const APP_STORAGE_KEYS = {
@@ -12063,18 +12110,19 @@ this.updateImageCounters();
 
             activateFileId(fileId, cardElement = null) {
                 const requestedId = String(fileId || '');
-                if (!requestedId || this.focusTransitionFileId) return false;
+                if (TapCheck.enabled) TapCheck.begin(requestedId, cardElement, this);
+                if (!requestedId || this.focusTransitionFileId) return TapCheck.reject('busy or empty id');
                 const canonicalStack = state.stacks[state.currentStack] || [];
                 const canonicalIndex = canonicalStack.findIndex(file => String(file.id) === requestedId);
-                if (canonicalIndex < 0) return false;
+                if (canonicalIndex < 0) return TapCheck.reject('tapped file not in current stack');
                 const index = this.files.findIndex(file => String(file.id) === requestedId);
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
-                if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
+                if (index < 0 || !card || (cardElement && card.element !== cardElement)) return TapCheck.reject('card/population mismatch');
                 const file = this.files[index];
                 const img = card.image || card.element.querySelector('img');
                 if (String(file.id) !== requestedId || String(card.fileId) !== requestedId
                     || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
-                    || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
+                    || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return TapCheck.reject('identity chain mismatch');
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
                 const expectedKey = SharedImageResources.key(file, 'sphere');
                 const immediateResource = binding && String(binding.fileId) === requestedId
@@ -12095,6 +12143,7 @@ this.updateImageCounters();
                 }, { immediateSrc: immediateResource })).then(result => {
                     this.transitionMoving = false;
                     this.focusTransitionFileId = null;
+                    if (TapCheck.enabled) TapCheck.opened(requestedId, result);
                     return result;
                 }).catch(error => {
                     this.transitionMoving = false;

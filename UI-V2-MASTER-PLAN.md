@@ -1528,3 +1528,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** New regressions, catch case proven failing on unfixed code: (a) trusted tap on a gliding sphere kills momentum, does not enter Focus, and the follow-up tap opens exactly the independently derived painted front card; (b) a below-threshold sphere selects on the first tap. The touch-jitter test updated to assert on a still sphere per the new contract (its slop-tolerance assertions unweakened). Full suite 35/35 green; WebKit pixel-ground-truth verification 12/12 (6 settled select, 6 catch-then-select); diff/syntax gates; publish per §43.
 
 **Discipline.** Selection input against a moving 3D field is never resolved at the moment of contact; motion must be stopped (or provably imperceptible) before a pick may bind to a fileId.
+
+---
+
+## 52 · R4.25 — TAP-CHECK DIAGNOSTIC (2026-09-04)
+
+**Purpose.** The owner reports wrong-image taps on a still sphere on Chrome for iPhone and Android; every churn flow reproducible in automation (fresh sphere, stack switches, writeback resume, rapid flips, Sort-origin round trips) passes with pixel-source invariants on both engine families, so the discriminating variable is the owner's live data/flow. Diagnostic-only release, zero behavior change without the flag (precedent: §R4.20 `?debug=1`).
+
+**Implementation.** `?tapcheck=1` overlays, on every sphere tap: a clone of the tapped card's exact pixels with its file name/id; on Focus entry, the opened file's name/id with SAME/DIFFERENT verdict and whether the Focus image src was set; on rejection, the exact guard that refused (busy, not-in-stack, population mismatch, identity chain). `activateFileId`'s guard returns route through `TapCheck.reject` (returns `false`, behavior identical when disabled).
+
+**Gates.** Full suite + churn spec 36/36 green; syntax/diff; publish per §43.
