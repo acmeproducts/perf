@@ -1553,3 +1553,18 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** New regressions, poisoned-row and repair cases proven failing on unfixed code: a full-snapshot row under another file's key cannot alter identity/URLs while user metadata still flows; repair rebuilds crossed fields, respects shortcut targets, and leaves clean records untouched; merge preserves only user metadata from cache. Full suite + churn + relist + identity: 40/40 green; syntax/diff; publish per §43. Tap-check overlay retained for on-device verification.
 
 **Discipline.** Identity-bearing fields (ids, names, provider URLs) have exactly one source of truth — the provider — and never round-trip through local persistence.
+
+---
+
+## 54 · R4.27 — 500-SCALE SPHERE INTEGRITY (2026-09-05)
+
+**Defect (owner report at 500+ items).** Sparse sphere with thumbnails appearing then disappearing; spins leaving blanks that slowly repaint; taps sometimes opening an image nowhere near the tapped one. Cause (graveyard G20): the population fired all ~500 thumbnail requests at once, tripping provider rate limiting — failed cards paint as near-invisible blanks that trickle back through R4.21 backoff — and blank cards remained pickable, so an invisible failed card in front stole taps aimed at the painted photo beneath.
+
+**Implementation.**
+1. Paced population: sphere card `<img>` fetches run through the R4.23 16-slot queue via a `paced` attach mode (slot held from src assignment to load/error, single request per card, 20s failsafe release). Explorer pinning now pins cache entries without preloading, eliminating the parallel duplicate fetch of the same URLs.
+2. Picking honesty: `cardAtPoint` skips cards whose image has no painted pixels (no src, incomplete, or zero naturalWidth) — only what the person can see is tappable.
+3. `maxResident` raised to 1400 so a full 500-card sphere's pinned entries plus display/thumb renditions fit without eviction churn (entries are cheap: decoded preloads already release on settle).
+
+**Gates.** New regressions, both proven failing on unfixed code: a blank frontmost card cannot steal the pick from the painted card beneath; a 120-card population never exceeds the slot limit in flight and fully paints. The R4.17 anti-trickle test updated to poll for full src coverage (eager, no lazy/idle deferral — pacing is bounded concurrency, not trickling). Full suite 42/42 green; syntax/diff; publish per §43.
+
+**Discipline.** Request concurrency to providers is always bounded, exactly one in-flight fetch exists per rendition key, and pointer picking only ever resolves to painted content.

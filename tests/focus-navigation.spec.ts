@@ -1100,9 +1100,11 @@ test.describe('Explorer pointer hit targeting', () => {
       return (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'bulk-0' });
     }, { base: 'https://focus-navigation.test' });
     await page.waitForFunction(() => (window as any).SpatialGallery.cards.length === 40);
-    // Give deferred paths a beat, then require every card — including indices past the old
-    // 18-card eager window — to be eager with its src already assigned.
-    await page.waitForTimeout(150);
+    // R4.27: loads are paced through a bounded slot queue to avoid provider rate limiting,
+    // so src assignment is prompt but not synchronous. The anti-trickle contract stands:
+    // every card — including indices past the old 18-card window — must be eager and get
+    // its src without lazy-loading or idle deferral. Poll until the full population has srcs.
+    await page.waitForFunction(() => (window as any).SpatialGallery.cards.every((c: any) => c.image.getAttribute('src')), undefined, { timeout: 5000 });
     const policy = await page.evaluate(() => {
       const gallery = (window as any).SpatialGallery;
       return gallery.cards.map((card: any, index: number) => ({
@@ -1404,5 +1406,63 @@ test.describe('Gliding-sphere tap catch (R4.24)', () => {
     });
     await page.mouse.click(target.x, target.y);
     await page.waitForFunction(expected => (window as any).__orbitalAppState.inspection?.fileId === expected, target.fileId);
+  });
+});
+
+test.describe('500-scale sphere integrity (R4.27)', () => {
+  test('an unloaded frontmost card never steals the tap from the painted card beneath', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.velocityX = 0; gallery.velocityY = 0;
+      // Painted card at a known spot.
+      const painted = gallery.cards[0];
+      painted.element.style.cssText += ';position:fixed;left:200px;top:200px;width:112px;height:148px;margin:0;transform:none;z-index:50;visibility:visible;';
+      // A blank card (no pixels: src removed) painted IN FRONT of it.
+      const blank = gallery.cards[1];
+      blank.image.removeAttribute('src');
+      blank.element.style.cssText += ';position:fixed;left:180px;top:190px;width:160px;height:180px;margin:0;transform:none;z-index:900;visibility:visible;';
+      const hit = gallery.cardAtPoint(250, 260);
+      return { hitFileId: hit ? String(hit.fileId) : null, paintedFileId: String(painted.fileId), blankFileId: String(blank.fileId) };
+    });
+    expect(result.hitFileId).toBe(result.paintedFileId);
+    expect(result.hitFileId).not.toBe(result.blankFileId);
+  });
+
+  test('a 120-card population never exceeds the load slot limit in flight and fully paints', async ({ page }) => {
+    let inFlight = 0, peak = 0;
+    await page.route('https://pace.test/**', async route => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      inFlight--;
+      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: imageSvg('#224466') });
+    });
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(({ base }) => {
+      const state = (window as any).__orbitalAppState;
+      const files = Array.from({ length: 120 }, (_, index) => ({
+        id: `pace-${index}`, name: `pace-${index}`, stack: 'in', stackSequence: 2000 - index, metadataStatus: 'loaded',
+        thumbnails: { small: { url: `${base}/pace-${index}.svg` }, medium: { url: `${base}/pace-${index}.svg` } },
+        downloadUrl: `${base}/pace-${index}.svg`
+      }));
+      state.imageFiles = files;
+      state.currentFolder = { id: 'pace', name: 'pace' };
+      state.providerType = 'test-provider';
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      (window as any).SharedImageResources.clear();
+      (window as any).Core.initializeStacks();
+      document.querySelector('#app-container')?.classList.remove('hidden');
+      (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'pace-0' });
+    }, { base: 'https://pace.test' });
+    await page.waitForFunction(() => {
+      const g = (window as any).SpatialGallery;
+      return g.cards.length === g.files.length && g.cards.every((c: any) => c.image.complete && c.image.naturalWidth > 0);
+    }, undefined, { timeout: 20000 });
+    expect(peak).toBeGreaterThan(0);
+    expect(peak).toBeLessThanOrEqual(16);
   });
 });

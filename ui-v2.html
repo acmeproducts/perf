@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.26 file identity integrity -->
+<!-- Orbital8 UI governed reconstruction · R4.27 500-scale sphere integrity -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.26-file-identity-integrity-2026.09.05.2';
+        const APP_BUILD_ID = 'reconstruction-R4.27-500-scale-sphere-integrity-2026.09.05.3';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -2600,7 +2600,10 @@
         };
 
         const SharedImageResources = {
-            maxResident: 640,
+            // Sized to hold a full 500-card sphere's pinned entries plus display/thumb
+            // renditions without eviction churn (entries hold URLs and state only; decoded
+            // preloads are released on settle, so residency is cheap).
+            maxResident: 1400,
             entries: new Map(),
             inFlight: new Map(),
             bindings: new WeakMap(),
@@ -2822,7 +2825,22 @@
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                 }, { once: true });
-                if (visible) apply(entry.src);
+                if (options.paced) {
+                    // Populations of hundreds of cards must not stampede the thumbnail host:
+                    // simultaneous request floods trigger provider rate limiting (sparse spheres
+                    // of blank cards that trickle back in). The slot queue paces the card's own
+                    // image fetch — one bounded request per card, no separate preload.
+                    this.acquireLoadSlot(() => {
+                        let released = false;
+                        const release = () => { if (!released) { released = true; this.releaseLoadSlot(); } };
+                        if (!isCurrent() || img.getAttribute('src') === entry.src) { apply(entry.src); release(); return; }
+                        img.addEventListener('load', release, { once: true });
+                        img.addEventListener('error', release, { once: true });
+                        setTimeout(release, 20000);
+                        apply(entry.src);
+                        if (!img.getAttribute('src')) release();
+                    });
+                } else if (visible) apply(entry.src);
                 else Utils.defer(() => apply(entry.src), { priority: 'background', timeout: 180 });
                 return entry;
             },
@@ -2926,7 +2944,11 @@
                 const next = new Set(files.map(file => this.key(file, 'sphere')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                this.warm(files, 'sphere', { pin: true });
+                // Pin without preloading: sphere cards fetch their own images through the
+                // paced slot queue, and a parallel warm of the same URLs would double the
+                // request volume the pacing exists to bound.
+                files.filter(Boolean).forEach(file => this.resolve(file, 'sphere', { pin: true }));
+                this.touch(null);
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -12055,7 +12077,7 @@ this.updateImageCounters();
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
                 SharedImageResources.attach(img, file, 'sphere', {
-                    surface: 'explore', visible: true, generation,
+                    surface: 'explore', visible: true, paced: true, generation,
                     stackName: this.stackName, folderId: this.folderId
                 }).then(entry => { if (!entry?.src) settlePopulationImage(); });
                 return { element: card, image: img, vector: null, fileId: file.id, generation };
@@ -12358,6 +12380,11 @@ this.updateImageCounters();
                 for (const card of this.cards) {
                     const element = card.element;
                     if (!element?.isConnected || element.style.visibility === 'hidden') continue;
+                    // A card whose thumbnail hasn't painted (still loading, failed, or rate-
+                    // limited) shows nothing tappable; letting it win the pick steals taps
+                    // aimed at the real photo painted beneath or beside it.
+                    const img = card.image;
+                    if (!img || !img.getAttribute('src') || !img.complete || !img.naturalWidth) continue;
                     const rect = element.getBoundingClientRect();
                     if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
                     const z = Number(element.style.zIndex) || 0;
