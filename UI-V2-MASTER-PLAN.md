@@ -1598,3 +1598,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Shipped.** ui-v2.html = the owner-pinned R4.10 blob plus exactly two additions: (1) the device-confirmed G19 identity fixes (metadata-store whitelist both directions, cloud-authoritative merge, per-hydration repair) — the corruption machinery predates Aug 24, so the guard is required on any candidate; (2) a one-time purge of persisted explore/table layout settings, because the discarded R4.13–R4.29 builds wrote layout values (sphere scale, card scale, limits) into the same storage keys this build reads, and replaying them degrades the restored layout.
 
 **Gates.** Blob verified: base = `fa9c0fb` + the two additions only; era suite: focus-navigation + stack-sequence 7/8 green — the single failure ("picks visible pixels by depth") reproduces identically on the pristine owner-pinned blob, i.e., it is an inherited era mismatch between the Aug-25 test file and the owner's chosen Aug-22 code, not a regression introduced here (verified by A/B run); identity regressions 3/3; boot smoke clean; syntax/diff; publish per §43.
+
+---
+
+## 58 · R4.31 — PINNED BASE + THE TWO PROVEN INPUT FIXES (2026-09-05)
+
+**Owner device report on R4.30.** Sphere builds quickly and correctly (pin + settings purge confirmed working); two defects remain, both pre-dating the pin and both already root-caused on device earlier in this project: (1) taps open the wrong image — the pinned code picks the containing card whose CENTER is nearest the finger, not the card painted on top, so overlapping cards (most of a populated sphere) routinely resolve to the one underneath (§48's subject, engine-independent in this form); (2) the Focus X exits only on the delayed synthetic click — it feels dead, and an impatient second tap fires a second exit that falls through to Sort, destroying the retained sphere and forcing a full repaint (§47/G16's subject).
+
+**Shipped (minimal deltas on the pinned base, re-landing only device-proven remedies).** `cardAtPoint` = §48 rect + inline-z-index frontmost winner, later DOM order breaking ties; Focus X = §47 finger-lift exit with 700ms trailing-click suppression and single-fire until the next Focus enter re-enables it.
+
+**Gates.** New regressions: overlapping-cards pick resolves the top card over the nearest-center card; a second impatient X tap plus the trailing click cannot fire a second exit. Both green; identity 3/3; smoke clean; era suite unchanged — its two failures reproduce identically on the pristine pinned blob (A/B verified, inherited test/code mismatch). Syntax/diff; publish per §43.

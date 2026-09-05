@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.30 owner-pinned R4.10 + file identity integrity -->
+<!-- Orbital8 UI governed reconstruction · R4.31 pinned base + proven input fixes -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.30-owner-pinned-R4.10-plus-identity-2026.09.05.6';
+        const APP_BUILD_ID = 'reconstruction-R4.31-pinned-base-proven-input-fixes-2026.09.05.7';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -11623,13 +11623,20 @@ this.updateImageCounters();
             },
 
             cardAtPoint(x, y) {
-                let best = null, bestDistance = Infinity;
-                this.cards.forEach(card => {
-                    const rect = card.element.getBoundingClientRect();
-                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
-                    const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
-                    if (distance < bestDistance) { best = card; bestDistance = distance; }
-                });
+                // §48 re-land (proven on device): the winner is the visually frontmost painted
+                // card — highest inline z-index among rects containing the point, later DOM
+                // order breaking ties to match paint order. Nearest-center picking chose a
+                // different card than the one on top wherever cards overlap, which is most of
+                // a populated sphere.
+                let best = null, bestZ = -Infinity;
+                for (const card of this.cards) {
+                    const element = card.element;
+                    if (!element?.isConnected || element.style.visibility === 'hidden') continue;
+                    const rect = element.getBoundingClientRect();
+                    if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+                    const z = Number(element.style.zIndex) || 0;
+                    if (z >= bestZ) { bestZ = z; best = card; }
+                }
                 return best;
             },
 
@@ -11897,7 +11904,25 @@ this.updateImageCounters();
                     button?.addEventListener('mousedown', isolate);
                     button?.addEventListener('touchstart', isolate, { passive: true });
                 });
-                exitButton?.addEventListener('click', event => { event.stopPropagation(); this.exit(); });
+                // §47 re-land (proven on device): the X exited only on the synthetic click,
+                // which mobile engines can delay after taps on a busy 3D scene — the X felt
+                // dead, and an impatient second tap fired a second exit that fell through to
+                // Sort and destroyed the retained sphere. Exit at finger-lift; the same tap's
+                // trailing click and any further taps are inert until the next Focus enter.
+                exitButton?.addEventListener('pointerup', event => {
+                    if (exitButton.disabled) return;
+                    if (event.button !== undefined && event.button !== 0) return;
+                    exitButton.disabled = true;
+                    this.exitTapHandledAt = performance.now();
+                    this.exit();
+                });
+                exitButton?.addEventListener('click', event => {
+                    event.stopPropagation();
+                    if (exitButton.disabled) return;
+                    if (this.exitTapHandledAt && performance.now() - this.exitTapHandledAt < 700) return;
+                    exitButton.disabled = true;
+                    this.exit();
+                });
             },
 
             syncExitControl() {
@@ -11939,6 +11964,8 @@ this.updateImageCounters();
                     PhotoTable.suspend();
                 }
                 state.isFocusMode = true;
+                const focusExitButton = document.getElementById('focus-origin-close');
+                if (focusExitButton) focusExitButton.disabled = false;
                 Utils.elements.appContainer.classList.add('focus-mode');
                 document.body.classList.add('origin-focus');
                 this.syncExitControl();
