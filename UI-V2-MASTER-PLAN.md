@@ -1642,3 +1642,13 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Shipped.** One-time (per device, flag-guarded) discard of the entire local file-record cache (`folderCache`, all folders), forcing a clean full rebuild from the provider listing — which is keyed correctly at the source. The sanitized store boundary and cloud-authoritative merge (§53) guarantee the corruption cannot re-form. User sorting data (stacks, favorites, notes, ratings) lives in the separate metadata store and is untouched; identity repair remains as a standing guard for any record that slips through.
 
 **Gates.** Full suites green (14 passed incl. refresh-stomp); WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.
+
+---
+
+## 62 · R4.36 — INSTANT X RETURN (2026-09-05)
+
+**Owner device report on R4.35.** Correct images now appear (provider-truth rebuild working), but the X sometimes lands in Sort instead of the globe, and X / Focus round trips lag badly. Cause, in the pinned exit path: `exitToReferrer` reopened the sphere on `state.currentStack` — which a background merge can re-anchor to a different stack mid-view (different sphere rebuilt, or empty path falling to Sort) — and any membership change defeated `preserveGeometry`'s exact-match test, forcing a full teardown-and-rebuild behind a loading state on nearly every X (the lag, the Sort flash, the repaint).
+
+**Shipped.** Explore exits return to the sphere's OWN stack (referrer stackName), with the current image re-anchored into it; same-context returns with changed membership route through a new `reconcilePopulation` (keyed element reuse, delta create/remove, sphere never hidden, no loading state) instead of `buildCards`. Full rebuild remains only for genuine context changes.
+
+**Gates.** New regression (proven failing on R4.35): after an in-Focus membership change plus a cross-stack re-anchor, the X returns to the visible sphere on its own stack with ≥10 of 12 card elements reused. All suites green (14 passed); WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.

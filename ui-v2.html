@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.35 provider-truth rebuild -->
+<!-- Orbital8 UI governed reconstruction · R4.36 instant X return -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1554,7 +1554,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.35-provider-truth-rebuild-2026.09.05.11';
+        const APP_BUILD_ID = 'reconstruction-R4.36-instant-x-return-2026.09.05.12';
         // One-time purge: the discarded R4.13-R4.29 builds shared this build's storage keys and
         // persisted layout values (sphere scale, card scale, limits) tuned for code that no
         // longer exists; replaying them degrades the restored layout. Runs once per device.
@@ -11396,6 +11396,14 @@ this.updateImageCounters();
                     this.elements.root.hidden = false;
                     SharedImageResources.pinExplorer(this.files);
                     this.select(this.selectedIndex);
+                } else if (preserveGeometry && this.cards.length > 0) {
+                    // Same-context return with changed membership: reuse every surviving card
+                    // element and patch only the delta. The old path tore the whole sphere
+                    // down and rebuilt it behind a loading screen on every Focus exit the
+                    // moment a background merge touched anything — the X lag, the flash of
+                    // Sort, the repaint-from-scratch.
+                    this.reconcilePopulation(this.files);
+                    this.elements.root.hidden = false;
                 } else {
                     this.elements.root.hidden = true;
                     this.buildCards();
@@ -11455,6 +11463,28 @@ this.updateImageCounters();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
                 if (restoreFocus) this.previousFocus?.focus?.();
+            },
+
+            reconcilePopulation(nextFiles) {
+                this.loadGeneration++;
+                const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
+                const nextCards = [];
+                this.files = nextFiles;
+                for (let index = 0; index < nextFiles.length; index++) {
+                    const file = nextFiles[index];
+                    const retained = existing.get(String(file.id));
+                    const card = retained || this.createCard(file, index);
+                    card.element.classList.toggle('selected', index === this.selectedIndex);
+                    card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
+                    this.elements.scene.appendChild(card.element);
+                    nextCards.push(card);
+                    existing.delete(String(file.id));
+                }
+                existing.forEach(card => card.element.remove());
+                this.cards = nextCards;
+                this.updateVectors();
+                SharedImageResources.pinExplorer(this.files);
+                this.requestFrame();
             },
 
             buildCards() {
@@ -12086,7 +12116,16 @@ this.updateImageCounters();
                     return false;
                 }
                 if (referrer.surface === 'explore') {
-                    SpatialGallery.open({ stackName: state.currentStack, fileId: current.id, preserveGeometry: true, suppressPersist: true });
+                    // Return to the stack the sphere was actually on. A background merge can
+                    // re-anchor state.currentStack mid-view; reopening on that other stack
+                    // forced a full rebuild of a different sphere (or an empty fall-through
+                    // to Sort).
+                    const returnStack = (state.stacks[referrer.stackName]?.length ? referrer.stackName : state.currentStack);
+                    const returnFile = (state.stacks[returnStack] || []).some(file => String(file.id) === String(current.id))
+                        ? current.id
+                        : (referrer.fileId && (state.stacks[returnStack] || []).some(file => String(file.id) === String(referrer.fileId)) ? referrer.fileId : (state.stacks[returnStack] || [])[0]?.id);
+                    if (returnFile) CurrentImage.set(returnFile, returnStack, { allowCrossStack: true });
+                    SpatialGallery.open({ stackName: returnStack, fileId: returnFile || current.id, preserveGeometry: true, suppressPersist: true });
                 } else if (referrer.surface === 'table') {
                     const canResume = PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0;
                     if (canResume) PhotoTable.resume(current.id);
