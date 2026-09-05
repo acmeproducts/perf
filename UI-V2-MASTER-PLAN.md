@@ -1708,3 +1708,18 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Binary gate.** Tap → exactly that image; next → the adjacent image displayed; prev → back to the tapped image; all suites; WebKit churn harness. Pass ⇒ publish as CANDIDATE (per G22, only owner device ratification makes it good). Fail ⇒ discard, return here.
 
 **§66 EXECUTION RESULT: GATE FAILED — PATCH DISCARDED UNSHIPPED.** The two pin-follow lines broke six suite regressions: era flows treat `inspection.fileId` as the session's ENTRY file (canonicality across Focus transitions, trash handling, display-race guards), so mutating it on navigation violates their contract — the R4.38 pin overloaded a field that already had era semantics. Lesson for the next definition: the pinned subject needs its OWN session field (e.g. `inspection.subjectFileId`), read by the display pin, written only by navigation, leaving `inspection.fileId` with its era meaning untouched. Published build remains R4.40 (owner-ratified). Next patch will be defined against this lesson only after explicit go-ahead.
+
+---
+
+## 67 · OWNER-IDENTIFIED GROUND LEVEL: R4.22 (bcb9af7) — 2026-09-05
+
+**Owner finding, from a full-lineage device survey (207-entry lineage scan, `ui-v2-lineage.json`, committed to the repo).** The ground level is **R4.22 (`bcb9af7`, blob `41af69c`)**: works sometimes but not always. This supersedes all prior last-known-good declarations, including the Aug-25 pin.
+
+**Action.** `main` now carries the byte-identical bcb9af7 blob for ui-v2.html (hash-verified `41af69c`) and that era's own test suite (30/30 green against it). No restamp, no riders, zero deltas — what is live is exactly what the owner measured.
+
+**"Sometimes but not always" — the known candidate causes already root-caused this session, queued as one-at-a-time patches, each requiring definition → binary gate → owner device ratification before the next:**
+1. **G19 record corruption** (proven by the owner's tap-check screenshots; its store-boundary fix was owner-ratified on device at R4.26): metadata-store whitelist both directions, cloud-authoritative merge, one-time provider-truth rebuild.
+2. **Mid-glide taps** (proven 6/6 wrong vs 6/6 right at rest in the WebKit pixel-truth harness).
+3. **Background refresh stomping the live session** (proven in the churn harness).
+
+**No patch is implemented until the owner says go on patch 1.**
