@@ -76,3 +76,36 @@ test('exit destination is immutable: clobbering referrer and stack after enter c
   expect(out.sphereVisible).toBe(true);
   expect(out.surface).toBe('explore');
 });
+
+test('the full owner flow: tap -> forward -> back -> X lands on the globe with the tapped image current', async ({ page }) => {
+  await setup(page);
+  const out = await page.evaluate(async () => {
+    const g = (window as any).SpatialGallery;
+    const state = (window as any).__orbitalAppState;
+    await g.activateFileId('d4', g.cards.find((c: any) => String(c.fileId) === 'd4').element);
+    await new Promise(r => setTimeout(r, 250));
+    const shown = () => String((document.getElementById('center-image') as HTMLImageElement | null)?.dataset.fileId || state.inspection?.fileId || '');
+    const s0 = shown();
+    await (window as any).Gestures.nextImage();
+    await new Promise(r => setTimeout(r, 150));
+    const s1 = shown();
+    await (window as any).Gestures.nextImage();
+    await new Promise(r => setTimeout(r, 150));
+    const s2 = shown();
+    await (window as any).Gestures.prevImage();
+    await new Promise(r => setTimeout(r, 150));
+    const s3 = shown();
+    const btn = document.getElementById('focus-origin-close') as HTMLButtonElement;
+    btn.disabled = false;
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 71, button: 0 }));
+    await new Promise(r => setTimeout(r, 450));
+    return { s0, s1, s2, s3, sphereVisible: !g.elements.root.hidden, surface: state.inspection?.surface || null, stack: state.currentStack };
+  });
+  expect(out.s0).toBe('d4');
+  expect(out.s1).toBe('d5');
+  expect(out.s2).toBe('d6');
+  expect(out.s3).toBe('d5');
+  expect(out.sphereVisible).toBe(true);
+  expect(out.surface).toBe('explore');
+  expect(out.stack).toBe('in');
+});

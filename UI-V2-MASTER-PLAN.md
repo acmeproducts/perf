@@ -1685,4 +1685,14 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 
 **Binary gate (pass = publish, fail = discard the patch, stop, and return to this section).** One end-to-end regression driving the full loop: tap a specific card → exactly that image in Focus → next shows exactly the id-neighbor → prev returns → X lands on the visible globe on its own stack. Plus: all existing suites green and the WebKit full-loop churn harness 5/5. Any red = the patch is discarded unshipped.
 
-**§64 EXECUTION RESULT (R4.39).** Gate PASSED: the §64 end-to-end regression (tap g4 → g4 in Focus → next → g5 → prev → g4 → X → visible globe on 'in') green; all suites green (18 passed, the two inherited era failures unchanged); WebKit full-loop churn harness 5/5. Published.
+---
+
+## 65 · R4.40 — ROLLBACK TO R4.38 AND THE RATIFICATION RULE (2026-09-05)
+
+**Owner report on R4.39.** Tap→image regressed (the function R4.38 had device-confirmed), Focus stuck, exit misrouted — despite the §64 gate passing in full. Pages deployment verified current (build commit = pushed commit; owner tested clean-cache), eliminating staleness. Graveyard G22: a passing lab gate is not ratification; the lab has repeatedly mispredicted the device.
+
+**Action.** Clean revert of R4.39 (no diagnosis-in-place, no forward patch). The working base returns to R4.38 — the last owner-ratified state for tap→image — with its two KNOWN defects standing documented (G21: Focus next/back frozen; X can fall to Sort via era swipe gestures). Known defects in a ratified build outrank unknown regressions in a gated one.
+
+**Standing rule (constitutional).** Every release is a candidate until ratified on the owner's device. Device regression ⇒ immediate rollback to the last ratified state, then G-entry, then plan, then at most one defined patch with a binary gate — whose pass still only makes the next candidate.
+
+**Next patch: not defined until the owner ratifies that R4.40 restores R4.38's device behavior (tap→image correct).** Then §64's state-machine completion gets re-attempted as a new, smaller definition informed by whatever the R4.39 device failure teaches.

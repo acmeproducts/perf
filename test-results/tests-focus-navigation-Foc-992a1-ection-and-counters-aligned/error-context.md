@@ -1,0 +1,80 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Orbital8" [level=1] [ref=e4]
+      - paragraph [ref=e5]: Select your cloud storage provider
+      - button "Google Drive" [ref=e6] [cursor=pointer]:
+        - img [ref=e7] [cursor=pointer]
+        - text: Google Drive
+      - button "OneDrive" [ref=e9] [cursor=pointer]:
+        - img [ref=e10] [cursor=pointer]
+        - text: OneDrive
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - generic [ref=e14]: "Visual Cue Intensity:"
+          - generic [ref=e15]:
+            - button "Low" [ref=e16] [cursor=pointer]
+            - button "Medium" [ref=e17] [cursor=pointer]
+            - button "High" [ref=e18] [cursor=pointer]
+        - generic [ref=e20] [cursor=pointer]:
+          - checkbox "Enable Haptic Feedback (Mobile)" [checked] [ref=e21]
+          - text: Enable Haptic Feedback (Mobile)
+        - generic [ref=e23] [cursor=pointer]:
+          - checkbox "Enable Debug Toasts" [checked] [ref=e24]
+          - text: Enable Debug Toasts
+      - generic [ref=e25]: Choose your preferred cloud storage
+    - generic [ref=e26]:
+      - generic [ref=e27]: Orbital8 UI · reconstruction-R4.39-focus-state-machine-complete-2026.09.05.15
+      - button "Open sync activity log window" [ref=e28] [cursor=pointer]: Sync Log
+      - button "Reset local folder cache and resync" [ref=e29] [cursor=pointer]: Reset Folder
+  - dialog "Table view. Double-tap the center background to return to Sort." [ref=e30]:
+    - generic [ref=e31]:
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - generic [ref=e34]:
+            - heading "Inbox" [level=2] [ref=e35]
+            - button "6" [ref=e36] [cursor=pointer]
+          - button [ref=e37] [cursor=pointer]:
+            - img [ref=e38] [cursor=pointer]
+        - generic [ref=e40]:
+          - generic [ref=e41]:
+            - generic [ref=e42]: 1 selected
+            - button [ref=e43] [cursor=pointer]:
+              - img [ref=e44] [cursor=pointer]
+          - generic [ref=e46]:
+            - slider [ref=e47]: "4"
+            - generic [ref=e48]: "4"
+        - generic [ref=e49]:
+          - 'textbox "Search with terms, -exclusions, #modifiers..." [ref=e50]'
+          - button "Search modifiers" [ref=e52] [cursor=pointer]:
+            - img [ref=e53] [cursor=pointer]
+        - generic [ref=e56]:
+          - button "Tag" [ref=e57] [cursor=pointer]
+          - button "Notes" [ref=e58] [cursor=pointer]
+          - button "Move" [ref=e59] [cursor=pointer]
+          - button "Delete" [ref=e60] [cursor=pointer]
+          - button "Export" [ref=e61] [cursor=pointer]
+          - button "Folder" [ref=e62] [cursor=pointer]
+      - generic [ref=e64]:
+        - generic [ref=e65] [cursor=pointer]:
+          - img "Alpha" [ref=e66] [cursor=pointer]
+          - button "Drag to reorder" [ref=e67]: ⠿
+        - generic [ref=e68] [cursor=pointer]:
+          - img "Bravo" [ref=e69] [cursor=pointer]
+          - button "Drag to reorder" [ref=e70]: ⠿
+        - generic [ref=e71] [cursor=pointer]:
+          - img "Charlie" [ref=e72] [cursor=pointer]
+          - button "Drag to reorder" [ref=e73]: ⠿
+        - generic [ref=e74] [cursor=pointer]:
+          - img "Delta" [ref=e75] [cursor=pointer]
+          - button "Drag to reorder" [ref=e76]: ⠿
+        - generic [ref=e77] [cursor=pointer]:
+          - img "Echo" [ref=e78] [cursor=pointer]
+          - button "Drag to reorder" [ref=e79]: ⠿
+        - generic [ref=e80] [cursor=pointer]:
+          - img "Foxtrot" [ref=e81] [cursor=pointer]
+          - button "Drag to reorder" [ref=e82]: ⠿
+```
