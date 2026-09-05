@@ -1667,3 +1667,20 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 **Gates.** Three new regressions, all proven failing on R4.37: gesture screens structurally inert with the sphere live; concurrent position/currentFileId mutation during and after enter cannot change the displayed subject; clobbering the referrer and current stack after enter cannot send the X to Sort. Full suites 16 green; WebKit full-loop churn harness 5/5; syntax/diff; publish per §43.
 
 **Discipline (constitutional, owner-directed).** Every user-visible outcome must be a pure function of the user's input and pinned session state: one input owner per surface, identity over position everywhere, single-assignment session constants. Any conditional guard added to referee concurrent writers is prima facie evidence of an architecture defect and is rejected at review.
+
+---
+
+## 64 · R4.38 FAILURE ANALYSIS, LAST-KNOWN-GOOD DECLARATION, AND THE ONE PATCH (2026-09-05)
+
+**Process violation acknowledged.** R4.38 regressed on device (Focus navigation frozen; X to Sort) and a forward patch was begun without stopping for root cause, graveyard, and plan. That work was halted by the owner and is discarded. This section executes the protocol.
+
+**Root cause (G21).** R4.38 shipped half a state machine: the Focus subject was pinned by id with no transition owner, so next/back (legitimate subject transitions writing position) are ignored by the pinned display; and the frozen exit destination was not session-scoped, so era swipe gestures consumed or bypassed it mid-session.
+
+**Last known good, declared.** No fully green build exists tonight. The ratified foundation is the owner's own Aug-25 pin of the Aug-22 build. Device-confirmed on top of it: sphere builds fast and correct (R4.30 stack: identity guard, settings purge, provider-truth rebuild) and tap→image correct (R4.38 determinism). R4.38 stands as the working base because rolling it back restores a worse device-confirmed defect (non-deterministic tap subject) while its own regression is smaller and fully root-caused.
+
+**The one patch (R4.39), defined before implementation.** Complete the state machine, nothing else:
+1. `CanonicalInspection.setSubject(fileId)` — the single lawful writer of the pinned subject: updates `inspection.fileId`, derives `currentFileId`/stack/position FROM the id, then displays.
+2. `Gestures.nextImage`/`prevImage` become subject transitions: neighbor computed BY ID in the canonical stack from the current pin (`stack[indexOf(pin) ± 1]`), then `setSubject`. No positional arithmetic on mutable counters.
+3. `exitDestination` is write-once per session: assigned at enter only when no session holds one; cleared only by completed exit. Nothing else may read or write it.
+
+**Binary gate (pass = publish, fail = discard the patch, stop, and return to this section).** One end-to-end regression driving the full loop: tap a specific card → exactly that image in Focus → next shows exactly the id-neighbor → prev returns → X lands on the visible globe on its own stack. Plus: all existing suites green and the WebKit full-loop churn harness 5/5. Any red = the patch is discarded unshipped.
