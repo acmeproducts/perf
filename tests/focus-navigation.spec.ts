@@ -960,12 +960,7 @@ test.describe('Explorer pointer hit targeting', () => {
     }))).toEqual({ galleryHidden: false, focusMode: false, inspectionSurface: 'explore', cards: 3, exitDisabled: true });
   });
 
-  // §72 SUPERSESSION (owner-ordered): the R4.19 unclamped free-trackball contract this test
-  // guarded is replaced by the repeatable no-roll turntable — pitch stops just past the pole
-  // (that is the feature: no spiral, retraceable paths). The test now asserts the NEW
-  // contract: a vertical drag up to the pole rotates; pitch never exceeds the clamp; and a
-  // reverse drag retraces exactly.
-  test('vertical drag reaches the pole, clamps there, and retraces exactly (§72 turntable)', async ({ page }) => {
+  test('vertical spin is unclamped: free trackball rotation continues past the old pitch limit', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
     const fingerprints = await page.evaluate(async () => {
@@ -986,30 +981,13 @@ test.describe('Explorer pointer hit targeting', () => {
         gallery.render(performance.now());
         return gallery.cards.map((card: any) => `${card.element.style.zIndex}|${card.element.style.transform}`).join('~');
       };
-      const start = gallery.orient.slice();
-      const afterBigDrag = dragUp(71, 450); // would be ~2.7rad unclamped; must stop at the pole clamp
-      const pitchAtPole = gallery.rotationY;
-      const afterFollowUp = dragUp(72, 100); // further up-drag: pitch must not exceed the clamp
-      const pitchAfterMore = gallery.rotationY;
-      // Retrace: drag back down the same total distance; pitch returns to the clamp minus... 
-      // exact retrace is asserted from the clamp point: down 100 then up 100 must be identity.
-      const beforePair = gallery.orient.slice();
-      const dispatchDown = (id: number, dyTotal: number) => {
-        dispatch('pointerdown', id, 600, 300);
-        for (let step = 1; step <= 5; step++) dispatch('pointermove', id, 600, 300 + (dyTotal * step) / 5);
-        dispatch('pointerup', id, 600, 300 + dyTotal);
-        gallery.velocityX = 0; gallery.velocityY = 0;
-        gallery.render(performance.now());
-      };
-      dispatchDown(73, 100);
-      dragUp(74, 100);
-      const afterPair = gallery.orient.slice();
-      const retraceDrift = Math.max(...beforePair.map((v: number, i: number) => Math.abs(v - afterPair[i])));
-      return { moved: afterBigDrag !== '', pitchAtPole, pitchAfterMore, retraceDrift };
+      // First drag pushes total pitch to ~2.7rad — far past the old ±1.35 clamp. Under the
+      // clamp, the second drag produced zero further rotation; free rotation must keep moving.
+      const afterBigDrag = dragUp(71, 450);
+      const afterFollowUp = dragUp(72, 100);
+      return { afterBigDrag, afterFollowUp };
     });
-    expect(fingerprints.pitchAtPole).toBeLessThanOrEqual(1.536 + 1e-9);
-    expect(fingerprints.pitchAfterMore).toBeLessThanOrEqual(1.536 + 1e-9);
-    expect(fingerprints.retraceDrift).toBeLessThan(1e-6);
+    expect(fingerprints.afterFollowUp).not.toEqual(fingerprints.afterBigDrag);
   });
 
   test('deleting an image in Focus pops the retained sphere back without a rebuild', async ({ page }) => {

@@ -1794,3 +1794,13 @@ Nothing else — no input, presentation, or session changes.
 **Gate (with counter-proof).** (1) Retrace invariant: the drag sequence right→down→left→up returns the orientation to identity within 1e-6 — MUST FAIL on the current trackball candidate (non-commutativity) and pass on the turntable. (2) No-roll invariant: after arbitrary mixed drags, the orientation's roll component is exactly zero (m[1] ≈ 0). (3) All eight direction axis-sign checks. (4) Ground suite + §69/§70/§71 gates green.
 
 **§72 GATE RESULT: PASSED, with discriminating counter-proof.** Retrace invariant (right→down→left→up = identity within 1e-6) and no-roll invariant (roll component < 1e-9 after arbitrary mixed drags): both FAIL on the trackball candidate and pass on the turntable — the spiral is gone by construction. The era's R4.19 unclamped-trackball test is superseded by owner order to the §72 contract (pole clamp + exact retrace) — recorded as a contract change, not a weakening. Full suites 39/39 green. Published as CANDIDATE (p1R+p2+p3+p4).
+
+---
+
+## 73 · §72 REJECTED ON DEVICE — ROLLBACK; REQUIREMENT REMAINS OPEN (2026-09-05)
+
+**Owner rejection.** The turntable candidate traded the spiral for ghost cards, a sparse globe, and repaint-storm performance on turns. Rolled back to the p1R+p2+p3 candidate (record integrity + single input owner + instant-X/8-way hardening) — the turntable and its test-contract change are fully reverted; the era's unclamped-spin test is restored with the code it describes.
+
+**Root cause: not proven (G24).** Inspection rules out competing orientation writers. Ghosting is a rendering/compositing behavior invisible to DOM-level gates, which is exactly why the gate passed and the device failed.
+
+**The repeatable-navigation requirement (owner: "a real need") remains OPEN.** Precondition for any re-attempt, now constitutional: a rendering-level gate in the WebKit screenshot harness that scripts turns and diffs successive frames, asserting zero ghost artifacts, must exist and must FAIL on the rejected §72 build before a new navigation model is defined. Requirement work resumes only on owner go-ahead.
