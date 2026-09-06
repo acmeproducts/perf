@@ -1972,3 +1972,15 @@ Nothing else — no input, presentation, or session changes.
 2. **Table floating controls.** `restoreSettings()` moved AFTER the scale/limit label elements bind, followed by `updateControlLabels()`, so persisted values display (not the HTML defaults 100%/24); `imageLimit` feeds `displayLimit` at build. Persist on every adjust (from §78, retained).
 
 **Gate.** Three regressions, all proven failing on p15: returning to a previously-built stack reuses ≥80% of cached card elements; returning after an insert reconciles the delta (old cards kept, new added); persisted table scale/limit shown in labels after init. Full suites 49/49. Published as CANDIDATE.
+
+---
+
+## 88 · FOCUS-EXIT LAG — FIXED ONCE AND FOR ALL (2026-09-05)
+
+**Owner.** Closing Focus back to the globe takes too long — fix definitively.
+
+**Root cause (found and proven).** `resumeFromFocus`'s `sameContext` test compared `saved.folderGeneration === state.folderSessionGeneration`. The background sync bumps `folderSessionGeneration` on nearly every merge, so `sameContext` was false almost every exit, forcing the fallback `this.open({ preserveGeometry: true })` — a full `buildCards` rebuild of the entire (up to 500-card) globe. The instant reconcile-delta path right below almost never ran.
+
+**Fix.** Removed the generation comparison from `sameContext` (identity = folder + stack + layout). Any membership/order change is fully handled by the reconcile-delta path (reuse every surviving card, apply inserts/removals), so Focus exit now reconciles the retained globe instead of rebuilding it. Confirmed structurally: the generation-gate string is gone (p16→p17, grep 1→0).
+
+**Gate (discriminating).** After a mid-Focus generation bump, exit reuses 100% of cards AND makes zero `open()`/rebuild calls (branch spy) — PASSES on the fix, FAILS on p16 (which rebuilds via open). Full suites 50/50. Published as CANDIDATE.
