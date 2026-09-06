@@ -1,4 +1,4 @@
-<!-- Orbital8 UI · baseline p1R+p2 + section 74 grid-exit current-image preservation — CANDIDATE -->
+<!-- Orbital8 UI · baseline p1R+p2 + section 75 grid ordering discipline — CANDIDATE -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p5-grid-exit-keeps-current-CANDIDATE-2026.09.05.23';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-grid-order-discipline-CANDIDATE-2026.09.05.24';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -8030,13 +8030,7 @@ this.updateImageCounters();
                 state.grid.closing = true;
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
-                // §74/G26: the session's current image survives this transition BY ID,
-                // unconditionally — captured before any reorder, restored first. The old
-                // conditional capture (only when grid stack === current stack) fell through
-                // to stack[0]: top-left crowned on center stage and the stack counter
-                // hijacked, poisoning every downstream position consumer.
-                const priorCurrentId = CurrentImage.current()?.id || null;
-                const priorStack = state.currentStack;
+                const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
                 const entryFileId = state.grid.entryFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
@@ -8048,9 +8042,22 @@ this.updateImageCounters();
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
                     const fallbackStack = state.stacks[gridStack] || [];
-                    let resolved = (priorCurrentId ? CurrentImage.set(priorCurrentId, priorStack, { allowCrossStack: false }) : null)
-                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
+                    // §75 (restored discipline): the grid authors the order; closing commits it;
+                    // Sort begins at the TOP of the committed stack. For the Sort destination the
+                    // current image is deterministically stacks[gridStack][0] — search results and
+                    // reorders land at the head via reorderStackOnClose, so the top-left of the
+                    // grid IS where the stack begins. Origin-routed closes keep their anchors.
+                    const sortDestination = !origin || origin.surface === 'sort' || !origin.surface;
+                    let resolved;
+                    if (sortDestination) {
+                        resolved = CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false });
+                    } else {
+                        resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
+                    }
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {

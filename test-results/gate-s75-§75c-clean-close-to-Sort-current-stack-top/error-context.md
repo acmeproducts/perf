@@ -27,26 +27,21 @@
           - text: Enable Debug Toasts
       - generic [ref=e25]: Choose your preferred cloud storage
     - generic [ref=e26]:
-      - generic [ref=e27]: Orbital8 UI · reconstruction-R4.39-focus-state-machine-complete-2026.09.05.15
+      - generic [ref=e27]: Orbital8 UI · ground-bcb9af7-p1R-p2-single-input-owner-CANDIDATE-2026.09.05.20
       - button "Open sync activity log window" [ref=e28] [cursor=pointer]: Sync Log
       - button "Reset local folder cache and resync" [ref=e29] [cursor=pointer]: Reset Folder
   - generic [ref=e30]:
     - button "Folders" [ref=e31] [cursor=pointer]
-    - img "No images in this stack" [ref=e33]
-    - generic:
-      - application "Sort mode. Double tap the center to choose Focus, Explore, or Table."
-    - generic [ref=e34] [cursor=pointer]: "0"
+    - button "Details" [ref=e32] [cursor=pointer]
+    - img "q5" [ref=e34]
     - generic [ref=e35] [cursor=pointer]: "0"
-    - generic [ref=e36] [cursor=pointer]: "12"
-    - generic [ref=e37] [cursor=pointer]: "0"
-    - generic [ref=e38]:
-      - generic [ref=e39]: No more images in this stack
-      - button "Select Another Stack" [ref=e40] [cursor=pointer]
-      - button "Choose Different Folder" [ref=e41] [cursor=pointer]
-    - button [ref=e43] [cursor=pointer]:
-      - img [ref=e44] [cursor=pointer]
-    - button "Choose view" [ref=e46] [cursor=pointer]:
-      - generic [ref=e47] [cursor=pointer]: Orbital8 UI · reconstruction-R4.39-focus-state-machine-complete-2026.09.05.15
-      - button "Open sync activity log window" [ref=e48] [cursor=pointer]: Sync Log
-      - button "Reset local folder cache and resync" [ref=e49] [cursor=pointer]: Reset Folder
+    - generic [ref=e36] [cursor=pointer]: "0"
+    - generic [ref=e37] [cursor=pointer]: "9"
+    - generic [ref=e38] [cursor=pointer]: "0"
+    - button [ref=e40] [cursor=pointer]:
+      - img [ref=e41] [cursor=pointer]
+    - button "Choose view" [ref=e43] [cursor=pointer]:
+      - generic [ref=e44] [cursor=pointer]: Orbital8 UI · ground-bcb9af7-p1R-p2-single-input-owner-CANDIDATE-2026.09.05.20
+      - button "Open sync activity log window" [ref=e45] [cursor=pointer]: Sync Log
+      - button "Reset local folder cache and resync" [ref=e46] [cursor=pointer]: Reset Folder
 ```

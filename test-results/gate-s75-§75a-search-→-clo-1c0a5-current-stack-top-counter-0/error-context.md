@@ -1,7 +1,7 @@
 # Page snapshot
 
 ```yaml
-- generic [ref=e1]:
+- generic [active] [ref=e1]:
   - generic [ref=e2]:
     - generic [ref=e3]:
       - heading "Orbital8" [level=1] [ref=e4]
@@ -27,19 +27,21 @@
           - text: Enable Debug Toasts
       - generic [ref=e25]: Choose your preferred cloud storage
     - generic [ref=e26]:
-      - generic [ref=e27]: Orbital8 UI · reconstruction-R4.39-focus-state-machine-complete-2026.09.05.15
+      - generic [ref=e27]: Orbital8 UI · ground-bcb9af7-p1R-p2-single-input-owner-CANDIDATE-2026.09.05.20
       - button "Open sync activity log window" [ref=e28] [cursor=pointer]: Sync Log
       - button "Reset local folder cache and resync" [ref=e29] [cursor=pointer]: Reset Folder
-  - dialog "Explore" [ref=e30]:
-    - generic "Rotatable sphere of images. Dragging does not activate an image." [ref=e31]:
-      - button "Select FILE-X" [ref=e32]:
-        - img "FILE-X"
-      - button "Select FILE-Y" [active] [pressed] [ref=e33]:
-        - img "FILE-Y"
-      - button "Select FILE-Z" [ref=e34]:
-        - img "FILE-Z"
-    - banner:
-      - button "Select stack or Grid. 3 images in Explore." [ref=e35] [cursor=pointer]: Inbox · 3
-      - button "Exit Explore to Sort" [ref=e36] [cursor=pointer]: ×
-      - button "Show Explore controls" [ref=e37] [cursor=pointer]: ⌄
+  - generic [ref=e30]:
+    - button "Folders" [ref=e31] [cursor=pointer]
+    - button "Details" [ref=e32] [cursor=pointer]
+    - img "q5" [ref=e34]
+    - generic [ref=e35] [cursor=pointer]: "0"
+    - generic [ref=e36] [cursor=pointer]: "0"
+    - generic [ref=e37] [cursor=pointer]: "9"
+    - generic [ref=e38] [cursor=pointer]: "0"
+    - button [ref=e40] [cursor=pointer]:
+      - img [ref=e41] [cursor=pointer]
+    - button "Choose view" [ref=e43] [cursor=pointer]:
+      - generic [ref=e44] [cursor=pointer]: Orbital8 UI · ground-bcb9af7-p1R-p2-single-input-owner-CANDIDATE-2026.09.05.20
+      - button "Open sync activity log window" [ref=e45] [cursor=pointer]: Sync Log
+      - button "Reset local folder cache and resync" [ref=e46] [cursor=pointer]: Reset Folder
 ```

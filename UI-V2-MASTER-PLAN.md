@@ -1818,3 +1818,15 @@ Nothing else — no input, presentation, or session changes.
 **§74 SEMANTICS NOTE.** Verified behavior: when the current image was MOVED via the grid, the session follows it to its new stack (identity over position — the era's `CurrentImage.set` locates across stacks); fallback engages only on outright deletion. Gate updated to assert exactly that.
 
 **§74 GATE RESULT: PASSED, discriminating counter-proof.** Cross-stack case (§74b) FAILS on the 8fabb49 baseline — the top-left crowning proven — and passes on the fix; same-stack preservation and moved/deleted semantics green; §69/§70 gates and ground suite green (38/38). Published as CANDIDATE (p1R+p2+p5).
+
+---
+
+## 75 · §74 REJECTED — THE ORDERING DISCIPLINE RESTORED (2026-09-05, owner-declared)
+
+**Owner correction.** §74 misread the spec and is reverted (G26 rewritten). The discipline, restored from the era when image order was perfect: **the grid authors the stack order; closing the grid commits it; Sort begins at the top of the stack (the grid's top-left); a search's results go to the top of the stack on close.** Table and Explore consume the same committed order.
+
+**Definition.** In `Grid.close()`, for the Sort destination: after the order commit, the current image becomes the TOP of the committed stack (`stacks[gridStack][0]`), stack = gridStack, counter = 0, displayed on center stage — deterministically, every grid→sort exit. Origin-routed closes (table/explore/focus) are untouched. The commit machinery (`reorderStackOnClose`: filtered/search results to the head, then selected, sequences rewritten) is already correct and unchanged.
+
+**Gate (counter-proof on 8fabb49 required).** (a) Search → close ⇒ stack head = the results in grid order, current = stack top, counter 0, center stage shows it. (b) Selection-reorder → close ⇒ same. (c) Clean close to Sort ⇒ current = stack top. (d) Explore/table-origin closes route unchanged. Ground suite + §69/§70 gates green.
+
+**§75 GATE RESULT: PASSED, discriminating counter-proofs.** Search-to-top-with-top-selected (§75a) and clean-close-to-top (§75c) both FAIL on the 8fabb49 baseline and pass on the discipline build; explore-origin routing unchanged (§75d green on both); ground suite + §69/§70 gates green — 38/38. Published as CANDIDATE (p1R+p2+p6).
