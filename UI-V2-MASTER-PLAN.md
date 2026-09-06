@@ -1950,3 +1950,13 @@ Nothing else — no input, presentation, or session changes.
 **Shipped: opt-in diagnostic only (`?gridtrace=1`), zero behavior change.** An on-screen green trace logs, per grid session: stack + currentStack + origin at open, and gridStack + acted + landedStack + landedId at close. One screenshot of a mislanded exit names whether grid.stack was wrong at open or the resolution diverged at close — root-cause before any fix.
 
 **Gate.** Behavior-unchanged suites green (38/38 in the relevant set). Published as CANDIDATE with the trace.
+
+---
+
+## 86 · RECYCLE-GRID EXIT: THE DATA WAS RIGHT, THE INDICATOR WAS STALE (2026-09-05)
+
+**Owner trace (?gridtrace=1) was decisive.** open stack=trash currentStack=trash origin=sort; close gridStack=trash landedStack=trash landedId=<trash file>. The stack machinery is CORRECT — the exit lands on trash with a trash file. The "Sort in Keep stack" was a stale VISUAL: the grid-to-Sort branch called `displayCurrentImage()` but not `updateImageCounters()`/`updateActiveProxTab()`, so the active stack pill stayed on Keep while the actual current stack/image were trash.
+
+**Fix.** The grid-to-Sort exit now calls `Core.updateImageCounters()` and `Core.updateActiveProxTab()` before displaying, so the active pill and counts match the landed stack.
+
+**Gate.** After Explore-on-Keep → switcher grid for Recycle → close, only the trash pill is active and currentStack is trash — proven failing on p14 (pill stuck on Keep), passing here. Full suites 46/46. The diagnostic trace is retained (harmless, opt-in). Published as CANDIDATE.
