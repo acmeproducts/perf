@@ -1874,3 +1874,13 @@ Nothing else — no input, presentation, or session changes.
 **Shipped.** (1) Heart CSS stripped to transparent bg / no border / grey→red color, matching #focus-favorite-btn. (2) `Grid.close()` forces `origin = null` (no table/explore/focus resume) AND tears down any live Explore/Table surface before displaying Sort — the grid can be opened over a live sphere, so closing must close it.
 
 **Gate.** Chromeless heart (computed color grey off / red on, transparent bg, 0 border); grid opened over a live Explore sphere closes with the sphere hidden and focus off — both proven failing on the §78 candidate; heart-in-frame, own-path toggle, Focus counter-proof, grid single-tap, table persistence, §75/§70/§69 and ground suite all green (40/40). Published as CANDIDATE.
+
+---
+
+## 80 · GRID EXITS TO SORT ON THE GRID'S (LIVE) STACK, AT ITS TOP (2026-09-05)
+
+**Owner.** Grid must exit to Sort on the live stack being sorted (the grid's stack), not the stack it was opened from.
+
+**Shipped.** `Grid.close()` (Sort destination) explicitly selects `stacks[gridStack][0]` and sets the current stack to `gridStack` after tearing down any live Explore/Table surface, making the grid-stack-top landing an unconditional guarantee independent of resolution order.
+
+**Honesty note.** The §80 regression as written did NOT discriminate against §79 — with origin forced null (§79), the resolution chain already lands on the grid-stack top, so the added selection is a belt-and-braces guarantee, not a proven behavior change. If the owner's device still shows exit to the ORIGIN stack, that is a distinct, not-yet-reproduced path (candidate: `state.currentStack` mutated between close start and display, or a persistView race) — to be root-caused from a device repro before any further change. Full suites green (43/43). Published as CANDIDATE.

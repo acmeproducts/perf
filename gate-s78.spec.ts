@@ -176,3 +176,40 @@ test('§79 grid ALWAYS exits to Sort, even when opened from Explore', async ({ p
   expect(out.sphereHidden).toBe(true);   // did NOT resume Explore
   expect(out.focusMode).toBe(false);     // did NOT resume Focus
 });
+
+test('§80 grid opened for a DIFFERENT stack than the origin exits to Sort on the GRID stack top', async ({ page }) => {
+  await page.goto(uiUrl);
+  await page.waitForFunction(() => !!(window as any).__orbitalAppState && !!(window as any).Grid && !!(window as any).SpatialGallery);
+  const out = await page.evaluate(async () => {
+    const state = (window as any).__orbitalAppState;
+    const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tan"/></svg>');
+    const mk = (id, i, stack) => ({ id, name: id, stack, stackSequence: 900 - i, metadataStatus: 'loaded', thumbnails: { medium: { url: svg } }, downloadUrl: svg });
+    state.imageFiles = Array.from({ length: 5 }, (_, i) => mk('in' + i, i, 'in')).concat(Array.from({ length: 4 }, (_, i) => mk('out' + i, i + 20, 'out')));
+    state.currentFolder = { id: 'd', name: 'd' }; state.providerType = 'test-provider';
+    state.currentStack = 'in'; state.currentStackPosition = 0;
+    state.stacks = { in: [], out: [], priority: [], trash: [] };
+    (window as any).Core.initializeStacks();
+    document.querySelector('#app-container')?.classList.remove('hidden');
+    // In Explore on the 'in' stack...
+    (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'in2' });
+    await new Promise(r => setTimeout(r, 250));
+    // ...open the grid for the 'out' stack.
+    (window as any).Grid.open('out', { origin: { surface: 'explore', stackName: 'in', fileId: 'in2' } });
+    await new Promise(r => setTimeout(r, 150));
+    state.grid.isDirty = false;
+    await (window as any).Grid.close();
+    await new Promise(r => setTimeout(r, 300));
+    const outTop = (state.stacks.out || [])[0]?.id;
+    return {
+      currentStack: state.currentStack,
+      currentId: String(state.currentFileId),
+      outTop: String(outTop || ''),
+      sphereHidden: (window as any).SpatialGallery.elements.root.hidden,
+      focusMode: state.isFocusMode
+    };
+  });
+  expect(out.currentStack).toBe('out');       // the grid's (live) stack, not the origin 'in'
+  expect(out.currentId).toBe(out.outTop);      // its top image
+  expect(out.sphereHidden).toBe(true);
+  expect(out.focusMode).toBe(false);
+});
