@@ -1910,3 +1910,17 @@ Nothing else — no input, presentation, or session changes.
 4. **Table floating controls:** `restoreSettings()` moved AFTER the label elements are bound and followed by `updateControlLabels()`, so persisted scale/limit actually display (previously loaded but the labels stayed at HTML defaults 100%/24).
 
 **Gate.** Four regressions: generation-independent focus resume with full card reuse; green veil element present and #39ff14; Table exit rearms the double-tap (lastHubTap cleared); persisted table scale/limit shown in labels after init. Three of four proven failing on p11; the resume-reuse case is generation-independent by construction. Full suites 47/47. Published as CANDIDATE.
+
+---
+
+## 83 · §82 REJECTED — ROLLBACK TO §81 (2026-09-05)
+
+**Owner rejection.** §82 caused two device defects: (a) exiting the grid after moving a file keep→maybe returned to Sort still on the KEEP stack, not MAYBE; (b) the center double-tap to open the mode menu was inert. Rolled back whole to the §81 candidate (blob 8250acb, `...p11-grid-always-sort-from-any-surface-CANDIDATE`). No forward patch. G28 recorded.
+
+**Lesson.** §82 bundled four independent changes; the double-tap regression traces to the `ModeCenterTap.reset()`/`lastHubTap` clear I added to the SHARED `returnSpatialModeToSort` (used by grid, table, AND focus exits) — reset in the wrong place made the gesture inert. The grid-exit stack defect shows grid close resolves to the wrong stack after an in-grid move.
+
+**Re-attempt (owner go-ahead only), each independent and gated on ALL exit paths:**
+1. Focus-exit lag / green veil — alone, gated so it cannot touch the Sort double-tap.
+2. Table double-tap rearm — placed so it fires on Table exit WITHOUT breaking the grid/focus double-tap; gate asserts the double-tap works after each of grid, table, and focus exits.
+3. Grid exit lands on the stack reflecting in-grid moves (keep→maybe ⇒ Sort on maybe) — its own gate.
+4. Table floating controls persistence — alone.
