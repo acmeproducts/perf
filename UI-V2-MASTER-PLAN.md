@@ -2075,3 +2075,40 @@ Scale multiplies the p18-clamped base (so 100% == the prior safe size, never a b
 ## 100 · ROLLED BACK TO p25 AS ORDERED (2026-09-05)
 
 Owner ordered rollback; sections 98 and 99 are reverted whole to p25 (blob 6cf93f6, `...p25-display-trace-CANDIDATE`). G31 records both the technical dead-end (pinned-subject kept trading right-image for working nav) and the process failure (patched forward twice after being told to roll back). No forward patch. p25 carries the opt-in ?tabletap trace and the known wrong-image-on-tap defect; both stay documented until a fix is attempted that is gated on right-image AND nav together, only on explicit go-ahead.
+
+---
+
+## 101 · THE ACTUAL ROOT CAUSE AND THE REAL PLAN FOR TABLE-TAP WRONG IMAGE (2026-09-05)
+
+### What the diagnostics actually proved (not assumptions)
+The `?tabletap` trace (plan §96–97, owner screenshots) is ground truth:
+- `tap`, `resolved`, and `current` are ALWAYS the correct tapped id.
+- Immediately after, `displayCurrentImage` runs 2–3 MORE times; each run `currentStackPosition` decrements (98→97→96) and `currentFileId` is set to that neighbor, so `syncFromIndex` faithfully returns the neighbor. The last run's file is what `center`/`opened` shows.
+- Long-press is unaffected because it opens the Details MODAL, not Focus (no display pipeline, no gesture-swipe path).
+
+### The real root cause (located in source, §101 analysis)
+It is NOT display resolution and NOT the tap. It is **spurious Focus navigation firing right after a table tap enters Focus.** The global Sort gesture handler (`Gestures` pointer up, ui-v2 ~line 10147) does:
+```
+if (distance > 80) { if (state.isFocusMode) { deltaX>0 ? nextImage() : prevImage() } ... }
+```
+A table print drag (moving the polaroid) travels >80px and its pointer sequence overlaps the tap→Focus transition. On pointer-up, `state.isFocusMode` is now true and `distance>80`, so the handler fires `prevImage()`/`nextImage()` — one or more times — stepping `currentStackPosition`/`currentFileId` off the tapped file. That is the drift the trace shows.
+
+Why §98/§99 failed (G31/G32): they fought the SYMPTOM (display resolution / pin) instead of the CAUSE (spurious nav), so they kept trading right-image against working nav.
+
+### The real solve (single candidate, minimal, cause-directed)
+The Focus swipe-navigation in the global Sort gesture handler must only act on gestures that BELONG to Focus — i.e. gestures that started while already in Focus. A gesture whose pointer-DOWN happened before Focus existed (a table print drag, a globe spin) must never be consumed as Focus next/prev.
+
+Implementation:
+1. Record the surface at gesture START: on the gesture handler's pointer-down/first-move, capture `gestureStartInFocus = state.isFocusMode` (and/or the active surface).
+2. In the pointer-up `distance>80 && state.isFocusMode` branch, require `gestureStartInFocus === true` before calling next/prev. If the gesture began outside Focus (table/explore owned it), do nothing here — the table/globe already handled its own drag.
+3. Do NOT touch `displayCurrentImage`, `syncFromIndex`, the pin, or nav internals. The tap-selects-correctly path (p25) is already correct; we are only stopping the stray nav that corrupts it.
+
+### Binary gate (ALL required in ONE candidate; each a discriminating counter-proof vs p25)
+1. Table tap opens EXACTLY the tapped image (no drift) — with a simulated >80px print-drag overlapping the tap.
+2. Focus next/prev (a gesture that STARTS in Focus) still navigate to the correct id-neighbor.
+3. Explore→Focus works and stays in Focus (no grid jump); a globe-spin that ends after Focus opens does not fire nav.
+4. Exit returns correctly.
+Pass on all four AND the full suite AND the WebKit real-input harness ⇒ CANDIDATE. Any red ⇒ discard, do not ship.
+
+### Execution note
+This is the ONLY sanctioned wrong-image approach going forward (G32 buried the pin/nav family). No pin-only or nav-only halves. Execute against §101 on explicit go-ahead.
