@@ -1938,3 +1938,15 @@ Nothing else — no input, presentation, or session changes.
 **Gate.** Bug1 (follow-move to Maybe) proven failing on the live base and passing here. Bug2 (gesture screen active + chooser opens) passes; honesty note: the Bug2 assertion is not fully discriminating in the harness (the base also satisfies the active contract once the overlay is bound in-test) — the device inertness was a teardown-timing gap that the explicit force-active addresses, verified structurally. Full suites 45/45. Published as CANDIDATE.
 
 **Scope discipline (G28 applied):** two changes only, both in the grid-exit path; the shared `returnSpatialModeToSort` is NOT touched, so table/focus exits are unaffected.
+
+---
+
+## 85 · RECYCLE-GRID EXIT MISLAND — DIAGNOSTIC TRACE (2026-09-05)
+
+**Owner report.** Explore on Keep → stack-switcher grid for Recycle → exit lands in Sort on KEEP, not Recycle.
+
+**Harness result: NOT reproduced.** The exact path in WebKit/DOM (`SurfaceStackSelector.openGrid('trash')` → close) correctly lands on trash/top. `Grid.open` sets `state.grid.stack='trash'`; `Grid.close` reads `gridStack=state.grid.stack`. The code path visible here is correct, so the device failure involves live state the synthetic path doesn't reproduce (candidate: an action taken in the recycle grid, or a switch via the stack BUTTON (switchStack reopens Explore) rather than the grid button, mutating currentStack).
+
+**Shipped: opt-in diagnostic only (`?gridtrace=1`), zero behavior change.** An on-screen green trace logs, per grid session: stack + currentStack + origin at open, and gridStack + acted + landedStack + landedId at close. One screenshot of a mislanded exit names whether grid.stack was wrong at open or the resolution diverged at close — root-cause before any fix.
+
+**Gate.** Behavior-unchanged suites green (38/38 in the relevant set). Published as CANDIDATE with the trace.
