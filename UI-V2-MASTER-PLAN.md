@@ -1896,3 +1896,17 @@ Nothing else — no input, presentation, or session changes.
 **Fix.** `openGrid` now records a Sort-only origin (no explore/table/focus, no focusReferrer). `Grid.close`'s Sort branch additionally exits any live Focus session (clears focus mode, referrer, inspection) in addition to tearing down Explore/Table, then selects the grid stack's top. Confirmed at the code level: the `focusReferrer` origin field is gone from `openGrid` (grep 1→0).
 
 **Honesty note.** The §81 regression exercises `openGrid` → close and passes, but did not discriminate against §80 in the harness because it does not reproduce the Focus-active timing of the device path; the fix is verified structurally (the resuming-origin mechanism is removed at source) rather than by a discriminating counter-proof. Full suites 43/43. Published as CANDIDATE.
+
+---
+
+## 82 · FOUR OWNER-ORDERED FIXES: FOCUS-EXIT LAG + GREEN VEIL, TABLE DOUBLE-TAP, TABLE FLOATING CONTROLS (2026-09-05)
+
+**Owner.** (1) Table exit to Sort doesn't allow the center double-tap to reach the Focus/Explore/Table chooser until a folder reload. (2) Focus→globe exit lag (6-count) is too frequent to ignore — either show a green "leaving Focus" sprite on X, or make the exit sub-second. (3) Table floating controls (image % and count) still not persisting/showing.
+
+**Shipped.**
+1. **Focus-exit lag (real fix):** `resumeFromFocus` no longer compares `folderGeneration` (a churn counter the background sync bumps constantly, which discarded the suspended sphere and forced a full ~500-card rebuild). Context identity = folderId + stack + layout; membership deltas ride the retained-scene reconcile. Sub-second resume by reuse.
+2. **Green veil (belt-and-braces, both options delivered):** a neon-green (#39ff14) "Leaving Focus…" veil shows the instant an Explore-origin X registers and tears down on the next frame after the sphere paints — instant acknowledgement even if a cold stack takes a beat.
+3. **Table double-tap:** `returnSpatialModeToSort` now resets `ModeCenterTap` and clears `Gestures.lastHubTap`, rearming Sort's center double-tap after a Table exit (was stale until folder reload).
+4. **Table floating controls:** `restoreSettings()` moved AFTER the label elements are bound and followed by `updateControlLabels()`, so persisted scale/limit actually display (previously loaded but the labels stayed at HTML defaults 100%/24).
+
+**Gate.** Four regressions: generation-independent focus resume with full card reuse; green veil element present and #39ff14; Table exit rearms the double-tap (lastHubTap cleared); persisted table scale/limit shown in labels after init. Three of four proven failing on p11; the resume-reuse case is generation-independent by construction. Full suites 47/47. Published as CANDIDATE.

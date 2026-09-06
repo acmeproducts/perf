@@ -384,6 +384,9 @@
             border-radius: 50%; border-top-color: var(--accent); animation: spin 1s linear infinite; margin-right: 12px;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+        #leaving-focus-veil { position: fixed; inset: 0; z-index: 18000; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(6, 10, 8, .72); color: #39ff14; font: 700 13px/1 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+        #leaving-focus-veil.show { display: flex; }
+        .leaving-focus-spinner { width: 46px; height: 46px; border: 4px solid rgba(57,255,20,.25); border-top-color: #39ff14; border-radius: 50%; animation: spin .8s linear infinite; box-shadow: 0 0 18px rgba(57,255,20,.5); }
 
         .loading-counter { color: var(--accent); font-size: 48px; font-weight: 700; margin: 20px 0; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8); }
         .loading-phase { color: var(--accent); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
@@ -1293,6 +1296,7 @@
                 </button>
             </div>
         </div>
+        <div id="leaving-focus-veil" aria-hidden="true"><div class="leaving-focus-spinner"></div><span>Leaving Focus…</span></div>
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
         <div class="gesture-layer" id="gesture-layer">
             <div id="gesture-screen-a" class="stage" role="application" tabindex="0"
@@ -1602,7 +1606,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-grid-always-sort-from-any-surface-CANDIDATE-2026.09.05.29';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p12-focusexit-tabledbltap-controls-CANDIDATE-2026.09.05.30';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -9723,6 +9727,11 @@ this.updateImageCounters();
                 CurrentImage.set(fallback[index]?.id, resolvedStack, { allowCrossStack: false });
                 state.inspection.fileId = CurrentImage.current()?.id || null;
                 Gestures.updateGestureOverlayMode();
+                // §82: rearm the center double-tap gesture — a Table exit left ModeCenterTap
+                // and lastHubTap in a stale state, so Sort's double-tap-to-choose (Focus/
+                // Explore/Table) did nothing until a folder reload.
+                ModeCenterTap.reset();
+                Gestures.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 Core.updateImageCounters(); Core.updateActiveProxTab();
                 await Core.displayCurrentImage();
                 ModeNavigation.hide();
@@ -11222,9 +11231,13 @@ this.updateImageCounters();
                 this.elements.folder = document.getElementById('photo-table-folder');
                 this.elements.controls = document.getElementById('photo-table-controls');
                 this.elements.controlsToggle = document.getElementById('photo-table-controls-toggle');
-                this.restoreSettings();
                 this.elements.scale = document.getElementById('photo-table-scale');
                 this.elements.limit = document.getElementById('photo-table-limit');
+                // §82: restore persisted floating-control values AFTER the label elements exist,
+                // then paint them — previously restore ran first and the displayed numbers
+                // stayed at the HTML defaults (100% / 24), so persistence looked broken.
+                this.restoreSettings();
+                this.updateControlLabels();
                 this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
                 this.elements.folder.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('table'); });
                 this.elements.controlsToggle?.addEventListener('click', event => { event.stopPropagation(); this.toggleControls(); });
@@ -11802,8 +11815,13 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack] || [];
                 const nextFiles = this.populationFor(stack, fileId);
                 const saved = this.focusSuspension;
+                // §82: context identity is folderId + stack + layout. folderGeneration is a
+                // churn counter the background sync bumps on nearly every merge; comparing it
+                // discarded the suspended sphere and forced a full ~500-card rebuild (the
+                // 6-count exit lag) on almost every X. Membership deltas are handled by the
+                // retained-scene reconcile below.
                 const sameContext = Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
-                    && saved.folderGeneration === state.folderSessionGeneration && saved.stackName === state.currentStack
+                    && saved.stackName === state.currentStack
                     && saved.layout === this.focusLayoutSignature();
                 const unchanged = sameContext && nextFiles.length === saved.populationIds.length
                     && nextFiles.every((file, index) => String(file.id) === saved.populationIds[index]);
@@ -12652,6 +12670,17 @@ this.updateImageCounters();
             },
 
             exitToReferrer({ persist = true, restore = true } = {}) {
+                // §82: instant visual acknowledgement that the X registered — the sphere
+                // resume can still take a beat on a large cold stack, and a silent gap felt
+                // like a dead button. The veil is torn down on the next frame after the
+                // sphere is shown.
+                const veil = document.getElementById('leaving-focus-veil');
+                if (veil && (this.referrerSnapshot()?.surface === 'explore')) {
+                    veil.classList.add('show');
+                    const clear = () => veil.classList.remove('show');
+                    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(clear, 30)));
+                    setTimeout(clear, 1500);
+                }
                 const current = CurrentImage.current();
                 const referrer = this.referrerSnapshot() || this.normalizeReferrer('sort', current?.id, state.currentStack);
                 this.transitionToken++;
