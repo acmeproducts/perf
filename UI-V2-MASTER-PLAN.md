@@ -1853,3 +1853,14 @@ Nothing else — no input, presentation, or session changes.
 **Owner rejection.** §76 broke Focus and anchored the Sort heart to the image VIEWPORT (top-right, behind the row-1 Detail button) instead of inside the IMAGE. Rolled back whole to the ratified §75 candidate (blob 4e5f608, `ground-bcb9af7-p1R-p2-p6-grid-order-discipline-CANDIDATE`). No forward patch. G27 recorded.
 
 **The three §76 requirements remain OPEN, re-attempted only on owner go-ahead, each with the G27 lessons:** the heart anchors to the image element's own top-right corner (not the viewport, clear of Detail); any change to `updateFavoriteButton`/the favorite path must gate Focus favoriting with a counter-proof; grid single-tap-close and table persistence re-land independently so a failure in one cannot force a rollback of the others.
+
+---
+
+## 78 · RE-LAND OF THE THREE REQUIREMENTS, INDEPENDENT + G27-CORRECT (2026-09-05)
+
+**Owner: go.** Re-landed on the ratified §75 base, each independent, with G27 applied.
+- **Heart anchored INSIDE the image:** `#center-image` is wrapped in a shrink-to-fit `.center-image-frame`; the heart pins to that frame's top-right — the image's own corner, structurally clear of the row-1 Detail button (gated: heart.parentElement === frame AND no geometric overlap with #details-button).
+- **Focus untouched (G27 counter-proof):** the heart has its OWN handler and `SortFavorite.refresh()`; the Focus favorite button, handler, and `updateFavoriteButton` are unchanged. Gate proves Focus favoriting still toggles.
+- **Grid X single-tap** and **table persistence** re-land as independent blocks so any one failing cannot force a rollback of the others.
+
+**Gate: PASSED** — heart-in-frame + clears Detail; heart toggles via own path, follows image changes, hidden in Focus; Focus favoriting still works (counter-proof); grid single-tap close with repeats inert; table scale/limit persist and restore. All prior gates + ground suite green (41/41). Published as CANDIDATE (p1R+p2+p6+p8).
