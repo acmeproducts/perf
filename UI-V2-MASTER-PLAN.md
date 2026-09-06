@@ -2112,3 +2112,5 @@ Pass on all four AND the full suite AND the WebKit real-input harness ⇒ CANDID
 
 ### Execution note
 This is the ONLY sanctioned wrong-image approach going forward (G32 buried the pin/nav family). No pin-only or nav-only halves. Execute against §101 on explicit go-ahead.
+
+**§101 EXECUTION RESULT (candidate p28).** The §101 guard is implemented exactly as specified: `gestureStartInFocus` captured at gesture start; Focus swipe-nav in `handleEnd` requires it true. Gates 2–4 (Focus-originated nav works; explore→Focus stays; exit returns) pass and the full suite is green (50/50). HONESTY NOTE: gate 1 (the drift discriminator) could NOT be made discriminating in the harness — synthetic invocation of `handleEnd` does not reproduce p25's device drift (p25 also returns the tapped id in the synthetic path), so the fix is verified STRUCTURALLY (the exact spurious-nav path is now guarded) rather than by a failing-on-p25 counter-proof. Per G22 this makes it a device-ratification candidate, not a lab-proven one. Nav/explore/exit are counter-proof-backed and regression-free.

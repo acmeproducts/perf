@@ -1604,7 +1604,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p25-display-trace-CANDIDATE-2026.09.05.43';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p28-gesture-owner-CANDIDATE-2026.09.05.46';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -10073,6 +10073,11 @@ this.updateImageCounters();
                 if (!this.hubPressActive) this.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                 if (!hubInteraction && state.stacks[state.currentStack].length === 0) return;
                 this.startPos = { x: point.clientX, y: point.clientY };
+                // §101: remember the surface state at gesture START. Focus swipe-nav must only
+                // act on gestures that began while already in Focus — a table print drag or a
+                // globe spin that overlaps the tap->Focus transition must never be consumed as
+                // Focus next/prev (the wrong-image drift).
+                this.gestureStartInFocus = state.isFocusMode === true;
                 this.currentPos = { x: point.clientX, y: point.clientY };
                 this.startTimestamp = performance.now();
                 this.maxTapDistance = 0;
@@ -10147,10 +10152,16 @@ this.updateImageCounters();
 
                 if (distance > 80) {
                     if (state.isFocusMode) {
-                        const direction = deltaX > 0 ? 'right' : 'left';
-                        this.highlightFocusDirection(direction);
-                        if (deltaX > 0) { this.nextImage(); }
-                        else { this.prevImage(); }
+                        // §101: only navigate if THIS gesture began in Focus. A drag that
+                        // started on the table/globe (pointer-down before Focus existed) is not
+                        // a Focus swipe — consuming it as next/prev is what stepped the subject
+                        // off the tapped image.
+                        if (this.gestureStartInFocus) {
+                            const direction = deltaX > 0 ? 'right' : 'left';
+                            this.highlightFocusDirection(direction);
+                            if (deltaX > 0) { this.nextImage(); }
+                            else { this.prevImage(); }
+                        }
                     } else {
                         const direction = this.determineSwipeDirection(deltaX, deltaY);
                         const targetStack = this.directionToStack(direction);
