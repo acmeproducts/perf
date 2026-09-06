@@ -1864,3 +1864,13 @@ Nothing else — no input, presentation, or session changes.
 - **Grid X single-tap** and **table persistence** re-land as independent blocks so any one failing cannot force a rollback of the others.
 
 **Gate: PASSED** — heart-in-frame + clears Detail; heart toggles via own path, follows image changes, hidden in Focus; Focus favoriting still works (counter-proof); grid single-tap close with repeats inert; table scale/limit persist and restore. All prior gates + ground suite green (41/41). Published as CANDIDATE (p1R+p2+p6+p8).
+
+---
+
+## 79 · HEART CHROMELESS + GRID ALWAYS EXITS TO SORT (2026-09-05)
+
+**Owner.** (1) The Sort heart needs no border/background — grey (#9ca3af) off, red (#ef4444) on, exactly like Focus. (2) The grid always exits to Sort.
+
+**Shipped.** (1) Heart CSS stripped to transparent bg / no border / grey→red color, matching #focus-favorite-btn. (2) `Grid.close()` forces `origin = null` (no table/explore/focus resume) AND tears down any live Explore/Table surface before displaying Sort — the grid can be opened over a live sphere, so closing must close it.
+
+**Gate.** Chromeless heart (computed color grey off / red on, transparent bg, 0 border); grid opened over a live Explore sphere closes with the sphere hidden and focus off — both proven failing on the §78 candidate; heart-in-frame, own-path toggle, Focus counter-proof, grid single-tap, table persistence, §75/§70/§69 and ground suite all green (40/40). Published as CANDIDATE.

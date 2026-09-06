@@ -119,3 +119,60 @@ test('§78 table scale/limit persist and restore', async ({ page }) => {
   expect(out.s).toBeCloseTo(1.2, 5);
   expect(out.l).toBe(39);
 });
+
+
+test('§79 heart is chromeless: transparent bg, no border, grey off / red on', async ({ page }) => {
+  await page.goto(uiUrl);
+  await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+  await page.evaluate(() => {
+    const state = (window as any).__orbitalAppState;
+    const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tan"/></svg>');
+    state.imageFiles = [{ id: 'h0', name: 'h0', stack: 'in', stackSequence: 900, metadataStatus: 'loaded', favorite: false, thumbnails: { medium: { url: svg } }, downloadUrl: svg }];
+    state.currentFolder = { id: 'd', name: 'd' }; state.providerType = 'test-provider';
+    state.currentStack = 'in'; state.currentStackPosition = 0;
+    state.stacks = { in: [], out: [], priority: [], trash: [] };
+    (window as any).Core.initializeStacks();
+    document.querySelector('#app-container')?.classList.remove('hidden');
+    (window as any).App.updateUserMetadata = async () => true;
+    (window as any).CurrentImage.set('h0', 'in', { allowCrossStack: false });
+    (window as any).SortFavorite.refresh();
+  });
+  const out = await page.evaluate(() => {
+    const heart = document.getElementById('sort-favorite-btn')!;
+    const off = getComputedStyle(heart);
+    const offColor = off.color; const bg = off.backgroundColor; const border = off.borderTopWidth;
+    heart.classList.add('favorited');
+    const onColor = getComputedStyle(heart).color;
+    return { offColor, onColor, bg, border };
+  });
+  // grey #9ca3af = rgb(156,163,175); red #ef4444 = rgb(239,68,68)
+  expect(out.offColor).toBe('rgb(156, 163, 175)');
+  expect(out.onColor).toBe('rgb(239, 68, 68)');
+  expect(out.bg).toBe('rgba(0, 0, 0, 0)');
+  expect(out.border).toBe('0px');
+});
+
+test('§79 grid ALWAYS exits to Sort, even when opened from Explore', async ({ page }) => {
+  await page.goto(uiUrl);
+  await page.waitForFunction(() => !!(window as any).__orbitalAppState && !!(window as any).Grid && !!(window as any).SpatialGallery);
+  const out = await page.evaluate(async () => {
+    const state = (window as any).__orbitalAppState;
+    const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tan"/></svg>');
+    state.imageFiles = Array.from({ length: 5 }, (_, i) => ({ id: 'g' + i, name: 'g' + i, stack: 'in', stackSequence: 900 - i, metadataStatus: 'loaded', thumbnails: { medium: { url: svg } }, downloadUrl: svg }));
+    state.currentFolder = { id: 'd', name: 'd' }; state.providerType = 'test-provider';
+    state.currentStack = 'in'; state.currentStackPosition = 0;
+    state.stacks = { in: [], out: [], priority: [], trash: [] };
+    (window as any).Core.initializeStacks();
+    document.querySelector('#app-container')?.classList.remove('hidden');
+    (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'g2' });
+    await new Promise(r => setTimeout(r, 250));
+    (window as any).Grid.open('in', { origin: { surface: 'explore', stackName: 'in', fileId: 'g2' } });
+    await new Promise(r => setTimeout(r, 150));
+    state.grid.isDirty = false;
+    await (window as any).Grid.close();
+    await new Promise(r => setTimeout(r, 300));
+    return { sphereHidden: (window as any).SpatialGallery.elements.root.hidden, focusMode: state.isFocusMode, inspection: state.inspection?.surface || null };
+  });
+  expect(out.sphereHidden).toBe(true);   // did NOT resume Explore
+  expect(out.focusMode).toBe(false);     // did NOT resume Focus
+});
