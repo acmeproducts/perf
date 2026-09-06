@@ -1804,3 +1804,17 @@ Nothing else — no input, presentation, or session changes.
 **Root cause: not proven (G24).** Inspection rules out competing orientation writers. Ghosting is a rendering/compositing behavior invisible to DOM-level gates, which is exactly why the gate passed and the device failed.
 
 **The repeatable-navigation requirement (owner: "a real need") remains OPEN.** Precondition for any re-attempt, now constitutional: a rendering-level gate in the WebKit screenshot harness that scripts turns and diffs successive frames, asserting zero ghost artifacts, must exist and must FAIL on the rejected §72 build before a new navigation model is defined. Requirement work resumes only on owner go-ahead.
+
+---
+
+## 74 · BASELINE RESET TO p1R+p2 (8fabb49) + THE ONE FIX: GRID EXIT PRESERVES THE CURRENT IMAGE (2026-09-05)
+
+**Owner ruling.** The p3 build is rejected (G25); baseline = 8fabb49 (ground + record integrity + single input owner). One fix, break nothing: exiting Grid to Sort must keep the person's current image on center stage — it was selecting the top-left image, and the hijacked stack counter is the owner-identified recurring corruption that later surfaces as globe thumbnail misses (G26).
+
+**Definition.** In `Grid.close()`: capture the current image id and its stack UNCONDITIONALLY before any reorder; restore it first in the resolution chain (same stack, by id); fall back to the grid entry id and then the grid stack's first item ONLY when the prior id no longer exists in its stack. No other line changes.
+
+**Gate (counter-proofs required on 8fabb49).** (a) Same-stack: current = a mid-stack image, grid opened, dirtied, reordered, closed ⇒ center stage still that id. (b) Cross-stack: current in 'in', grid opened for 'out', closed ⇒ current id AND current stack unchanged. (c) Removal: current moved out via the grid ⇒ clean fallback, no crash. Plus §69/§70 gates and the ground suite. Pass ⇒ candidate.
+
+**§74 SEMANTICS NOTE.** Verified behavior: when the current image was MOVED via the grid, the session follows it to its new stack (identity over position — the era's `CurrentImage.set` locates across stacks); fallback engages only on outright deletion. Gate updated to assert exactly that.
+
+**§74 GATE RESULT: PASSED, discriminating counter-proof.** Cross-stack case (§74b) FAILS on the 8fabb49 baseline — the top-left crowning proven — and passes on the fix; same-stack preservation and moved/deleted semantics green; §69/§70 gates and ground suite green (38/38). Published as CANDIDATE (p1R+p2+p5).
