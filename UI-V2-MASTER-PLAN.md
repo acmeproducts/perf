@@ -2008,3 +2008,13 @@ Nothing else — no input, presentation, or session changes.
 **Gate (discriminating).** Controls visible by default on open (fails on p16 — hidden); adjusting scale/limit updates labels, applies to the render, and persists; the open/closed preference persists across reopen (fails on p16 — no such preference). Full suites 47/47. Published as CANDIDATE.
 
 **Still open (my next call, with a wrong-image gate):** Focus-exit lag — the safe version per G29 (reuse only when population identical by id+order; otherwise delta-reconcile that re-binds each card to its CURRENT file), gated by a tap-opens-the-right-image counter-proof.
+
+---
+
+## 91 · TABLE CONTROLS MATCH THE EXPLORE DESIGN (2026-09-05)
+
+**Owner (screenshot as spec).** The provided screenshot is the Explore floating controls — a clean two-stepper panel (+/value/− ×2, 80% and MAX) with a collapse chevron, no text labels. Table's controls must look like this; they didn't (Table showed text labels "Image size"/"Images" and slightly different chrome).
+
+**Fix (visual only).** Table controls markup drops the text labels to match Explore's two-stepper layout; the panel CSS is aligned to `.spatial-gallery__controls` (same radius/border/blur/positioning, `.spatial-gallery__adjust { display:block }`). Behavior (visible-by-default, persistence from §90) unchanged.
+
+**Gate.** No behavior regressions — §90 visibility/persistence, §87 globe cache, and all prior suites green (46/46). Visual parity is by construction (shared class styling). Published as CANDIDATE.
