@@ -1602,7 +1602,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-tablecontrols-visible-CANDIDATE-2026.09.05.36';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-tablescale-safe-CANDIDATE-2026.09.05.39';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -11298,6 +11298,7 @@ this.updateImageCounters();
             isOpen() { return Boolean(this.elements.root && !this.elements.root.hidden); },
             workingFiles(stackName = this.stackName) { return (state.stacks[stackName] || []).filter(file => TableTagTargets.isEligible(file)); },
             displayLimit(total) { return Math.min(this.imageLimit, total); },
+            maxTableLimit() { return Math.max(5, (this.workingFiles() || []).length || 500); },
             updateControlLabels() {
                 if (this.elements.scale) this.elements.scale.textContent = `${Math.round(this.imageScale * 100)}%`;
                 if (this.elements.limit) this.elements.limit.textContent = String(this.imageLimit);
@@ -11319,13 +11320,13 @@ this.updateImageCounters();
                 try {
                     const saved = JSON.parse(localStorage.getItem(this.SETTINGS_KEY) || 'null');
                     if (saved && Number.isFinite(saved.imageScale)) this.imageScale = Math.max(.5, Math.min(1.8, saved.imageScale));
-                    if (saved && Number.isFinite(saved.imageLimit)) this.imageLimit = Math.max(5, Math.min(50, saved.imageLimit));
+                    if (saved && Number.isFinite(saved.imageLimit)) this.imageLimit = Math.max(5, Math.min(this.maxTableLimit(), saved.imageLimit));
                     this.controlsOpen = saved && typeof saved.controlsOpen === 'boolean' ? saved.controlsOpen : true;
                 } catch (error) { this.controlsOpen = true; }
             },
             adjustControl(control, delta) {
-                if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
-                else this.imageLimit = Math.max(5, Math.min(50, this.imageLimit + delta));
+                if (control === 'scale') this.imageScale = Math.max(.6, Math.min(1.6, this.imageScale + delta / 100));
+                else this.imageLimit = Math.max(5, Math.min(this.maxTableLimit(), this.imageLimit + delta));
                 this.persistSettings();
                 this.updateControlLabels();
                 if (this.isOpen()) {
@@ -11385,7 +11386,8 @@ this.updateImageCounters();
             hash(id) { let h = 2166136261; for (const c of String(id)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; },
             spawn(file, index = this.photos.length) {
                 if (!file || this.photos.some(photo => String(photo.fileId) === String(file.id))) return null;
-                const width = Math.max(62, Math.min(160, innerWidth * .145 * this.imageScale));
+                const baseWidth = Math.max(62, Math.min(160, innerWidth * .145));
+                const width = baseWidth * this.imageScale;
                 const height = width * 1.27, seed = this.hash(file.id);
                 const usableX = Math.max(1, innerWidth - width - 20);
                 const usableY = Math.max(1, innerHeight - height - 150);
@@ -11405,7 +11407,8 @@ this.updateImageCounters();
                 this.cancelPhotoLongPress();
                 if (this.pointer && this.photos.length) SharedImageResources.instrumentation.elementRecreationsDuringMovement += this.photos.length;
                 this.elements.surface.replaceChildren(); this.photos = []; this.z = 1;
-                files.forEach((file, index) => this.spawn(file, index));
+                const seen = new Set();
+                files.forEach((file, index) => { const id = String(file.id); if (seen.has(id)) return; seen.add(id); this.spawn(file, index); });
             },
             reconcilePopulation(preferredFileId = this.currentFileId) {
                 const eligible = this.workingFiles();

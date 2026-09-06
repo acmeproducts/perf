@@ -2041,3 +2041,9 @@ Nothing else — no input, presentation, or session changes.
 **Root cause.** Removing the 160px width clamp and multiplying by scale (to 42vw / 3x) blew up the DEFAULT (100%) tile size on a phone, not just the extremes — the clamp had been protecting the default layout — and the seeded scatter positions don't grow with tile size, so bigger tiles overlap and pile. The count-uncap and de-dupe from §92 were fine; only the scale change regressed.
 
 **Re-attempt (owner go-ahead), correctly scoped:** scale must keep the DEFAULT (100%) tile size at the prior safe clamp (~160px on phone) and scale MODESTLY around it (e.g. 60%–140%), with the scatter spacing scaled to tile size so prints never pile. Gated by a default-view layout assertion (tile within safe range, bounded overlap), not merely "the number changed". Count-uncap and de-dupe can re-land independently as they were not the regression.
+
+---
+
+## 94 · TABLE SCALE (SAFE), COUNT-UNCAP, DE-DUPE (2026-09-05)
+
+Scale multiplies the p18-clamped base (so 100% == the prior safe size, never a blow-up), range 0.6x–1.6x, scatter spacing derives from the actual tile size so tiles don't pile; count cap = full eligible stack via maxTableLimit(); build() de-dupes by id. Default-view layout gate (100% set width == p18 formula) FAILS on the rejected §92 build and passes here; scale up/down bounded; count reaches full stack; no duplicates. 50/50. Published as CANDIDATE.
