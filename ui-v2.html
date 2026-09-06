@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
+<!-- Orbital8 UI · ground bcb9af7 + section 69 revised patch 1 (G19 boundary, one-time, presentation untouched) — CANDIDATE -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
+        const APP_BUILD_ID = 'ground-bcb9af7-patch1R-record-integrity-CANDIDATE-2026.09.05.19';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -3658,10 +3658,20 @@
                 if (!folderId) return null;
                 return `${providerType || 'unknown'}::${folderId}`;
             }
+            USER_METADATA_FIELDS = ['stack', 'tags', 'qualityRating', 'contentRating', 'notes',
+                'stackSequence', 'favorite', 'extractedMetadata', 'metadataStatus', 'prompt', 'localUpdatedAt'];
+            sanitizeStoredMetadata(metadata) {
+                if (!metadata || typeof metadata !== 'object') return {};
+                const clean = {};
+                this.USER_METADATA_FIELDS.forEach(field => {
+                    if (field in metadata) clean[field] = metadata[field];
+                });
+                return clean;
+            }
             scheduleMetadataSave(fileId, metadata, context = {}, options = {}) {
                 if (!this.db) return Promise.resolve();
                 const pending = this.pendingMetadataWrites.get(fileId) || { resolvers: [], rejecters: [] };
-                pending.metadata = metadata;
+                pending.metadata = this.sanitizeStoredMetadata(metadata);
                 pending.context = context;
                 const promise = new Promise((resolve, reject) => {
                     pending.resolvers.push(resolve);
@@ -3819,7 +3829,7 @@
                 return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction('metadata', 'readwrite');
                     const store = transaction.objectStore('metadata');
-                    const record = { id: fileId, metadata };
+                    const record = { id: fileId, metadata: this.sanitizeStoredMetadata(metadata) };
                     if (folderKey) {
                         record.folderKey = folderKey;
                         record.provider = context.providerType || null;
@@ -6490,6 +6500,21 @@
                 }
 
                 const sessionKey = `${state.providerType || 'unknown'}::${folderId}`;
+                try {
+                    const purgeFlag = 'orbital8:file-record-purge:S67P1R';
+                    if (!localStorage.getItem(purgeFlag)) {
+                        await new Promise(resolve => {
+                            try {
+                                const transaction = state.dbManager.db.transaction('folderCache', 'readwrite');
+                                transaction.objectStore('folderCache').clear();
+                                transaction.oncomplete = resolve;
+                                transaction.onerror = resolve;
+                            } catch (error) { resolve(); }
+                        });
+                        localStorage.setItem(purgeFlag, '1');
+                        state.syncLog?.log?.({ event: 'identity:cache-purge', level: 'warn', details: 'Discarded local file records once (G19); rebuilding from provider truth. One-time; no presentation caches touched.' });
+                    }
+                } catch (error) { /* storage unavailable */ }
                 const cachedFiles = await state.dbManager.getFolderCache(folderId) || [];
                 if (!this.isNavigationActive(navigationToken)) {
                     return false;
@@ -6646,7 +6671,7 @@
                         merged.push({ ...cloudFile });
                         newIds.push(cloudFile.id);
                     } else {
-                        const mergedFile = { ...cached, ...cloudFile };
+                        const mergedFile = { ...cloudFile, ...state.dbManager.sanitizeStoredMetadata(cached) };
                         if (hasProviderDifferences(cached, cloudFile)) {
                             updatedIds.push(cloudFile.id);
                         }
@@ -6946,7 +6971,7 @@
                             ? await state.dbManager.getMetadata(file.id)
                             : cachedMetadata.get(file.id);
                         if (metadata) {
-                            Object.assign(file, metadata);
+                            Object.assign(file, state.dbManager.sanitizeStoredMetadata(metadata));
                         } else {
                             const defaultMetadata = this.generateDefaultMetadata(file, { index: i, total: files.length });
                             Object.assign(file, defaultMetadata);

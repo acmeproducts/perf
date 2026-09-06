@@ -1754,3 +1754,5 @@ Nothing else — no input, presentation, or session changes.
 **Revised patch 1 (defined before implementation).** Identical store-boundary fixes (whitelist both directions, cloud-authoritative merge, one-time record purge + rebuild), with two corrections: identity repair runs ONLY as part of the one-time purge cycle (same flag), and it never touches presentation caches. Zero recurring work; zero cache clears.
 
 **Gate.** Identity regressions + ground suite + syntax; plus a new regression: a second hydration after the purge performs no repair and no cache clear. Pass ⇒ candidate. Owner check unchanged: the previously-wrong photos must open correctly, and the app must feel no worse than the ground.
+
+**§69 GATE RESULT: PASSED** (poisoned-row and merge boundaries hold, user metadata flows, purge one-time; ground suite 30/30; syntax clean; zero recurring repair, zero added cache clears — grep-verified). Published as CANDIDATE; awaiting owner device ratification.
