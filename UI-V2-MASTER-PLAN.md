@@ -1830,3 +1830,18 @@ Nothing else — no input, presentation, or session changes.
 **Gate (counter-proof on 8fabb49 required).** (a) Search → close ⇒ stack head = the results in grid order, current = stack top, counter 0, center stage shows it. (b) Selection-reorder → close ⇒ same. (c) Clean close to Sort ⇒ current = stack top. (d) Explore/table-origin closes route unchanged. Ground suite + §69/§70 gates green.
 
 **§75 GATE RESULT: PASSED, discriminating counter-proofs.** Search-to-top-with-top-selected (§75a) and clean-close-to-top (§75c) both FAIL on the 8fabb49 baseline and pass on the discipline build; explore-origin routing unchanged (§75d green on both); ground suite + §69/§70 gates green — 38/38. Published as CANDIDATE (p1R+p2+p6).
+
+---
+
+## 76 · THREE OWNER-ORDERED CHANGES + BACKLOG (2026-09-05)
+
+**Definition (one candidate, do not break anything).**
+1. **Grid X single-tap close; resizable, persistent grid window.** The X currently needs two taps (first tap shifts the window). Fix: finger-lift single-fire close (§47 pattern) with trailing-click suppression. The grid content becomes user-resizable; its size persists per device and restores on open.
+2. **Sort-mode speed favoriting.** A heart toggle in the top-right corner of the Sort center-stage image; identical write path to the Focus favorite (optimistic toggle + provider metadata update + rollback on failure); state synced on every image change; hidden while Focus is open (Focus keeps its own button). Chosen explicitly to avoid the footer-wrap layout redesign, which is BACKLOGGED.
+3. **Table floating controls with persistence.** The existing image-size (%) and image-count steppers persist per device (no more reset to 24) and restore on Table init.
+
+**BACKLOG (owner-ordered):** footer wrap taking two rows and occluding trash-stack controls (Sort) and favorite/trash (Focus) — full responsive layout reconciliation across desktop/tablet/phone.
+
+**Gate.** (1) Grid: one synthetic pointerup on the X closes; a second tap and the trailing click are inert; size persists across close/open. (2) Sort heart: toggles the current file's favorite via the standard path, reflects state after image change, hidden in Focus. (3) Table: adjust scale/limit, re-init, values restored. Ground suite + §69/§70/§75 gates green.
+
+**§76 GATE RESULT: PASSED** (grid X single finger-lift close with repeats/trailing-click inert; grid window resizable + size persisted/restored; sort heart toggles current file via the standard favorite path, follows image changes, hidden in Focus; table scale+limit persist and restore on init — no more reset to 24). Ground suite + §69/§70/§75 gates green (42/42). Backlog recorded: footer-wrap responsive layout reconciliation. Published as CANDIDATE (p1R+p2+p6+p7).
