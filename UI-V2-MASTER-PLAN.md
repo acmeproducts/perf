@@ -2018,3 +2018,16 @@ Nothing else — no input, presentation, or session changes.
 **Fix (visual only).** Table controls markup drops the text labels to match Explore's two-stepper layout; the panel CSS is aligned to `.spatial-gallery__controls` (same radius/border/blur/positioning, `.spatial-gallery__adjust { display:block }`). Behavior (visible-by-default, persistence from §90) unchanged.
 
 **Gate.** No behavior regressions — §90 visibility/persistence, §87 globe cache, and all prior suites green (46/46). Visual parity is by construction (shared class styling). Published as CANDIDATE.
+
+---
+
+## 92 · TABLE CONTROLS ACTUALLY WORK: SCALE RESIZES, COUNT UNCAPPED, NO DUPLICATES (2026-09-05)
+
+**Owner (reproduced 2 of 3 in harness).** The % control didn't scale the thumbnails, the count capped at 50, and (on device) count changes spawned duplicates. Note: §91's visual match was rejected; this reverts to p18 chrome and fixes function.
+
+**Fixes.**
+1. **Scale resizes:** the tile width formula was clamped at `Math.min(160px)`, so scaling above ~1x hit the ceiling and stopped changing size. Replaced with an imageScale-driven range (`.145*scale*innerWidth`, floor 48px, ceiling 42vw) and scale range extended to 3x. Adjusting % now visibly resizes tiles (proven: larger %→wider, smaller %→narrower).
+2. **Count uncapped:** the `Math.min(50)` ceiling is replaced by `maxTableLimit()` = the full eligible count in the current stack. Count now reaches the whole stack.
+3. **De-dupe:** `build()` de-dupes by id defensively so a stack that momentarily held a repeated id (mid-sync) never paints a file twice; `spawn` already guarded mounted ids.
+
+**Gate.** Scale-resizes and count-to-full-stack proven FAILING on p18 and passing here; no-duplicates passes. Full suites 48/48. Published as CANDIDATE.
