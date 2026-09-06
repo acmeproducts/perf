@@ -2059,3 +2059,13 @@ Scale multiplies the p18-clamped base (so 100% == the prior safe size, never a b
 **Gate (discriminating).** In Focus, repeated displayCurrentImage calls with position drift leave the pinned subject and displayed image unchanged — FAILS on the live p25 build (subject drifts), passes on the fix. Full suites 44/44. Diagnostic trace retained (opt-in). Published as CANDIDATE.
 
 **Owner's other observations:** long-press → Details modal is correct/by design; the stack-highlight when a photo is in a stack's orbit is a separate concern (not arming a wrong id — the pin is now the sole subject source), noted for later if it misbehaves.
+
+---
+
+## 99 · FOCUS PIN + WORKING NAVIGATION (2026-09-05)
+
+**Owner:** §98 fixed the right-image selection but froze Focus next/prev (inert), made explore→Focus inert, and jumped Focus→grid — rejected. But rolling back reintroduces the wrong-image bug. Correct path: keep §98's pinned-subject fix and make navigation the ONE thing that legitimately moves the pin.
+
+**Fix.** `nextImage`/`prevImage` now update `state.inspection.fileId` to the new neighbor (in addition to position + currentFileId), so the pinned display (§98) follows navigation instead of blocking it. Everything else still respects the pin, so stray position drift can't move the subject, but deliberate nav does.
+
+**Gate (discriminating).** Table tap opens the tapped image AND next moves to the id-neighbor AND prev returns; explore tap enters Focus, nav works, and it stays in Focus (no grid jump). Both FAIL on the rejected §98 build (nav inert) and pass here. Full suites 47/47. Published as CANDIDATE.
