@@ -2114,3 +2114,13 @@ Pass on all four AND the full suite AND the WebKit real-input harness ⇒ CANDID
 This is the ONLY sanctioned wrong-image approach going forward (G32 buried the pin/nav family). No pin-only or nav-only halves. Execute against §101 on explicit go-ahead.
 
 **§101 EXECUTION RESULT (candidate p28).** The §101 guard is implemented exactly as specified: `gestureStartInFocus` captured at gesture start; Focus swipe-nav in `handleEnd` requires it true. Gates 2–4 (Focus-originated nav works; explore→Focus stays; exit returns) pass and the full suite is green (50/50). HONESTY NOTE: gate 1 (the drift discriminator) could NOT be made discriminating in the harness — synthetic invocation of `handleEnd` does not reproduce p25's device drift (p25 also returns the tapped id in the synthetic path), so the fix is verified STRUCTURALLY (the exact spurious-nav path is now guarded) rather than by a failing-on-p25 counter-proof. Per G22 this makes it a device-ratification candidate, not a lab-proven one. Nav/explore/exit are counter-proof-backed and regression-free.
+
+---
+
+## 102 · §101 REJECTED (BROKE EXPLORE) — ROLLBACK TO p25; STOP GUESSING (2026-09-05)
+
+**Owner rejection.** §101's gesture-owner guard broke Explore. Rolled back to p25 (blob 6cf93f6). G33 recorded. It was shipped on a non-discriminating gate 1 (I could not reproduce the device drift), which is exactly the insufficient-proof condition G22 warns against — that is the mistake, and it is now buried.
+
+**Standing correction to §101 (supersedes its "real solve").** The §101 root-cause analysis (spurious Focus nav from an overlapping surface drag) may still be correct, but ANY fix for it is blocked until there is a DISCRIMINATING gate that reproduces the actual drift on p25 and passes on the fix. No structural-only verification. No shipping the fix before the reproduction exists. And the fix must not alter Explore/Table gesture handling as a side effect — proven by explicit Explore + Table + Focus interaction gates.
+
+**Current state: p25 (156a120) is the working base.** It carries the known wrong-image-on-tap defect AND the opt-in ?tabletap trace. No further wrong-image attempt without: (1) a failing-on-p25 discriminating repro, then (2) a fix gated on that repro plus Explore/Table/Focus non-regression, all in one candidate. Await explicit go-ahead.
