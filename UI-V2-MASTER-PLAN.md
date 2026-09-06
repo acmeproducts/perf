@@ -1756,3 +1756,15 @@ Nothing else — no input, presentation, or session changes.
 **Gate.** Identity regressions + ground suite + syntax; plus a new regression: a second hydration after the purge performs no repair and no cache clear. Pass ⇒ candidate. Owner check unchanged: the previously-wrong photos must open correctly, and the app must feel no worse than the ground.
 
 **§69 GATE RESULT: PASSED** (poisoned-row and merge boundaries hold, user metadata flows, purge one-time; ground suite 30/30; syntax clean; zero recurring repair, zero added cache clears — grep-verified). Published as CANDIDATE; awaiting owner device ratification.
+
+---
+
+## 70 · PATCH 2 OF §67 — SINGLE INPUT OWNER (THE ±1 GHOST PATH) — 2026-09-05
+
+**Owner ruling confirmed in source.** The wrong image is off by ±1 and it is the code: `updateGestureOverlayMode` hides Sort's gesture screen only during Focus, so while Explore is live the Sort layer receives the same taps and its directional handlers fire `prevImage()`/`nextImage()` — position ±1, sign = tap side. The sphere's own activation is id-verified and correct; the ±1 bump wins the display. Tap-and-hold is immune because gesture classifiers reject holds as taps — the owner's discriminator, explained exactly.
+
+**Definition.** While Explore or Table is live, Sort's gesture screen is hidden AND pointer-inert — structural absence from input, no handler guards. Two lines in `updateGestureOverlayMode`, re-evaluated on surface open/close. Nothing else.
+
+**Gate.** With the sphere live: the gesture screen is hidden/pointer-inert and a synthetic directional tap through it changes nothing (position and currentFileId unmoved); a sphere tap opens exactly the tapped id; ground suite green. Applied on top of the live §69 candidate (both independent, both awaiting one ratification pass).
+
+**§70 GATE RESULT: PASSED** (sort layer hidden + pointer-inert with the sphere live and directional taps through it change nothing; sphere tap opens exactly the tapped id; layer restored on sphere close; §69 boundary gates and ground suite all green — 35/35). Published as CANDIDATE with §69; one ratification pass covers both.
