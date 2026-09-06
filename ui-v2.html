@@ -392,9 +392,6 @@
         .loading-progress-bar { height: 100%; background: linear-gradient(45deg, var(--accent), #d97706); border-radius: 3px; transition: width 0.3s ease; width: 0%; }
 
         .app-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); overflow: hidden; }
-        .sort-favorite { position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); z-index: 40; width: 46px; height: 46px; padding: 0; border: 1px solid rgba(255,255,255,.35); border-radius: 999px; color: rgba(255,255,255,.72); background: rgba(15,23,42,.55); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; cursor: pointer; }
-        .sort-favorite.favorited { color: #f43f5e; border-color: rgba(244,63,94,.6); }
-        .focus-mode .sort-favorite, body.origin-focus .sort-favorite { display: none; }
         .image-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1; overflow: hidden; touch-action: none; -webkit-tap-highlight-color: transparent; }
         .center-image {
             max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; user-select: none; pointer-events: none;
@@ -1283,9 +1280,6 @@
         <button class="ui-button" id="details-button">Details</button>
 
         <div class="image-viewport" id="image-viewport">
-            <button id="sort-favorite-btn" class="sort-favorite" type="button" aria-pressed="false" aria-label="Toggle favorite">
-                <svg style="width:26px;height:26px;pointer-events:none" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clip-rule="evenodd"/></svg>
-            </button>
             <img class="center-image zoomable" id="center-image" alt="Select a folder to start" />
         </div>
         <!-- Gesture overlay (triangular sort zones + focus halves) -->
@@ -1597,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p7-owner-triple-CANDIDATE-2026.09.05.25';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-grid-order-discipline-CANDIDATE-2026.09.05.24';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -7800,8 +7794,6 @@
             updateFavoriteButton() {
                 const currentFile = CurrentImage.current();
                 if (!currentFile) {
-                    const sortHeartEmpty = document.getElementById('sort-favorite-btn');
-                    if (sortHeartEmpty) { sortHeartEmpty.classList.remove('favorited'); sortHeartEmpty.setAttribute('aria-pressed', 'false'); }
                     if (Utils.elements.focusFavoriteBtn) {
                         Utils.elements.focusFavoriteBtn.classList.remove('favorited');
                         Utils.elements.focusFavoriteBtn.setAttribute('aria-pressed', 'false');
@@ -7809,8 +7801,6 @@
                     return;
                 }
                 const isFavorite = Utils.isFavorite(currentFile);
-                const sortHeart = document.getElementById('sort-favorite-btn');
-                if (sortHeart) { sortHeart.classList.toggle('favorited', isFavorite); sortHeart.setAttribute('aria-pressed', String(isFavorite)); }
                 if (Utils.elements.focusFavoriteBtn) {
                     Utils.elements.focusFavoriteBtn.classList.toggle('favorited', isFavorite);
                     Utils.elements.focusFavoriteBtn.setAttribute('aria-pressed', isFavorite ? 'true' : 'false');
@@ -11209,8 +11199,6 @@ this.updateImageCounters();
                 this.elements.folder = document.getElementById('photo-table-folder');
                 this.elements.controls = document.getElementById('photo-table-controls');
                 this.elements.controlsToggle = document.getElementById('photo-table-controls-toggle');
-                this.restoreSettings();
-                this.updateControlLabels?.();
                 this.elements.scale = document.getElementById('photo-table-scale');
                 this.elements.limit = document.getElementById('photo-table-limit');
                 this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -11239,21 +11227,9 @@ this.updateImageCounters();
                 this.elements.controlsToggle?.setAttribute('aria-expanded', String(open));
                 this.elements.controlsToggle?.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} Table controls`);
             },
-            SETTINGS_KEY: 'orbital8:table-settings',
-            persistSettings() {
-                try { localStorage.setItem(this.SETTINGS_KEY, JSON.stringify({ imageScale: this.imageScale, imageLimit: this.imageLimit })); } catch (error) { /* ignore */ }
-            },
-            restoreSettings() {
-                try {
-                    const saved = JSON.parse(localStorage.getItem(this.SETTINGS_KEY) || 'null');
-                    if (saved && Number.isFinite(saved.imageScale)) this.imageScale = Math.max(.5, Math.min(1.8, saved.imageScale));
-                    if (saved && Number.isFinite(saved.imageLimit)) this.imageLimit = Math.max(5, Math.min(50, saved.imageLimit));
-                } catch (error) { /* ignore */ }
-            },
             adjustControl(control, delta) {
                 if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
                 else this.imageLimit = Math.max(5, Math.min(50, this.imageLimit + delta));
-                this.persistSettings();
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -13202,58 +13178,7 @@ this.updateImageCounters();
                 });
             },
             setupGridControls() {
-                document.getElementById('sort-favorite-btn')?.addEventListener('click', event => {
-                    event.stopPropagation();
-                    try {
-                        const currentFile = CurrentImage.current();
-                        if (!currentFile) return;
-                        const currentlyFavorite = Utils.isFavorite(currentFile);
-                        const nextFavorite = !currentlyFavorite;
-                        currentFile.favorite = nextFavorite;
-                        Core.updateFavoriteButton();
-                        App.updateUserMetadata(currentFile.id, { favorite: nextFavorite }, { providerSilent: true }).catch(error => {
-                            currentFile.favorite = currentlyFavorite;
-                            Core.updateFavoriteButton();
-                            Utils.showToast(`Favorite failed: ${error.message}`, 'error', true);
-                        });
-                    } catch (error) { Utils.showToast(`Favorite failed: ${error.message}`, 'error', true); }
-                });
-                // §76.1: the grid X closes on the FIRST finger-lift; the same tap's trailing
-                // click and any repeat taps are inert until the next grid open (§47 pattern —
-                // the old click-only handler needed a second tap after the window shifted).
-                Utils.elements.closeGrid.addEventListener('pointerup', event => {
-                    if (event.button !== undefined && event.button !== 0) return;
-                    if (Utils.elements.closeGrid.dataset.closing === '1') return;
-                    Utils.elements.closeGrid.dataset.closing = '1';
-                    Grid.close().finally(() => { setTimeout(() => { delete Utils.elements.closeGrid.dataset.closing; }, 700); });
-                });
-                Utils.elements.closeGrid.addEventListener('click', event => {
-                    event.stopPropagation();
-                    if (Utils.elements.closeGrid.dataset.closing === '1') return;
-                    Utils.elements.closeGrid.dataset.closing = '1';
-                    Grid.close().finally(() => { setTimeout(() => { delete Utils.elements.closeGrid.dataset.closing; }, 700); });
-                });
-                // §76.1: resizable, persistent grid window.
-                (() => {
-                    const content = Utils.elements.gridModal?.querySelector('.modal-content');
-                    if (!content) return;
-                    content.style.resize = 'both';
-                    content.style.overflow = 'auto';
-                    const sizeKey = 'orbital8:grid-window-size';
-                    try {
-                        const saved = JSON.parse(localStorage.getItem(sizeKey) || 'null');
-                        if (saved?.width && saved?.height) { content.style.width = saved.width; content.style.height = saved.height; }
-                    } catch (error) { /* ignore */ }
-                    let saveTimer = null;
-                    new ResizeObserver(() => {
-                        clearTimeout(saveTimer);
-                        saveTimer = setTimeout(() => {
-                            try {
-                                if (content.style.width || content.style.height) localStorage.setItem(sizeKey, JSON.stringify({ width: content.style.width, height: content.style.height }));
-                            } catch (error) { /* ignore */ }
-                        }, 300);
-                    }).observe(content);
-                })();
+                Utils.elements.closeGrid.addEventListener('click', () => Grid.close());
                 Utils.elements.selectAllBtn.addEventListener('click', () => Grid.selectAll());
                 Utils.elements.gridSize.addEventListener('input', () => {
                     const value = Utils.elements.gridSize.value;

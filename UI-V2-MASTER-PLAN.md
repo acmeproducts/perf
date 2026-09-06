@@ -1845,3 +1845,11 @@ Nothing else — no input, presentation, or session changes.
 **Gate.** (1) Grid: one synthetic pointerup on the X closes; a second tap and the trailing click are inert; size persists across close/open. (2) Sort heart: toggles the current file's favorite via the standard path, reflects state after image change, hidden in Focus. (3) Table: adjust scale/limit, re-init, values restored. Ground suite + §69/§70/§75 gates green.
 
 **§76 GATE RESULT: PASSED** (grid X single finger-lift close with repeats/trailing-click inert; grid window resizable + size persisted/restored; sort heart toggles current file via the standard favorite path, follows image changes, hidden in Focus; table scale+limit persist and restore on init — no more reset to 24). Ground suite + §69/§70/§75 gates green (42/42). Backlog recorded: footer-wrap responsive layout reconciliation. Published as CANDIDATE (p1R+p2+p6+p7).
+
+---
+
+## 77 · §76 REJECTED — FULL ROLLBACK TO §75 (2026-09-05)
+
+**Owner rejection.** §76 broke Focus and anchored the Sort heart to the image VIEWPORT (top-right, behind the row-1 Detail button) instead of inside the IMAGE. Rolled back whole to the ratified §75 candidate (blob 4e5f608, `ground-bcb9af7-p1R-p2-p6-grid-order-discipline-CANDIDATE`). No forward patch. G27 recorded.
+
+**The three §76 requirements remain OPEN, re-attempted only on owner go-ahead, each with the G27 lessons:** the heart anchors to the image element's own top-right corner (not the viewport, clear of Detail); any change to `updateFavoriteButton`/the favorite path must gate Focus favoriting with a counter-proof; grid single-tap-close and table persistence re-land independently so a failure in one cannot force a rollback of the others.
