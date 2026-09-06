@@ -1723,3 +1723,20 @@ Gates: full `tests/focus-navigation.spec.ts` green including the restored coordi
 3. **Background refresh stomping the live session** (proven in the churn harness).
 
 **No patch is implemented until the owner says go on patch 1.**
+
+---
+
+## 68 · PATCH 1 OF §67 — G19 RECORD-INTEGRITY BOUNDARY ON THE GROUND (2026-09-05)
+
+**Definition (before implementation; owner-ratified fix from R4.26/R4.35, re-landed verbatim on the bcb9af7 ground).**
+1. Metadata store carries USER metadata only: whitelist enforced on write (scheduled + direct) and on read (hydration assign).
+2. Cache merge is cloud-authoritative: merged record = cloud record + sanitized user metadata from cache.
+3. `repairDriveIdentityFields` at every hydration point.
+4. One-time (new flag) discard of the local file-record cache, forcing a clean rebuild from the Drive listing.
+Nothing else — no input, presentation, or session changes.
+
+**Binary gate.** Identity regressions (poisoned row cannot rewrite identity/URLs; repair rebuilds crossed fields, respects shortcut targets; merge preserves only user metadata) + the ground's own 30-test suite + syntax. Pass ⇒ publish as CANDIDATE. Fail ⇒ discard, return here.
+
+**Owner check for ratification.** The specific photos that opened wrong images: tap them. Each must open exactly the picture on its thumbnail. First load per phone is slower once (the rebuild).
+
+**§68 GATE RESULT: PASSED** (identity 3/3, ground suite 30/30, syntax clean). Published as CANDIDATE; awaiting owner device ratification per G22.
