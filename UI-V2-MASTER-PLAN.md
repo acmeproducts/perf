@@ -2031,3 +2031,13 @@ Nothing else — no input, presentation, or session changes.
 3. **De-dupe:** `build()` de-dupes by id defensively so a stack that momentarily held a repeated id (mid-sync) never paints a file twice; `spawn` already guarded mounted ids.
 
 **Gate.** Scale-resizes and count-to-full-stack proven FAILING on p18 and passing here; no-duplicates passes. Full suites 48/48. Published as CANDIDATE.
+
+---
+
+## 93 · §92 REJECTED — ROLLBACK TO p18 (2026-09-05)
+
+**Owner rejection.** §92's scale change made the default Table view a mess of giant, overlapping, scattered prints — a regression from the semi-functional prior. Rolled back whole to p18 (blob 91117d0, `...p18-tablecontrols-visible-CANDIDATE`). No forward patch. G30 recorded.
+
+**Root cause.** Removing the 160px width clamp and multiplying by scale (to 42vw / 3x) blew up the DEFAULT (100%) tile size on a phone, not just the extremes — the clamp had been protecting the default layout — and the seeded scatter positions don't grow with tile size, so bigger tiles overlap and pile. The count-uncap and de-dupe from §92 were fine; only the scale change regressed.
+
+**Re-attempt (owner go-ahead), correctly scoped:** scale must keep the DEFAULT (100%) tile size at the prior safe clamp (~160px on phone) and scale MODESTLY around it (e.g. 60%–140%), with the scatter spacing scaled to tile size so prints never pile. Gated by a default-view layout assertion (tile within safe range, bounded overlap), not merely "the number changed". Count-uncap and de-dupe can re-land independently as they were not the regression.
