@@ -1768,3 +1768,15 @@ Nothing else — no input, presentation, or session changes.
 **Gate.** With the sphere live: the gesture screen is hidden/pointer-inert and a synthetic directional tap through it changes nothing (position and currentFileId unmoved); a sphere tap opens exactly the tapped id; ground suite green. Applied on top of the live §69 candidate (both independent, both awaiting one ratification pass).
 
 **§70 GATE RESULT: PASSED** (sort layer hidden + pointer-inert with the sphere live and directional taps through it change nothing; sphere tap opens exactly the tapped id; layer restored on sphere close; §69 boundary gates and ground suite all green — 35/35). Published as CANDIDATE with §69; one ratification pass covers both.
+
+---
+
+## 71 · PATCH 3 OF §67 — INSTANT X RETURN + EIGHT-DIRECTION DRAG GUARANTEE (2026-09-05, owner-ordered for this release)
+
+**Exit lag root cause.** `resumeFromFocus`'s same-context test compares `folderGeneration`, a churn counter the background sync bumps on nearly every merge — so the suspended sphere is discarded and fully rebuilt (~500 cards + ~500 thumbnail fetches ≈ the owner's "7 count") on almost every X. Fix: context identity = folderId + stackName + layout; the generation counter is dropped from the test (membership deltas are already handled by the retained-scene reconcile path).
+
+**Drag guarantee.** The trackball math already composes pitch+yaw freely (all 8 directions). Hardening: `touch-action: none` + `overscroll-behavior: contain` on the sphere scene so no browser gesture can claim an axis on device. The 8 directions become a GATED contract: each of L→R, R→L, T→B, B→T, and all four diagonals must rotate the orientation with the correct axis signs.
+
+**Gate.** Eight-direction drag regression (per-direction orient axis-sign assertions); exit regression: with the sphere suspended and the generation bumped mid-Focus, X returns with card elements reused, no population-loading state; §69/§70 gates and ground suite green. Pass ⇒ candidate.
+
+**§71 GATE RESULT: PASSED** (all eight drag directions rotate with the sphere-scene hardened against browser axis theft; X after a mid-Focus generation bump returns to the visible sphere with 100% of card elements reused and no loading state — that exit case proven failing on the prior candidate; §69/§70 gates and ground suite green, 37/37). Published as CANDIDATE (p1R + p2 + p3); one ratification pass covers all three.
