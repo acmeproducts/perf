@@ -1996,3 +1996,15 @@ Nothing else — no input, presentation, or session changes.
 **Re-attempt (owner go-ahead only), correctly scoped:**
 1. Focus-exit lag: reuse the retained globe ONLY when the population is byte-identical (ids+order); when it changed, do a delta reconcile that re-binds each reused card to its CURRENT file (not merely reattach), gated by a wrong-image counter-proof (tap after a mid-Focus reorder opens the tapped id).
 2. Table floating controls persistence: separate, independent candidate; STILL OUTSTANDING.
+
+---
+
+## 90 · TABLE FLOATING CONTROLS — VISIBLE BY DEFAULT + FULLY PERSISTENT (2026-09-05)
+
+**My call (owner: make the decision).** Took the lowest-risk owed item first, nowhere near the wrong-image machinery. Diagnosed the real defect: the controls' scale/limit adjust + persist WORKED, but the floating panel was `hidden` by default behind the ⌄ toggle — so on opening Table the size/count controls weren't there ("can't fix the floating controls"). 
+
+**Fix.** The floating controls panel now shows by DEFAULT when Table opens (owner's ask), and the open/closed choice persists per device alongside scale and limit; scale/limit continue to apply and persist as before. Three changes only, all inside PhotoTable's controls/settings — no shared paths touched.
+
+**Gate (discriminating).** Controls visible by default on open (fails on p16 — hidden); adjusting scale/limit updates labels, applies to the render, and persists; the open/closed preference persists across reopen (fails on p16 — no such preference). Full suites 47/47. Published as CANDIDATE.
+
+**Still open (my next call, with a wrong-image gate):** Focus-exit lag — the safe version per G29 (reuse only when population identical by id+order; otherwise delta-reconcile that re-binds each card to its CURRENT file), gated by a tap-opens-the-right-image counter-proof.
