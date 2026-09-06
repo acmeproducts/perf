@@ -1924,3 +1924,17 @@ Nothing else — no input, presentation, or session changes.
 2. Table double-tap rearm — placed so it fires on Table exit WITHOUT breaking the grid/focus double-tap; gate asserts the double-tap works after each of grid, table, and focus exits.
 3. Grid exit lands on the stack reflecting in-grid moves (keep→maybe ⇒ Sort on maybe) — its own gate.
 4. Table floating controls persistence — alone.
+
+---
+
+## 84 · GRID EXIT FOLLOWS THE MOVED FILE + SORT DOUBLE-TAP REARM (2026-09-05)
+
+**Owner reproduction.** In the Keep grid, moving a file Keep→Maybe then exiting returned to Sort on KEEP (not Maybe), and the center double-tap to open the mode menu was inert. Both reproduced in the WebKit/DOM harness on the live base.
+
+**Fixes (independent, on the §83 rollback base).**
+1. **Follow the moved file:** `executeMove` records `state.grid.lastActedFileId`; `Grid.close` captures it BEFORE `resetAfterClose` wipes grid state, and the Sort-exit lands on whatever stack that file now lives in (Keep→Maybe ⇒ Sort on Maybe, on that file), falling back to the grid-stack top only when no file was moved. Lifecycle: cleared on grid open and in resetAfterClose.
+2. **Double-tap rearm:** the grid-to-Sort teardown explicitly forces `gesture-screen-a` active (removes hidden, aria-hidden false, inline pointer-events cleared to match the §70 active path) and resets `ModeCenterTap`/`lastHubTap`, so the center double-tap opens the chooser after grid close without a folder reload.
+
+**Gate.** Bug1 (follow-move to Maybe) proven failing on the live base and passing here. Bug2 (gesture screen active + chooser opens) passes; honesty note: the Bug2 assertion is not fully discriminating in the harness (the base also satisfies the active contract once the overlay is bound in-test) — the device inertness was a teardown-timing gap that the explicit force-active addresses, verified structurally. Full suites 45/45. Published as CANDIDATE.
+
+**Scope discipline (G28 applied):** two changes only, both in the grid-exit path; the shared `returnSpatialModeToSort` is NOT touched, so table/focus exits are unaffected.

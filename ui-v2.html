@@ -1602,7 +1602,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-grid-always-sort-from-any-surface-CANDIDATE-2026.09.05.29';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-grid-follow-move-doubletap-CANDIDATE-2026.09.05.31';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -8013,6 +8013,7 @@ this.updateImageCounters();
                 Utils.elements.gridTitle.textContent = filterTag ? `${TableTagTargets.display(filterTag)} · ${STACK_NAMES[stack] || stack}` : (STACK_NAMES[stack] || stack);
                 state.grid.stack = stack;
                 state.grid.origin = origin;
+                state.grid.lastActedFileId = null;
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
@@ -8046,6 +8047,7 @@ this.updateImageCounters();
                 const gridStack = state.grid.stack || state.currentStack;
                 const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
                 const entryFileId = state.grid.entryFileId;
+                const actedFileId = state.grid.lastActedFileId || null;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
@@ -8089,22 +8091,51 @@ this.updateImageCounters();
                             fileId: selected.id
                         }, { restoring: true });
                     } else {
-                        // Grid always exits to Sort on the GRID's stack, at its top. Tear down
-                        // every other live surface first — Explore, Table, AND Focus — since the
-                        // grid can be opened over any of them (e.g. stack-switcher → grid).
+                        // Grid always exits to Sort. Tear down every other live surface first —
+                        // Explore, Table, AND Focus — since the grid can be opened over any.
                         if (state.isFocusMode) {
                             state.isFocusMode = false;
                             Utils.elements.appContainer.classList.remove('focus-mode');
                             document.body.classList.remove('origin-focus');
                             CanonicalInspection.clearReferrer?.();
                             state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
-                            Gestures.updateGestureOverlayMode?.();
                         }
                         if (!SpatialGallery.elements?.root?.hidden) SpatialGallery.close({ restoreFocus: false, force: true });
                         if (!PhotoTable.elements?.root?.hidden) PhotoTable.close({ restoreFocus: false, force: true });
-                        const gridTop = (state.stacks[gridStack] || [])[0]?.id;
-                        if (gridTop) CurrentImage.set(gridTop, gridStack, { allowCrossStack: true });
+                        // Bug 1 (in-grid move): if the file acted on in the grid moved to another
+                        // stack, exit follows it there — land on the stack the file now lives in,
+                        // at its position — instead of the stack the grid was opened for.
+                        const actedId = actedFileId;
+                        let landed = false;
+                        if (actedId) {
+                            for (const [name, files] of Object.entries(state.stacks)) {
+                                if (files.some(file => String(file.id) === String(actedId))) {
+                                    CurrentImage.set(actedId, name, { allowCrossStack: true });
+                                    state.currentStack = name;
+                                    landed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!landed) {
+                            const gridTop = (state.stacks[gridStack] || [])[0]?.id;
+                            if (gridTop) CurrentImage.set(gridTop, gridStack, { allowCrossStack: true });
+                        }
+                        // Bug 2 (inert double-tap): Sort owns input now — force the gesture
+                        // layer fully live (attribute AND pointer-events) so the center
+                        // double-tap works, independent of recomputation timing.
+                        ModeNavigation.hide?.();
+                        Gestures.updateGestureOverlayMode();
+                        const sortScreen = Utils.elements.gestureScreenA;
+                        if (sortScreen) {
+                            sortScreen.removeAttribute('hidden');
+                            sortScreen.style.pointerEvents = '';
+                            sortScreen.setAttribute('aria-hidden', 'false');
+                        }
+                        ModeCenterTap.reset();
+                        Gestures.lastHubTap = { time: 0, x: 0, y: 0, fileId: null, stackName: null };
                         await Core.displayCurrentImage();
+                        Utils.elements.gestureScreenA?.focus?.({ preventScroll: true });
                     }
                     App.persistViewContext();
                     return selected ? CurrentImage.assert(selected.id, 'grid close') : false;
@@ -8130,6 +8161,7 @@ this.updateImageCounters();
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
                 state.grid.entryFileId = null;
+                state.grid.lastActedFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
             },
@@ -9272,6 +9304,8 @@ this.updateImageCounters();
                             file.stackSequence = newSequence;
                             state.stacks[targetStack].unshift(file);
                             state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
+                            // The grid exit follows the file the person acted on to its new stack.
+                            state.grid.lastActedFileId = fileId;
                         }
                     },
                     successMessage: `Moved {count} images to ${STACK_NAMES[targetStack]}`
