@@ -1602,7 +1602,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p10-grid-exits-live-stack-CANDIDATE-2026.09.05.28';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-grid-always-sort-from-any-surface-CANDIDATE-2026.09.05.29';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -8089,9 +8089,17 @@ this.updateImageCounters();
                             fileId: selected.id
                         }, { restoring: true });
                     } else {
-                        // Grid always exits to Sort on the GRID's stack (the live stack being
-                        // sorted), at its top — never the stack the grid was opened from. Any
-                        // other live surface is torn down first.
+                        // Grid always exits to Sort on the GRID's stack, at its top. Tear down
+                        // every other live surface first — Explore, Table, AND Focus — since the
+                        // grid can be opened over any of them (e.g. stack-switcher → grid).
+                        if (state.isFocusMode) {
+                            state.isFocusMode = false;
+                            Utils.elements.appContainer.classList.remove('focus-mode');
+                            document.body.classList.remove('origin-focus');
+                            CanonicalInspection.clearReferrer?.();
+                            state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
+                            Gestures.updateGestureOverlayMode?.();
+                        }
                         if (!SpatialGallery.elements?.root?.hidden) SpatialGallery.close({ restoreFocus: false, force: true });
                         if (!PhotoTable.elements?.root?.hidden) PhotoTable.close({ restoreFocus: false, force: true });
                         const gridTop = (state.stacks[gridStack] || [])[0]?.id;
@@ -9413,17 +9421,11 @@ this.updateImageCounters();
             openGrid(stackName) {
                 const surface = this.surface;
                 if (!surface || !(state.stacks[stackName] || []).length) return false;
-                const anchor = this.anchor || { stackName: state.currentStack, fileId: this.currentFileId(surface) };
-                const origin = {
-                    surface,
-                    stackName: anchor.stackName,
-                    fileId: anchor.fileId,
-                    focusOrigin: CanonicalInspection.active() ? CanonicalInspection.origin : null,
-                    focusReferrer: CanonicalInspection.active() ? CanonicalInspection.referrerSnapshot() : null,
-                    gridStack: stackName
-                };
+                // The grid ALWAYS exits to Sort on the grid's stack (owner rule). It must not
+                // carry a resuming origin (explore/table/focus) — doing so routed the recycle
+                // exit back into Focus/globe instead of Sort. Sort-only origin, grid stack set.
                 this.close();
-                Grid.open(stackName, { origin });
+                Grid.open(stackName, { origin: { surface: 'sort', stackName, fileId: (state.stacks[stackName] || [])[0]?.id, gridStack: stackName } });
                 return true;
             },
             init() {

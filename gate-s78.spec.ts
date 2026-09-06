@@ -213,3 +213,42 @@ test('§80 grid opened for a DIFFERENT stack than the origin exits to Sort on th
   expect(out.sphereHidden).toBe(true);
   expect(out.focusMode).toBe(false);
 });
+
+
+test('§81 stack-switcher -> grid -> close goes to SORT on the grid stack (not focus/explore), from Explore origin', async ({ page }) => {
+  await page.goto(uiUrl);
+  await page.waitForFunction(() => !!(window as any).__orbitalAppState && !!(window as any).Grid && !!(window as any).SpatialGallery && !!(window as any).SurfaceStackSelector);
+  const out = await page.evaluate(async () => {
+    const state = (window as any).__orbitalAppState;
+    const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tan"/></svg>');
+    const mk = (id, i, stack) => ({ id, name: id, stack, stackSequence: 900 - i, metadataStatus: 'loaded', thumbnails: { medium: { url: svg } }, downloadUrl: svg });
+    state.imageFiles = Array.from({ length: 5 }, (_, i) => mk('in' + i, i, 'in')).concat(Array.from({ length: 4 }, (_, i) => mk('tr' + i, i + 20, 'trash')));
+    state.currentFolder = { id: 'd', name: 'd' }; state.providerType = 'test-provider';
+    state.currentStack = 'in'; state.currentStackPosition = 0;
+    state.stacks = { in: [], out: [], priority: [], trash: [] };
+    (window as any).Core.initializeStacks();
+    document.querySelector('#app-container')?.classList.remove('hidden');
+    // Sort -> Explore.
+    (window as any).SpatialGallery.open({ stackName: 'in', fileId: 'in1' });
+    await new Promise(r => setTimeout(r, 250));
+    // Stack switcher (opened from explore) -> grid for the recycle (trash) stack.
+    (window as any).SurfaceStackSelector.surface = 'explore';
+    (window as any).SurfaceStackSelector.openGrid('trash');
+    await new Promise(r => setTimeout(r, 200));
+    state.grid.isDirty = false;
+    await (window as any).Grid.close();
+    await new Promise(r => setTimeout(r, 300));
+    return {
+      currentStack: state.currentStack,
+      currentId: String(state.currentFileId),
+      trashTop: String((state.stacks.trash || [])[0]?.id || ''),
+      sphereHidden: (window as any).SpatialGallery.elements.root.hidden,
+      focusMode: state.isFocusMode,
+      inspection: state.inspection?.surface || null
+    };
+  });
+  expect(out.focusMode).toBe(false);           // NOT focus
+  expect(out.sphereHidden).toBe(true);         // NOT explore
+  expect(out.currentStack).toBe('trash');      // the grid (recycle) stack
+  expect(out.currentId).toBe(out.trashTop);    // its top
+});

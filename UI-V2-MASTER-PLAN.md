@@ -1884,3 +1884,15 @@ Nothing else — no input, presentation, or session changes.
 **Shipped.** `Grid.close()` (Sort destination) explicitly selects `stacks[gridStack][0]` and sets the current stack to `gridStack` after tearing down any live Explore/Table surface, making the grid-stack-top landing an unconditional guarantee independent of resolution order.
 
 **Honesty note.** The §80 regression as written did NOT discriminate against §79 — with origin forced null (§79), the resolution chain already lands on the grid-stack top, so the added selection is a belt-and-braces guarantee, not a proven behavior change. If the owner's device still shows exit to the ORIGIN stack, that is a distinct, not-yet-reproduced path (candidate: `state.currentStack` mutated between close start and display, or a persistView race) — to be root-caused from a device repro before any further change. Full suites green (43/43). Published as CANDIDATE.
+
+---
+
+## 81 · GRID FROM ANY SURFACE EXITS TO SORT — THE STACK-SWITCHER RECYCLE PATH (2026-09-05)
+
+**Owner reproduction (precise).** Sort → Explore → stack switcher → grid for recycle → exit landed in Focus (and exiting Focus went to the globe) instead of Sort.
+
+**Root cause (found in source).** `SurfaceStackSelector.openGrid` built a resuming origin carrying `surface: 'explore'`, `focusOrigin`, and `focusReferrer` (a Focus return address) and handed it to `Grid.open`. §79's "force origin null" lives only inside `Grid.close`'s resolution — but the recorded `focusReferrer` on `state.grid.origin` was consumed by the origin-routed close branch, entering Focus. So the grid opened from the stack switcher always carried a Focus/Explore return address the close honored.
+
+**Fix.** `openGrid` now records a Sort-only origin (no explore/table/focus, no focusReferrer). `Grid.close`'s Sort branch additionally exits any live Focus session (clears focus mode, referrer, inspection) in addition to tearing down Explore/Table, then selects the grid stack's top. Confirmed at the code level: the `focusReferrer` origin field is gone from `openGrid` (grep 1→0).
+
+**Honesty note.** The §81 regression exercises `openGrid` → close and passes, but did not discriminate against §80 in the harness because it does not reproduce the Focus-active timing of the device path; the fix is verified structurally (the resuming-origin mechanism is removed at source) rather than by a discriminating counter-proof. Full suites 43/43. Published as CANDIDATE.
