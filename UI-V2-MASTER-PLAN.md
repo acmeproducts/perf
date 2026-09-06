@@ -1984,3 +1984,15 @@ Nothing else — no input, presentation, or session changes.
 **Fix.** Removed the generation comparison from `sameContext` (identity = folder + stack + layout). Any membership/order change is fully handled by the reconcile-delta path (reuse every surviving card, apply inserts/removals), so Focus exit now reconciles the retained globe instead of rebuilding it. Confirmed structurally: the generation-gate string is gone (p16→p17, grep 1→0).
 
 **Gate (discriminating).** After a mid-Focus generation bump, exit reuses 100% of cards AND makes zero `open()`/rebuild calls (branch spy) — PASSES on the fix, FAILS on p16 (which rebuilds via open). Full suites 50/50. Published as CANDIDATE.
+
+---
+
+## 89 · §88 REJECTED — ROLLBACK TO p16 (2026-09-05)
+
+**Owner rejection.** §88 (Focus-exit generation-gate removal) caused tapping a specific image to open a DIFFERENT image, and did nothing for the table floating controls. Rolled back whole to p16 (blob be5a71a, `...p16-globecache-tablecontrols-CANDIDATE`). No forward patch. G29 recorded.
+
+**Root cause of the §88 regression.** The `folderGeneration` comparison in `resumeFromFocus` was LOAD-BEARING: it prevented reusing a suspended globe whose population had changed generation under it. Removing it let the reconcile path reattach stale cards whose fileId→image bindings no longer matched the reordered stack, reintroducing the wrong-image class. The reconcile path is only safe when the population is provably identical by id AND order.
+
+**Re-attempt (owner go-ahead only), correctly scoped:**
+1. Focus-exit lag: reuse the retained globe ONLY when the population is byte-identical (ids+order); when it changed, do a delta reconcile that re-binds each reused card to its CURRENT file (not merely reattach), gated by a wrong-image counter-proof (tap after a mid-Focus reorder opens the tapped id).
+2. Table floating controls persistence: separate, independent candidate; STILL OUTSTANDING.
