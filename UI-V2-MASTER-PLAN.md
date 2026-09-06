@@ -2047,3 +2047,15 @@ Nothing else — no input, presentation, or session changes.
 ## 94 · TABLE SCALE (SAFE), COUNT-UNCAP, DE-DUPE (2026-09-05)
 
 Scale multiplies the p18-clamped base (so 100% == the prior safe size, never a blow-up), range 0.6x–1.6x, scatter spacing derives from the actual tile size so tiles don't pile; count cap = full eligible stack via maxTableLimit(); build() de-dupes by id. Default-view layout gate (100% set width == p18 formula) FAILS on the rejected §92 build and passes here; scale up/down bounded; count reaches full stack; no duplicates. 50/50. Published as CANDIDATE.
+
+---
+
+## 98 · TABLE TAP WRONG IMAGE — THE PIN DRIFT, FOUND VIA TRACE AND FIXED (2026-09-05)
+
+**Owner trace was conclusive.** tap/resolved/current were all the CORRECT id; then displayCurrentImage was called 2 more times, each decrementing syncPos (98→97→96) and — because it wrote `state.inspection.fileId = currentFile.id` at the end — dragging the pinned id to a neighbor each call (the owner's "-1" drift). Long-press was unaffected (it uses the Details modal, not Focus display). The tap was never the bug; Focus display resolving by POSITION and writing the drift back onto the pin was.
+
+**Fix.** While Focus is live, displayCurrentImage resolves STRICTLY from the pinned `state.inspection.fileId` (by identity, across stacks; position aligned to it), and never overwrites the pin with a position-resolved file. Position drift from any source (a stray prevImage/gesture on entry) can no longer move the subject.
+
+**Gate (discriminating).** In Focus, repeated displayCurrentImage calls with position drift leave the pinned subject and displayed image unchanged — FAILS on the live p25 build (subject drifts), passes on the fix. Full suites 44/44. Diagnostic trace retained (opt-in). Published as CANDIDATE.
+
+**Owner's other observations:** long-press → Details modal is correct/by design; the stack-highlight when a photo is in a stack's orbit is a separate concern (not arming a wrong id — the pin is now the sole subject source), noted for later if it misbehaves.
