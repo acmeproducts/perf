@@ -2069,3 +2069,9 @@ Scale multiplies the p18-clamped base (so 100% == the prior safe size, never a b
 **Fix.** `nextImage`/`prevImage` now update `state.inspection.fileId` to the new neighbor (in addition to position + currentFileId), so the pinned display (§98) follows navigation instead of blocking it. Everything else still respects the pin, so stray position drift can't move the subject, but deliberate nav does.
 
 **Gate (discriminating).** Table tap opens the tapped image AND next moves to the id-neighbor AND prev returns; explore tap enters Focus, nav works, and it stays in Focus (no grid jump). Both FAIL on the rejected §98 build (nav inert) and pass here. Full suites 47/47. Published as CANDIDATE.
+
+---
+
+## 100 · ROLLED BACK TO p25 AS ORDERED (2026-09-05)
+
+Owner ordered rollback; sections 98 and 99 are reverted whole to p25 (blob 6cf93f6, `...p25-display-trace-CANDIDATE`). G31 records both the technical dead-end (pinned-subject kept trading right-image for working nav) and the process failure (patched forward twice after being told to roll back). No forward patch. p25 carries the opt-in ?tabletap trace and the known wrong-image-on-tap defect; both stay documented until a fix is attempted that is gated on right-image AND nav together, only on explicit go-ahead.

@@ -1604,7 +1604,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p27-focus-pin-plus-nav-CANDIDATE-2026.09.05.45';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p25-display-trace-CANDIDATE-2026.09.05.43';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -7747,28 +7747,7 @@
                     return;
                 }
 
-                let resolved;
-                const focusPinned = state.inspection?.surface === 'focus' && state.inspection?.fileId != null
-                    ? String(state.inspection.fileId) : null;
-                if (focusPinned) {
-                    // While Focus is live the subject is the pinned id — the SINGLE source of
-                    // truth. Resolve it by identity (across stacks) and align the position to it.
-                    // Never resolve by position here: repeat displayCurrentImage calls were
-                    // decrementing currentStackPosition and, via the write-back below, dragging
-                    // the pinned id to a neighbor each call (the "-1" drift, wrong image).
-                    const located = CurrentImage.locate(focusPinned, state.currentStack);
-                    if (located?.file) {
-                        state.currentStack = located.stackName;
-                        state.currentStackPosition = located.index;
-                        state.currentFileId = located.file.id;
-                        state.focusTraversalIndex = located.index;
-                        resolved = located;
-                    } else {
-                        resolved = CurrentImage.syncFromIndex();
-                    }
-                } else {
-                    resolved = CurrentImage.syncFromIndex();
-                }
+                const resolved = CurrentImage.syncFromIndex();
                 const currentFile = resolved?.file;
                 if (window.TableTapTrace && state.inspection?.surface === 'focus') {
                     window.TableTapTrace.log('display pinned=' + state.inspection?.fileId + ' syncStack=' + state.currentStack + ' syncPos=' + state.currentStackPosition + ' resolved=' + (currentFile && currentFile.id) + ' inStack=' + (state.stacks[state.currentStack]||[]).some(f => String(f.id) === String(state.inspection?.fileId)));
@@ -7790,7 +7769,7 @@
                     Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
                     this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
                     this.prefetchStackHeads();
-                    if (CanonicalInspection.active() && !focusPinned) {
+                    if (CanonicalInspection.active()) {
                         state.inspection.fileId = currentFile.id;
                     }
 
@@ -10243,11 +10222,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                const nextFile = stack[state.currentStackPosition];
-                CurrentImage.set(nextFile.id, state.currentStack, { allowCrossStack: false });
-                // Navigation is the ONE thing that legitimately moves the Focus subject, so it
-                // updates the pin; the pinned display (section 98) then shows the new file.
-                if (state.inspection?.surface === 'focus') state.inspection = { ...state.inspection, fileId: nextFile.id };
+                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -10256,9 +10231,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                const prevFile = stack[state.currentStackPosition];
-                CurrentImage.set(prevFile.id, state.currentStack, { allowCrossStack: false });
-                if (state.inspection?.surface === 'focus') state.inspection = { ...state.inspection, fileId: prevFile.id };
+                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
