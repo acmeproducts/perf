@@ -1782,3 +1782,15 @@ Nothing else — no input, presentation, or session changes.
 **§71 GATE RESULT: PASSED** (all eight drag directions rotate with the sphere-scene hardened against browser axis theft; X after a mid-Focus generation bump returns to the visible sphere with 100% of card elements reused and no loading state — that exit case proven failing on the prior candidate; §69/§70 gates and ground suite green, 37/37). Published as CANDIDATE (p1R + p2 + p3); one ratification pass covers all three.
 
 **§71 CORRECTION (honesty entry).** The "proven failing on the prior candidate" claim for the exit regression was WRONG: with an unchanged harness population, the prior code's rebuild path also resumes, so the counter-proof does not discriminate. The generation-comparison removal is retained on its merits (it deletes a comparison that live-Drive churn defeats), but the 7-count fix is ratifiable only by the owner's device, where mid-Focus membership churn actually occurs. Gates remain necessary-not-sufficient (G22).
+
+---
+
+## 72 · PATCH 4 — REPEATABLE NAVIGATION: THE NO-ROLL TURNTABLE (2026-09-05, owner requirement)
+
+**Owner requirement.** The eight directions are a precision browsing contract: the sphere is an efficient way to scan many images at once ONLY if the navigation path is repeatable. The free trackball fails it by construction — 3D rotations do not commute, so mixed drags accumulate roll: the view spirals and no path retraces.
+
+**Definition.** Orientation becomes a pure function of exactly two scalars: `orient = Rx(pitch) · Ry(yaw)`. Horizontal drag ⇒ yaw only; vertical ⇒ pitch only; diagonal ⇒ both, proportionally. Pitch clamps just past the poles (±88°) so over-the-pole inversion cannot occur. Momentum decays per-axis in the same two scalars. Roll is not damped or corrected — it is unrepresentable. `center()` derives yaw/pitch from the target vector (its existing math) and the same function produces the orientation. `applyViewRotation` matrix composition and `orthonormalizeOrient` are removed from the drag path.
+
+**Gate (with counter-proof).** (1) Retrace invariant: the drag sequence right→down→left→up returns the orientation to identity within 1e-6 — MUST FAIL on the current trackball candidate (non-commutativity) and pass on the turntable. (2) No-roll invariant: after arbitrary mixed drags, the orientation's roll component is exactly zero (m[1] ≈ 0). (3) All eight direction axis-sign checks. (4) Ground suite + §69/§70/§71 gates green.
+
+**§72 GATE RESULT: PASSED, with discriminating counter-proof.** Retrace invariant (right→down→left→up = identity within 1e-6) and no-roll invariant (roll component < 1e-9 after arbitrary mixed drags): both FAIL on the trackball candidate and pass on the turntable — the spiral is gone by construction. The era's R4.19 unclamped-trackball test is superseded by owner order to the §72 contract (pole clamp + exact retrace) — recorded as a contract change, not a weakening. Full suites 39/39 green. Published as CANDIDATE (p1R+p2+p3+p4).

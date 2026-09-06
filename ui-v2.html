@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p3-instant-x-8way-drag-CANDIDATE-2026.09.05.21';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p3-p4-no-roll-turntable-CANDIDATE-2026.09.05.22';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -12019,6 +12019,18 @@ this.updateImageCounters();
             },
             // Free trackball rotation: any swipe direction (including all four diagonals)
             // rotates the sphere about the perpendicular axis in view space; no pitch clamp.
+            clampPitch(pitch) {
+                const limit = 1.536; // just past the poles: full pole-to-pole reach, no inversion
+                return Math.max(-limit, Math.min(limit, pitch));
+            },
+            orientFromAngles(yaw, pitch) {
+                const cy = Math.cos(yaw), sy = Math.sin(yaw);
+                const cp = Math.cos(pitch), sp = Math.sin(pitch);
+                // Rx(pitch) · Ry(yaw): roll-free by construction (m[1] === 0 always).
+                return [cy, 0, sy,
+                        sp * sy, cp, -sp * cy,
+                        -cp * sy, sp, cp * cy];
+            },
             applyViewRotation(pitch, yaw) {
                 const cp = Math.cos(pitch), sp = Math.sin(pitch);
                 const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -12055,10 +12067,10 @@ this.updateImageCounters();
                 const vector = this.cards[index]?.vector;
                 if (!vector) return;
                 this.velocityX = 0; this.velocityY = 0;
-                this.orient = this.orientFacing(vector);
                 this.rotationX = Math.atan2(-vector.x, vector.z);
                 const z = Math.hypot(vector.x, vector.z);
-                this.rotationY = Math.atan2(vector.y, z);
+                this.rotationY = this.clampPitch(Math.atan2(vector.y, z));
+                this.orient = this.orientFromAngles(this.rotationX, this.rotationY);
                 this.select(index);
                 if (!this.elements.root.hidden) {
                     if (this.frameId) cancelAnimationFrame(this.frameId);
@@ -12165,8 +12177,12 @@ this.updateImageCounters();
                 const dx = event.clientX - this.lastX, dy = event.clientY - this.lastY;
                 const elapsed = Math.max(8, now - this.lastTime);
                 const yaw = dx * 0.006, pitch = -dy * 0.006;
-                this.applyViewRotation(pitch, yaw);
-                this.rotationX += yaw; this.rotationY += pitch;
+                // §72: repeatable navigation. Orientation is a pure function of two scalars
+                // (yaw, pitch); roll is unrepresentable, so mixed drag sequences retrace
+                // exactly and the view can never spiral.
+                this.rotationX += yaw;
+                this.rotationY = this.clampPitch(this.rotationY + pitch);
+                this.orient = this.orientFromAngles(this.rotationX, this.rotationY);
                 this.velocityX = yaw / elapsed * 16; this.velocityY = pitch / elapsed * 16;
                 this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = now;
                 this.requestFrame();
@@ -12408,8 +12424,9 @@ this.updateImageCounters();
                 this.lastFrameTime = time;
                 if (!this.dragging) {
                     if (this.velocityX || this.velocityY) {
-                        this.applyViewRotation(this.velocityY * dt / 16, this.velocityX * dt / 16);
-                        this.rotationX += this.velocityX * dt / 16; this.rotationY += this.velocityY * dt / 16;
+                        this.rotationX += this.velocityX * dt / 16;
+                        this.rotationY = this.clampPitch(this.rotationY + this.velocityY * dt / 16);
+                        this.orient = this.orientFromAngles(this.rotationX, this.rotationY);
                     }
                     const damping = Math.pow(0.94, dt / 16);
                     this.velocityX *= damping; this.velocityY *= damping;
