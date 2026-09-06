@@ -1602,7 +1602,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-gridexit-stackindicator-CANDIDATE-2026.09.05.33';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-globecache-tablecontrols-CANDIDATE-2026.09.05.34';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -11275,9 +11275,13 @@ this.updateImageCounters();
                 this.elements.folder = document.getElementById('photo-table-folder');
                 this.elements.controls = document.getElementById('photo-table-controls');
                 this.elements.controlsToggle = document.getElementById('photo-table-controls-toggle');
-                this.restoreSettings();
                 this.elements.scale = document.getElementById('photo-table-scale');
                 this.elements.limit = document.getElementById('photo-table-limit');
+                // §87: restore persisted floating-control values AFTER the label elements exist,
+                // then paint them so the numbers reflect persistence instead of the HTML
+                // defaults (100% / 24). imageLimit feeds displayLimit at build time.
+                this.restoreSettings();
+                this.updateControlLabels();
                 this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
                 this.elements.folder.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('table'); });
                 this.elements.controlsToggle?.addEventListener('click', event => { event.stopPropagation(); this.toggleControls(); });
@@ -11780,6 +11784,11 @@ this.updateImageCounters();
                     // image nodes survive instead of repainting the complete sphere.
                     this.reconcilePopulation(nextFiles);
                     this.elements.root.hidden = false;
+                } else if (this.restoreCachedStack(stackName, nextFiles)) {
+                    // §87: this stack's globe was already built in this folder session — its
+                    // cards are cached. Reattach them and reconcile only the delta (inserts/
+                    // removals). No full rebuild, no round-trip refetch.
+                    this.elements.root.hidden = false;
                 } else {
                     this.elements.root.hidden = true;
                     this.beginPopulationLoading();
@@ -11935,10 +11944,33 @@ this.updateImageCounters();
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
                 this.cancelPopulationLoading();
-                this.elements.scene.replaceChildren();
+                // §87: a stack's globe is built once and then mutated. On close, cache the built
+                // cards per (folder+stack) instead of destroying them, so returning to a stack
+                // already built reattaches and reconciles the delta — never a full rebuild.
+                if (this.stackName && this.cards.length && this.folderId) {
+                    this.stackCache = this.stackCache || new Map();
+                    const key = this.folderId + '::' + this.stackName;
+                    // Detach (don't destroy) the scene's cards into a fragment held in the cache.
+                    const fragment = document.createDocumentFragment();
+                    this.cards.forEach(card => fragment.appendChild(card.element));
+                    this.stackCache.set(key, {
+                        cards: this.cards, files: this.files, fragment,
+                        orient: this.orient.slice(), rotationX: this.rotationX, rotationY: this.rotationY,
+                        selectedIndex: this.selectedIndex
+                    });
+                    // Bound the cache to a few stacks to keep memory sane.
+                    if (this.stackCache.size > 4) {
+                        const oldestKey = this.stackCache.keys().next().value;
+                        const evicted = this.stackCache.get(oldestKey);
+                        evicted?.cards.forEach(card => card.element.remove());
+                        this.stackCache.delete(oldestKey);
+                    }
+                    this.elements.scene.replaceChildren();
+                } else {
+                    this.elements.scene.replaceChildren();
+                }
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
-                SharedImageResources.pinExplorer([]);
                 Gestures.updateGestureOverlayMode();
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
@@ -12037,6 +12069,21 @@ this.updateImageCounters();
                 this.requestFrame();
                 this.scheduleNextPage(generation);
                 this.updatePopulationLoading(generation);
+            },
+
+            restoreCachedStack(stackName, nextFiles) {
+                const key = (state.currentFolder?.id ?? this.folderId) + '::' + stackName;
+                const cached = this.stackCache?.get(key);
+                if (!cached) return false;
+                this.stackCache.delete(key);
+                // Reattach the cached card elements to the live scene.
+                this.cards = cached.cards;
+                this.files = cached.files;
+                this.elements.scene.appendChild(cached.fragment);
+                // Reconcile only the delta (inserts of new files, removals of deleted ones).
+                this.reconcilePopulation(nextFiles);
+                SharedImageResources.pinExplorer(this.files);
+                return true;
             },
 
             reconcilePopulation(nextFiles) {

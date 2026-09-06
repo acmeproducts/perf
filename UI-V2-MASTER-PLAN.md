@@ -1960,3 +1960,15 @@ Nothing else — no input, presentation, or session changes.
 **Fix.** The grid-to-Sort exit now calls `Core.updateImageCounters()` and `Core.updateActiveProxTab()` before displaying, so the active pill and counts match the landed stack.
 
 **Gate.** After Explore-on-Keep → switcher grid for Recycle → close, only the trash pill is active and currentStack is trash — proven failing on p14 (pill stuck on Keep), passing here. Full suites 46/46. The diagnostic trace is retained (harmless, opt-in). Published as CANDIDATE.
+
+---
+
+## 87 · GLOBE BUILT ONCE PER STACK (CACHED) + TABLE FLOATING CONTROLS PERSISTENCE (2026-09-05)
+
+**Owner.** (1) Returning to a stack's globe (globe→grid→sort→globe) took ~30s to fully rebuild; a full globe should be built once per stack, then only inserts/removals — no full round-trip cost again. (2) Table floating controls (image %, count) must update and persist — outstanding for three releases.
+
+**Fixes.**
+1. **Per-stack globe cache.** `SpatialGallery.close` no longer destroys the built cards — it detaches them into a `stackCache` keyed by folder+stack (bounded to 4 stacks, LRU-evicted). `open` gains a `restoreCachedStack` branch: if the target stack was already built this folder session, its cards are reattached and `reconcilePopulation` applies only the delta (inserts of new files, removals of deleted). Full `buildCards` runs only for a never-built stack. Returning to a built stack is now a reattach + delta, not a rebuild.
+2. **Table floating controls.** `restoreSettings()` moved AFTER the scale/limit label elements bind, followed by `updateControlLabels()`, so persisted values display (not the HTML defaults 100%/24); `imageLimit` feeds `displayLimit` at build. Persist on every adjust (from §78, retained).
+
+**Gate.** Three regressions, all proven failing on p15: returning to a previously-built stack reuses ≥80% of cached card elements; returning after an insert reconciles the delta (old cards kept, new added); persisted table scale/limit shown in labels after init. Full suites 49/49. Published as CANDIDATE.
