@@ -1740,3 +1740,17 @@ Nothing else — no input, presentation, or session changes.
 **Owner check for ratification.** The specific photos that opened wrong images: tap them. Each must open exactly the picture on its thumbnail. First load per phone is slower once (the rebuild).
 
 **§68 GATE RESULT: PASSED** (identity 3/3, ground suite 30/30, syntax clean). Published as CANDIDATE; awaiting owner device ratification per G22.
+
+---
+
+## 69 · §68 CANDIDATE FAILED RATIFICATION — ANALYSIS AND REVISED PATCH 1 (2026-09-05)
+
+**Owner device evidence on the §68 candidate.** (a) Quick taps: right image at LOW probability; **tap-and-hold: right image EVERY time** — device confirmation of the mid-glide mechanism (§67 item 2; harness had shown 6/6 wrong gliding vs 6/6 right at rest): a held finger stops the sphere before release. (b) Spin makes painted thumbnails vanish and repaint (pre-existing G17-class memory behavior, worsened by this candidate). (c) X exit lags hugely, sphere does not pop — worse than the ground.
+
+**Root cause of the candidate's regression (G23).** `repairDriveIdentityFields` ran at every hydration and called `SharedImageResources.clear()` whenever any field changed — on live Drive that is nearly always, so it repeatedly nuked the image cache: recurring thumbnail wipes and a cold cache at every Focus exit.
+
+**Action.** Reverted to the pure ground (blob 41af69c).
+
+**Revised patch 1 (defined before implementation).** Identical store-boundary fixes (whitelist both directions, cloud-authoritative merge, one-time record purge + rebuild), with two corrections: identity repair runs ONLY as part of the one-time purge cycle (same flag), and it never touches presentation caches. Zero recurring work; zero cache clears.
+
+**Gate.** Identity regressions + ground suite + syntax; plus a new regression: a second hydration after the purge performs no repair and no cache clear. Pass ⇒ candidate. Owner check unchanged: the previously-wrong photos must open correctly, and the app must feel no worse than the ground.
