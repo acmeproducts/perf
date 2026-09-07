@@ -2216,3 +2216,13 @@ Owner directive: fix it. Applied on p29, together, the two fixes each already va
 **Gate — all green.** Final gate F1-F6 (tap opens+stays, genuine Focus tap navigates, globe tap enters+stays, globe→X→globe with ≤1 exitToReferrer and no grid/detail, table→X→table, 7× exit storm→1 exit) + the full 8-route matrix, all pass. Full suite 43/44.
 
 **Honesty note.** The one failing suite test ("puts the Explorer-selected Focus image first when opening its Grid") fails IDENTICALLY on p29 and on pristine §104 — it is PRE-EXISTING on the live base, not introduced here. It asserts old grid-from-Focus ordering (entry image first) that §104's correct tap selection changes. Not a regression from this change; flagged for a separate decision. Published as CANDIDATE.
+
+---
+
+## 111 · ROLLED BACK TO THE LAST KNOWN GOOD: R4.30 (2026-09-06)
+
+Owner: roll back to the last known good. The record's last owner-device-CONFIRMED state is R4.30 (§57, commit c47a5a7): "sphere builds quickly and correctly, pin + settings purge confirmed working." Everything after — the entire §31–§110 tap/Focus/exit/table-controls line — was rejected on device across dozens of candidates (G37). Restored ui-v2.html to the R4.30 blob exactly.
+
+**R4.30's known, documented, TOLERATED defects** (per §57): (1) table/sphere tap can open the wrong image on overlapping cards; (2) the Focus X uses the delayed synthetic click. These are known and accepted as the price of a stable, owner-confirmed base — over shipping more unproven candidates.
+
+**Rule from here:** nothing ships on top of R4.30 without explicit owner go-ahead AND a device-reproduced failing test in hand first. No lab-green-only candidates. No stacking.
