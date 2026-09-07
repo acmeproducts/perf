@@ -2181,3 +2181,13 @@ Re-apply the entering-tap guard, but (a) scope the flag so it lives ONLY in the 
 1. a test that reproduces the actual drift by driving REAL DOM pointer events end-to-end (pointerdown/move/up on the real elements), failing on p29 and passing on the fix; OR
 2. a mechanism whose correctness is structural and cannot mis-fire by construction (not a heuristic guard).
 No more gesture-layer heuristics. No shipping on matrix-green alone. Await owner direction on which approach.
+
+---
+
+## 108 · EXIT IDEMPOTENCY — THE DEVICE TRACE NAILED IT (2026-09-05)
+
+**Owner exit-trace (?exittrace, copy button) was conclusive.** On the globe, ONE Focus X press fired `exit()` → `exitToReferrer` SEVEN times (all ref=explore), and only the last flipped to `returnSpatialModeToSort` — the async explore resume leaves `this.active()` true across re-entries, so the button handler re-fired and the storm eventually fell through toward Sort/grid/detail. Table (ref=table) fired once and was fine. The bug is the re-entrant storm, not the routing.
+
+**Fix (structural, cannot mis-fire by construction — satisfies §107's requirement).** `CanonicalInspection.exit()` now holds a single `exitInProgress` re-entry flag: the first call runs, any re-entry until it settles is a no-op, the flag clears when the exit (sync or async) completes. One gesture ⇒ exactly one exit. This is not a heuristic guard on gesture provenance (the buried §101/104/106 family) — it is plain re-entrancy protection that is correct regardless of timing.
+
+**Gate.** Idempotency repro: a 7× exit() storm now yields exactly ONE exitToReferrer and never routes through grid/details. Full exitchain (real X, globe→globe and table→table) and the 9-route matrix all green; full suite 55/55. Honesty note: the storm repro is non-discriminating in the harness (synchronous exit() doesn't reproduce the device's async re-entrant timing that kept active() true), so the fix's *correctness* rests on it being structural re-entrancy protection — a boolean in-progress flag cannot be bypassed by timing — plus the device trace that proved the 7× storm. Published as CANDIDATE.

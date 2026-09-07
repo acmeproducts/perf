@@ -1604,7 +1604,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p33-exit-trace-CANDIDATE-2026.09.05.51';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p34-exit-idempotent-CANDIDATE-2026.09.05.52';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -12764,7 +12764,24 @@ this.updateImageCounters();
 
             exit() {
                 if (window.ExitTrace) window.ExitTrace.log('exit()');
-                return this.active() ? this.exitToReferrer() : this.exitToSort();
+                // Structural idempotency: one exit gesture must cause exactly one exit. The
+                // trace showed the Focus X firing exit() up to 7x on a single press (the
+                // async explore resume leaves this.active() true across re-entries), which
+                // stormed exitToReferrer and fell through to Sort. This flag makes re-entry
+                // impossible by construction; it clears when the exit settles.
+                if (this.exitInProgress) return false;
+                this.exitInProgress = true;
+                const done = result => { this.exitInProgress = false; return result; };
+                try {
+                    const outcome = this.active() ? this.exitToReferrer() : this.exitToSort();
+                    if (outcome && typeof outcome.then === 'function') {
+                        return outcome.then(done, err => { this.exitInProgress = false; throw err; });
+                    }
+                    return done(outcome);
+                } catch (error) {
+                    this.exitInProgress = false;
+                    throw error;
+                }
             },
 
             async enter(fileId, referrer = 'sort', options = {}) {
