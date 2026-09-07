@@ -2134,3 +2134,25 @@ This is the ONLY sanctioned wrong-image approach going forward (G32 buried the p
 **Fix (cause-directed, minimal).** `CanonicalInspection.enter` arms a one-shot `enteringTapPending` flag (fresh entries only, not restoring resumes); `Gestures.handleTap` consumes it on the first Focus tap after entry and returns without navigating — that first tap IS the entering tap. Genuine later Focus taps navigate normally. A 700ms guard window keeps the one-shot from lingering onto an unrelated later tap. Nothing in display/pin/nav internals changed; Explore/Table gesture handling untouched.
 
 **Gate (discriminating, §102-compliant).** Repro test drives PhotoTable.handleTap→enter then Gestures.handleTap: on p29 the entering tap fires nav (FAILS); on the fix it does not and the tapped image holds (PASSES). Non-regression: a genuine separate Focus tap still navigates. Full suite 48/48. Explore→Focus and exit unaffected (existing gates green). Published as CANDIDATE.
+
+---
+
+## 105 · §104 ROLLED BACK (BROKE EXIT ROUTING) — AND THE PROCESS FIX (2026-09-05)
+
+**Owner:** §104 fixed the table-tap wrong image (confirmed working) but globe→exit went to grid and grid→exit went to Details. Rolled back to p29 (blob aab6af0). G34 recorded. The tap fix is CORRECT; the failure is a GATING GAP — I gated tap + Focus-nav but not the exit matrix, so an exit-routing side effect shipped unseen.
+
+**Root process problem the owner named: this should not be trial-and-error.** The recurring pattern is: a fix's gate covers the thing being fixed but NOT the adjacent surfaces/routes it can perturb, so a regression ships and gets caught only on device. The correction is a STANDING REGRESSION MATRIX that every Focus/gesture/exit change must pass in ONE candidate before it is publishable, so adjacent breakage is caught in the lab, not by the owner.
+
+### STANDING FOCUS/NAV/EXIT REGRESSION MATRIX (must all pass in any candidate touching tap, Focus, gestures, or exit)
+1. Table tap opens EXACTLY the tapped image and stays (no drift).
+2. Genuine Focus tap-to-nav (separate tap) navigates to the correct id-neighbor.
+3. Focus swipe next/prev navigate to the correct id-neighbor.
+4. Explore (globe) tap → enters Focus on the tapped id, stays in Focus (no grid jump).
+5. Globe → Focus → exit → returns to the GLOBE (explore), not grid, not Details.
+6. Table → Focus → exit → returns to the TABLE/sort origin, not Details.
+7. Grid open → close → SORT on the grid's stack top (not Details, not Focus).
+8. Sort → Focus → exit → returns to Sort.
+9. Long-press on a table print → Details modal (unchanged).
+
+### Re-land plan for the wrong-image fix (§104 approach, correctly gated)
+Re-apply the entering-tap guard, but (a) scope the flag so it lives ONLY in the Gestures.handleTap path and cannot be read by exit/referrer routing, and (b) prove the FULL matrix above green — with counter-proofs where a route regressed — before it is a candidate. Await explicit go-ahead.
