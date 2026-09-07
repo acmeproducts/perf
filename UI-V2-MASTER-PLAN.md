@@ -2226,3 +2226,9 @@ Owner: roll back to the last known good. The record's last owner-device-CONFIRME
 **R4.30's known, documented, TOLERATED defects** (per §57): (1) table/sphere tap can open the wrong image on overlapping cards; (2) the Focus X uses the delayed synthetic click. These are known and accepted as the price of a stable, owner-confirmed base — over shipping more unproven candidates.
 
 **Rule from here:** nothing ships on top of R4.30 without explicit owner go-ahead AND a device-reproduced failing test in hand first. No lab-green-only candidates. No stacking.
+
+---
+
+## 112 · RESTORED THE OWNER'S STARTING BUILD: R4.22 (bcb9af7 / 41af69c) — 2026-09-06
+
+Owner: this is where they started two days ago — `reconstruction-R4.22-neon-green-spinner-2026.09.04.5`, with the original reported issues (sphere tap inaccurate, index sphere slow, crashes/restarts). Restored ui-v2.html to the exact bcb9af7 blob (41af69c), byte-for-byte, zero additions. This is now the clean baseline. Every change made across §31–§111 is discarded from the live file (history retained in git + graveyard). Nothing ships on top of this without explicit owner go-ahead.
