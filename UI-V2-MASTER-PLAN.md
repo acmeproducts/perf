@@ -2124,3 +2124,13 @@ This is the ONLY sanctioned wrong-image approach going forward (G32 buried the p
 **Standing correction to §101 (supersedes its "real solve").** The §101 root-cause analysis (spurious Focus nav from an overlapping surface drag) may still be correct, but ANY fix for it is blocked until there is a DISCRIMINATING gate that reproduces the actual drift on p25 and passes on the fix. No structural-only verification. No shipping the fix before the reproduction exists. And the fix must not alter Explore/Table gesture handling as a side effect — proven by explicit Explore + Table + Focus interaction gates.
 
 **Current state: p25 (156a120) is the working base.** It carries the known wrong-image-on-tap defect AND the opt-in ?tabletap trace. No further wrong-image attempt without: (1) a failing-on-p25 discriminating repro, then (2) a fix gated on that repro plus Explore/Table/Focus non-regression, all in one candidate. Await explicit go-ahead.
+
+---
+
+## 104 · THE ACTUAL SOLVE: THE ENTERING TAP WAS FIRING FOCUS NAV (2026-09-05)
+
+**Owner's caller-trace (p29, ?tabletap) named it exactly:** `displayCall ... by Object.prevImage <- Object.handleTap` and `... by Object.nextImage <- Object.handleTap`. The §101 overlapping-swipe theory was WRONG (harness never fired nav). The real cause: there are TWO handleTaps. `PhotoTable.handleTap(photo)` enters Focus; then the SAME tap reaches the document-level `Gestures.handleTap(x,y)`, which — now that isFocusMode is true — reads the tap's x-position as Focus tap-to-navigate and fires prevImage/nextImage, stepping the subject off the tapped image (the drift). Long-press was immune (opens the Details modal, not Focus).
+
+**Fix (cause-directed, minimal).** `CanonicalInspection.enter` arms a one-shot `enteringTapPending` flag (fresh entries only, not restoring resumes); `Gestures.handleTap` consumes it on the first Focus tap after entry and returns without navigating — that first tap IS the entering tap. Genuine later Focus taps navigate normally. A 700ms guard window keeps the one-shot from lingering onto an unrelated later tap. Nothing in display/pin/nav internals changed; Explore/Table gesture handling untouched.
+
+**Gate (discriminating, §102-compliant).** Repro test drives PhotoTable.handleTap→enter then Gestures.handleTap: on p29 the entering tap fires nav (FAILS); on the fix it does not and the tapped image holds (PASSES). Non-regression: a genuine separate Focus tap still navigates. Full suite 48/48. Explore→Focus and exit unaffected (existing gates green). Published as CANDIDATE.

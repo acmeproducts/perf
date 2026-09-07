@@ -1604,7 +1604,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p29-display-caller-trace-CANDIDATE-2026.09.05.47';
+        const APP_BUILD_ID = 'ground-bcb9af7-p1R-p2-p6-p8-p9-p11-p13-p15-p16-p18-p21-p22-p30-entering-tap-guard-CANDIDATE-2026.09.05.48';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -10017,6 +10017,10 @@ this.updateImageCounters();
             },
             handleTap(clientX, clientY) {
                 if (state.isFocusMode) {
+                    // §104: the tap that ENTERED Focus must not also be read as a Focus nav tap.
+                    // enter() sets a one-shot flag consumed by the first Focus tap after entry —
+                    // that first tap IS the entering tap. Genuine later taps navigate normally.
+                    if (CanonicalInspection.consumeEnteringTap && CanonicalInspection.consumeEnteringTap()) return;
                     const viewport = Utils.elements.imageViewport;
                     if (!viewport) return;
                     const rect = viewport.getBoundingClientRect();
@@ -12732,8 +12736,22 @@ this.updateImageCounters();
                 return this.active() ? this.exitToReferrer() : this.exitToSort();
             },
 
+            consumeEnteringTap() {
+                // §104: true exactly once, for the first Focus tap-nav after entry (the tap that
+                // entered Focus). Guarded to a short window so it can't linger onto a later tap.
+                if (this.enteringTapPending && (performance.now() - (this.enteredFocusAt || 0)) < 700) {
+                    this.enteringTapPending = false;
+                    return true;
+                }
+                this.enteringTapPending = false;
+                return false;
+            },
+
             async enter(fileId, referrer = 'sort', options = {}) {
                 const { restoring = false, immediateResource = null, immediateSrc = null } = options;
+                // §104: arm the one-shot guard so the tap that caused this entry isn't re-read
+                // as a Focus nav tap. Only arm on a fresh entry (not a restoring resume).
+                if (!restoring) { this.enteredFocusAt = performance.now(); this.enteringTapPending = true; }
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
                 const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
                 if (!resolved) {
