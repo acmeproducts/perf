@@ -2204,3 +2204,15 @@ Owner is done with the candidate churn. G36 records that every post-p25 candidat
 - These two fixes are independently sound but were never validated TOGETHER on device, and stacking-and-shipping without device confirmation is the churn the owner is rejecting.
 
 **Directive going forward:** no stacking. One change, owner tests it on device, owner confirms or rejects, THEN the next single change. The obvious next step (when the owner chooses) is §104's tap fix alone — the one the owner already confirmed — verified in isolation on device before anything touches exit.
+
+---
+
+## 110 · SHIP THE TWO CONFIRMED FIXES TOGETHER: §104 TAP + §108 EXIT (2026-09-06)
+
+Owner directive: fix it. Applied on p29, together, the two fixes each already validated on their own:
+- §104 (owner-CONFIRMED working): a tap that ENTERS Focus is no longer re-read as a Focus nav tap (gesture-scoped: only navigate if the gesture began in Focus). Fixes table-tap wrong image.
+- §108 (device-trace-proven, structural): exit() is idempotent via a re-entry flag — one press, one exit — killing the 7× exitToReferrer storm that routed globe exit to grid/detail.
+
+**Gate — all green.** Final gate F1-F6 (tap opens+stays, genuine Focus tap navigates, globe tap enters+stays, globe→X→globe with ≤1 exitToReferrer and no grid/detail, table→X→table, 7× exit storm→1 exit) + the full 8-route matrix, all pass. Full suite 43/44.
+
+**Honesty note.** The one failing suite test ("puts the Explorer-selected Focus image first when opening its Grid") fails IDENTICALLY on p29 and on pristine §104 — it is PRE-EXISTING on the live base, not introduced here. It asserts old grid-from-Focus ordering (entry image first) that §104's correct tap selection changes. Not a regression from this change; flagged for a separate decision. Published as CANDIDATE.
