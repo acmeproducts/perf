@@ -2191,3 +2191,16 @@ No more gesture-layer heuristics. No shipping on matrix-green alone. Await owner
 **Fix (structural, cannot mis-fire by construction — satisfies §107's requirement).** `CanonicalInspection.exit()` now holds a single `exitInProgress` re-entry flag: the first call runs, any re-entry until it settles is a no-op, the flag clears when the exit (sync or async) completes. One gesture ⇒ exactly one exit. This is not a heuristic guard on gesture provenance (the buried §101/104/106 family) — it is plain re-entrancy protection that is correct regardless of timing.
 
 **Gate.** Idempotency repro: a 7× exit() storm now yields exactly ONE exitToReferrer and never routes through grid/details. Full exitchain (real X, globe→globe and table→table) and the 9-route matrix all green; full suite 55/55. Honesty note: the storm repro is non-discriminating in the harness (synchronous exit() doesn't reproduce the device's async re-entrant timing that kept active() true), so the fix's *correctness* rests on it being structural re-entrancy protection — a boolean in-progress flag cannot be bypassed by timing — plus the device trace that proved the 7× storm. Published as CANDIDATE.
+
+---
+
+## 109 · STOP. RESTORED TO p29. ONE-STEP-ONLY FROM HERE (2026-09-05)
+
+Owner is done with the candidate churn. G36 records that every post-p25 candidate failed on device and that the 9-point matrix was oversold — lab-green has repeatedly not predicted the device. Restored to p29 (blob aab6af0), the clean base with no half-fixes stacked.
+
+**The record of what is actually true, no spin:**
+- Table-tap wrong image: §104 fixed it and the owner CONFIRMED it working (plan §105/line ~2142). §104's ONLY failure was exit routing (globe→grid, grid→Details).
+- Exit routing: the §108 device trace proved the cause — one X press firing exit() 7× (re-entrant storm). §108's idempotency flag fixes that structurally (cannot misfire by timing).
+- These two fixes are independently sound but were never validated TOGETHER on device, and stacking-and-shipping without device confirmation is the churn the owner is rejecting.
+
+**Directive going forward:** no stacking. One change, owner tests it on device, owner confirms or rejects, THEN the next single change. The obvious next step (when the owner chooses) is §104's tap fix alone — the one the owner already confirmed — verified in isolation on device before anything touches exit.
