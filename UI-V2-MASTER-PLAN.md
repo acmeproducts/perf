@@ -2168,3 +2168,16 @@ Re-apply the entering-tap guard, but (a) scope the flag so it lives ONLY in the 
 **Gate — THE MATRIX DID ITS JOB.** First attempt (one-shot flag) passed the tap fix but the matrix caught M2 (genuine Focus tap) regressing in the LAB, forcing the correct gesture-scoped mechanism. Final: TAPFIX + all 9 matrix routes green (M1 tap-correct, M2 genuine tap navigates, M3 swipe, M4 globe→Focus stays, M5 globe→exit→globe, M6 table→exit→sort, M7 grid→sort-top, M8 sort→exit→sort), plus full suite 55/55.
 
 **Honesty note.** The TAPFIX counter-proof is non-discriminating in the harness (synthetic handleEnd can't reproduce the device's real overlapping-gesture drift; p29 also passes it), so the tap fix is verified STRUCTURALLY. BUT the exit-matrix (M5–M8) — the routes that regressed on the owner's device last release — are now genuinely gated and green, which is the protection that was missing. Published as CANDIDATE.
+
+---
+
+## 107 · §106 REJECTED ON DEVICE (9/9 MATRIX GREEN) — ROLLBACK; THE MATRIX IS NOT ENOUGH (2026-09-05)
+
+**Owner:** §106 failed on device even though the full matrix and tap fix passed in the lab. Rolled back to p29 (blob aab6af0). G35 recorded.
+
+**Hard truth, stated plainly:** the harness — matrix included — cannot reproduce the device's real gesture/timing behavior for the Focus tap/gesture/exit pipeline. Lab-green there is necessary but NOT sufficient. Three gesture-layer guard variants (§101 swipe-owner, §104 one-shot, §106 gesture-start) have now each passed the lab and failed the device. The gesture-layer-guard family is a dead end (G35).
+
+**What this means for the plan going forward.** The matrix STAYS as a regression gate for exit routing (it correctly holds M5-M8, which is real value). But it must not be presented as proof that a tap/gesture fix WORKS — only as proof it did not break the routes it covers. A wrong-image fix now requires ONE of:
+1. a test that reproduces the actual drift by driving REAL DOM pointer events end-to-end (pointerdown/move/up on the real elements), failing on p29 and passing on the fix; OR
+2. a mechanism whose correctness is structural and cannot mis-fire by construction (not a heuristic guard).
+No more gesture-layer heuristics. No shipping on matrix-green alone. Await owner direction on which approach.
