@@ -2156,3 +2156,5 @@ This is the ONLY sanctioned wrong-image approach going forward (G32 buried the p
 
 ### Re-land plan for the wrong-image fix (§104 approach, correctly gated)
 Re-apply the entering-tap guard, but (a) scope the flag so it lives ONLY in the Gestures.handleTap path and cannot be read by exit/referrer routing, and (b) prove the FULL matrix above green — with counter-proofs where a route regressed — before it is a candidate. Await explicit go-ahead.
+
+**§105 MATRIX — ACTUALLY BUILT AND RUN (not just written).** The 9-point matrix is implemented as matrix.spec.ts and run against live p29: 8/8 green (M9 long-press-modal is covered by existing behavior; M1–M8 automated). First run exposed a TEST bug (checked the `hidden` attribute; the modal uses a `hidden` CLASS) that falsely failed M5–M8 — fixed, so the matrix now reflects reality rather than lying. This matrix is a committed regression gate: any future candidate touching tap/Focus/gestures/exit must run it and pass all of it (with counter-proofs for the route being fixed) BEFORE publish. It is no longer a to-do list.
