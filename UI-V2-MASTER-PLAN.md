@@ -2350,3 +2350,16 @@ Owner approved Alternative 2 (§113). Built on top of R4.31 (§115) — stacked,
 
 **Gate.** Syntax-checked clean. Not run against your Playwright/WebKit device suite (not available in this session). Two unconfirmed candidates (R4.31 + R4.32) are now stacked on `main` — recommend testing them as one combined device pass rather than trying to isolate blame between them, given they touch adjacent surfaces (floating controls / cardScale) but not the same code paths.
 
+
+---
+
+## 117 · R4.31/R4.32 REJECTED ON DEVICE — ROLLBACK TO R4.22 (2026-09-10)
+
+**Owner:** complete fail, too many regressions. Rolled back.
+
+`ui-v2.html` restored to the exact R4.22 blob (`bcb9af7`/`41af69c`), byte-for-byte — same restore point as §112. Both the floating-control uncap (§115/R4.31) and the autoset zoom sizing (§116/R4.32) are discarded from the live file.
+
+**G38 (recorded).** Uncapping count/scale together with tying `cardScale` to `sphereScale` on every zoom frame, shipped stacked and lab-only (no device gate available in this session), failed on device. §116 itself flagged the risk of stacking two unconfirmed candidates rather than testing R4.31 alone first — that risk materialized. Lesson for this line of work specifically: the zoom-tied `cardScale` recompute running every `onTouchMove` frame is the more likely single point of failure (continuous per-frame layout change during a live gesture) versus the static cap changes in §115, but they were never isolated on device, so this is not confirmed — only flagged for whoever re-attempts.
+
+**Rule reaffirmed:** nothing ships on `main` again without explicit owner go-ahead, one change at a time, device-confirmed before the next stacks on it (§109, still binding).
+
