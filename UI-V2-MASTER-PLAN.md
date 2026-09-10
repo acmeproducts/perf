@@ -2232,3 +2232,97 @@ Owner: roll back to the last known good. The record's last owner-device-CONFIRME
 ## 112 · RESTORED THE OWNER'S STARTING BUILD: R4.22 (bcb9af7 / 41af69c) — 2026-09-06
 
 Owner: this is where they started two days ago — `reconstruction-R4.22-neon-green-spinner-2026.09.04.5`, with the original reported issues (sphere tap inaccurate, index sphere slow, crashes/restarts). Restored ui-v2.html to the exact bcb9af7 blob (41af69c), byte-for-byte, zero additions. This is now the clean baseline. Every change made across §31–§111 is discarded from the live file (history retained in git + graveyard). Nothing ships on top of this without explicit owner go-ahead.
+
+---
+
+## 113 · PERFORMANCE ASSESSMENT + FLOATING-CONTROL PARITY + AUTOSET ZOOM PROPOSAL (2026-09-10)
+
+**Current live baseline:** R4.22 (bcb9af7/41af69c), per §112 — zero additions on top.
+
+### Performance gaps found in live `ui-v2.html`
+
+1. **Table thumbnail count hard-capped at 50** (`Math.max(5, Math.min(50, ...))`) while Explore's cap is effectively the whole stack (`maxImageLimit: 500`). Table can't show a full large stack; Explore can.
+2. **Table zoom range capped at 50%–180%**, Explore's card-scale stepper has no matching hard ceiling in the same place — inconsistent limits between the two modes for the same kind of control.
+3. **Table controls and Explore controls are visually similar but functionally different components** — two separate caps, two separate persistence keys, drift risk every time one is changed without the other.
+4. **No relationship between sphere zoom (`sphereScale`, gesture-driven) and thumbnail card size (`cardScale`) or density in Explore.** Zooming the sphere in/out changes the sphere radius but never auto-adjusts thumbnail size or count — thumbnails can end up too small to read when zoomed out, or too sparse/oversized when zoomed in. Table has the same disconnect between its scatter spacing and its scale stepper.
+5. **Table's de-dupe and cap logic run on every adjust**, not just at open — fine functionally, but it's extra work per stepper tap that a single derived-state recompute would avoid.
+
+### Immediate enhancement — Table controls exactly match Explore controls, no cap on either
+
+- Both controls, both modes, truly uncapped at the top: `maxImageLimit` stops being a fixed number (500) and becomes the actual eligible stack size, live — so Explore's count ceiling is never an arbitrary round number either, only "however many images exist." Scale keeps only a floor (to prevent unreadable/zero-size tiles); no ceiling on either mode.
+- Table's count control: dropped the fixed `50` ceiling for the same live full-stack ceiling.
+- Table's scale control: dropped the fixed `0.5–1.8` clamp for the same floor-only pattern as Explore.
+- Both controls draw from one shared stepper/limit component so Table and Explore can never drift apart again — one cap policy, two mounts.
+- Gate: Table reaches full stack count and scales without a ceiling in the lab; scatter/de-dupe from §94 carried forward unchanged; no default-view layout regression (100% stays at the current safe tile size).
+
+### Autoset mode for floating controls — assessment
+
+**What it would do:** instead of the person manually adjusting count/scale, the app derives thumbnail size, count, and spacing automatically from sphere size, zoom level, and current thumbnail density, and re-derives live as the person zooms in/out.
+
+**Alternative 1 — Fixed angular size (thumbnails hold constant screen size as you zoom)**
+As the sphere radius grows (zoom in), more thumbnails fit in view, so the system pulls more from the stack automatically and tightens spacing; as it shrinks (zoom out), it drops thumbnails and widens spacing, holding each thumbnail's on-screen size roughly constant.
+- Why better than today: today the person manually re-taps the size/count steppers after every zoom to fix cards that just went from readable to illegible; this removes that whole manual loop.
+- Trade-off: total visible count swings with zoom, so a specific "show me exactly 40" request stops being purely manual — needs an override toggle to fall back to manual.
+
+**Alternative 2 — Fixed count, variable size and spacing (zoom controls density, not headcount)**
+The count the person set stays fixed; zooming in/out only grows or shrinks each thumbnail and its spacing to fill the sphere's current apparent size, so the same set of images gets bigger/smaller and more/less spread out rather than more/fewer images appearing.
+- Why better than today: today, count and scale are two independent steppers the person has to coordinate by hand to avoid overlap or wasted empty sphere; this ties size and spacing directly to zoom so they never fight each other, while keeping the person's chosen count authoritative (matches how people already think about "how many images am I browsing").
+- Trade-off: at extreme zoom-out, thumbnails can still shrink below a readable floor if the count is set very high — needs the same floor clamp as today's manual scale.
+
+**Recommendation:** Alternative 2 is the safer fit — it keeps count as the one thing the person explicitly decided (matching current mental model) and only automates the two things that currently require constant manual re-coordination (size, spacing). Alternative 1 is more "hands-off" but changes what's on screen without the person asking, which is a bigger behavior change from today's app.
+
+Awaiting go-ahead before scoping either alternative into a release stage.
+
+
+---
+
+## 114 · RELEASE PLAN — GOOGLE/MICROSOFT-APPROVED OAUTH2 FRONT DOOR (2026-09-10)
+
+**Goal.** Replace any placeholder/manual credential handling with a proper OAuth2 front door: the user signs in with Google and/or Microsoft, grants scoped access to their own cloud images, and Orbital8 manages those images under that grant — no passwords ever touch the app.
+
+**Ownership note.** This is a new release stage, sequenced after the current R4 table-controls work closes. Nothing in R1–R4 blocks it; it plugs into the existing multi-provider cloud file intelligence work already underway on Orbital8.
+
+### A. Pre-development steps
+1. Confirm which providers ship first — Google Drive/Photos, Microsoft OneDrive, or both together — and which of your existing image sources map to each.
+2. Decide the auth flow shape for a mobile-only, no-desktop-browser user: Authorization Code + PKCE (no client secret exposed, works fully in-browser on iPhone/Android Chrome). This is the only flow that fits your constraint — do not use implicit flow (deprecated by both providers) or a flow that assumes a desktop redirect listener.
+3. Decide token storage: short-lived access token in memory, refresh token handled via the provider's standard refresh flow, nothing long-lived written to localStorage in plaintext.
+4. Draft the minimum scope list per provider (read + list for images; write only if you want in-app rename/move/delete) — narrower scopes clear app review faster.
+5. Register your production domain (GitHub Pages URL) and redirect URI pattern before touching provider consoles, so the app registration step below isn't blocked mid-way.
+
+### B. Steps with the cloud providers (explicit)
+**Google (Google Cloud Console):**
+1. Create/select a Google Cloud project.
+2. Configure the OAuth consent screen — app name, logo, support email, scopes (e.g. `drive.readonly` or `photoslibrary.readonly`), and privacy policy + terms URLs (both must be live, public pages before submission).
+3. Create an OAuth 2.0 Client ID of type "Web application," add your exact GitHub Pages origin as an authorized JavaScript origin and redirect URI.
+4. While in "Testing" mode, only accounts you add as test users can sign in — fine for your own device testing.
+5. Submit for verification once ready for real users: Google reviews the consent screen and, for sensitive/restricted scopes (Drive, Photos), may require a third-party security assessment (CASA) — budget real calendar time here, this is not instant.
+
+**Microsoft (Azure/Entra ID app registration):**
+1. Register an application in the Microsoft Entra admin center (formerly Azure AD).
+2. Set platform to "Single-page application (SPA)" so PKCE is supported without a client secret; add your GitHub Pages origin as the redirect URI.
+3. Add Microsoft Graph delegated permissions (e.g. `Files.Read` for OneDrive) — avoid application-level/admin-consent permissions, you want per-user delegated access only.
+4. Set "Supported account types" to whatever matches your real users — personal Microsoft accounts, work/school accounts, or both.
+5. Microsoft Identity's "Publisher verification" is optional but removes an "unverified" warning users otherwise see — worth doing before public rollout, not required for testing.
+
+### C. Development plan
+1. **Auth module (isolated, single-file-compatible):** a self-contained OAuth2/PKCE handler — generate code verifier/challenge, open provider sign-in, exchange code for tokens, store tokens in memory + sessionStorage (never localStorage), silent-refresh on expiry.
+2. **Provider adapter layer:** one thin adapter per provider (Google Drive, OneDrive) exposing the same internal interface (list, fetch, thumbnail URL) so the rest of the app never branches on provider.
+3. **Sign-in UI ("front door"):** a single entry screen offering "Continue with Google" / "Continue with Microsoft," replacing or gating whatever currently initializes the image source.
+4. **Session state:** signed-in identity, active provider(s), and token expiry surfaced in app state the same way current sync/stack state is.
+5. **Error/expiry handling:** expired-session and revoked-access states must degrade to a clear re-sign-in prompt, never a silent blank screen — this is the same class of defect your existing graveyard already tracks closely (blank screens on bad state).
+6. **Gate:** structural — PKCE flow verified end-to-end against both providers' real sandboxes with your own test accounts before any device gate; token refresh proven across an expiry boundary; sign-out proven to fully clear tokens.
+
+### D. Post-development steps
+1. Security review of the token storage and refresh logic — confirm nothing sensitive lands in a place a shared/lost device would expose (matches your existing mobile-only constraint).
+2. Rate-limit and quota check against each provider's API (Drive and Graph both throttle) so bulk thumbnail loads don't trip provider-side limits.
+3. Submit Google's app for verification (see B5) if not already done — this can run in parallel with development, not after.
+4. Update your privacy policy/terms pages to accurately describe what's accessed and why (required by both providers, and by you).
+
+### E. User rollout steps
+1. Soft launch to yourself + a small test-user list added explicitly in each provider console (works even pre-verification).
+2. Confirm the full sign-in → browse → sign-out loop on both target platforms (iPhone Safari, Android Chrome) — your only two real environments.
+3. Once Google verification clears (and Microsoft publisher verification if pursued), open sign-in to the public — no code change needed at that point, only the provider-side status flips.
+4. Monitor first-week sign-in failures via your existing sync/error logging path rather than a new one.
+
+Awaiting go-ahead on provider scope (A1) before development begins — everything in A and B can proceed in parallel with the current R4 work.
+
