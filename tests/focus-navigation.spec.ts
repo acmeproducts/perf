@@ -1466,3 +1466,38 @@ test.describe('500-scale sphere integrity (R4.27)', () => {
     expect(peak).toBeLessThanOrEqual(16);
   });
 });
+
+test.describe('Sphere hit-test zIndex tie-break (R4.28)', () => {
+  test('an exact rounded zIndex tie between two real cards resolves to the true nearer card, not array order', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const result = await page.evaluate(() => {
+      const gallery = (window as any).SpatialGallery;
+      gallery.render(performance.now());
+
+      const cardA = gallery.cards[0];
+      const cardB = gallery.cards[1];
+      // Same rounded CSS bucket (what Math.round(depth*1000) produces for close-but-distinct
+      // depths on a populated sphere), but genuinely different true depth.
+      cardA.depth = 0.61;
+      cardB.depth = 0.60;
+      cardA.element.style.zIndex = '610';
+      cardB.element.style.zIndex = '610';
+
+      const rectA = cardA.element.getBoundingClientRect();
+      cardB.element.style.position = 'fixed';
+      cardB.element.style.left = `${rectA.left}px`;
+      cardB.element.style.top = `${rectA.top}px`;
+      cardB.element.style.width = `${rectA.width}px`;
+      cardB.element.style.height = `${rectA.height}px`;
+
+      const x = rectA.left + rectA.width / 2;
+      const y = rectA.top + rectA.height / 2;
+      const picked = gallery.cardAtPoint(x, y);
+      return { pickedFileId: picked ? String(picked.fileId) : null, deeperFileId: String(cardA.fileId) };
+    });
+
+    expect(result.pickedFileId).toBe(result.deeperFileId);
+  });
+});
