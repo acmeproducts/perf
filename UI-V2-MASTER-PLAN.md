@@ -2391,3 +2391,14 @@ Built per §118 Spec A, on the confirmed R4.22 restore point (§117). Autoset zo
 
 **Gate.** Syntax-checked clean. Same lab-only limitation as before — no Playwright/WebKit harness in this session. Pushed to `main` as CANDIDATE; needs owner device confirmation before Spec B is attempted.
 
+
+---
+
+## 120 · R4.31 (SPEC A) REJECTED ON DEVICE — SPHERE CAPPED AT 10 ON A 300-ITEM STACK — ROLLBACK (2026-09-10)
+
+**Owner:** Explore sphere limited to 10 items on a 300-item stack. Immediate rollback executed. Restored to R4.22 (bcb9af7/41af69c) byte-for-byte, same restore point as §117. G39.
+
+**Suspected cause (unconfirmed — flag only, not diagnosed on device).** The restore-on-open path sets `imageLimit` from a persisted per-device value if one exists, falling back to `maxImageLimit` only when nothing is persisted. A stale persisted `imageLimit` from an earlier session (e.g. 10, saved back when the fixed cap made that a normal value to land on) would still load as 10 under the new live-ceiling getter — the getter changes the CEILING, not what gets restored. If this is the cause, Spec A's redesign needs to also handle stale persisted values that are now far below the live ceiling, not just the ceiling itself.
+
+**Standing rule reaffirmed again:** nothing ships without explicit go-ahead; this line of work (floating-control caps) has now failed on device twice. Recommend the next attempt add a persisted-value sanity check (e.g. clamp up toward the live ceiling if the persisted value looks like a stale small-stack artifact) as an explicit item in Spec A before rebuilding a third time.
+
