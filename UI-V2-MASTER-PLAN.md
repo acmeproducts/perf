@@ -2326,3 +2326,16 @@ Awaiting go-ahead before scoping either alternative into a release stage.
 
 Awaiting go-ahead on provider scope (A1) before development begins — everything in A and B can proceed in parallel with the current R4 work.
 
+
+---
+
+## 115 · R4.31 CANDIDATE — FLOATING CONTROLS UNCAPPED (2026-09-10)
+
+Built on R4.22 (§112), one change only, per the standing one-step rule (§109).
+
+**Change.** Table's count ceiling (was fixed 50) and scale ceiling (was fixed 1.8/180%) removed; Table count now ceilings at the actual eligible stack size, same pattern as Explore. Explore's own count ceiling changed from a fixed 500 to a live getter on the actual current stack size — so neither mode is capped at an arbitrary number anymore, both cap at "however many images exist." Scale floors are unchanged (prevents zero/unreadable tiles); no scale ceiling on either mode. Internal self-check assertion (`exploreAdaptiveLayout`) updated to match the new dynamic cap instead of asserting the old fixed 500.
+
+**Gate.** Syntax-checked (`node --check`) clean. NOT run against the project's own Playwright/WebKit device-parity suite — that harness lives in the repo's test infra, not in this session, so per §107/§109 this is lab-unverified and needs your device confirmation before it's treated as passed. Pushed to `main` as `ui-v2.html` directly (no separate branch in this workflow) — treat it as CANDIDATE, not confirmed, until tested on device.
+
+**Still open:** the autoset zoom-driven size/spacing feature from §113 (Alternative 2 recommended) is scoped but not built — awaiting explicit go on which alternative to implement.
+
