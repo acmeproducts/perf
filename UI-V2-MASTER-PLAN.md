@@ -2380,3 +2380,14 @@ Both specs carry an explicit build gate list requiring owner/device confirmation
 
 Awaiting go-ahead to build Spec A.
 
+
+---
+
+## 119 · R4.31 RE-BUILT (SPEC A ONLY) — 2026-09-10
+
+Built per §118 Spec A, on the confirmed R4.22 restore point (§117). Autoset zoom (Spec B) intentionally NOT included — sequencing holds, per the spec, until this ships and is device-confirmed alone.
+
+**Change.** Identical to §115: Table count/scale ceilings removed (live stack size / floor-only); Explore's `maxImageLimit` is now a live getter on the current stack instead of a fixed 500. Self-check assertion updated to match.
+
+**Gate.** Syntax-checked clean. Same lab-only limitation as before — no Playwright/WebKit harness in this session. Pushed to `main` as CANDIDATE; needs owner device confirmation before Spec B is attempted.
+
