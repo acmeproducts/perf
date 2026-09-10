@@ -2339,3 +2339,14 @@ Built on R4.22 (§112), one change only, per the standing one-step rule (§109).
 
 **Still open:** the autoset zoom-driven size/spacing feature from §113 (Alternative 2 recommended) is scoped but not built — awaiting explicit go on which alternative to implement.
 
+
+---
+
+## 116 · R4.32 CANDIDATE — AUTOSET EXPLORE ZOOM (ALTERNATIVE 2 BUILT) (2026-09-10)
+
+Owner approved Alternative 2 (§113). Built on top of R4.31 (§115) — stacked, not device-confirmed individually first, flagged here per the standing one-step rule (§109) rather than asked as a question: R4.31 has not yet been device-tested, so this candidate carries both changes together.
+
+**Change.** `automaticCardScale()` now includes a `sphereScale` term (`sqrt` of current zoom, floored at 0.1) alongside the existing population-density term — so pinch and wheel zoom now drive thumbnail size directly, not just sphere radius. `onWheel` and `onTouchMove` recompute `cardScale` on every zoom step and repaint via the existing render loop. Image count (`imageLimit`) is untouched by zoom, matching Alternative 2 exactly — only size and (via the existing radius formula) spacing respond to zoom. Table is unaffected — it has no zoom gesture, per code inspection.
+
+**Gate.** Syntax-checked clean. Not run against your Playwright/WebKit device suite (not available in this session). Two unconfirmed candidates (R4.31 + R4.32) are now stacked on `main` — recommend testing them as one combined device pass rather than trying to isolate blame between them, given they touch adjacent surfaces (floating controls / cardScale) but not the same code paths.
+
