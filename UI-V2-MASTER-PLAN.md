@@ -2363,3 +2363,20 @@ Owner approved Alternative 2 (§113). Built on top of R4.31 (§115) — stacked,
 
 **Rule reaffirmed:** nothing ships on `main` again without explicit owner go-ahead, one change at a time, device-confirmed before the next stacks on it (§109, still binding).
 
+
+---
+
+## 118 · SPEC BUILT — FLOATING CONTROLS RE-ATTEMPT, SPLIT INTO A + B (2026-09-10)
+
+Owner asked for an actual spec after G38's rollback, rather than another stacked candidate.
+
+`UI-V2-FLOATING-CONTROLS-SPEC.pdf` (delivered to owner) is now the governing spec for this line of work. Summary:
+
+- **Spec A — cap removal (Table matches Explore, both live-ceiling not fixed-number).** Same exact code change as §115, unchanged — flagged as low-risk (pure boundary-value change, no new code paths). Builds and ships FIRST, alone, device-confirmed before anything stacks on it.
+- **Spec B — autoset zoom sizing, redesigned.** Same goal as §116 (Alternative 2), but the per-touchmove-frame `cardScale` recompute — the top suspect for the device regression — is replaced with: recompute only on pinch-end and on a throttled interval during wheel zoom, not on every gesture frame. Thumbnails hold their size during the live gesture and snap to the new auto-set size once it settles.
+- Sequencing is strict: A ships and is owner-confirmed on device before B is attempted again. No stacking this time.
+
+Both specs carry an explicit build gate list requiring owner/device confirmation — this session has no access to the project's Playwright/WebKit harness, so nothing here is self-certifying as done.
+
+Awaiting go-ahead to build Spec A.
+
