@@ -2402,3 +2402,14 @@ Built per §118 Spec A, on the confirmed R4.22 restore point (§117). Autoset zo
 
 **Standing rule reaffirmed again:** nothing ships without explicit go-ahead; this line of work (floating-control caps) has now failed on device twice. Recommend the next attempt add a persisted-value sanity check (e.g. clamp up toward the live ceiling if the persisted value looks like a stale small-stack artifact) as an explicit item in Spec A before rebuilding a third time.
 
+
+---
+
+## 121 · SCOPE NARROWED — TABLE ONLY, EXPLORE UNTOUCHED (2026-09-10)
+
+**Owner:** only Table's floating controls need to match Explore for this release — nothing else. Explore's own `maxImageLimit`/restore logic (the suspected cause of G39) is NOT touched this build.
+
+**Change.** Table only: count ceiling changed from the literal `50` to the literal `500`, matching Explore's own fixed ceiling exactly (not a dynamic getter). Scale ceiling (`1.8`) removed, matching Explore's scale control having no ceiling. Nothing else in the file changed — confirmed `maxImageLimit` occurrence count identical to the R4.22 baseline (8/8), so Explore's code is byte-identical to the confirmed-good state.
+
+**Gate.** Syntax-checked clean. Pushed as CANDIDATE. Awaiting device confirmation.
+
