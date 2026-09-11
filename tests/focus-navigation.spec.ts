@@ -1466,3 +1466,21 @@ test.describe('500-scale sphere integrity (R4.27)', () => {
     expect(peak).toBeLessThanOrEqual(16);
   });
 });
+
+test.describe('Sort gesture overlay suppressed during Explore (root-cause fix)', () => {
+  test('Sort\'s directional gesture screen is hidden while Explore is open, not just while Focus is open', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const result = await page.evaluate(() => {
+      const g = window as any;
+      return {
+        exploreOpen: !g.SpatialGallery.elements.root.hidden,
+        screenAHidden: g.Gestures.overlay.screenA?.hidden,
+      };
+    });
+
+    expect(result.exploreOpen).toBe(true);
+    expect(result.screenAHidden).toBe(true);
+  });
+});
