@@ -2413,3 +2413,25 @@ Built per §118 Spec A, on the confirmed R4.22 restore point (§117). Autoset zo
 
 **Gate.** Syntax-checked clean. Pushed as CANDIDATE. Awaiting device confirmation.
 
+
+## 122 · EXPLORE CONFIRMED WORKING ON DEVICE — FROZEN, NO FURTHER CHANGES (2026-09-11)
+
+**Owner:** Explore works perfectly. Freeze it — no changes to Explore going forward. Document explicitly what fixed it.
+
+**Context.** R4.22 was never a safe baseline — it is the pre-reconstruction starting point (§112), carrying the *original* reported defects (tap inaccurate, sphere slow, crashes) that R4.23–R4.30 had already fixed and device-confirmed, before an unrelated candidate line (§31–110) failed and triggered a wholesale rollback past those fixes too. Note also a naming collision: this build's commit message calls itself "R4.31," which coincidentally reuses the same revision number as the unrelated, already-reverted §119/§120 floating-control attempt. They are unrelated builds — refer to commit `3c8471d` to disambiguate, not the revision label.
+
+**What was actually done — four pieces, applied and gate-tested individually before being layered, each pulled from its real historical commit rather than reinvented:**
+
+1. **Thumbnail sizing + cache release** (`152829d`, R4.23, G17). Sphere thumbnails right-sized instead of oversized; decoded preloads released once a card settles; fetches bounded by a 16-slot queue. Fixed: slow build, lag, crashes.
+
+2. **Glide-catch** (`dcab0a8`, R4.24, G18). A tap on a still-gliding sphere catches and stops it instead of resolving a selection — selection only fires against a sphere at rest. This was device-verified historically at 6/6 wrong while moving, 6/6 correct at rest. This is the fix behind "long-press worked, quick tap didn't" — a quick tap could land mid-glide; a long-press always outlasted it.
+
+3. **Painted-only hit test + load pacing** (`c6efaef`, R4.27, G20, isolated from its R4.26 identity-fix parent so only this piece landed). `cardAtPoint` now skips any card whose thumbnail hasn't actually finished painting, so a blank/loading card can no longer steal a tap meant for the photo behind or beside it. Population fetches are paced through the existing slot queue so large folders don't trigger provider rate-limiting. Folded in alongside this: a zIndex tie-break fix found and verified earlier this session — `cardAtPoint` now breaks an exact zIndex tie (adjacent cards on a populated sphere can round to the same CSS zIndex bucket) using true per-frame card depth instead of falling back to array order.
+
+4. **Sort gesture-overlay leak — the ±1 root cause** (`8fabb49`, §70, Explore half only for this freeze). `updateGestureOverlayMode()` previously hid Sort's directional gesture screen only during Focus. While Explore was open, that screen stayed live *underneath* the sphere, and its own tap handler fired `prevImage()`/`nextImage()` on the same tap — overwriting Explorer's own correct, id-verified card selection with a ±1 stack-position bump immediately after. This is why the sphere's own pick was never actually wrong — something else was quietly overwriting it a moment later. Long-press was immune because Sort's gesture classifier doesn't count a hold as a tap. Fix: the gesture screen is now also hidden AND pointer-inert (explicit `pointer-events: none`, not just the `hidden` attribute) while Explore is open, re-evaluated on both open and close.
+
+**Gate.** All four applied and individually verified via the full local Playwright suite (`focus-navigation.spec.ts` + `stack-sequence-regression.spec.ts` + `google-drive-url.spec.ts`) at each layering step, then together, run three times for stability: 44 passed consistently; only the 3 pre-existing, unrelated Google Drive URL format mismatches remain (present on unmodified R4.22 too). Four new regression tests added as counter-proof (fail on R4.22, pass on this build): sphere overlap-picking, Sort-overlay-leak for Explore, Sort-overlay-leak for Table, Table cap/scale ceiling. No device Playwright/WebKit harness was available this session — device confirmation is the owner's, given above.
+
+**Status: Explore is frozen as of commit `3c8471d`. No further changes to any Explore/SpatialGallery code without explicit owner go-ahead.**
+
+---
