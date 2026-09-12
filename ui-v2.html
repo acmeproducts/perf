@@ -986,7 +986,11 @@
         .photo-table__print.capturing { pointer-events: none; }
         .photo-table__control { position: absolute; z-index: 1010; min-height: 44px; padding: 9px 13px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(15,23,42,.76); backdrop-filter: blur(10px); }
         #photo-table-folder { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); }
-        #photo-table-controls-toggle { position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); z-index: 2100; }
+        .photo-table__controls-toggle { top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 46px; padding: 0; font-size: 25px; }
+        .photo-table__controls-toggle[aria-expanded="true"] { transform: rotate(180deg); }
+        .photo-table__controls { position: absolute; z-index: 1090; top: max(66px, calc(env(safe-area-inset-top) + 66px)); right: max(12px, env(safe-area-inset-right)); display: grid; grid-template-columns: auto auto; align-items: center; gap: 8px 12px; padding: 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 16px; background: rgba(15,23,42,.84); box-shadow: 0 12px 34px rgba(0,0,0,.4); backdrop-filter: blur(10px); }
+        .photo-table__controls[hidden] { display: none; }
+        .photo-table__controls .spatial-gallery__control-label { display: inline; }
         .surface-close { position: absolute; z-index: 1110; top: max(12px, env(safe-area-inset-top)); left: 50%; translate: -50% 0; width: 46px; height: 46px; padding: 0; border: 1px solid rgba(255,255,255,.34); border-radius: 999px; color: #fff; background: rgba(15,23,42,.82); box-shadow: 0 10px 32px rgba(0,0,0,.38); font: 700 28px/1 system-ui; cursor: pointer; }
         .photo-table__targets { position: absolute; inset: 0; z-index: 1000; pointer-events: none; }
         .photo-table__target { position: absolute; translate: -50% -50%; min-width: 90px; min-height: 56px; padding: 10px 15px; border: 1px solid rgba(255,255,255,.34); border-radius: 999px; color: #fff; background: rgba(15,23,42,.86); box-shadow: 0 10px 30px rgba(0,0,0,.42); font: 750 13px/1 system-ui,sans-serif; pointer-events: auto; touch-action: none; cursor: grab; }
@@ -1356,8 +1360,8 @@
         <div id="photo-table-fx" class="photo-table__fx" aria-hidden="true"></div>
         <div id="photo-table-targets" class="photo-table__targets" aria-label="Table tag targets"></div>
         <button id="photo-table-folder" class="photo-table__control" type="button" aria-haspopup="true" aria-expanded="false"></button>
-        <button id="photo-table-controls-toggle" class="spatial-gallery__button spatial-gallery__controls-toggle" type="button" aria-expanded="false" aria-controls="photo-table-controls" aria-label="Show Table controls">⌄</button>
-        <div id="photo-table-controls" class="spatial-gallery__chrome spatial-gallery__controls" aria-label="Table image controls" hidden>
+        <button id="photo-table-controls-toggle" class="photo-table__control photo-table__controls-toggle" type="button" aria-expanded="false" aria-controls="photo-table-controls" aria-label="Show Table controls">⌄</button>
+        <div id="photo-table-controls" class="photo-table__controls" aria-label="Table image controls" hidden>
             <span class="spatial-gallery__control-label">Image size</span>
             <span class="spatial-gallery__stepper" data-control="scale"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><output id="photo-table-scale" class="spatial-gallery__value" aria-live="polite">100%</output><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
             <span class="spatial-gallery__control-label">Images</span>
@@ -9808,18 +9812,10 @@ this.updateImageCounters();
             },
             updateGestureOverlayMode() {
                 if (!this.overlay) return;
-                // Sort's directional gesture screen must be inert whenever something else owns the
-                // tap -- Focus, or Explore's sphere. It was previously gated on Focus alone, so while
-                // Explore was open this screen stayed live underneath the sphere and its tap handler
-                // fired prevImage()/nextImage() on the same tap, overwriting Explorer's own correct,
-                // id-verified selection with a +-1 stack-position bump right after. That's the
-                // documented root cause of Explore's wrong-image-on-tap (MASTER-PLAN root cause note).
                 const focus = state.isFocusMode;
-                const exploreOpen = Boolean(SpatialGallery.elements?.root && !SpatialGallery.elements.root.hidden);
-                const suppress = focus || exploreOpen;
                 if (this.overlay.screenA) {
-                    this.overlay.screenA.toggleAttribute('hidden', suppress);
-                    this.overlay.screenA.setAttribute('aria-hidden', suppress ? 'true' : 'false');
+                    this.overlay.screenA.toggleAttribute('hidden', focus);
+                    this.overlay.screenA.setAttribute('aria-hidden', focus ? 'true' : 'false');
                 }
                 if (this.overlay.screenB) {
                     this.overlay.screenB.toggleAttribute('hidden', !focus);
@@ -11146,7 +11142,6 @@ this.updateImageCounters();
             elements: {}, photos: [], deck: [], currentFileId: null, stackName: null, pointer: null,
             frameId: null, z: 1, reducedMotion: false, previousFocus: null, emptyPress: null, emptyPressTimer: null,
             imageScale: 1, imageLimit: 24, photoPressTimer: null,
-            controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             visibilityAnimationSuspended: false,
             folderId: null, folderGeneration: 0, exitPointerGuard: null,
             shotStats: { attempts: 0, captures: 0, misses: 0 },
@@ -11164,14 +11159,6 @@ this.updateImageCounters();
                 this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
                     event.stopPropagation(); this.adjustControl(button.closest('.spatial-gallery__stepper').dataset.control, Number(button.dataset.delta));
                 }));
-                this.elements.controls?.addEventListener('pointerdown', event => { event.stopPropagation(); this.onControlsPointerDown(event); });
-                this.elements.controls?.addEventListener('pointermove', event => { event.stopPropagation(); this.onControlsPointerMove(event); });
-                this.elements.controls?.addEventListener('pointerup', event => { event.stopPropagation(); this.onControlsPointerUp(event); });
-                this.elements.controls?.addEventListener('pointercancel', event => { event.stopPropagation(); this.onControlsPointerUp(event); });
-                this.elements.controls?.addEventListener('click', event => event.stopPropagation());
-                ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(type => {
-                    this.elements.controls?.addEventListener(type, event => event.stopPropagation(), { passive: type.startsWith('touch') });
-                });
                 document.getElementById('photo-table-close')?.addEventListener('click', event => { event.stopPropagation(); if (!this.exitPointerGuard) this.exit(); });
                 this.elements.surface.addEventListener('pointerdown', event => { this.down(event); this.emptyLongPressDown(event); });
                 this.elements.surface.addEventListener('pointermove', event => { this.move(event); this.emptyLongPressMove(event); });
@@ -11191,30 +11178,6 @@ this.updateImageCounters();
                 this.elements.controls.hidden = !open;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', String(open));
                 this.elements.controlsToggle?.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} Table controls`);
-            },
-            onControlsPointerDown(event) {
-                if (event.target.closest('button')) return;
-                const rect = this.elements.controls.getBoundingClientRect();
-                this.controlsDragging = true; this.controlsPointerId = event.pointerId;
-                this.controlsOffsetX = event.clientX - rect.left; this.controlsOffsetY = event.clientY - rect.top;
-                this.elements.controls.classList.add('dragging');
-                this.elements.controls.setPointerCapture?.(event.pointerId);
-                event.preventDefault(); event.stopPropagation();
-            },
-            onControlsPointerMove(event) {
-                if (!this.controlsDragging || event.pointerId !== this.controlsPointerId) return;
-                const controls = this.elements.controls;
-                const x = Math.max(8, Math.min(innerWidth - controls.offsetWidth - 8, event.clientX - this.controlsOffsetX));
-                const y = Math.max(8, Math.min(innerHeight - controls.offsetHeight - 8, event.clientY - this.controlsOffsetY));
-                controls.style.left = `${x}px`; controls.style.top = `${y}px`; controls.style.bottom = 'auto'; controls.style.transform = 'none';
-                event.preventDefault(); event.stopPropagation();
-            },
-            onControlsPointerUp(event) {
-                if (event.pointerId !== this.controlsPointerId) return;
-                this.controlsDragging = false; this.controlsPointerId = null;
-                this.elements.controls.classList.remove('dragging');
-                localStorage.setItem(`${APP_IDENTITY.storagePrefix}:table_controls_position`, JSON.stringify({ x: this.elements.controls.offsetLeft, y: this.elements.controls.offsetTop }));
-                event.preventDefault(); event.stopPropagation();
             },
             adjustControl(control, delta) {
                 if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
@@ -12190,23 +12153,16 @@ this.updateImageCounters();
             cardAtPoint(x, y) {
                 // Rect + paint-order picking. DOM hit-testing (elementsFromPoint) is unreliable in
                 // WebKit for 3D-transformed compositor layers inside a perspective scene, which made
-                // iPad taps resolve the wrong card. Bounding rects are computed geometry, consistent
-                // across engines, and match what was painted.
-                // style.zIndex (an integer, set by render()) is the primary picking key -- some
-                // callers set it directly without going through render(). It's rounded into ~1000
-                // buckets for paint performance, so adjacent cards on a populated sphere can land on
-                // the exact same integer. On that exact tie, break it with card.depth -- the
-                // full-precision value render() stashes each frame -- instead of array order, which
-                // is what previously resolved the wrong image on tap.
-                let best = null, bestZ = -Infinity, bestDepth = -Infinity;
+                // iPad taps resolve the wrong card. Bounding rects and the inline z-index written by
+                // render() are computed geometry, consistent across engines, and match what was painted.
+                let best = null, bestZ = -Infinity;
                 for (const card of this.cards) {
                     const element = card.element;
                     if (!element?.isConnected || element.style.visibility === 'hidden') continue;
                     const rect = element.getBoundingClientRect();
                     if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
                     const z = Number(element.style.zIndex) || 0;
-                    const depth = Number.isFinite(card.depth) ? card.depth : -Infinity;
-                    if (z > bestZ || (z === bestZ && depth > bestDepth)) { bestZ = z; bestDepth = depth; best = card; }
+                    if (z >= bestZ) { bestZ = z; best = card; }
                 }
                 return best;
             },
@@ -12431,10 +12387,6 @@ this.updateImageCounters();
                     const x = x1 * sphereRadius * perspective;
                     const y = y2 * sphereRadius * perspective;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
-                    // Full-precision depth for hit-testing (cardAtPoint). The CSS zIndex below is
-                    // rounded into ~1000 buckets for render performance, which lets adjacent cards
-                    // collide on the same bucket — cardAtPoint must not tie-break on that rounded value.
-                    card.depth = depth;
                     const style = card.element.style;
                     const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
                     // Far-hemisphere cards are barely visible but each costs a full compositor
