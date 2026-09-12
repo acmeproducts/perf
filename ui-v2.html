@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
+<!-- Orbital8 UI governed reconstruction · R4.24 gliding tap catch -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1591,7 +1591,7 @@
             debugGlobal: '__orbitalUI',
             syncLogWindowName: 'orbital8-ui-sync-log'
         };
-        const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
+        const APP_BUILD_ID = 'reconstruction-R4.24-gliding-tap-catch-2026.09.04.7';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
             label: `Orbital8 UI · ${APP_BUILD_ID}`
@@ -2516,7 +2516,10 @@
         };
 
         const SharedImageResources = {
-            maxResident: 640,
+            // Sized to hold a full 500-card sphere's pinned entries plus display/thumb
+            // renditions without eviction churn (entries hold URLs and state only; decoded
+            // preloads are released on settle, so residency is cheap).
+            maxResident: 1400,
             entries: new Map(),
             inFlight: new Map(),
             bindings: new WeakMap(),
@@ -2534,6 +2537,7 @@
             },
             clear() {
                 this.presentationToken++;
+                this.loadQueue.length = 0;
                 this.entries.clear();
                 this.inFlight.clear();
                 this.activeExplorerKeys.clear();
@@ -2548,11 +2552,19 @@
                 if (!file) return '';
                 if (state.providerType === 'googledrive') {
                     const urls = DriveLinkHelper.resolveAssetUrls(file);
+                    // Sphere cards paint at ~112x148 CSS px; an 800px thumbnail per card decodes to
+                    // ~2.5MB, and hundreds of them exhaust iPad Safari's per-tab memory budget
+                    // (tab jetsam = the "crash and restart"). 300px covers 2x DPR with headroom.
+                    if (rendition === 'sphere') {
+                        return (urls.fileId ? DriveLinkHelper.buildThumbnailUrl(urls.fileId, 300, urls.resourceKey) : null)
+                            || urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '';
+                    }
                     return rendition === 'display'
                         ? (urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '')
                         : (urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '');
                 }
                 const thumbnails = file.thumbnails || {};
+                if (rendition === 'sphere') return (thumbnails.small?.url || thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
                 return rendition === 'display'
                     ? (thumbnails.large?.url || file.downloadUrl || file.webContentLink || '')
                     : (thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
@@ -2594,29 +2606,55 @@
                 }
                 entry.readyState = 'loading';
                 entry.ready = new Promise(resolve => {
-                    const preload = new Image();
-                    preload.decoding = 'async';
-                    entry.preload = preload;
-                    const settle = async loaded => {
-                        if (loaded && typeof preload.decode === 'function') {
-                            try { await preload.decode(); } catch (_) {}
-                        }
-                        entry.readyState = loaded ? 'loaded' : 'error';
-                        if (loaded) { entry.loadFailures = 0; entry.retryAfter = 0; }
-                        else {
-                            entry.loadFailures = (entry.loadFailures || 0) + 1;
-                            this.instrumentation.imageErrorCount++;
-                            entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
-                            entry.ready = null; entry.preload = null;
-                        }
-                        resolve(entry);
+                    const start = () => {
+                        const preload = new Image();
+                        preload.decoding = 'async';
+                        entry.preload = preload;
+                        const settle = async loaded => {
+                            if (loaded && typeof preload.decode === 'function') {
+                                try { await preload.decode(); } catch (_) {}
+                            }
+                            entry.readyState = loaded ? 'loaded' : 'error';
+                            if (loaded) {
+                                entry.loadFailures = 0; entry.retryAfter = 0;
+                                // Do not retain the decoded preload: keeping an Image per cache entry
+                                // pinned every decoded bitmap (up to maxResident of them) in memory,
+                                // which is what exhausted iPad Safari's tab budget. On-screen <img>
+                                // elements hold their own pixels; re-attach hits the HTTP cache.
+                                entry.preload = null;
+                            } else {
+                                entry.loadFailures = (entry.loadFailures || 0) + 1;
+                                this.instrumentation.imageErrorCount++;
+                                entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
+                                entry.ready = null; entry.preload = null;
+                            }
+                            this.releaseLoadSlot();
+                            resolve(entry);
+                        };
+                        preload.addEventListener('load', () => settle(true), { once: true });
+                        preload.addEventListener('error', () => settle(false), { once: true });
+                        preload.src = entry.src;
+                        this.instrumentation.providerRequestCount++;
                     };
-                    preload.addEventListener('load', () => settle(true), { once: true });
-                    preload.addEventListener('error', () => settle(false), { once: true });
-                    preload.src = entry.src;
-                    this.instrumentation.providerRequestCount++;
+                    // Bounded concurrency: firing hundreds of preloads at once saturates the
+                    // connection pool and stacks decodes on the main thread, which is the jank
+                    // that made taps land on stale-painted positions. A short FIFO keeps the
+                    // sphere filling fast without the stampede.
+                    this.acquireLoadSlot(start);
                 });
                 return entry.ready;
+            },
+            loadSlotsInUse: 0,
+            loadSlotLimit: 16,
+            loadQueue: [],
+            acquireLoadSlot(start) {
+                if (this.loadSlotsInUse < this.loadSlotLimit) { this.loadSlotsInUse++; start(); }
+                else this.loadQueue.push(start);
+            },
+            releaseLoadSlot() {
+                const next = this.loadQueue.shift();
+                if (next) next();
+                else this.loadSlotsInUse = Math.max(0, this.loadSlotsInUse - 1);
             },
             async refreshFile(fileId) {
                 this.instrumentation.recoveryAttempts++;
@@ -2703,7 +2741,22 @@
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                 }, { once: true });
-                if (visible) apply(entry.src);
+                if (options.paced) {
+                    // Populations of hundreds of cards must not stampede the thumbnail host:
+                    // simultaneous request floods trigger provider rate limiting (sparse spheres
+                    // of blank cards that trickle back in). The slot queue paces the card's own
+                    // image fetch — one bounded request per card, no separate preload.
+                    this.acquireLoadSlot(() => {
+                        let released = false;
+                        const release = () => { if (!released) { released = true; this.releaseLoadSlot(); } };
+                        if (!isCurrent() || img.getAttribute('src') === entry.src) { apply(entry.src); release(); return; }
+                        img.addEventListener('load', release, { once: true });
+                        img.addEventListener('error', release, { once: true });
+                        setTimeout(release, 20000);
+                        apply(entry.src);
+                        if (!img.getAttribute('src')) release();
+                    });
+                } else if (visible) apply(entry.src);
                 else Utils.defer(() => apply(entry.src), { priority: 'background', timeout: 180 });
                 return entry;
             },
@@ -2804,10 +2857,14 @@
                 this.touch(null);
             },
             pinExplorer(files = []) {
-                const next = new Set(files.map(file => this.key(file, 'thumb')));
+                const next = new Set(files.map(file => this.key(file, 'sphere')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                this.warm(files, 'thumb', { pin: true });
+                // Pin without preloading: sphere cards fetch their own images through the
+                // paced slot queue, and a parallel warm of the same URLs would double the
+                // request volume the pacing exists to bound.
+                files.filter(Boolean).forEach(file => this.resolve(file, 'sphere', { pin: true }));
+                this.touch(null);
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -9812,13 +9869,23 @@ this.updateImageCounters();
             },
             updateGestureOverlayMode() {
                 if (!this.overlay) return;
+                // §70: exactly one surface owns pointer input, decided structurally. While
+                // Explore or Table is live, Sort's gesture screen does not exist for input —
+                // its directional tap handlers were firing prevImage/nextImage on the same
+                // tap that opened Focus, displaying the file at position ±1 (sign = tap
+                // side). Tap-and-hold was immune because gesture classifiers reject holds.
                 const focus = state.isFocusMode;
+                const spatialLive = (typeof SpatialGallery !== 'undefined' && !SpatialGallery.elements?.root?.hidden)
+                    || (typeof PhotoTable !== 'undefined' && !PhotoTable.elements?.root?.hidden);
                 if (this.overlay.screenA) {
-                    this.overlay.screenA.toggleAttribute('hidden', focus);
-                    this.overlay.screenA.setAttribute('aria-hidden', focus ? 'true' : 'false');
+                    const activeA = !focus && !spatialLive;
+                    this.overlay.screenA.toggleAttribute('hidden', !activeA);
+                    this.overlay.screenA.style.pointerEvents = activeA ? '' : 'none';
+                    this.overlay.screenA.setAttribute('aria-hidden', activeA ? 'false' : 'true');
                 }
                 if (this.overlay.screenB) {
                     this.overlay.screenB.toggleAttribute('hidden', !focus);
+                    this.overlay.screenB.style.pointerEvents = focus ? '' : 'none';
                     this.overlay.screenB.setAttribute('aria-hidden', focus ? 'false' : 'true');
                 }
             },
@@ -11180,8 +11247,8 @@ this.updateImageCounters();
                 this.elements.controlsToggle?.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} Table controls`);
             },
             adjustControl(control, delta) {
-                if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
-                else this.imageLimit = Math.max(5, Math.min(50, this.imageLimit + delta));
+                if (control === 'scale') this.imageScale = Math.max(.5, this.imageScale + delta / 100);
+                else this.imageLimit = Math.max(5, Math.min(500, this.imageLimit + delta));
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -11226,6 +11293,7 @@ this.updateImageCounters();
                 this.deck = ordered.slice(limit).map(file => file.id);
                 this.elements.root.hidden = false;
                 document.body.style.overflow = 'hidden';
+                Gestures.updateGestureOverlayMode();
                 this.build(ordered.slice(0, limit));
                 TableTagTargets.render();
                 this.updateCount();
@@ -11515,6 +11583,7 @@ this.updateImageCounters();
             close({ restoreFocus = true, preserve = false, force = false } = {}) {
                 if (!this.elements.root || (this.elements.root.hidden && !force)) return;
                 if (!this.elements.root.hidden) this.suspend();
+                Gestures.updateGestureOverlayMode();
                 if (preserve) return;
                 this.cancelPhotoLongPress(); this.toggleControls(false);
                 this.elements.surface.replaceChildren(); this.photos = []; this.deck = [];
@@ -11802,6 +11871,7 @@ this.updateImageCounters();
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
                 SharedImageResources.pinExplorer([]);
+                Gestures.updateGestureOverlayMode();
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
                 if (this.elements.controls) this.elements.controls.hidden = true;
@@ -11869,8 +11939,8 @@ this.updateImageCounters();
                 });
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
-                SharedImageResources.attach(img, file, 'thumb', {
-                    surface: 'explore', visible: true, generation,
+                SharedImageResources.attach(img, file, 'sphere', {
+                    surface: 'explore', visible: true, paced: true, generation,
                     stackName: this.stackName, folderId: this.folderId
                 }).then(entry => { if (!entry?.src) settlePopulationImage(); });
                 return { element: card, image: img, vector: null, fileId: file.id, generation };
@@ -12041,7 +12111,7 @@ this.updateImageCounters();
                     || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
                     || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
-                const expectedKey = SharedImageResources.key(file, 'thumb');
+                const expectedKey = SharedImageResources.key(file, 'sphere');
                 const immediateResource = binding && String(binding.fileId) === requestedId
                     && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey
                     && binding.loadedKey === expectedKey
@@ -12088,18 +12158,30 @@ this.updateImageCounters();
                 clearTimeout(this.tapTimer); this.lastTapIndex = -1; this.lastTapTime = 0;
             },
 
+            // Glide speed above which a tap catches the sphere instead of selecting.
+            // ~0.0006 rad/frame ≈ 5°/s ≈ a few px of card drift during human reaction time;
+            // below it the sphere is visually still and selection is safe.
+            catchThreshold: 0.0006,
+
             tapSlop(pointerType) {
                 return pointerType === 'touch' ? 12 : pointerType === 'pen' ? 8 : 3;
             },
 
             onPointerDown(event) {
                 if (event.button !== undefined && event.button !== 0) return;
+                // A tap on a gliding sphere catches and stops it, never selects. While momentum
+                // glides, the card painted under the finger at the moment the person decided to
+                // tap has already rotated away by pointer-down (human reaction + paint latency),
+                // so any selection here picks the wrong image — verified in WebKit: 6/6 wrong
+                // mid-glide, 6/6 correct at rest. Selection is only meaningful on a still sphere.
+                const gliding = Math.abs(this.velocityX) + Math.abs(this.velocityY) > this.catchThreshold;
+                this.velocityX = 0; this.velocityY = 0;
                 this.dragging = true; this.pointerId = event.pointerId; this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = performance.now();
                 this.elements.scene.classList.add('dragging');
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const hit = this.cardAtPoint(event.clientX, event.clientY);
+                const hit = gliding ? null : this.cardAtPoint(event.clientX, event.clientY);
                 const card = hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
                 // Coordinate-based picking: the visually frontmost card at the down point is authoritative.
@@ -12155,14 +12237,24 @@ this.updateImageCounters();
                 // WebKit for 3D-transformed compositor layers inside a perspective scene, which made
                 // iPad taps resolve the wrong card. Bounding rects and the inline z-index written by
                 // render() are computed geometry, consistent across engines, and match what was painted.
-                let best = null, bestZ = -Infinity;
+                // A card whose thumbnail hasn't painted (still loading, failed, or rate-
+                // limited) shows nothing tappable; letting it win the pick steals taps
+                // aimed at the real photo painted beneath or beside it.
+                let best = null, bestZ = -Infinity, bestDepth = -Infinity;
                 for (const card of this.cards) {
                     const element = card.element;
                     if (!element?.isConnected || element.style.visibility === 'hidden') continue;
+                    const img = card.image;
+                    if (!img || !img.getAttribute('src') || !img.complete || !img.naturalWidth) continue;
                     const rect = element.getBoundingClientRect();
                     if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
                     const z = Number(element.style.zIndex) || 0;
-                    if (z >= bestZ) { bestZ = z; best = card; }
+                    // zIndex is rounded into ~1000 buckets for paint performance; on a populated
+                    // sphere, adjacent cards can land on the exact same integer. zIndex stays the
+                    // primary key; card.depth (full precision, set each render frame) only breaks
+                    // an exact tie, rather than falling through to array order.
+                    const depth = Number.isFinite(card.depth) ? card.depth : -Infinity;
+                    if (z > bestZ || (z === bestZ && depth > bestDepth)) { bestZ = z; bestDepth = depth; best = card; }
                 }
                 return best;
             },
@@ -12387,6 +12479,7 @@ this.updateImageCounters();
                     const x = x1 * sphereRadius * perspective;
                     const y = y2 * sphereRadius * perspective;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
+                    card.depth = depth;
                     const style = card.element.style;
                     const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
                     // Far-hemisphere cards are barely visible but each costs a full compositor

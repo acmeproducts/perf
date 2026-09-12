@@ -1466,3 +1466,66 @@ test.describe('500-scale sphere integrity (R4.27)', () => {
     expect(peak).toBeLessThanOrEqual(16);
   });
 });
+
+test.describe('Sort gesture overlay suppressed during Explore and Table (root-cause §70)', () => {
+  test('Sort\'s directional gesture screen is hidden and pointer-inert while Explore is open', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    const result = await page.evaluate(() => {
+      const g = window as any;
+      return {
+        exploreOpen: !g.SpatialGallery.elements.root.hidden,
+        screenAHidden: g.Gestures.overlay.screenA?.hidden,
+        screenAPointerEvents: g.Gestures.overlay.screenA?.style.pointerEvents,
+      };
+    });
+    expect(result.exploreOpen).toBe(true);
+    expect(result.screenAHidden).toBe(true);
+    expect(result.screenAPointerEvents).toBe('none');
+  });
+
+  test('Sort\'s directional gesture screen is hidden and pointer-inert while Table is open', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      const g = window as any;
+      g.SpatialGallery.close({ restoreFocus: false, force: true });
+      g.PhotoTable.open({ stackName: 'in', fileId: 'file-y' });
+    });
+    const result = await page.evaluate(() => {
+      const g = window as any;
+      return {
+        tableOpen: !g.PhotoTable.elements.root.hidden,
+        screenAHidden: g.Gestures.overlay.screenA?.hidden,
+        screenAPointerEvents: g.Gestures.overlay.screenA?.style.pointerEvents,
+      };
+    });
+    expect(result.tableOpen).toBe(true);
+    expect(result.screenAHidden).toBe(true);
+    expect(result.screenAPointerEvents).toBe('none');
+  });
+});
+
+test.describe('Table image count and scale ceilings match Explore (§121)', () => {
+  test('Table imageLimit can reach 500, not capped at 50; scale has no upper ceiling', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      const g = window as any;
+      g.SpatialGallery.close({ restoreFocus: false, force: true });
+      g.PhotoTable.open({ stackName: 'in', fileId: 'file-y' });
+    });
+    const result = await page.evaluate(() => {
+      const g = window as any;
+      g.PhotoTable.imageLimit = 3;
+      for (let i = 0; i < 60; i++) g.PhotoTable.adjustControl('limit', 10);
+      const limitAtCeiling = g.PhotoTable.imageLimit;
+      g.PhotoTable.imageScale = 1;
+      for (let i = 0; i < 50; i++) g.PhotoTable.adjustControl('scale', 10);
+      const scaleAfterManySteps = g.PhotoTable.imageScale;
+      return { limitAtCeiling, scaleAfterManySteps };
+    });
+    expect(result.limitAtCeiling).toBe(500);
+    expect(result.scaleAfterManySteps).toBeGreaterThan(1.8);
+  });
+});
