@@ -1564,3 +1564,38 @@ test.describe('Table controls steppers are visible and functional, matching Expl
     expect(after.limit).toBeGreaterThan(before.limit);
   });
 });
+
+test.describe('Explore warm-resume on mode-switcher re-entry (no full rebuild)', () => {
+  test('closing Explore via mode switch and reopening the same stack reuses card elements and does not re-fetch images', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+
+    const before = await page.evaluate(() => {
+      const g = window as any;
+      const card = g.SpatialGallery.cards.find((c: any) => c.fileId === 'file-y');
+      card.element.dataset.identityProbe = 'original-card';
+      return {
+        requestsBefore: g.SharedImageResources.instrumentation.providerRequestCount,
+      };
+    });
+
+    // Simulate the mode-switcher's close-with-preserve, then reopen the same stack.
+    await page.evaluate(() => {
+      const g = window as any;
+      g.SpatialGallery.close({ restoreFocus: false, preserve: true });
+      g.SpatialGallery.open({ stackName: 'in', fileId: 'file-y' });
+    });
+
+    const after = await page.evaluate(() => {
+      const g = window as any;
+      const card = g.SpatialGallery.cards.find((c: any) => c.fileId === 'file-y');
+      return {
+        sameElement: card.element.dataset.identityProbe === 'original-card',
+        requestsAfter: g.SharedImageResources.instrumentation.providerRequestCount,
+      };
+    });
+
+    expect(after.sameElement).toBe(true);
+    expect(after.requestsAfter).toBe(before.requestsBefore);
+  });
+});

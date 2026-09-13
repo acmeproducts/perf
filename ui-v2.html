@@ -9658,7 +9658,7 @@ this.updateImageCounters();
                     });
                 }
                 if (CanonicalInspection.active()) CanonicalInspection.exitToOrigin({ persist: false, restore: false });
-                SpatialGallery.close({ restoreFocus: false });
+                SpatialGallery.close({ restoreFocus: false, preserve: true });
                 PhotoTable.close({ restoreFocus: false });
                 state.currentStack = selection.stackName || this.entry?.stackName || state.currentStack;
                 const stack = state.stacks[state.currentStack] || [];
@@ -11853,26 +11853,33 @@ this.updateImageCounters();
                 return CurrentImage.assert(fileId, 'explore warm Focus resume');
             },
 
-            close({ restoreFocus = true, force = false } = {}) {
+            close({ restoreFocus = true, force = false, preserve = false } = {}) {
                 if (this.elements.root.hidden && !force) return;
                 this.elements.root.hidden = true;
-                this.loadGeneration++;
-                document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
-                this.cancelPopulationLoading();
-                this.elements.scene.replaceChildren();
-                this.cards = [];
-                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
-                SharedImageResources.pinExplorer([]);
+                this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
                 Gestures.updateGestureOverlayMode();
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
+                document.body.style.overflow = '';
                 if (restoreFocus) this.previousFocus?.focus?.();
+                if (preserve) return;
+                // Same-context return (mode switcher, quick re-entry) is handled by open()'s own
+                // sameSession/canResume check against this.cards/files/stackName/folderId -- but
+                // that check is worthless if this teardown already wiped them on every close,
+                // which forced a full rebuild-and-refetch of the whole population on every re-entry
+                // even when nothing had changed. Only actually discard state when NOT preserving.
+                this.loadGeneration++;
+                this.cancelPopulationLoading();
+                this.elements.scene.replaceChildren();
+                this.cards = [];
+                this.files = []; this.stackName = ''; this.folderId = null;
+                SharedImageResources.pinExplorer([]);
             },
 
             beginPopulationLoading() {
