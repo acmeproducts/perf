@@ -1337,9 +1337,8 @@ test.describe('Sphere memory and load discipline (R4.23)', () => {
       }));
       await Promise.all(files.map(file => resources.ensure(file, 'thumb')));
     }, { base: 'https://slot-cap.test' });
-    const configuredLimit = await page.evaluate(() => (window as any).SharedImageResources.loadSlotLimit);
     expect(peak).toBeGreaterThan(0);
-    expect(peak).toBeLessThanOrEqual(configuredLimit);
+    expect(peak).toBeLessThanOrEqual(16);
   });
 });
 
@@ -1463,9 +1462,8 @@ test.describe('500-scale sphere integrity (R4.27)', () => {
       const g = (window as any).SpatialGallery;
       return g.cards.length === g.files.length && g.cards.every((c: any) => c.image.complete && c.image.naturalWidth > 0);
     }, undefined, { timeout: 20000 });
-    const configuredLimit = await page.evaluate(() => (window as any).SharedImageResources.loadSlotLimit);
     expect(peak).toBeGreaterThan(0);
-    expect(peak).toBeLessThanOrEqual(configuredLimit);
+    expect(peak).toBeLessThanOrEqual(16);
   });
 });
 
@@ -1529,6 +1527,41 @@ test.describe('Table image count and scale ceilings match Explore (§121)', () =
     });
     expect(result.limitAtCeiling).toBe(500);
     expect(result.scaleAfterManySteps).toBeGreaterThan(1.8);
+  });
+});
+
+test.describe('Table controls steppers are visible and functional, matching Explore (owner-confirmed)', () => {
+  test('Table scale and limit stepper buttons are not display:none and actually change values on click', async ({ page }) => {
+    await installDeterministicImages(page);
+    await prepareExplore(page);
+    await page.evaluate(() => {
+      const g = window as any;
+      g.SpatialGallery.close({ restoreFocus: false, force: true });
+      g.PhotoTable.open({ stackName: 'in', fileId: 'file-y' });
+      g.PhotoTable.toggleControls(true);
+    });
+    const before = await page.evaluate(() => {
+      const g = window as any;
+      const buttons = Array.from(document.querySelectorAll('#photo-table-controls .spatial-gallery__adjust')) as HTMLElement[];
+      return {
+        buttonCount: buttons.length,
+        anyHidden: buttons.some(b => getComputedStyle(b).display === 'none'),
+        scale: g.PhotoTable.imageScale,
+        limit: g.PhotoTable.imageLimit,
+      };
+    });
+    expect(before.buttonCount).toBeGreaterThan(0);
+    expect(before.anyHidden).toBe(false);
+
+    await page.click('#photo-table-controls [data-control="scale"] .spatial-gallery__adjust[data-delta="10"]');
+    await page.click('#photo-table-controls [data-control="limit"] .spatial-gallery__adjust[data-delta="5"]');
+
+    const after = await page.evaluate(() => {
+      const g = window as any;
+      return { scale: g.PhotoTable.imageScale, limit: g.PhotoTable.imageLimit };
+    });
+    expect(after.scale).toBeGreaterThan(before.scale);
+    expect(after.limit).toBeGreaterThan(before.limit);
   });
 });
 
