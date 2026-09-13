@@ -1636,6 +1636,7 @@
                     'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
                     'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
                     'img errors: ' + i.imageErrorCount + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
+                    'pace timeouts (20s, stuck): ' + (i.paceTimeoutCount || 0),
                     'image requests: ' + i.providerRequestCount
                 ].join('\n');
             }
@@ -2530,7 +2531,7 @@
                 cacheHits: 0, cacheMisses: 0, pinnedCount: 0, residentCount: 0,
                 evictionCount: 0, providerResolutionCount: 0, providerRequestCount: 0,
                 sourceReplacementsDuringMovement: 0, elementRecreationsDuringMovement: 0,
-                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0, imageErrorCount: 0
+                exploreVisibleFillMs: null, tableVisibleFillMs: null, recoveryAttempts: 0, recoverySuccesses: 0, imageErrorCount: 0, paceTimeoutCount: 0
             },
             version(file) {
                 return file?.modifiedTime || file?.version || file?.eTag || file?.size || 'v0';
@@ -2748,13 +2749,29 @@
                     // image fetch — one bounded request per card, no separate preload.
                     this.acquireLoadSlot(() => {
                         let released = false;
-                        const release = () => { if (!released) { released = true; this.releaseLoadSlot(); } };
-                        if (!isCurrent() || img.getAttribute('src') === entry.src) { apply(entry.src); release(); return; }
-                        img.addEventListener('load', release, { once: true });
-                        img.addEventListener('error', release, { once: true });
-                        setTimeout(release, 20000);
+                        const release = reason => {
+                            if (released) return;
+                            released = true;
+                            if (reason === 'timeout') {
+                                // Previously silent: the slot freed up but nothing recorded that
+                                // this card's image never actually resolved either way. A stuck
+                                // population (progress counter frozen short of 100%) was
+                                // indistinguishable from a healthy one still in flight, because
+                                // this path left zero trace. Found via isolated POC before this
+                                // was touched: instrumentation must never show a false "0 errors"
+                                // while unresolved cards are silently accumulating.
+                                this.instrumentation.paceTimeoutCount = (this.instrumentation.paceTimeoutCount || 0) + 1;
+                                this.instrumentation.imageErrorCount++;
+                                if (typeof PerfBeacon !== 'undefined') PerfBeacon.render();
+                            }
+                            this.releaseLoadSlot();
+                        };
+                        if (!isCurrent() || img.getAttribute('src') === entry.src) { apply(entry.src); release('current'); return; }
+                        img.addEventListener('load', () => release('loaded'), { once: true });
+                        img.addEventListener('error', () => release('error'), { once: true });
+                        setTimeout(() => release('timeout'), 20000);
                         apply(entry.src);
-                        if (!img.getAttribute('src')) release();
+                        if (!img.getAttribute('src')) release('no-src');
                     });
                 } else if (visible) apply(entry.src);
                 else Utils.defer(() => apply(entry.src), { priority: 'background', timeout: 180 });
