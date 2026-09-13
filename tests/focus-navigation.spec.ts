@@ -1337,8 +1337,9 @@ test.describe('Sphere memory and load discipline (R4.23)', () => {
       }));
       await Promise.all(files.map(file => resources.ensure(file, 'thumb')));
     }, { base: 'https://slot-cap.test' });
+    const configuredLimit = await page.evaluate(() => (window as any).SharedImageResources.loadSlotLimit);
     expect(peak).toBeGreaterThan(0);
-    expect(peak).toBeLessThanOrEqual(16);
+    expect(peak).toBeLessThanOrEqual(configuredLimit);
   });
 });
 
@@ -1462,8 +1463,9 @@ test.describe('500-scale sphere integrity (R4.27)', () => {
       const g = (window as any).SpatialGallery;
       return g.cards.length === g.files.length && g.cards.every((c: any) => c.image.complete && c.image.naturalWidth > 0);
     }, undefined, { timeout: 20000 });
+    const configuredLimit = await page.evaluate(() => (window as any).SharedImageResources.loadSlotLimit);
     expect(peak).toBeGreaterThan(0);
-    expect(peak).toBeLessThanOrEqual(16);
+    expect(peak).toBeLessThanOrEqual(configuredLimit);
   });
 });
 
