@@ -82,12 +82,15 @@ test('card pixels always belong to the card fileId through churn, and taps open 
     await page.mouse.click(target.x, target.y);
     await page.waitForFunction(() => (window as any).__orbitalAppState.inspection?.surface === 'focus', undefined, { timeout: 8000 });
     const opened = await page.evaluate(() => ({
-      fileId: String((window as any).__orbitalAppState.inspection?.fileId || ''),
-      centerSrc: (document.querySelector('#center-image') as HTMLImageElement | null)?.getAttribute('src') || ''
+      fileId: String((window as any).__orbitalAppState.inspection?.fileId || '')
     }));
     expect(opened.fileId, `${label}: opened fileId`).toBe(String(target.fileId));
+    await page.waitForFunction(expected =>
+      (document.querySelector('#center-image') as HTMLImageElement | null)?.getAttribute('src') === expected,
+      target.src
+    );
     // The picture the person sees in Focus must be the same picture that was on the tapped card.
-    expect(opened.centerSrc, `${label}: focus shows the tapped picture`).toBe(target.src);
+    expect(await page.locator('#center-image').getAttribute('src'), `${label}: focus shows the tapped picture`).toBe(target.src);
     // Exit Focus back to the sphere.
     await page.evaluate(() => { const b = document.getElementById('focus-origin-close') as HTMLButtonElement | null; if (b) { b.disabled = false; b.click(); } });
     await page.waitForFunction(() => !(window as any).SpatialGallery.elements.root.hidden, undefined, { timeout: 8000 });
