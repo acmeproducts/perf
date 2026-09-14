@@ -2435,3 +2435,110 @@ Built per §118 Spec A, on the confirmed R4.22 restore point (§117). Autoset zo
 **Status: Explore is frozen as of commit `3c8471d`. No further changes to any Explore/SpatialGallery code without explicit owner go-ahead.**
 
 ---
+
+## §123 · Four confirmed defects on the true baseline (3c8471d) — RCA, manager review, red team review (2026-09-13)
+
+**Owner directive:** exactly four items, no more, no less. RCA for each. Manager review. Red team review. No code until this is reviewed.
+
+**Baseline correction on record:** `main` was drifting across several restore attempts this session (3c8471d → various combinations → back). Owner confirmed directly: **`3c8471d` is the correct baseline** — taps faithful, sphere not sparse. `main` has been restored to byte-identical `3c8471d` as of this section. Nothing else is live. The defects below are real defects *in that exact baseline*, not regressions from anything built on top of it.
+
+---
+
+### §123.1 · RCA — Item 1: Explore rebuilds instead of resuming
+
+**Symptom (owner-reported, both sub-cases):**
+- 1a. Explore built for folder A → leave to select a different folder → return to folder A → rebuilds from scratch.
+- 1b. Explore built for a stack → change stacks → return to a stack already built → rebuilds from scratch.
+
+**Root cause, verified by reading, not inferred:**
+
+`SpatialGallery.close()` unconditionally executes:
+```
+this.cards = [];
+this.files = []; ... this.stackName = ''; this.folderId = null;
+```
+on every call, with no exceptions. `SpatialGallery.open()` separately contains correct, already-working reconcile logic — `else if (sameSession && this.cards.length) { this.reconcilePopulation(nextFiles); ... }` — that reuses existing DOM cards by file id instead of rebuilding, *if* `sameSession` (`this.stackName === stackName && folderId matches`) is true. That logic is dead on arrival for both 1a and 1b: `close()` always runs first and always resets `stackName`/`folderId` to empty, so `sameSession` can never be true on the next `open()`, and the full-rebuild branch fires every time — same folder, same stack, doesn't matter.
+
+`close()` is called from at least three places: the mode switcher (Sort ⇄ Explore), the folder-selector exit path, and `returnSpatialModeToSort`. All three hit the same unconditional wipe. This is one root cause producing both 1a and 1b, not two separate bugs.
+
+**Confidence:** High. Traced the exact line, traced why the existing reconcile logic can't fire, confirmed via a working isolated fix earlier this session (now reverted, since it was correctly discarded along with an unrelated regression it got bundled with) that this diagnosis produces a working fix when applied — [§124: 25c1825 warm-resume commit] validated this mechanism end-to-end with a counter-proof test.
+
+**What's NOT yet confirmed:** whether the folder-selector-exit path is the exact same code path as the mode-switcher path, or a distinct one requiring its own `preserve` flag. Needs one more read-through of the folder-selection open/close sequence before implementation, not before diagnosis.
+
+---
+
+### §123.2 · RCA — Item 2: Table floating controls (image size / count, no cap)
+
+**Symptom:** `+`/`−` buttons for Image Size and Images don't render or respond on `3c8471d`.
+
+**Root cause, verified by reading:**
+
+Table's controls panel markup uses `class="photo-table__controls"`. The stepper buttons (`.spatial-gallery__adjust`) are `display: none` by default in the shared stylesheet, and only become visible under the selector `.spatial-gallery__controls .spatial-gallery__adjust` — the class Explore's own panel carries, and Table's never did. The click handlers are already correctly wired in JS (`this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(...)`); the buttons are simply invisible and consequently unclickable. This is a pure CSS/markup defect, zero logic involved.
+
+Separately: the owner wants **no cap**, stated explicitly. Current code (`adjustControl`) has `Math.min(500, this.imageLimit + delta)` for count and `Math.min(1.8, ...)` for scale. 500 is a number, not "no cap." Literal "no cap" means removing the ceiling clause entirely (keep only the floor, matching Explore's own scale control, which already has no ceiling).
+
+**Confidence:** High on the CSS root cause — already built and device-tested once this session (as part of a combined build the owner rejected only because of *other*, unrelated items bundled with it, not because this specific fix failed). Not yet re-verified in isolation on top of the corrected 3c8471d baseline.
+
+---
+
+### §123.3 · RCA — Item 3: thumbnail-to-Focus shows small image, then swaps to large
+
+**Symptom:** Tapping a sphere card visibly shows a lower-resolution image first, then swaps to the full-resolution image a moment later.
+
+**Root cause, verified by reading:**
+
+`SharedImageResources.present()` — the function that paints the image when Focus opens — is deliberately two-stage: it paints immediately from whatever's already cached (the small `thumb`/`sphere` rendition, `firstFrame`), then separately calls `this.ensure(file, 'display')` and swaps `img.src` a second time once the larger rendition finishes loading. This is intentional progressive-loading code, with its own explanatory comment ("show the thumb the moment it loads instead of holding the screen blank"), not leftover/dead code from an old format — but the owner has now confirmed it's actively undesired, whatever its original intent.
+
+**The mechanism this shares with Item 4, found while reading this same function:** the `display`-rendition fetch inside `present()` goes through `this.ensure()`, which acquires a slot from the *same shared 16-slot queue* used by the Explore sphere and everything else in `SharedImageResources`. This is relevant context for Item 4, not a claim that Item 3 causes Item 4.
+
+**Confidence:** High on mechanism (read directly, not inferred). Not yet determined: whether removing the two-stage paint and waiting for `display` before showing anything will *feel* slower in the case where `display` genuinely takes a moment to load (i.e., whether the small-then-large step was, in some cases, actually hiding real latency rather than adding an unnecessary one). That's a measurement question, addressed in the red team section below.
+
+---
+
+### §123.4 · RCA — Item 4: Focus forward/back stalls on rapid repeated clicks
+
+**Symptom:** Clicking next/prev three times quickly in Focus, which used to be snappy, now visibly stalls.
+
+**Root cause, verified by reading:**
+
+`Gestures.nextImage()`/`prevImage()` each call `Core.displayCurrentImage()`, which calls `Utils.setImageSrc()`, which calls `SharedImageResources.present()` (the same function from Item 3) for the newly-focused file. `present()` calls `this.ensure(file, 'display')`, which acquires a slot from the shared 16-slot `acquireLoadSlot` queue — the identical pool used by Explore's sphere population and Table.
+
+Three rapid clicks fire three overlapping `present()` calls for three different files, each independently queuing for a slot in that same shared pool. `displayCurrentImage()` itself is synchronous and fast (confirmed by reading — no blocking `await` in its body), so the *click handling* isn't what stalls; the *painting* of the final image does, because its `display`-rendition fetch is waiting in the same FIFO queue as whatever else the app is doing at that moment — including, plausibly, residual Explore sphere activity if the sphere was recently open. The neighbor-prefetch path (`prefetchNeighborImages`) already has its own coalescing/de-dup logic for exactly this kind of rapid-repeat scenario; the `display`-rendition fetch inside `present()` does not.
+
+**Confidence:** Medium-high. The queue-sharing mechanism is confirmed by reading, and it's a plausible, sufficient explanation. Not yet confirmed: whether this queue was *always* shared this way (meaning the stall was always latent and is only more visible now because the sphere is busier under G17/G18/G20) or whether something more recent specifically made Focus's own fetches compete harder for slots. This needs the same on-device instrumentation discipline as the pace-timeout work: before changing anything, confirm with data (log slot-queue depth/wait-time specifically for `surface: 'focus'` requests) rather than assuming the fix is "give Focus its own queue" without proof that's the actual bottleneck.
+
+---
+
+### §123.5 · Manager review
+
+**On scope:** four items, all four independently diagnosed with a specific line-level cause, not a vague symptom description. That's the right size for one release — small enough to gate individually, related enough (three of four touch the same `SharedImageResources` subsystem) that testing them together is efficient rather than redundant.
+
+**On sequencing risk:** Items 3 and 4 share a resource (`SharedImageResources.present()`/`ensure()`/the load-slot queue). Touching both in the same pass without isolating which change caused which effect would repeat this session's central failure mode. Recommend: implement and device-verify Item 4's diagnosis *before* touching Item 3's code, even though they're adjacent, specifically so a queue-depth measurement for Item 4 isn't contaminated by a simultaneous change to how Item 3 uses the same queue.
+
+**On Item 1:** the fix mechanism already exists and was already proven end-to-end this session (25c1825), including a passing counter-proof test. This is the lowest-risk item to execute first: known cause, known fix, known test. Recommend going first.
+
+**On Item 2:** also already built and proven this session, rejected only because of unrelated bundling, not because the fix itself failed. Second-lowest risk. Recommend going second, and this time landing it *alone*, not combined with anything else in the same push, so a device check is unambiguous.
+
+**On resourcing the "no cap" requirement:** confirm with the owner whether "no cap" should also apply to the *scale* stepper (currently 1.8 ceiling) or only the *count* stepper — the owner's wording said both should mirror Explore, and Explore's own scale control already has no ceiling, so treating both identically is the reading here unless corrected.
+
+**On Item 4's medium-high (not high) confidence:** do not implement a fix for Item 4 on the strength of the RCA alone. The RCA identifies a real, sufficient mechanism, but "sufficient" is not "confirmed as the actual cause on your device." Recommend instrumenting first (log per-surface queue wait time), exactly the discipline the owner asked for this session, applied consistently rather than only when convenient.
+
+---
+
+### §123.6 · Red team review
+
+**Challenge to Item 1's RCA:** is it certain that `preserve`-style state retention (kept-alive `cards`/`files` while closed) doesn't reintroduce a memory-growth problem G17 was built to prevent? A sphere kept "warm" indefinitely across many folder/stack switches, never actually torn down, could accumulate decoded image memory the same way the original crash-causing behavior did. The fix needs an explicit bound (e.g., only preserve the *most recent* closed sphere, evict on the next genuinely-different open) — not unconditionally skip teardown forever. This wasn't in the original RCA and should be added to the implementation, not assumed away.
+
+**Challenge to Item 2's "no cap":** a literal unbounded count on Table, with no ceiling at all, means a user could set Table to request as many images as exist in a folder of any size — the exact stampede G20 was built to prevent, just on a different surface. "No artificial UI cap" and "no bound on concurrent fetch volume" are two different asks; the fix should remove the *stepper's* ceiling as stated, while leaning on the *existing* load-slot queue (already shared, already bounded at 16) to prevent that from becoming a real-world problem. This should be stated explicitly in the implementation, not left implicit.
+
+**Challenge to Item 3's RCA:** the red-team question is whether removing the two-stage paint could make Focus *feel* slower to open in the case where the `display` rendition genuinely isn't cached yet (cold tap, nothing pre-warmed). The current code shows something immediately in that case; removing it means a real blank/loading interval where there wasn't a visible one before. This needs to be measured (per §123.1 of the manager review: how long is the gap, typically) before deciding whether to remove the two-stage paint outright or shorten the perceptible gap between stages instead.
+
+**Challenge to Item 4's RCA — the sharpest one:** the RCA states the shared queue is a "plausible, sufficient" explanation, explicitly not a confirmed one. Red team position: this is exactly the shape of every prior wrong guess this session (zIndex tie-break, momentum, occlusion, concurrency-vs-throttling) — a mechanism that reads as plausible from the code and turned out to be incomplete or wrong when tested. Do not implement a fix for Item 4 based on this RCA. Instrument the actual queue wait time per surface first, on-device, and confirm the mechanism before writing a single line of fix code. This is not optional given the session's track record.
+
+**Cross-cutting challenge:** three of the four items now point at the same shared `SharedImageResources` subsystem (the load-slot queue, `present()`, `ensure()`). That concentration is either a sign the RCAs are converging on something real and systemic, or a sign that the same subsystem is being blamed repeatedly because it's the thing most recently and most thoroughly read this session, not because it's actually implicated four times over. Recommend treating Items 3 and 4 as genuinely separate investigations with separate evidence, not as "probably the same root cause" — until proven otherwise with data, not code-reading alone.
+
+---
+
+**Status: no code changes made in this section. This is the RCA + review deliverable requested. Implementation waits for owner review of this section.**
+
+---
