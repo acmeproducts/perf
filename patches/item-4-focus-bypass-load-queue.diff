@@ -1,0 +1,46 @@
+--- /tmp/true_baseline.html	2026-09-14 01:53:18.008832232 +0000
++++ /tmp/item4_only.html	2026-09-14 20:16:25.864319940 +0000
+@@ -2604,8 +2604,10 @@
+                     const nextAllowed = entry.retryAfter || 0;
+                     if (attempts >= 3 || performance.now() < nextAllowed) return Promise.resolve(entry);
+                 }
++                const bypassQueue = options.surface === 'focus';
+                 entry.readyState = 'loading';
+                 entry.ready = new Promise(resolve => {
++                    let acquiredSlot = false;
+                     const start = () => {
+                         const preload = new Image();
+                         preload.decoding = 'async';
+@@ -2628,7 +2630,7 @@
+                                 entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
+                                 entry.ready = null; entry.preload = null;
+                             }
+-                            this.releaseLoadSlot();
++                            if (acquiredSlot) this.releaseLoadSlot();
+                             resolve(entry);
+                         };
+                         preload.addEventListener('load', () => settle(true), { once: true });
+@@ -2639,8 +2641,12 @@
+                     // Bounded concurrency: firing hundreds of preloads at once saturates the
+                     // connection pool and stacks decodes on the main thread, which is the jank
+                     // that made taps land on stale-painted positions. A short FIFO keeps the
+-                    // sphere filling fast without the stampede.
+-                    this.acquireLoadSlot(start);
++                    // sphere filling fast without the stampede. Focus never fires more than a
++                    // handful of requests at once and never needed this bound -- it only got
++                    // pulled in because this function is shared with the sphere (see plan
++                    // section123.4 and commit 152829d, R4.23, where this queue was introduced).
++                    if (bypassQueue) start();
++                    else { acquiredSlot = true; this.acquireLoadSlot(start); }
+                 });
+                 return entry.ready;
+             },
+@@ -2819,7 +2825,7 @@
+                     const fresh = await this.refreshFile(fileId);
+                     if (fresh && token === this.presentationToken && String(state.currentFileId) === fileId) this.present(img, fresh, { surface });
+                 };
+-                this.ensure(file, 'display').then(entry => {
++                this.ensure(file, 'display', { surface }).then(entry => {
+                     if (!entry?.src || entry.readyState !== 'loaded') return;
+                     const priorKey = binding.key;
+                     const priorEntry = this.entries.get(priorKey);

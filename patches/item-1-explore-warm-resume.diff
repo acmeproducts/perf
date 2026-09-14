@@ -1,0 +1,53 @@
+--- /tmp/true_baseline.html	2026-09-14 01:53:18.008832232 +0000
++++ /tmp/item1_only.html	2026-09-14 20:16:45.297469723 +0000
+@@ -9662,7 +9662,7 @@
+                     });
+                 }
+                 if (CanonicalInspection.active()) CanonicalInspection.exitToOrigin({ persist: false, restore: false });
+-                SpatialGallery.close({ restoreFocus: false });
++                SpatialGallery.close({ restoreFocus: false, preserve: true });
+                 PhotoTable.close({ restoreFocus: false });
+                 state.currentStack = selection.stackName || this.entry?.stackName || state.currentStack;
+                 const stack = state.stacks[state.currentStack] || [];
+@@ -11857,26 +11857,33 @@
+                 return CurrentImage.assert(fileId, 'explore warm Focus resume');
+             },
+ 
+-            close({ restoreFocus = true, force = false } = {}) {
++            close({ restoreFocus = true, force = false, preserve = false } = {}) {
+                 if (this.elements.root.hidden && !force) return;
+                 this.elements.root.hidden = true;
+-                this.loadGeneration++;
+-                document.body.style.overflow = '';
+                 if (this.frameId) cancelAnimationFrame(this.frameId);
+                 this.frameId = null;
+                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
+                 this.lastTapIndex = -1; this.lastTapTime = 0;
+-                this.cancelPopulationLoading();
+-                this.elements.scene.replaceChildren();
+-                this.cards = [];
+-                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
+-                SharedImageResources.pinExplorer([]);
++                this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
++                document.body.style.overflow = '';
+                 Gestures.updateGestureOverlayMode();
+                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
+                 ModeCenterTap.reset();
+                 if (this.elements.controls) this.elements.controls.hidden = true;
+                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
+                 if (restoreFocus) this.previousFocus?.focus?.();
++                if (preserve) return;
++                // Item 1 RCA (plan section123.1): open()'s own sameSession/canResume reconcile
++                // logic was already correct, but this teardown ran unconditionally on every
++                // close and wiped the very state (cards/files/stackName/folderId) that check
++                // depends on -- so a full rebuild-and-refetch happened on every re-entry to the
++                // same stack/folder. Only discard state when NOT preserving.
++                this.loadGeneration++;
++                this.cancelPopulationLoading();
++                this.elements.scene.replaceChildren();
++                this.cards = [];
++                this.files = []; this.stackName = ''; this.folderId = null;
++                SharedImageResources.pinExplorer([]);
+             },
+ 
+             beginPopulationLoading() {
