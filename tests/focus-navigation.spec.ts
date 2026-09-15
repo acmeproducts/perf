@@ -1120,9 +1120,10 @@ test.describe('Explorer pointer hit targeting', () => {
     }
   });
 
-  test('an uncached current image paints its thumb instead of holding a blank screen', async ({ page }) => {
+  test('an uncached current image stays hidden until display loads, then shows display directly (no thumb-first paint)', async ({ page }) => {
     await installDeterministicImages(page);
-    // Make the display rendition slow so the blank window would be visible without the thumb-first path.
+    // Make the display rendition slow so a premature thumb paint (the old behavior) would be
+    // clearly visible within this window if it still happened.
     await page.route(imageUrl('file-y', 'display'), async route => {
       await new Promise(resolve => setTimeout(resolve, 1500));
       await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: imageSvg('#00ff00') });
@@ -1158,13 +1159,17 @@ test.describe('Explorer pointer hit targeting', () => {
       return w.Core.displayCurrentImage();
     });
 
-    // Within well under the display delay, the center image must be visible showing the thumb.
-    await page.waitForFunction(() => {
+    // Item 3: while display is still loading, the image must NOT show the thumb -- it stays
+    // hidden (opacity 0) rather than painting a small version first.
+    await page.waitForTimeout(400);
+    const midFlight = await page.evaluate(() => {
       const img = document.querySelector('#center-image') as HTMLImageElement;
-      return img && img.style.opacity === '1' && (img.getAttribute('src') || '').includes('file-y-thumb');
-    }, undefined, { timeout: 1000 });
+      return { opacity: img?.style.opacity, src: img?.getAttribute('src') || '' };
+    });
+    expect(midFlight.opacity).not.toBe('1');
+    expect(midFlight.src).not.toContain('file-y-thumb');
 
-    // The slow display rendition still arrives and replaces the thumb.
+    // Once the slow display rendition arrives, it's shown directly.
     await page.waitForFunction(() => {
       const img = document.querySelector('#center-image') as HTMLImageElement;
       return img && img.style.opacity === '1' && (img.getAttribute('src') || '').includes('file-y-display');
@@ -1506,8 +1511,8 @@ test.describe('Sort gesture overlay suppressed during Explore and Table (root-ca
   });
 });
 
-test.describe('Table image count and scale ceilings match Explore (§121)', () => {
-  test('Table imageLimit can reach 500, not capped at 50; scale has no upper ceiling', async ({ page }) => {
+test.describe('Table image count has no cap, scale has no upper ceiling (Item 2, plan §123.2)', () => {
+  test('Table imageLimit is never clamped by any ceiling; scale has no upper ceiling', async ({ page }) => {
     await installDeterministicImages(page);
     await prepareExplore(page);
     await page.evaluate(() => {
@@ -1519,13 +1524,147 @@ test.describe('Table image count and scale ceilings match Explore (§121)', () =
       const g = window as any;
       g.PhotoTable.imageLimit = 3;
       for (let i = 0; i < 60; i++) g.PhotoTable.adjustControl('limit', 10);
-      const limitAtCeiling = g.PhotoTable.imageLimit;
+      const limitAfter60Steps = g.PhotoTable.imageLimit;
       g.PhotoTable.imageScale = 1;
       for (let i = 0; i < 50; i++) g.PhotoTable.adjustControl('scale', 10);
       const scaleAfterManySteps = g.PhotoTable.imageScale;
-      return { limitAtCeiling, scaleAfterManySteps };
+      return { limitAfter60Steps, scaleAfterManySteps };
     });
-    expect(result.limitAtCeiling).toBe(500);
+    // No ceiling clause at all: 3 + (60 * 10) = 603, exactly -- not clamped to 500 or anything else.
+    expect(result.limitAfter60Steps).toBe(603);
     expect(result.scaleAfterManySteps).toBeGreaterThan(1.8);
+  });
+});
+
+test.describe('Focus image fetches bypass the shared load-slot queue (Item 4, plan §123.4/history-traced)', () => {
+  test('a Focus display fetch does not consume a load slot, so it is never queued behind sphere/table traffic', async ({ page }) => {
+    await installDeterministicImages(page);
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const result = await page.evaluate(async () => {
+      const g = window as any;
+      const resources = g.SharedImageResources;
+      resources.clear();
+      // Saturate the queue with sphere-surface fetches that never resolve, so any request
+      // sharing the queue would be stuck waiting behind them.
+      for (let i = 0; i < resources.loadSlotLimit; i++) {
+        const file = { id: `blocker-${i}`, name: `blocker-${i}`, metadataStatus: 'loaded',
+          thumbnails: { medium: { url: `https://blocker.test/${i}.svg` }, large: { url: `https://blocker.test/${i}.svg` } } };
+        resources.ensure(file, 'sphere', {});
+      }
+      const slotsAfterSaturation = resources.loadSlotsInUse;
+
+      // Now a Focus-surface fetch for a different file.
+      const img = document.createElement('img');
+      document.body.appendChild(img);
+      const focusFile = { id: 'focus-target', name: 'focus-target', metadataStatus: 'loaded',
+        thumbnails: { medium: { url: 'https://blocker.test/focus-thumb.svg' }, large: { url: 'https://blocker.test/focus-display.svg' } } };
+      const before = resources.instrumentation.providerRequestCount;
+      resources.present(img, focusFile, { surface: 'focus' });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const after = resources.instrumentation.providerRequestCount;
+      return {
+        slotsAfterSaturation,
+        loadSlotLimit: resources.loadSlotLimit,
+        focusFetchFired: after > before,
+        slotsAfterFocusFetch: resources.loadSlotsInUse,
+      };
+    });
+    expect(result.slotsAfterSaturation).toBe(result.loadSlotLimit);
+    // The queue is fully saturated by blockers, yet the Focus fetch still fired immediately --
+    // proof it bypassed the queue rather than waiting for a slot.
+    expect(result.focusFetchFired).toBe(true);
+    expect(result.slotsAfterFocusFetch).toBe(result.loadSlotLimit);
+  });
+});
+
+test.describe('Codex review fixes: P1#1 rebind, P1#2 error recovery, P2 bounded Focus pool', () => {
+  test('P1#1: a retained-but-unfinished card is rebound to the current generation, not left permanently blank', async ({ page }) => {
+    await page.route('https://p1a.test/slow.svg', () => { /* never resolves */ });
+    await page.route('https://p1a.test/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#f00"/></svg>' }));
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const result = await page.evaluate(async () => {
+      const g = window as any;
+      const state = g.__orbitalAppState;
+      state.providerType = 'test-provider';
+      state.imageFiles = [
+        { id: 'slow', name: 'slow', stack: 'in', stackSequence: 2, metadataStatus: 'loaded', thumbnails: { medium: { url: 'https://p1a.test/slow.svg' } } },
+        { id: 'fast', name: 'fast', stack: 'in', stackSequence: 1, metadataStatus: 'loaded', thumbnails: { medium: { url: 'https://p1a.test/fast.svg' } } },
+      ];
+      state.currentFolder = { id: 'p1a-test', name: 'p1a-test' };
+      state.currentStack = 'in';
+      state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      g.SharedImageResources.clear();
+      g.Core.initializeStacks();
+      g.SpatialGallery.open({ stackName: 'in', fileId: 'fast' });
+      // Preserve-close while 'slow' hasn't finished loading.
+      g.SpatialGallery.close({ restoreFocus: false, preserve: true });
+      const slowCardBefore = g.SpatialGallery.cards.find((c: any) => c.fileId === 'slow');
+      const wasUnfinished = !(slowCardBefore.image.complete && slowCardBefore.image.naturalWidth > 0);
+      const genBefore = slowCardBefore.generation;
+      // Reopen the same stack -- reconcilePopulation path.
+      g.SpatialGallery.open({ stackName: 'in', fileId: 'fast' });
+      const slowCardAfter = g.SpatialGallery.cards.find((c: any) => c.fileId === 'slow');
+      return {
+        wasUnfinished,
+        genBefore,
+        genAfter: slowCardAfter.generation,
+        currentGeneration: g.SpatialGallery.loadGeneration,
+        sameElement: slowCardBefore.element === slowCardAfter.element,
+      };
+    });
+    expect(result.wasUnfinished).toBe(true);
+    expect(result.sameElement).toBe(true);
+    // The retained element is reused (no rebuild), but its generation must be rebound to
+    // the current one, or its original fetch's callback will fail the generation check
+    // forever and it will never receive a src.
+    expect(result.genAfter).toBe(result.currentGeneration);
+    expect(result.genAfter).not.toBe(result.genBefore);
+  });
+
+  test('P1#2: a failed display fetch triggers recovery instead of leaving Focus permanently blank', async ({ page }) => {
+    await page.route('https://p1b.test/**', route => route.fulfill({ status: 404 }));
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const result = await page.evaluate(async () => {
+      const g = window as any;
+      const resources = g.SharedImageResources;
+      resources.clear();
+      let refreshCalled = false;
+      const originalRefresh = resources.refreshFile.bind(resources);
+      resources.refreshFile = async (fileId: string) => { refreshCalled = true; return null; };
+      const img = document.createElement('img');
+      document.body.appendChild(img);
+      const state = g.__orbitalAppState;
+      state.currentFileId = 'p1b-fail';
+      state.inspection = { fileId: 'p1b-fail' };
+      const file = { id: 'p1b-fail', name: 'p1b-fail', metadataStatus: 'loaded',
+        thumbnails: { medium: { url: 'https://p1b.test/fail.svg' }, large: { url: 'https://p1b.test/fail.svg' } } };
+      resources.present(img, file, { surface: 'focus' });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      resources.refreshFile = originalRefresh;
+      return { refreshCalled, opacity: img.style.opacity };
+    });
+    expect(result.refreshCalled).toBe(true);
+  });
+
+  test('P2: Focus fetches are bounded by their own pool, not unlimited', async ({ page }) => {
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    const result = await page.evaluate(() => {
+      const g = window as any;
+      const resources = g.SharedImageResources;
+      return {
+        hasFocusPool: typeof resources.acquireFocusLoadSlot === 'function',
+        focusLimit: resources.focusLoadSlotLimit,
+        distinctFromSpherePool: resources.focusLoadSlotLimit !== resources.loadSlotLimit || resources.acquireFocusLoadSlot !== resources.acquireLoadSlot,
+      };
+    });
+    expect(result.hasFocusPool).toBe(true);
+    expect(typeof result.focusLimit).toBe('number');
+    expect(result.focusLimit).toBeGreaterThan(0);
+    expect(result.distinctFromSpherePool).toBe(true);
   });
 });
