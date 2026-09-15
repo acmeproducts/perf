@@ -2434,7 +2434,38 @@
 
             setImageSrc(img, file, options = {}) {
                 state.currentImageLoadId = file.id;
-                return SharedImageResources.present(img, file, { surface: 'focus', immediateSrc: options.immediateSrc || '' });
+                // Focus loads the way ui-v3.html does: set the display URL on the <img> directly.
+                // No SharedImageResources.present(), no ensure(), no slot queue, no two-stage
+                // paint. Focus shows exactly one image at a time and never needed any of that
+                // machinery -- it was built for the sphere's hundreds of cards, and routing
+                // Focus through it (shared queue, then a separate small pool) stayed slow on
+                // the owner's device both times. Direct assignment is the reference behavior.
+                if (!img || !file?.id) return null;
+                const fileId = String(file.id);
+                const src = SharedImageResources.source(file, 'display');
+                if (!src) return null;
+                const key = SharedImageResources.key(file, 'display');
+                const binding = { key, fileId, surface: 'focus', movement: false, loadedKey: null, token: ++SharedImageResources.presentationToken };
+                SharedImageResources.bindings.set(img, binding);
+                img.dataset.fileId = fileId;
+                img.dataset.sharedResourceKey = key;
+                img.alt = file.name || 'Image';
+                let recovered = false;
+                img.onerror = async () => {
+                    if (recovered || String(state.currentFileId) !== fileId) return;
+                    recovered = true;
+                    const fresh = await SharedImageResources.refreshFile(fileId);
+                    if (fresh && String(state.currentFileId) === fileId) Utils.setImageSrc(img, fresh, options);
+                };
+                img.addEventListener('load', () => {
+                    if (SharedImageResources.bindings.get(img) === binding) binding.loadedKey = key;
+                }, { once: true });
+                if (img.getAttribute('src') !== src) {
+                    img.src = src;
+                    SharedImageResources.instrumentation.providerRequestCount++;
+                } else if (img.complete && img.naturalWidth > 0) binding.loadedKey = key;
+                img.style.opacity = '1';
+                return { fileId, src };
             },
 
             defer(callback, options = {}) {
@@ -11611,6 +11642,29 @@ this.updateImageCounters();
 
         const SpatialGallery = {
             elements: {}, cards: [], files: [], selectedIndex: 0,
+            // Item 1 (rebuild on stack switch): Explore previously remembered only ONE stack's
+            // cards -- switching in -> out -> in rebuilt 'in' from scratch every time. This cache
+            // keeps built populations per (folder, stack) so a return reconciles by id instead.
+            // Bounded to 3 retained stacks (4 stacks exist in total); cleared on real close()
+            // and whenever the folder changes.
+            stackCache: new Map(),
+            stackCacheKey(stackName, folderId) { return `${folderId ?? ''}:${stackName}`; },
+            stashCurrentStack() {
+                if (!this.stackName || !this.cards.length) return;
+                const key = this.stackCacheKey(this.stackName, this.folderId);
+                this.stackCache.delete(key);
+                this.stackCache.set(key, { cards: this.cards, files: this.files, stackName: this.stackName, folderId: this.folderId });
+                while (this.stackCache.size > 3) this.stackCache.delete(this.stackCache.keys().next().value);
+            },
+            restoreCachedStack(stackName, folderId) {
+                const key = this.stackCacheKey(stackName, folderId);
+                const cached = this.stackCache.get(key);
+                if (!cached) return false;
+                this.stackCache.delete(key);
+                this.cards = cached.cards; this.files = cached.files;
+                this.stackName = cached.stackName; this.folderId = cached.folderId;
+                return true;
+            },
             maxImageLimit: 500, imageLimit: 500, density: 1, cardScale: 1, sphereScale: 1,
             layoutBias: 1, layoutVersion: 2, automaticLayout: true, extentHardLimits: false,
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0, orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -11696,6 +11750,13 @@ this.updateImageCounters();
                 if (!nextFiles.length) {
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
+                }
+                const requestedFolderId = state.currentFolder?.id ?? null;
+                if (String(this.folderId) !== String(requestedFolderId) && this.folderId != null) this.stackCache.clear();
+                if (this.stackName && this.stackName !== stackName) {
+                    // Leaving a built stack for a different one: remember it instead of losing it.
+                    this.stashCurrentStack();
+                    this.restoreCachedStack(stackName, requestedFolderId);
                 }
                 const sameSession = this.stackName === stackName && String(this.folderId) === String(state.currentFolder?.id);
                 const canResume = preserveGeometry && sameSession && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
@@ -11898,6 +11959,7 @@ this.updateImageCounters();
                 this.elements.scene.replaceChildren();
                 this.cards = [];
                 this.files = []; this.stackName = ''; this.folderId = null;
+                this.stackCache.clear();
                 SharedImageResources.pinExplorer([]);
             },
 
