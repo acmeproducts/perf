@@ -2433,59 +2433,8 @@
             },
 
             setImageSrc(img, file, options = {}) {
-                if (!img || !file?.id) return Promise.resolve();
-                const fileId = String(file.id);
-                const src = SharedImageResources.source(file, 'display');
-                const key = SharedImageResources.key(file, 'display');
-                const loadId = `${fileId}_${performance.now()}`;
-                state.currentImageLoadId = loadId;
-                img.dataset.fileId = fileId;
-                img.dataset.sharedResourceKey = key;
-                img.alt = file.name || 'Image';
-                // Binding is identity metadata only (read by identity-consistency checks
-                // elsewhere) -- it does not gate or stage anything here.
-                const binding = { key, fileId, surface: 'focus', loadedKey: null };
-                SharedImageResources.bindings.set(img, binding);
-                if (!src) return Promise.resolve();
-                // Cache hit: a same-tab Image() cache keyed by fileId+src. If we've already
-                // preloaded and decoded this exact URL, the swap is instant with zero network
-                // involvement -- this is what makes revisiting an image feel free.
-                const cached = this._focusImageCache?.get(fileId);
-                if (cached?.src === src && cached.loaded) {
-                    img.src = src;
-                    img.style.opacity = '1';
-                    binding.loadedKey = key;
-                    return Promise.resolve();
-                }
-                return new Promise(resolve => {
-                    const preload = new Image();
-                    preload.decoding = 'async';
-                    const settle = loaded => {
-                        preload.onload = null; preload.onerror = null;
-                        if (state.currentImageLoadId !== loadId) { resolve(); return; }
-                        if (loaded) {
-                            if (!this._focusImageCache) this._focusImageCache = new Map();
-                            this._focusImageCache.set(fileId, { src, loaded: true });
-                            while (this._focusImageCache.size > 12) this._focusImageCache.delete(this._focusImageCache.keys().next().value);
-                            img.src = src;
-                            img.style.opacity = '1';
-                            binding.loadedKey = key;
-                            SharedImageResources.instrumentation.providerRequestCount++;
-                        } else if (!recoveryTried) {
-                            recoveryTried = true;
-                            SharedImageResources.refreshFile(fileId).then(fresh => {
-                                if (fresh && state.currentImageLoadId === loadId) this.setImageSrc(img, fresh, options).then(resolve);
-                                else resolve();
-                            });
-                            return;
-                        }
-                        resolve();
-                    };
-                    let recoveryTried = false;
-                    preload.onload = () => settle(true);
-                    preload.onerror = () => settle(false);
-                    preload.src = src;
-                });
+                state.currentImageLoadId = file.id;
+                return SharedImageResources.present(img, file, { surface: 'focus', immediateSrc: options.immediateSrc || '' });
             },
 
             defer(callback, options = {}) {
@@ -11662,29 +11611,6 @@ this.updateImageCounters();
 
         const SpatialGallery = {
             elements: {}, cards: [], files: [], selectedIndex: 0,
-            // Item 1 (rebuild on stack switch): Explore previously remembered only ONE stack's
-            // cards -- switching in -> out -> in rebuilt 'in' from scratch every time. This cache
-            // keeps built populations per (folder, stack) so a return reconciles by id instead.
-            // Bounded to 3 retained stacks (4 stacks exist in total); cleared on real close()
-            // and whenever the folder changes.
-            stackCache: new Map(),
-            stackCacheKey(stackName, folderId) { return `${folderId ?? ''}:${stackName}`; },
-            stashCurrentStack() {
-                if (!this.stackName || !this.cards.length) return;
-                const key = this.stackCacheKey(this.stackName, this.folderId);
-                this.stackCache.delete(key);
-                this.stackCache.set(key, { cards: this.cards, files: this.files, stackName: this.stackName, folderId: this.folderId });
-                while (this.stackCache.size > 3) this.stackCache.delete(this.stackCache.keys().next().value);
-            },
-            restoreCachedStack(stackName, folderId) {
-                const key = this.stackCacheKey(stackName, folderId);
-                const cached = this.stackCache.get(key);
-                if (!cached) return false;
-                this.stackCache.delete(key);
-                this.cards = cached.cards; this.files = cached.files;
-                this.stackName = cached.stackName; this.folderId = cached.folderId;
-                return true;
-            },
             maxImageLimit: 500, imageLimit: 500, density: 1, cardScale: 1, sphereScale: 1,
             layoutBias: 1, layoutVersion: 2, automaticLayout: true, extentHardLimits: false,
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0, orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -11770,13 +11696,6 @@ this.updateImageCounters();
                 if (!nextFiles.length) {
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
-                }
-                const requestedFolderId = state.currentFolder?.id ?? null;
-                if (String(this.folderId) !== String(requestedFolderId) && this.folderId != null) this.stackCache.clear();
-                if (this.stackName && this.stackName !== stackName) {
-                    // Leaving a built stack for a different one: remember it instead of losing it.
-                    this.stashCurrentStack();
-                    this.restoreCachedStack(stackName, requestedFolderId);
                 }
                 const sameSession = this.stackName === stackName && String(this.folderId) === String(state.currentFolder?.id);
                 const canResume = preserveGeometry && sameSession && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
@@ -11979,7 +11898,6 @@ this.updateImageCounters();
                 this.elements.scene.replaceChildren();
                 this.cards = [];
                 this.files = []; this.stackName = ''; this.folderId = null;
-                this.stackCache.clear();
                 SharedImageResources.pinExplorer([]);
             },
 

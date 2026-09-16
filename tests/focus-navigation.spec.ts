@@ -1159,14 +1159,14 @@ test.describe('Explorer pointer hit targeting', () => {
       return w.Core.displayCurrentImage();
     });
 
-    // Focus now sets img.src directly (no SharedImageResources.present() staging), matching
-    // ui-v3.html's reference behavior. There's no hidden/opacity-0 interim state anymore --
-    // what matters is the src is never the thumb URL, only ever the display URL.
+    // Item 3: while display is still loading, the image must NOT show the thumb -- it stays
+    // hidden (opacity 0) rather than painting a small version first.
     await page.waitForTimeout(400);
     const midFlight = await page.evaluate(() => {
       const img = document.querySelector('#center-image') as HTMLImageElement;
-      return { src: img?.getAttribute('src') || '' };
+      return { opacity: img?.style.opacity, src: img?.getAttribute('src') || '' };
     });
+    expect(midFlight.opacity).not.toBe('1');
     expect(midFlight.src).not.toContain('file-y-thumb');
 
     // Once the slow display rendition arrives, it's shown directly.
@@ -1666,108 +1666,5 @@ test.describe('Codex review fixes: P1#1 rebind, P1#2 error recovery, P2 bounded 
     expect(typeof result.focusLimit).toBe('number');
     expect(result.focusLimit).toBeGreaterThan(0);
     expect(result.distinctFromSpherePool).toBe(true);
-  });
-});
-
-test.describe('Explore remembers multiple stacks (Item 1, fixed properly this time)', () => {
-  test('switching stack A to B and back to A reconciles A instead of rebuilding it', async ({ page }) => {
-    await installDeterministicImages(page);
-    await page.goto(uiUrl);
-    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
-    const result = await page.evaluate(async () => {
-      const g = window as any;
-      const state = g.__orbitalAppState;
-      state.providerType = 'test-provider';
-      state.imageFiles = [
-        { id: 'a1', name: 'a1', stack: 'in', stackSequence: 2, metadataStatus: 'loaded', thumbnails: { medium: { url: 'https://t.test/a1.svg' } } },
-        { id: 'b1', name: 'b1', stack: 'out', stackSequence: 1, metadataStatus: 'loaded', thumbnails: { medium: { url: 'https://t.test/b1.svg' } } },
-      ];
-      state.currentFolder = { id: 'multi-stack-test', name: 'multi-stack-test' };
-      state.currentStack = 'in';
-      state.currentStackPosition = 0;
-      state.stacks = { in: [], out: [], priority: [], trash: [] };
-      g.SharedImageResources.clear();
-      g.Core.initializeStacks();
-      g.SpatialGallery.open({ stackName: 'in', fileId: 'a1' });
-      const cardABefore = g.SpatialGallery.cards.find((c: any) => c.fileId === 'a1');
-      g.SpatialGallery.open({ stackName: 'out', fileId: 'b1' });
-      const requestsAfterB = g.SharedImageResources.instrumentation.providerRequestCount;
-      g.SpatialGallery.open({ stackName: 'in', fileId: 'a1' });
-      const cardAAfter = g.SpatialGallery.cards.find((c: any) => c.fileId === 'a1');
-      const requestsAfterReturn = g.SharedImageResources.instrumentation.providerRequestCount;
-      return {
-        sameCardElement: cardABefore.element === cardAAfter.element,
-        requestsIncreasedOnReturn: requestsAfterReturn > requestsAfterB,
-      };
-    });
-    expect(result.sameCardElement).toBe(true);
-    expect(result.requestsIncreasedOnReturn).toBe(false);
-  });
-});
-
-test.describe('Focus loads images directly, no shared queue (matches ui-v3.html reference)', () => {
-  test('setImageSrc does not go through SharedImageResources.present/ensure at all', async ({ page }) => {
-    await installDeterministicImages(page);
-    await page.goto(uiUrl);
-    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
-    const result = await page.evaluate(async () => {
-      const g = window as any;
-      g.__orbitalAppState.providerType = 'test-provider';
-      const resources = g.SharedImageResources;
-      let presentCalled = false, ensureCalled = false;
-      const origPresent = resources.present, origEnsure = resources.ensure;
-      resources.present = (...args: any[]) => { presentCalled = true; return origPresent.apply(resources, args); };
-      resources.ensure = (...args: any[]) => { ensureCalled = true; return origEnsure.apply(resources, args); };
-      const img = document.createElement('img');
-      const file = { id: 'direct-1', name: 'direct-1', thumbnails: { medium: { url: 'https://focus-navigation.test/file-x-thumb.svg' }, large: { url: 'https://focus-navigation.test/file-x-display.svg' } } };
-      await g.Utils.setImageSrc(img, file, {});
-      resources.present = origPresent; resources.ensure = origEnsure;
-      return { presentCalled, ensureCalled, src: img.getAttribute('src') || '', opacity: img.style.opacity };
-    });
-    expect(result.presentCalled).toBe(false);
-    expect(result.ensureCalled).toBe(false);
-    expect(result.src).toBe('https://focus-navigation.test/file-x-display.svg');
-    expect(result.opacity).toBe('1');
-  });
-});
-
-test.describe('Focus rapid-tap correctness (real preload-then-swap, matches ui-v3.html)', () => {
-  test('three rapid taps settle on the correct final image without a stale slow load clobbering it', async ({ page }) => {
-    await page.route('https://rapid.test/**', async (route, request) => {
-      const url = request.url();
-      const delay = url.includes('/0.svg') ? 800 : url.includes('/1.svg') ? 400 : 50;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="#0f0"/></svg>' });
-    });
-    await page.goto(uiUrl);
-    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
-    await page.evaluate(() => {
-      const g = window as any;
-      const state = g.__orbitalAppState;
-      state.providerType = 'test-provider';
-      state.imageFiles = Array.from({ length: 4 }, (_, i) => ({
-        id: 'f' + i, name: 'f' + i, stack: 'in', stackSequence: 100 - i, metadataStatus: 'loaded',
-        thumbnails: { medium: { url: `https://rapid.test/${i}.svg` }, large: { url: `https://rapid.test/${i}.svg` } }
-      }));
-      state.currentFolder = { id: 'rapid-test', name: 'rapid-test' };
-      state.currentStack = 'in'; state.currentStackPosition = 0;
-      state.stacks = { in: [], out: [], priority: [], trash: [] };
-      g.SharedImageResources.clear();
-      g.Core.initializeStacks();
-      state.isFocusMode = true;
-    });
-    await page.evaluate(() => (window as any).Core.displayCurrentImage());
-    // f0 (800ms) is now slow-loading. Immediately fire two more rapid navigations, landing on
-    // f2 (50ms, fast). f0's slow load must not clobber f2 once it eventually resolves.
-    await page.evaluate(() => (window as any).Gestures.nextImage());
-    await page.evaluate(() => (window as any).Gestures.nextImage());
-    await page.waitForFunction(() => {
-      const img = document.querySelector('#center-image') as HTMLImageElement;
-      return img?.getAttribute('src')?.includes('/2.svg');
-    }, undefined, { timeout: 2000 });
-    // Wait past f0's slow 800ms resolution to confirm it never overwrites the correct final image.
-    await page.waitForTimeout(900);
-    const finalSrc = await page.evaluate(() => document.querySelector('#center-image')?.getAttribute('src'));
-    expect(finalSrc).toContain('/2.svg');
   });
 });
