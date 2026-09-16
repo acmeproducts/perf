@@ -2433,39 +2433,59 @@
             },
 
             setImageSrc(img, file, options = {}) {
-                state.currentImageLoadId = file.id;
-                // Focus loads the way ui-v3.html does: set the display URL on the <img> directly.
-                // No SharedImageResources.present(), no ensure(), no slot queue, no two-stage
-                // paint. Focus shows exactly one image at a time and never needed any of that
-                // machinery -- it was built for the sphere's hundreds of cards, and routing
-                // Focus through it (shared queue, then a separate small pool) stayed slow on
-                // the owner's device both times. Direct assignment is the reference behavior.
-                if (!img || !file?.id) return null;
+                if (!img || !file?.id) return Promise.resolve();
                 const fileId = String(file.id);
                 const src = SharedImageResources.source(file, 'display');
-                if (!src) return null;
                 const key = SharedImageResources.key(file, 'display');
-                const binding = { key, fileId, surface: 'focus', movement: false, loadedKey: null, token: ++SharedImageResources.presentationToken };
-                SharedImageResources.bindings.set(img, binding);
+                const loadId = `${fileId}_${performance.now()}`;
+                state.currentImageLoadId = loadId;
                 img.dataset.fileId = fileId;
                 img.dataset.sharedResourceKey = key;
                 img.alt = file.name || 'Image';
-                let recovered = false;
-                img.onerror = async () => {
-                    if (recovered || String(state.currentFileId) !== fileId) return;
-                    recovered = true;
-                    const fresh = await SharedImageResources.refreshFile(fileId);
-                    if (fresh && String(state.currentFileId) === fileId) Utils.setImageSrc(img, fresh, options);
-                };
-                img.addEventListener('load', () => {
-                    if (SharedImageResources.bindings.get(img) === binding) binding.loadedKey = key;
-                }, { once: true });
-                if (img.getAttribute('src') !== src) {
+                // Binding is identity metadata only (read by identity-consistency checks
+                // elsewhere) -- it does not gate or stage anything here.
+                const binding = { key, fileId, surface: 'focus', loadedKey: null };
+                SharedImageResources.bindings.set(img, binding);
+                if (!src) return Promise.resolve();
+                // Cache hit: a same-tab Image() cache keyed by fileId+src. If we've already
+                // preloaded and decoded this exact URL, the swap is instant with zero network
+                // involvement -- this is what makes revisiting an image feel free.
+                const cached = this._focusImageCache?.get(fileId);
+                if (cached?.src === src && cached.loaded) {
                     img.src = src;
-                    SharedImageResources.instrumentation.providerRequestCount++;
-                } else if (img.complete && img.naturalWidth > 0) binding.loadedKey = key;
-                img.style.opacity = '1';
-                return { fileId, src };
+                    img.style.opacity = '1';
+                    binding.loadedKey = key;
+                    return Promise.resolve();
+                }
+                return new Promise(resolve => {
+                    const preload = new Image();
+                    preload.decoding = 'async';
+                    const settle = loaded => {
+                        preload.onload = null; preload.onerror = null;
+                        if (state.currentImageLoadId !== loadId) { resolve(); return; }
+                        if (loaded) {
+                            if (!this._focusImageCache) this._focusImageCache = new Map();
+                            this._focusImageCache.set(fileId, { src, loaded: true });
+                            while (this._focusImageCache.size > 12) this._focusImageCache.delete(this._focusImageCache.keys().next().value);
+                            img.src = src;
+                            img.style.opacity = '1';
+                            binding.loadedKey = key;
+                            SharedImageResources.instrumentation.providerRequestCount++;
+                        } else if (!recoveryTried) {
+                            recoveryTried = true;
+                            SharedImageResources.refreshFile(fileId).then(fresh => {
+                                if (fresh && state.currentImageLoadId === loadId) this.setImageSrc(img, fresh, options).then(resolve);
+                                else resolve();
+                            });
+                            return;
+                        }
+                        resolve();
+                    };
+                    let recoveryTried = false;
+                    preload.onload = () => settle(true);
+                    preload.onerror = () => settle(false);
+                    preload.src = src;
+                });
             },
 
             defer(callback, options = {}) {

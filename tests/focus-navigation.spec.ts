@@ -1710,7 +1710,7 @@ test.describe('Focus loads images directly, no shared queue (matches ui-v3.html 
     await installDeterministicImages(page);
     await page.goto(uiUrl);
     await page.waitForFunction(() => !!(window as any).__orbitalAppState);
-    const result = await page.evaluate(() => {
+    const result = await page.evaluate(async () => {
       const g = window as any;
       g.__orbitalAppState.providerType = 'test-provider';
       const resources = g.SharedImageResources;
@@ -1719,14 +1719,55 @@ test.describe('Focus loads images directly, no shared queue (matches ui-v3.html 
       resources.present = (...args: any[]) => { presentCalled = true; return origPresent.apply(resources, args); };
       resources.ensure = (...args: any[]) => { ensureCalled = true; return origEnsure.apply(resources, args); };
       const img = document.createElement('img');
-      const file = { id: 'direct-1', name: 'direct-1', thumbnails: { medium: { url: 'https://t.test/direct.svg' }, large: { url: 'https://t.test/direct.svg' } } };
-      g.Utils.setImageSrc(img, file, {});
+      const file = { id: 'direct-1', name: 'direct-1', thumbnails: { medium: { url: 'https://focus-navigation.test/file-x-thumb.svg' }, large: { url: 'https://focus-navigation.test/file-x-display.svg' } } };
+      await g.Utils.setImageSrc(img, file, {});
       resources.present = origPresent; resources.ensure = origEnsure;
       return { presentCalled, ensureCalled, src: img.getAttribute('src') || '', opacity: img.style.opacity };
     });
     expect(result.presentCalled).toBe(false);
     expect(result.ensureCalled).toBe(false);
-    expect(result.src).toBe('https://t.test/direct.svg');
+    expect(result.src).toBe('https://focus-navigation.test/file-x-display.svg');
     expect(result.opacity).toBe('1');
+  });
+});
+
+test.describe('Focus rapid-tap correctness (real preload-then-swap, matches ui-v3.html)', () => {
+  test('three rapid taps settle on the correct final image without a stale slow load clobbering it', async ({ page }) => {
+    await page.route('https://rapid.test/**', async (route, request) => {
+      const url = request.url();
+      const delay = url.includes('/0.svg') ? 800 : url.includes('/1.svg') ? 400 : 50;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="#0f0"/></svg>' });
+    });
+    await page.goto(uiUrl);
+    await page.waitForFunction(() => !!(window as any).__orbitalAppState);
+    await page.evaluate(() => {
+      const g = window as any;
+      const state = g.__orbitalAppState;
+      state.providerType = 'test-provider';
+      state.imageFiles = Array.from({ length: 4 }, (_, i) => ({
+        id: 'f' + i, name: 'f' + i, stack: 'in', stackSequence: 100 - i, metadataStatus: 'loaded',
+        thumbnails: { medium: { url: `https://rapid.test/${i}.svg` }, large: { url: `https://rapid.test/${i}.svg` } }
+      }));
+      state.currentFolder = { id: 'rapid-test', name: 'rapid-test' };
+      state.currentStack = 'in'; state.currentStackPosition = 0;
+      state.stacks = { in: [], out: [], priority: [], trash: [] };
+      g.SharedImageResources.clear();
+      g.Core.initializeStacks();
+      state.isFocusMode = true;
+    });
+    await page.evaluate(() => (window as any).Core.displayCurrentImage());
+    // f0 (800ms) is now slow-loading. Immediately fire two more rapid navigations, landing on
+    // f2 (50ms, fast). f0's slow load must not clobber f2 once it eventually resolves.
+    await page.evaluate(() => (window as any).Gestures.nextImage());
+    await page.evaluate(() => (window as any).Gestures.nextImage());
+    await page.waitForFunction(() => {
+      const img = document.querySelector('#center-image') as HTMLImageElement;
+      return img?.getAttribute('src')?.includes('/2.svg');
+    }, undefined, { timeout: 2000 });
+    // Wait past f0's slow 800ms resolution to confirm it never overwrites the correct final image.
+    await page.waitForTimeout(900);
+    const finalSrc = await page.evaluate(() => document.querySelector('#center-image')?.getAttribute('src'));
+    expect(finalSrc).toContain('/2.svg');
   });
 });
