@@ -2600,10 +2600,8 @@
                     const nextAllowed = entry.retryAfter || 0;
                     if (attempts >= 3 || performance.now() < nextAllowed) return Promise.resolve(entry);
                 }
-                const bypassQueue = options.surface === 'focus';
                 entry.readyState = 'loading';
                 entry.ready = new Promise(resolve => {
-                    const release = bypassQueue ? () => this.releaseFocusLoadSlot() : () => this.releaseLoadSlot();
                     const start = () => {
                         const preload = new Image();
                         preload.decoding = 'async';
@@ -2626,7 +2624,7 @@
                                 entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
                                 entry.ready = null; entry.preload = null;
                             }
-                            release();
+                            this.releaseLoadSlot();
                             resolve(entry);
                         };
                         preload.addEventListener('load', () => settle(true), { once: true });
@@ -2637,13 +2635,8 @@
                     // Bounded concurrency: firing hundreds of preloads at once saturates the
                     // connection pool and stacks decodes on the main thread, which is the jank
                     // that made taps land on stale-painted positions. A short FIFO keeps the
-                    // sphere filling fast without the stampede. Focus uses its own separate,
-                    // smaller bounded pool (Codex review P2) rather than an unbounded bypass --
-                    // it must never wait behind the sphere, but rapid navigation must not be
-                    // allowed to fire unlimited concurrent requests either. See also commit
-                    // 152829d (R4.23), where this queue was first introduced for the sphere only.
-                    if (bypassQueue) this.acquireFocusLoadSlot(start);
-                    else this.acquireLoadSlot(start);
+                    // sphere filling fast without the stampede.
+                    this.acquireLoadSlot(start);
                 });
                 return entry.ready;
             },
@@ -2658,25 +2651,6 @@
                 const next = this.loadQueue.shift();
                 if (next) next();
                 else this.loadSlotsInUse = Math.max(0, this.loadSlotsInUse - 1);
-            },
-            // Separate, independent, small pool for Focus (Codex review, P2): Focus must never
-            // wait behind the sphere's population queue (that was the original Item 4 problem),
-            // but rapid repeated navigation must not be allowed to fire unbounded concurrent
-            // requests either -- that's the same class of flood the sphere's queue exists to
-            // prevent, just relocated to a different surface. 4 is generous for "current image
-            // plus a couple of prefetched neighbors" and nowhere near the hundreds that actually
-            // crashed Safari.
-            focusLoadSlotsInUse: 0,
-            focusLoadSlotLimit: 4,
-            focusLoadQueue: [],
-            acquireFocusLoadSlot(start) {
-                if (this.focusLoadSlotsInUse < this.focusLoadSlotLimit) { this.focusLoadSlotsInUse++; start(); }
-                else this.focusLoadQueue.push(start);
-            },
-            releaseFocusLoadSlot() {
-                const next = this.focusLoadQueue.shift();
-                if (next) next();
-                else this.focusLoadSlotsInUse = Math.max(0, this.focusLoadSlotsInUse - 1);
             },
             async refreshFile(fileId) {
                 this.instrumentation.recoveryAttempts++;
@@ -2789,17 +2763,12 @@
                 const token = ++this.presentationToken;
                 const fileId = String(file.id);
                 const displayEntry = this.resolve(file, 'display');
+                const thumbEntry = this.resolve(file, 'thumb');
                 const immediateEntry = immediateResource?.key ? this.entries.get(immediateResource.key) : null;
-                // Item 3 (plan §123.3): previously painted the cached 'thumb' rendition
-                // immediately, then swapped to 'display' a moment later -- a visible small-
-                // then-large step. Now only ever paints 'display'. The one fast path kept:
-                // if 'display' itself is already cached (revisiting an image), show it
-                // instantly, same as before for that case -- this was never the two-stage
-                // behavior the owner asked to remove, only the thumb-first interim paint was.
                 const firstEntry = immediateEntry && String(immediateResource.fileId) === fileId
                     && String(immediateEntry.fileId) === fileId && immediateResource.key === immediateEntry.key
-                    && immediateResource.loadedKey === immediateEntry.key && immediateEntry.rendition === 'display' ? immediateEntry
-                    : (displayEntry?.readyState === 'loaded' ? displayEntry : null);
+                    && immediateResource.loadedKey === immediateEntry.key ? immediateEntry
+                    : (thumbEntry?.readyState === 'loaded' ? thumbEntry : null);
                 const firstFrame = firstEntry?.src || '';
                 const binding = { key: firstEntry?.key || displayEntry?.key || '', fileId, surface, movement: false, loadedKey: firstEntry?.key || null, token };
                 const isCurrent = (entry, expectedKey = binding.key) => token === this.presentationToken
@@ -2818,42 +2787,53 @@
                     this.instrumentation.providerRequestCount++;
                 }
                 img.style.opacity = firstFrame ? '1' : '0';
+                if (!firstFrame) {
+                    // No cached frame: show the thumb the moment it loads instead of holding the
+                    // screen blank until the full display rendition finishes downloading.
+                    const initialKey = binding.key;
+                    this.ensure(file, 'thumb').then(entry => {
+                        if (!entry?.src || entry.readyState !== 'loaded') return;
+                        if (token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
+                        const activeBinding = this.bindings.get(img);
+                        if (activeBinding !== binding || binding.key !== initialKey || binding.loadedKey) return;
+                        if (String(entry.fileId) !== fileId) return;
+                        binding.key = entry.key;
+                        binding.loadedKey = entry.key;
+                        img.dataset.sharedResourceKey = entry.key;
+                        if (img.getAttribute('src') !== entry.src) {
+                            img.src = entry.src;
+                            this.instrumentation.providerRequestCount++;
+                        }
+                        img.style.opacity = '1';
+                    });
+                }
                 let recovered = false;
-                const recover = async () => {
+                img.onerror = async () => {
                     const activeEntry = this.entries.get(binding.key);
                     if (recovered || !isCurrent(activeEntry)) return;
                     recovered = true;
                     const fresh = await this.refreshFile(fileId);
                     if (fresh && token === this.presentationToken && String(state.currentFileId) === fileId) this.present(img, fresh, { surface });
                 };
-                img.onerror = recover;
-                if (!firstFrame) {
-                    this.ensure(file, 'display', { surface }).then(entry => {
-                        // Codex review, P1#2: a failed ensure() previously returned here silently.
-                        // img.src was never set to the failing URL in this path, so img.onerror
-                        // could never fire on its own -- Focus stayed blank permanently with no
-                        // way to recover. Trigger the same recovery explicitly.
-                        if (!entry?.src) return;
-                        if (entry.readyState === 'error') { recover(); return; }
-                        if (entry.readyState !== 'loaded') return;
-                        const priorKey = binding.key;
-                        const priorEntry = this.entries.get(priorKey);
-                        if (!isCurrent(priorEntry, priorKey) || String(entry.fileId) !== fileId || entry.key !== displayEntry?.key) return;
-                        binding.key = entry.key;
-                        binding.loadedKey = null;
-                        img.dataset.sharedResourceKey = entry.key;
-                        const commitDisplay = () => {
-                            if (!isCurrent(entry, entry.key)) return;
-                            binding.loadedKey = entry.key;
-                            img.style.opacity = '1';
-                        };
-                        img.addEventListener('load', commitDisplay, { once: true });
-                        if (img.getAttribute('src') !== entry.src) {
-                            img.src = entry.src;
-                            this.instrumentation.providerRequestCount++;
-                        } else if (img.complete && img.naturalWidth > 0) commitDisplay();
-                    });
-                }
+                this.ensure(file, 'display').then(entry => {
+                    if (!entry?.src || entry.readyState !== 'loaded') return;
+                    const priorKey = binding.key;
+                    const priorEntry = this.entries.get(priorKey);
+                    if (!isCurrent(priorEntry, priorKey) || String(entry.fileId) !== fileId || entry.key !== displayEntry?.key) return;
+                    binding.key = entry.key;
+                    binding.loadedKey = null;
+                    img.dataset.sharedResourceKey = entry.key;
+                    const commitDisplay = () => {
+                        if (!isCurrent(entry, entry.key)) return;
+                        binding.loadedKey = entry.key;
+                        img.style.opacity = '1';
+                    };
+                    img.addEventListener('load', commitDisplay, { once: true });
+                    if (img.getAttribute('src') !== entry.src) {
+                        img.src = entry.src;
+                        this.instrumentation.providerRequestCount++;
+                    } else if (img.complete && img.naturalWidth > 0) commitDisplay();
+                });
                 return { token, fileId, firstFrame, displayEntry };
             },
             markMovement(img, active) {
@@ -9678,7 +9658,7 @@ this.updateImageCounters();
                     });
                 }
                 if (CanonicalInspection.active()) CanonicalInspection.exitToOrigin({ persist: false, restore: false });
-                SpatialGallery.close({ restoreFocus: false, preserve: true });
+                SpatialGallery.close({ restoreFocus: false });
                 PhotoTable.close({ restoreFocus: false });
                 state.currentStack = selection.stackName || this.entry?.stackName || state.currentStack;
                 const stack = state.stacks[state.currentStack] || [];
@@ -11264,7 +11244,7 @@ this.updateImageCounters();
             },
             adjustControl(control, delta) {
                 if (control === 'scale') this.imageScale = Math.max(.5, this.imageScale + delta / 100);
-                else this.imageLimit = Math.max(5, this.imageLimit + delta);
+                else this.imageLimit = Math.max(5, Math.min(500, this.imageLimit + delta));
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -11873,32 +11853,26 @@ this.updateImageCounters();
                 return CurrentImage.assert(fileId, 'explore warm Focus resume');
             },
 
-            close({ restoreFocus = true, force = false, preserve = false } = {}) {
+            close({ restoreFocus = true, force = false } = {}) {
                 if (this.elements.root.hidden && !force) return;
                 this.elements.root.hidden = true;
+                this.loadGeneration++;
+                document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
-                this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
-                document.body.style.overflow = '';
+                this.cancelPopulationLoading();
+                this.elements.scene.replaceChildren();
+                this.cards = [];
+                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
+                SharedImageResources.pinExplorer([]);
                 Gestures.updateGestureOverlayMode();
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
                 if (restoreFocus) this.previousFocus?.focus?.();
-                if (preserve) return;
-                // Item 1 RCA (plan §123.1): open()'s own sameSession/canResume reconcile logic
-                // was already correct, but this teardown ran unconditionally on every close and
-                // wiped the very state (cards/files/stackName/folderId) that check depends on --
-                // so a full rebuild-and-refetch happened on every re-entry, same folder or not.
-                this.loadGeneration++;
-                this.cancelPopulationLoading();
-                this.elements.scene.replaceChildren();
-                this.cards = [];
-                this.files = []; this.stackName = ''; this.folderId = null;
-                SharedImageResources.pinExplorer([]);
             },
 
             beginPopulationLoading() {
@@ -12005,21 +11979,7 @@ this.updateImageCounters();
                 for (let index = 0; index < renderedCount; index++) {
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
-                    let card;
-                    if (retained) {
-                        card = retained;
-                        const unfinished = !(card.image?.complete && card.image?.naturalWidth > 0);
-                        if (unfinished && card.generation !== generation) {
-                            card.generation = generation;
-                            const settlePopulationImage = this.trackPopulationImage(card.image, file.id, generation);
-                            SharedImageResources.attach(card.image, file, 'sphere', {
-                                surface: 'explore', visible: true, paced: true, generation,
-                                stackName: this.stackName, folderId: this.folderId
-                            }).then(entry => { if (!entry?.src) settlePopulationImage(); });
-                        }
-                    } else {
-                        card = this.createCard(file, index, generation);
-                    }
+                    const card = retained || this.createCard(file, index, generation);
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     this.elements.scene.appendChild(card.element);
