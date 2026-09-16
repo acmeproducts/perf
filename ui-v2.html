@@ -2433,8 +2433,60 @@
             },
 
             setImageSrc(img, file, options = {}) {
-                state.currentImageLoadId = file.id;
-                return SharedImageResources.present(img, file, { surface: 'focus', immediateSrc: options.immediateSrc || '' });
+                if (!img || !file?.id) return Promise.resolve();
+                const fileId = String(file.id);
+                const src = SharedImageResources.source(file, 'display');
+                const key = SharedImageResources.key(file, 'display');
+                // Per-call token: the only cancellation mechanism Focus needs. A superseded
+                // load checks this and drops out instead of painting over a newer image.
+                const loadId = `${fileId}_${performance.now()}`;
+                state.currentImageLoadId = loadId;
+                // Identity fields the Explore/Table tap contracts read (see
+                // IMAGE-LIFECYCLE-MAP.md). These must stay mutually consistent or taps that
+                // hand off an already-loaded image silently fail.
+                img.dataset.fileId = fileId;
+                img.dataset.sharedResourceKey = key;
+                img.alt = file.name || 'Image';
+                const binding = { key, fileId, surface: 'focus', movement: false, loadedKey: null };
+                SharedImageResources.bindings.set(img, binding);
+                if (!src) return Promise.resolve();
+                // Already decoded this exact URL in this tab: swap instantly, no network.
+                const cache = this._focusCache || (this._focusCache = new Map());
+                if (cache.get(fileId) === src) {
+                    if (img.getAttribute('src') !== src) img.src = src;
+                    img.style.opacity = '1';
+                    binding.loadedKey = key;
+                    return Promise.resolve();
+                }
+                return new Promise(resolve => {
+                    const preload = new Image();
+                    preload.decoding = 'async';
+                    let recoveryTried = false;
+                    const settle = async loaded => {
+                        preload.onload = null; preload.onerror = null;
+                        if (state.currentImageLoadId !== loadId) { resolve(); return; }
+                        if (loaded) {
+                            cache.set(fileId, src);
+                            while (cache.size > 12) cache.delete(cache.keys().next().value);
+                            if (img.getAttribute('src') !== src) {
+                                img.src = src;
+                                SharedImageResources.instrumentation.providerRequestCount++;
+                            }
+                            img.style.opacity = '1';
+                            binding.loadedKey = key;
+                        } else if (!recoveryTried) {
+                            recoveryTried = true;
+                            const fresh = await SharedImageResources.refreshFile(fileId);
+                            if (fresh && state.currentImageLoadId === loadId) {
+                                await Utils.setImageSrc(img, fresh, options);
+                            }
+                        }
+                        resolve();
+                    };
+                    preload.onload = () => settle(true);
+                    preload.onerror = () => settle(false);
+                    preload.src = src;
+                });
             },
 
             defer(callback, options = {}) {
@@ -9658,7 +9710,7 @@ this.updateImageCounters();
                     });
                 }
                 if (CanonicalInspection.active()) CanonicalInspection.exitToOrigin({ persist: false, restore: false });
-                SpatialGallery.close({ restoreFocus: false });
+                SpatialGallery.close({ restoreFocus: false, preserve: true });
                 PhotoTable.close({ restoreFocus: false });
                 state.currentStack = selection.stackName || this.entry?.stackName || state.currentStack;
                 const stack = state.stacks[state.currentStack] || [];
@@ -11853,26 +11905,34 @@ this.updateImageCounters();
                 return CurrentImage.assert(fileId, 'explore warm Focus resume');
             },
 
-            close({ restoreFocus = true, force = false } = {}) {
+            close({ restoreFocus = true, force = false, preserve = false } = {}) {
                 if (this.elements.root.hidden && !force) return;
                 this.elements.root.hidden = true;
-                this.loadGeneration++;
                 document.body.style.overflow = '';
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
-                this.cancelPopulationLoading();
-                this.elements.scene.replaceChildren();
-                this.cards = [];
-                this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
-                SharedImageResources.pinExplorer([]);
+                this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
                 Gestures.updateGestureOverlayMode();
                 if (!CanonicalInspection.active()) state.inspection = { surface: null, origin: null, fileId: state.currentFileId };
                 ModeCenterTap.reset();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
                 if (restoreFocus) this.previousFocus?.focus?.();
+                if (preserve) return;
+                // Full teardown. loadGeneration is bumped ONLY here, never on the preserve
+                // path: attach()'s isCurrent() gates every in-flight image load on this value,
+                // so bumping it while retaining cards strands any still-loading card blank --
+                // and a blank card never gets binding.loadedKey, which makes its tap silently
+                // fail the identity contract. That is exactly what broke taps in 5bbf82c.
+                // See IMAGE-LIFECYCLE-MAP.md.
+                this.loadGeneration++;
+                this.cancelPopulationLoading();
+                this.elements.scene.replaceChildren();
+                this.cards = [];
+                this.files = []; this.stackName = ''; this.folderId = null;
+                SharedImageResources.pinExplorer([]);
             },
 
             beginPopulationLoading() {
@@ -11979,7 +12039,25 @@ this.updateImageCounters();
                 for (let index = 0; index < renderedCount; index++) {
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
-                    const card = retained || this.createCard(file, index, generation);
+                    let card;
+                    if (retained) {
+                        card = retained;
+                        const unfinished = !(card.image?.complete && card.image?.naturalWidth > 0);
+                        if (unfinished && card.generation !== generation) {
+                            // Its in-flight load is bound to a stale generation and will be
+                            // rejected by attach()'s isCurrent(), leaving the card permanently
+                            // blank -- and a blank card has no binding.loadedKey, so its tap
+                            // silently fails. Rebind it to the current generation.
+                            card.generation = generation;
+                            const settlePopulationImage = this.trackPopulationImage(card.image, file.id, generation);
+                            SharedImageResources.attach(card.image, file, 'sphere', {
+                                surface: 'explore', visible: true, paced: true, generation,
+                                stackName: this.stackName, folderId: this.folderId
+                            }).then(entry => { if (!entry?.src) settlePopulationImage(); });
+                        }
+                    } else {
+                        card = this.createCard(file, index, generation);
+                    }
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     this.elements.scene.appendChild(card.element);
