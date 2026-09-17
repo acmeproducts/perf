@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · OWNER APPROVED BASELINE (restored from d4144fb) · R4.19 free trackball spin and instant Focus exit -->
+<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1590,7 +1590,7 @@
         const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
-            label: `Orbital8 UI · OWNER APPROVED BASELINE · ${APP_BUILD_ID}`
+            label: `Orbital8 UI · ${APP_BUILD_ID}`
         });
         function applyBuildIdentity() {
             document.documentElement.dataset.build = APP_BUILD.id;
@@ -2436,23 +2436,6 @@
                 state.currentImageLoadId = file.id;
                 return SharedImageResources.present(img, file, { surface: 'focus', immediateSrc: options.immediateSrc || '' });
             },
-
-            // --- DIAGNOSTIC INSTRUMENTATION (stack-order investigation, see plan doc; logging only, no behavior change) ---
-            diagStackWrite(stack, source, arr) {
-                state.syncLog?.log({
-                    event: 'diag:stack-write', level: 'info',
-                    details: `[diag] state.stacks.${stack} rewritten by ${source} (${(arr || []).length} images)`,
-                    data: { stack, source, length: (arr || []).length, firstIds: (arr || []).slice(0, 5).map(f => f.id), t: Date.now() }
-                });
-            },
-            diagGridFlag(source, extra = {}) {
-                state.syncLog?.log({
-                    event: 'diag:grid-flag', level: 'info',
-                    details: `[diag] grid flags set by ${source}: isDirty=${state.grid?.isDirty} skipReorderOnClose=${state.grid?.skipReorderOnClose}`,
-                    data: { source, isDirty: state.grid?.isDirty, skipReorderOnClose: state.grid?.skipReorderOnClose, t: Date.now(), ...extra }
-                });
-            },
-            // --- END DIAGNOSTIC INSTRUMENTATION ---
 
             defer(callback, options = {}) {
                 const { priority = 'normal', timeout = 120 } = options;
@@ -7607,7 +7590,6 @@
                 });
                 STACKS.forEach(stack => {
                     state.stacks[stack] = this.sortFiles(state.stacks[stack]);
-                    Utils.diagStackWrite(stack, 'Core:load-rebuild', state.stacks[stack]);
                 });
                 let resolved = preservedFileId ? CurrentImage.set(preservedFileId, preservedStack) : null;
                 if (!resolved && preservedFileId) resolved = CurrentImage.fallback(previousOrder, preservedFileId, preservedStack);
@@ -7863,7 +7845,6 @@
                         item.stackSequence = newSequence;
                         state.stacks[targetStack].unshift(item);
                         state.stacks[targetStack] = this.sortFiles(state.stacks[targetStack]);
-                        Utils.diagStackWrite(targetStack, 'Core:moveToStack', state.stacks[targetStack]);
                         App.updateUserMetadata(currentImage.id, { stack: targetStack, stackSequence: newSequence }, { skipDebounce: true, operationType: 'stack:move', providerSilent: true }).catch(error => {
                             state.syncLog?.log({ event: 'ui:stack-move:error', level: 'error', fileId: movedFileId, details: error.message, data: { from: originalStackName, to: targetStack, source } });
                         });
@@ -7994,7 +7975,6 @@ this.updateImageCounters();
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
-                Utils.diagGridFlag('Grid:open');
                 state.grid.orderChanged = false;
                 state.grid.closing = false;
                 state.grid.dragSession = createDefaultGridDragSession();
@@ -8029,26 +8009,9 @@ this.updateImageCounters();
                 ModeCenterTap.reset();
                 try {
                     let reordered = false;
-                    const willReorder = Boolean(state.grid.isDirty && !state.grid.skipReorderOnClose);
-                    state.syncLog?.log({
-                        event: 'diag:grid-close-decision', level: 'info',
-                        details: `[diag] Grid.close deciding: isDirty=${state.grid.isDirty} skipReorderOnClose=${state.grid.skipReorderOnClose} → willReorder=${willReorder}`,
-                        data: { stack: gridStack, isDirty: state.grid.isDirty, skipReorderOnClose: state.grid.skipReorderOnClose, willReorder, t: Date.now() }
-                    });
-                    if (willReorder) {
+                    if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
-                    Utils.diagStackWrite(gridStack, 'Grid:close(post-decision)', state.stacks[gridStack]);
-                    const closeSnapshotIds = (state.stacks[gridStack] || []).slice(0, 5).map(f => f.id);
-                    Utils.defer(() => {
-                        const laterIds = (state.stacks[gridStack] || []).slice(0, 5).map(f => f.id);
-                        const changed = JSON.stringify(laterIds) !== JSON.stringify(closeSnapshotIds);
-                        state.syncLog?.log({
-                            event: 'diag:grid-close-recheck', level: changed ? 'warn' : 'info',
-                            details: `[diag] stack order ~1s after close ${changed ? 'CHANGED — something else rewrote it' : 'unchanged'}`,
-                            data: { stack: gridStack, atClose: closeSnapshotIds, oneSecondLater: laterIds, changed, t: Date.now() }
-                        });
-                    }, { priority: 'background', timeout: 1000 });
                     const fallbackStack = state.stacks[gridStack] || [];
                     let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
                         || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
@@ -8073,7 +8036,6 @@ this.updateImageCounters();
                         await Core.displayCurrentImage();
                     }
                     App.persistViewContext();
-                    state.syncLog?.log({ event: 'diag:grid-close-finished', level: 'info', details: `[diag] Grid.close() finished`, data: { stack: gridStack, t: Date.now() } });
                     return selected ? CurrentImage.assert(selected.id, 'grid close') : false;
                 } catch (error) {
                     Utils.showToast(`Error closing grid: ${error.message}`, 'error', true);
@@ -8096,7 +8058,6 @@ this.updateImageCounters();
                 state.grid.origin = null;
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
-                Utils.diagGridFlag('Grid:resetAfterClose');
                 state.grid.entryFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
@@ -8391,7 +8352,6 @@ this.updateImageCounters();
                 if (!hasChanges) {
                     state.grid.isDirty = false;
                     state.grid.skipReorderOnClose = true;
-                    Utils.diagGridFlag('Grid:applyReorder(no-change)');
                     return;
                 }
 
@@ -8406,7 +8366,6 @@ this.updateImageCounters();
                 });
 
                 state.stacks[stackName] = newStackOrder;
-                Utils.diagStackWrite(stackName, 'Grid:applyReorder(drag)', newStackOrder);
 
                 if (state.grid.filtered.length > 0) {
                     const filteredIds = new Set(state.grid.filtered.map(file => file.id));
@@ -8419,7 +8378,6 @@ this.updateImageCounters();
                 state.grid.selected = [...selectedIds];
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
-                Utils.diagGridFlag('Grid:applyReorder(drag)');
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStackOrder[0]?.id || null;
 
@@ -8510,7 +8468,6 @@ this.updateImageCounters();
                 } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
                 state.grid.isDirty = true;
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:toggleSelection');
                 this.updateSelectionUI();
             },
 
@@ -8530,7 +8487,6 @@ this.updateImageCounters();
                 });
                 state.grid.isDirty = true;
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:selectAll');
                 this.updateSelectionUI();
             },
 
@@ -8538,7 +8494,6 @@ this.updateImageCounters();
                 document.querySelectorAll('#grid-container .grid-item.selected').forEach(item => item.classList.remove('selected') );
                 state.grid.selected = [];
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:deselectAll');
                 this.updateSelectionUI();
             },
 
@@ -8565,7 +8520,6 @@ this.updateImageCounters();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:performSearch');
             },
 
             resetSearch() {
@@ -8585,7 +8539,6 @@ this.updateImageCounters();
                 Core.updateStackCounts();
                 this.deselectAll();
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:resetSearch');
             },
 
             refreshTagFilter() {
@@ -8599,7 +8552,6 @@ this.updateImageCounters();
                 this.updateSelectionUI();
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
-                Utils.diagGridFlag('Grid:refreshTagFilter');
                 return true;
             },
 
@@ -8651,7 +8603,6 @@ this.updateImageCounters();
                 this.updateSelectionUI();
                 state.grid.isDirty = true;
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                Utils.diagGridFlag('Grid:syncWithStack');
             },
 
             syncSelectionWithFocus() {
@@ -8665,7 +8616,6 @@ this.updateImageCounters();
                     state.grid.selected = [currentFile.id];
                     state.grid.skipReorderOnClose = true;
                     state.grid.isDirty = false;
-                    Utils.diagGridFlag('Grid:syncSelectionWithFocus');
                 }
                 Utils.elements.gridContainer?.querySelectorAll('.grid-item').forEach(item => {
                     item.classList.toggle('selected', item.dataset.fileId === currentFile.id);
@@ -8773,18 +8723,12 @@ this.updateImageCounters();
                     file.stackSequence = timestamp - i;
                 });
 
-                const diagQueuedAt = Date.now();
-                state.syncLog?.log({ event: 'diag:save-queued', level: 'info', details: `[diag] reorder save queued for ${newStack.length} images`, data: { stack: state.grid.stack, count: newStack.length, t: diagQueuedAt } });
                 newStack.forEach(file => {
-                    const savePromise = state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' });
-                    savePromise?.then(() => {
-                        state.syncLog?.log({ event: 'diag:save-flushed', level: 'info', details: `[diag] reorder save landed for ${file.id} (+${Date.now() - diagQueuedAt}ms)`, data: { stack: state.grid.stack, fileId: file.id, queuedAt: diagQueuedAt, flushedAt: Date.now(), deltaMs: Date.now() - diagQueuedAt } });
-                    }).catch(() => {});
+                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' });
                 });
                 state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
 
                 state.stacks[state.grid.stack] = newStack;
-                Utils.diagStackWrite(state.grid.stack, 'Grid:reorderStackOnClose', newStack);
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStack[0]?.id || null;
                 if (state.grid.stack === state.currentStack) {
@@ -9257,7 +9201,6 @@ this.updateImageCounters();
                             file.stackSequence = newSequence;
                             state.stacks[targetStack].unshift(file);
                             state.stacks[targetStack] = Core.sortFiles(state.stacks[targetStack]);
-                            Utils.diagStackWrite(targetStack, 'Grid:bulk-move', state.stacks[targetStack]);
                         }
                     },
                     successMessage: `Moved {count} images to ${STACK_NAMES[targetStack]}`
@@ -11267,10 +11210,7 @@ this.updateImageCounters();
             },
             adjustControl(control, delta) {
                 if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
-                else {
-                    const maxLimit = Math.max(5, this.workingFiles().length);
-                    this.imageLimit = Math.max(5, Math.min(maxLimit, this.imageLimit + delta));
-                }
+                else this.imageLimit = Math.max(5, Math.min(50, this.imageLimit + delta));
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -11309,7 +11249,6 @@ this.updateImageCounters();
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, stackName, { allowCrossStack: false });
                 const eligible = this.workingFiles(stackName);
-                this.imageLimit = Math.max(5, Math.min(50, eligible.length));
                 const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
                 const ordered = eligible.slice(start).concat(eligible.slice(0, start));
                 const limit = this.displayLimit(ordered.length);
