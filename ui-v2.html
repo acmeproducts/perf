@@ -8003,7 +8003,6 @@ this.updateImageCounters();
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
                 const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
-                const entryFileId = state.grid.entryFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
@@ -8013,10 +8012,21 @@ this.updateImageCounters();
                     if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
+                    // Read fresh, not pre-captured: reorderStackOnClose() updates entryFileId internally,
+                    // so grabbing it before that call would use the pre-reorder (stale) value.
+                    const entryFileId = state.grid.entryFileId;
                     const fallbackStack = state.stacks[gridStack] || [];
-                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
+                    // If the order actually changed this session (a completed drag, or a search
+                    // result promoted to the front), the new front of stack is what should display --
+                    // that's the whole point of reordering. Otherwise keep the prior behavior of
+                    // staying on whatever image you were already viewing.
+                    let resolved = state.grid.orderChanged
+                        ? (CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }))
+                        : (CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }));
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
