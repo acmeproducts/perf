@@ -1,4 +1,4 @@
-<!-- Orbital8 UI governed reconstruction · OWNER APPROVED BASELINE (restored from d4144fb) · R4.19 free trackball spin and instant Focus exit -->
+<!-- Orbital8 UI governed reconstruction · R4.19 free trackball spin and instant Focus exit -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1590,7 +1590,7 @@
         const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
-            label: `Orbital8 UI · OWNER APPROVED BASELINE · ${APP_BUILD_ID}`
+            label: `Orbital8 UI · ${APP_BUILD_ID}`
         });
         function applyBuildIdentity() {
             document.documentElement.dataset.build = APP_BUILD.id;
@@ -1920,7 +1920,7 @@
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false, origin: null, filterTag: null,
-                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, dragReorderApplied: false, entryFileId: null, orderChanged: false, closing: false,
+                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, entryFileId: null, orderChanged: false, closing: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
             folderMoveMode: { active: false, files: [] },
@@ -7975,7 +7975,6 @@ this.updateImageCounters();
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
-                state.grid.dragReorderApplied = false;
                 state.grid.orderChanged = false;
                 state.grid.closing = false;
                 state.grid.dragSession = createDefaultGridDragSession();
@@ -8003,30 +8002,20 @@ this.updateImageCounters();
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
                 const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
+                const entryFileId = state.grid.entryFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
                 ModeCenterTap.reset();
                 try {
                     let reordered = false;
-                    if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
+                    if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
-                    // Read fresh, not pre-captured: reorderStackOnClose() updates entryFileId internally,
-                    // so grabbing it before that call would use the pre-reorder (stale) value.
-                    const entryFileId = state.grid.entryFileId;
                     const fallbackStack = state.stacks[gridStack] || [];
-                    // If the order actually changed this session (a completed drag, or a search
-                    // result promoted to the front), the new front of stack is what should display --
-                    // that's the whole point of reordering. Otherwise keep the prior behavior of
-                    // staying on whatever image you were already viewing.
-                    let resolved = state.grid.orderChanged
-                        ? (CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                            || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
-                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }))
-                        : (CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
-                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }));
+                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
@@ -8069,7 +8058,6 @@ this.updateImageCounters();
                 state.grid.origin = null;
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
-                state.grid.dragReorderApplied = false;
                 state.grid.entryFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
@@ -8390,7 +8378,6 @@ this.updateImageCounters();
                 state.grid.selected = [...selectedIds];
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
-                state.grid.dragReorderApplied = true;
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStackOrder[0]?.id || null;
 
@@ -8736,13 +8723,10 @@ this.updateImageCounters();
                     file.stackSequence = timestamp - i;
                 });
 
-                // Awaited, not fire-and-forget: close() must not proceed while this reorder is still
-                // unsaved, or a concurrent read (provider sync, cache reload) can put the old order
-                // back before the write lands.
-                await Promise.all(newStack.map(file =>
-                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' })
-                ));
-                await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+                newStack.forEach(file => {
+                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' });
+                });
+                state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
 
                 state.stacks[state.grid.stack] = newStack;
                 state.grid.orderChanged = true;
@@ -11226,10 +11210,7 @@ this.updateImageCounters();
             },
             adjustControl(control, delta) {
                 if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
-                else {
-                    const maxLimit = Math.max(5, this.workingFiles().length);
-                    this.imageLimit = Math.max(5, Math.min(maxLimit, this.imageLimit + delta));
-                }
+                else this.imageLimit = Math.max(5, Math.min(50, this.imageLimit + delta));
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -11268,7 +11249,6 @@ this.updateImageCounters();
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, stackName, { allowCrossStack: false });
                 const eligible = this.workingFiles(stackName);
-                this.imageLimit = Math.max(5, Math.min(50, eligible.length));
                 const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
                 const ordered = eligible.slice(start).concat(eligible.slice(0, start));
                 const limit = this.displayLimit(ordered.length);
@@ -11914,12 +11894,6 @@ this.updateImageCounters();
                 card.style.filter = 'none';
                 card.addEventListener('click', event => {
                     if (card.dataset.moved === 'true' || event.detail !== 0) return;
-                    // A trailing synthetic click on Android can arrive with detail:0, same as a real
-                    // keyboard activation. If the pointer path just activated this exact card, treat
-                    // this click as that trailing echo and skip it -- a genuine keyboard press won't
-                    // land inside this short window right after a touch release.
-                    const since = Date.now() - Number(card.dataset.pointerActivatedAt || 0);
-                    if (since >= 0 && since < 800) return;
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
@@ -12200,15 +12174,7 @@ this.updateImageCounters();
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
                     const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
                     const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
-                    if (stillOnPressedCard) {
-                        // Mark this element as just handled by the pointer path. Android Chrome's
-                        // trailing synthetic 'click' after a touch tap can report detail:0, the same
-                        // signature as a real keyboard activation -- without this guard the card's own
-                        // click listener re-fires a moment later and can re-activate on whatever fileId
-                        // has since been bound to this pooled element, landing one card off.
-                        pressedCard.dataset.pointerActivatedAt = String(Date.now());
-                        this.activateFileId(pressedFileId, pressedCard);
-                    }
+                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
                 }
                 this.requestFrame();
             },
