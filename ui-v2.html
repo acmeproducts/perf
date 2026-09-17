@@ -1961,29 +1961,10 @@
                 }
                 return null;
             },
-            promoteToFront(stackName, fileId) {
-                // The stack's rule: position 0 is always whatever was last viewed. Viewing
-                // (paging in Sort/Focus, opening Focus from Explore/Grid/Table) calls this so the
-                // array itself stays the single source of truth -- Grid's top-left tile, Sort, and
-                // Focus all just read position 0, no separate "what's current" bookkeeping needed.
-                const files = state.stacks[stackName];
-                if (!Array.isArray(files) || !files.length) return null;
-                const index = files.findIndex(file => String(file.id) === String(fileId));
-                if (index < 0) return null;
-                if (index === 0) return { stackName, index: 0, file: files[0] };
-                const [file] = files.splice(index, 1);
-                file.stackSequence = Date.now();
-                files.unshift(file);
-                state.dbManager?.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder?.id, providerType: state.providerType }, { priority: 'normal' });
-                return { stackName, index: 0, file };
-            },
-            set(fileId, stackName = state.currentStack, { allowCrossStack = true, promote = false } = {}) {
+            set(fileId, stackName = state.currentStack, { allowCrossStack = true } = {}) {
                 let resolved = this.locate(fileId, stackName);
                 if (resolved && !allowCrossStack && resolved.stackName !== stackName) resolved = null;
                 if (!resolved) return null;
-                if (promote && resolved.index !== 0) {
-                    resolved = this.promoteToFront(resolved.stackName, resolved.file.id) || resolved;
-                }
                 state.currentStack = resolved.stackName;
                 state.currentStackPosition = resolved.index;
                 state.currentFileId = resolved.file.id;
@@ -8021,6 +8002,7 @@ this.updateImageCounters();
                 state.grid.closing = true;
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
+                const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
@@ -8030,14 +8012,21 @@ this.updateImageCounters();
                     if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
-                    // Position 0 of the stack is the single source of truth for "what's current" --
-                    // viewing and reordering both keep it there live, so close() just trusts it.
-                    // Only skip touching the display when Grid was opened for a stack you weren't
-                    // even looking at, so you're not yanked onto a different stack you didn't ask for.
+                    // Read fresh, not pre-captured: reorderStackOnClose() updates entryFileId internally,
+                    // so grabbing it before that call would use the pre-reorder (stale) value.
+                    const entryFileId = state.grid.entryFileId;
                     const fallbackStack = state.stacks[gridStack] || [];
-                    let resolved = state.currentStack === gridStack
-                        ? CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
-                        : null;
+                    // If the order actually changed this session (a completed drag, or a search
+                    // result promoted to the front), the new front of stack is what should display --
+                    // that's the whole point of reordering. Otherwise keep the prior behavior of
+                    // staying on whatever image you were already viewing.
+                    let resolved = state.grid.orderChanged
+                        ? (CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }))
+                        : (CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }));
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
@@ -10107,7 +10096,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false, promote: true });
+                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -10116,7 +10105,7 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false, promote: true });
+                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -11788,19 +11777,11 @@ this.updateImageCounters();
                     return this.open({ stackName: state.currentStack, fileId, preserveGeometry: true, suppressPersist: true });
                 }
                 if (!unchanged) {
-                    // Order alone can now change on every single Focus page-through (position 0 is
-                    // "last viewed"), so this branch runs far more than it used to -- reordering with
-                    // the same membership must stay cheap. Only genuine membership changes (delete,
-                    // move, writeback) get the full rebuild; a pure reorder reuses cards in place.
-                    const savedIds = new Set(saved.populationIds);
-                    const sameMembership = nextFiles.length === saved.populationIds.length
-                        && nextFiles.every(file => savedIds.has(String(file.id)));
-                    if (sameMembership && this.adoptPopulationOrder(nextFiles)) {
-                        // adopted in place, no rebuild needed
-                    } else {
-                        this.reconcilePopulation(nextFiles);
-                        SharedImageResources.pinExplorer(nextFiles);
-                    }
+                    // Membership or order changed while in Focus (delete, move, writeback). Apply the
+                    // delta to the retained scene — reuse every surviving card element — so the globe
+                    // pops back immediately instead of rebuilding and re-fetching the whole sphere.
+                    this.reconcilePopulation(nextFiles);
+                    SharedImageResources.pinExplorer(nextFiles);
                 }
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
                 CurrentImage.set(this.files[this.selectedIndex].id, this.stackName, { allowCrossStack: false });
@@ -12615,7 +12596,7 @@ this.updateImageCounters();
             async enter(fileId, referrer = 'sort', options = {}) {
                 const { restoring = false, immediateResource = null, immediateSrc = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
-                const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false, promote: !restoring });
+                const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
                 if (!resolved) {
                     Utils.showToast('That image is no longer available in this stack.', 'info');
                     return false;
