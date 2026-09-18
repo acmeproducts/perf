@@ -1920,7 +1920,7 @@
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false, origin: null, filterTag: null,
-                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, dragReorderApplied: false, reorderPromise: null, entryFileId: null, openedFileId: null, orderChanged: false, closing: false,
+                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, entryFileId: null, orderChanged: false, closing: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
             folderMoveMode: { active: false, files: [] },
@@ -7975,8 +7975,6 @@ this.updateImageCounters();
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
-                state.grid.dragReorderApplied = false;
-                state.grid.reorderPromise = null;
                 state.grid.orderChanged = false;
                 state.grid.closing = false;
                 state.grid.dragSession = createDefaultGridDragSession();
@@ -7990,7 +7988,6 @@ this.updateImageCounters();
                     ? [sourceFiles[preferredIndex], ...sourceFiles.slice(0, preferredIndex), ...sourceFiles.slice(preferredIndex + 1)]
                     : sourceFiles;
                 state.grid.entryFileId = orderedFiles[0]?.id || null;
-                state.grid.openedFileId = state.currentStack === stack ? CurrentImage.current()?.id || null : null;
                 state.grid.selected = [];
                 state.grid.filtered = Array.isArray(filesOverride) ? [...orderedFiles] : [];
                 Utils.elements.gridContainer.innerHTML = '';
@@ -8004,32 +8001,22 @@ this.updateImageCounters();
                 state.grid.closing = true;
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
-                const canonicalFileId = state.grid.openedFileId;
+                const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
+                const entryFileId = state.grid.entryFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
                 ModeCenterTap.reset();
                 try {
-                    if (state.grid.reorderPromise) await state.grid.reorderPromise;
                     let reordered = false;
-                    if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
+                    if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
                     const fallbackStack = state.stacks[gridStack] || [];
-                    const entryFileId = state.grid.entryFileId;
-                    let resolved = state.grid.orderChanged
-                        ? CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
-                        : CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false });
-                    resolved ||= CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
                         || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
                     const selected = resolved?.file || CurrentImage.current();
-                    if (state.grid.orderChanged && selected) {
-                        if (SpatialGallery.stackName === gridStack && SpatialGallery.files.length) {
-                            SpatialGallery.adoptPopulationOrder(SpatialGallery.populationFor(fallbackStack, selected.id));
-                            SpatialGallery.selectedIndex = SpatialGallery.files.findIndex(file => String(file.id) === String(selected.id));
-                        }
-                        if (PhotoTable.stackName === gridStack && PhotoTable.photos.length) PhotoTable.reconcilePopulation(selected.id);
-                    }
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
                         const stackName = selected ? state.currentStack : origin.stackName;
@@ -8071,10 +8058,7 @@ this.updateImageCounters();
                 state.grid.origin = null;
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
-                state.grid.dragReorderApplied = false;
-                state.grid.reorderPromise = null;
                 state.grid.entryFileId = null;
-                state.grid.openedFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
             },
@@ -8246,7 +8230,6 @@ this.updateImageCounters();
                     ...createDefaultGridDragSession(),
                     active: true,
                     pointerId: event.pointerId ?? null,
-                    initiatorId: fileId,
                     selectedIds,
                     dragElements: draggedElements
                 };
@@ -8307,19 +8290,16 @@ this.updateImageCounters();
                 if (targetIndex === -1) { targetIndex = allFiles.length; }
 
                 try {
-                    const pending = this.applyReorder(session.selectedIds, targetIndex, session.initiatorId);
-                    state.grid.reorderPromise = pending;
-                    await pending;
+                    await this.applyReorder(session.selectedIds, targetIndex);
                 } catch (error) {
                     console.error('Error reordering grid items:', error);
                     Utils.showToast(`Error reordering items: ${error.message}`, 'error', true);
                 } finally {
-                    state.grid.reorderPromise = null;
                     this.clearDragState();
                 }
             },
 
-            async applyReorder(selectedIds, targetIndex, initiatorId = selectedIds?.[0]) {
+            async applyReorder(selectedIds, targetIndex) {
                 if (!Array.isArray(selectedIds) || selectedIds.length === 0) { return; }
                 const stackName = state.grid.stack;
                 if (!stackName) { return; }
@@ -8335,13 +8315,10 @@ this.updateImageCounters();
                 const selectedSet = new Set(selectedIds);
                 const movingItems = [];
                 const remainingItems = [];
-                const visibleSelected = allFiles.filter(file => selectedSet.has(file.id));
-                const initiator = visibleSelected.find(file => String(file.id) === String(initiatorId));
-                if (initiator) movingItems.push(initiator);
-                visibleSelected.forEach(file => { if (file !== initiator) movingItems.push(file); });
+
                 stackArray.forEach(file => {
-                    if (!selectedSet.has(file.id)) remainingItems.push(file);
-                    else if (!movingItems.some(item => String(item.id) === String(file.id))) movingItems.push(file);
+                    if (selectedSet.has(file.id)) { movingItems.push(file); }
+                    else { remainingItems.push(file); }
                 });
 
                 if (movingItems.length === 0) { return; }
@@ -8401,7 +8378,6 @@ this.updateImageCounters();
                 state.grid.selected = [...selectedIds];
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
-                state.grid.dragReorderApplied = true;
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStackOrder[0]?.id || null;
 
@@ -8419,9 +8395,7 @@ this.updateImageCounters();
                 }
 
                 if (updatesQueue.length > 0) {
-                        await Promise.all(newStackOrder.map(file =>
-                            state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' })
-                        ));
+                    Utils.defer(async () => {
                         const results = await Promise.allSettled(updatesQueue.map(update => App.updateUserMetadata(update.fileId, { stackSequence: update.newSequence }, {
                             skipDebounce: true,
                             operationType: 'stack:reorder',
@@ -8439,8 +8413,7 @@ this.updateImageCounters();
                             });
                             Utils.showToast('Some items could not be fully reordered. Please retry.', 'error', true);
                         }
-                        if (errors.length) throw new Error('Grid reorder persistence failed');
-                        await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+                    }, { priority: 'high', timeout: 32 });
                 }
             },
 
@@ -8750,10 +8723,10 @@ this.updateImageCounters();
                     file.stackSequence = timestamp - i;
                 });
 
-                await Promise.all(newStack.map(file =>
-                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' })
-                ));
-                await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+                newStack.forEach(file => {
+                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' });
+                });
+                state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
 
                 state.stacks[state.grid.stack] = newStack;
                 state.grid.orderChanged = true;
@@ -11586,7 +11559,7 @@ this.updateImageCounters();
             layoutBias: 1, layoutVersion: 2, automaticLayout: true, extentHardLimits: false,
             rotationX: 0, rotationY: 0, velocityX: 0, velocityY: 0, orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
-            pressedCard: null, pressedFileId: null, pressedPointerType: null, pressedDomFileId: null, pointerDownPoint: null, pointerUpPoint: null, lastTapDiagnostic: null, pinchStartDistance: 0, pinchStartScale: 1,
+            pressedCard: null, pressedFileId: null, pressedPointerType: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
             visibilityAnimationSuspended: false, focusSuspension: null, warmResumeMetrics: null,
@@ -11909,7 +11882,6 @@ this.updateImageCounters();
                 card.setAttribute('aria-label', `Select ${file.name || `image ${index + 1}`}`);
                 card.dataset.fileId = file.id;
                 const img = document.createElement('img');
-                img.dataset.fileId = file.id;
                 img.alt = file.name || '';
                 // All sphere cards are conceptually visible; lazy loading + deferred src assignment
                 // made the browser trickle-load them. Eager + async decode + fetchPriority lets the
@@ -11922,10 +11894,7 @@ this.updateImageCounters();
                 card.style.filter = 'none';
                 card.addEventListener('click', event => {
                     if (card.dataset.moved === 'true' || event.detail !== 0) return;
-                    const since = Date.now() - Number(card.dataset.pointerActivatedAt || 0);
-                    if (since >= 0 && since < 800) return;
-                    const record = this.cards.find(item => item.element === card);
-                    this.activateFileId(card.dataset.fileId, record);
+                    this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
@@ -11962,7 +11931,6 @@ this.updateImageCounters();
             },
 
             reconcilePopulation(nextFiles) {
-                this.clearPointerState();
                 this.loadGeneration++;
                 const generation = this.loadGeneration;
                 this.beginPopulationLoading();
@@ -11975,7 +11943,6 @@ this.updateImageCounters();
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
                     const card = retained || this.createCard(file, index, generation);
-                    card.generation = generation;
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     this.elements.scene.appendChild(card.element);
@@ -11991,7 +11958,6 @@ this.updateImageCounters();
             },
 
             adoptPopulationOrder(nextFiles) {
-                this.clearPointerState();
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
                 const canAdopt = nextFiles.length === this.files.length && nextFiles.every(file => existing.has(String(file.id)));
                 if (!canAdopt) {
@@ -12001,7 +11967,6 @@ this.updateImageCounters();
                 this.files = nextFiles;
                 this.cards = nextFiles.map(file => existing.get(String(file.id)));
                 this.cards.forEach((card, index) => {
-                    card.generation = this.loadGeneration;
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                 });
@@ -12090,20 +12055,20 @@ this.updateImageCounters();
                 }
             },
 
-            activateFileId(fileId, pickedCard = null) {
+            activateFileId(fileId, cardElement = null) {
                 const requestedId = String(fileId || '');
                 if (!requestedId || this.focusTransitionFileId) return false;
-                if (pickedCard?.nodeType === 1) pickedCard = this.cards.find(card => card.element === pickedCard) || null;
                 const canonicalStack = state.stacks[state.currentStack] || [];
                 const canonicalIndex = canonicalStack.findIndex(file => String(file.id) === requestedId);
+                if (canonicalIndex < 0) return false;
                 const index = this.files.findIndex(file => String(file.id) === requestedId);
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
-                if (canonicalIndex < 0 || index < 0 || !card || (pickedCard && card !== pickedCard)) return this.rejectTap(requestedId, index, canonicalIndex);
+                if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
                 const file = this.files[index];
                 const img = card.image || card.element.querySelector('img');
                 if (String(file.id) !== requestedId || String(card.fileId) !== requestedId
                     || String(card.element.dataset.fileId) !== requestedId || String(img?.dataset.fileId) !== requestedId
-                    || card.generation !== this.loadGeneration || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return this.rejectTap(requestedId, index, canonicalIndex);
+                    || String(canonicalStack[canonicalIndex]?.id) !== requestedId) return false;
                 const binding = img ? SharedImageResources.bindings.get(img) : null;
                 const expectedKey = SharedImageResources.key(file, 'thumb');
                 const immediateResource = binding && String(binding.fileId) === requestedId
@@ -12113,11 +12078,10 @@ this.updateImageCounters();
                 // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
                 this.select(index);
                 const resolved = CurrentImage.set(requestedId, state.currentStack, { allowCrossStack: false });
-                if (!resolved || String(resolved.file?.id) !== requestedId || String(state.currentFileId) !== requestedId || String(CurrentImage.current()?.id) !== requestedId
-                    || String(canonicalStack[state.currentStackPosition]?.id) !== requestedId) return this.rejectTap(requestedId, index, canonicalIndex);
+                if (!resolved || String(state.currentFileId) !== requestedId || String(CurrentImage.current()?.id) !== requestedId
+                    || String(canonicalStack[state.currentStackPosition]?.id) !== requestedId) return false;
                 this.focusTransitionFileId = requestedId;
                 this.transitionMoving = true;
-                this.clearPointerState();
                 return Promise.resolve(CanonicalInspection.enter(requestedId, {
                     surface: 'explore',
                     stackName: state.currentStack,
@@ -12132,23 +12096,6 @@ this.updateImageCounters();
                     Utils.showToast(`Unable to inspect that image: ${error.message}`, 'error', true);
                     return false;
                 });
-            },
-
-            rejectTap(requestedId, populationIndex, canonicalIndex) {
-                this.focusTransitionFileId = null; this.transitionMoving = false;
-                this.lastTapDiagnostic = {
-                    pointerType: this.pressedPointerType, down: this.pointerDownPoint, up: this.pointerUpPoint,
-                    domTargetId: this.pressedDomFileId, downPickedId: this.pressedFileId,
-                    releasePickedId: this.releaseFileId || null, populationIndex, canonicalIndex, requestedId
-                };
-                return false;
-            },
-
-            clearPointerState() {
-                this.dragging = false; this.dragIntent = false; this.pointerId = null;
-                this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
-                this.pressedDomFileId = null; this.pointerDownPoint = null; this.pointerUpPoint = null; this.releaseFileId = null;
-                this.elements.scene?.classList.remove('dragging');
             },
 
             handleCardTap(fileId, cardElement = null) {
@@ -12181,14 +12128,12 @@ this.updateImageCounters();
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const hit = this.cardFromPointerEvent(event);
+                const hit = this.cardAtPoint(event.clientX, event.clientY);
                 const card = hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
                 // Coordinate-based picking: the visually frontmost card at the down point is authoritative.
                 this.pressedCard = card; this.pressedFileId = hit ? String(hit.fileId || '') : null;
                 this.pressedPointerType = event.pointerType || 'mouse';
-                this.pressedDomFileId = event.target?.closest?.('.spatial-gallery__card')?.dataset.fileId || null;
-                this.pointerDownPoint = { x: event.clientX, y: event.clientY };
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
             },
@@ -12221,28 +12166,17 @@ this.updateImageCounters();
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const pressedCard = this.pressedCard;
                 const pressedFileId = this.pressedFileId;
-                const pressedPointerType = this.pressedPointerType || event.pointerType || 'mouse';
                 const tapSlop = this.tapSlop(this.pressedPointerType || event.pointerType);
                 const moved = this.maxPointerDistance > tapSlop || pressedCard?.dataset.moved === 'true';
-                this.pointerUpPoint = { x: event.clientX, y: event.clientY };
+                this.dragging = false; this.dragIntent = false; this.pointerId = null;
+                this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
+                this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
-                    const releaseCard = pressedPointerType === 'touch' || pressedPointerType === 'pen'
-                        ? this.cardAtPoint(event.clientX, event.clientY) : pressedCard;
-                    this.releaseFileId = releaseCard?.fileId == null ? null : String(releaseCard.fileId);
-                    if (pressedCard && releaseCard === pressedCard && this.releaseFileId === pressedFileId) {
-                        if (pressedPointerType === 'touch' || pressedPointerType === 'pen') pressedCard.element.dataset.pointerActivatedAt = String(Date.now());
-                        this.activateFileId(pressedFileId, pressedCard);
-                    }
+                    const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
+                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
+                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
                 }
-                this.clearPointerState();
                 this.requestFrame();
-            },
-
-            cardFromPointerEvent(event, pointerType = event.pointerType || 'mouse') {
-                if (pointerType === 'touch' || pointerType === 'pen') return this.cardAtPoint(event.clientX, event.clientY);
-                const element = event.target?.closest?.('.spatial-gallery__card');
-                if (element && this.elements.scene?.contains(element)) return this.cards.find(card => card.element === element) || null;
-                return this.cardAtPoint(event.clientX, event.clientY);
             },
 
             cardAtPoint(x, y) {
@@ -12256,26 +12190,15 @@ this.updateImageCounters();
                 // the exact same integer. On that exact tie, break it with card.depth -- the
                 // full-precision value render() stashes each frame -- instead of array order, which
                 // is what previously resolved the wrong image on tap.
-                let best = null, bestZ = -Infinity, bestDepth = -Infinity, bestOrder = -1;
-                const generation = this.loadGeneration;
+                let best = null, bestZ = -Infinity, bestDepth = -Infinity;
                 for (const card of this.cards) {
                     const element = card.element;
-                    const index = this.files.findIndex(file => String(file.id) === String(card.fileId));
-                    if (!element?.isConnected || card.generation !== generation || index < 0
-                        || String(element.dataset.fileId) !== String(card.fileId)
-                        || String(card.image?.dataset.fileId) !== String(card.fileId)
-                        || String(this.files[index]?.id) !== String(card.fileId)
-                        || element.hidden || element.dataset.culled === 'true' || element.classList.contains('culled')) continue;
-                    const style = getComputedStyle(element);
-                    if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+                    if (!element?.isConnected || element.style.visibility === 'hidden') continue;
                     const rect = element.getBoundingClientRect();
                     if (!rect.width || !rect.height || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
-                    const z = Number(style.zIndex) || 0;
+                    const z = Number(element.style.zIndex) || 0;
                     const depth = Number.isFinite(card.depth) ? card.depth : -Infinity;
-                    const order = Array.prototype.indexOf.call(element.parentNode?.children || [], element);
-                    if (z > bestZ || (z === bestZ && (depth > bestDepth || (depth === bestDepth && order > bestOrder)))) {
-                        bestZ = z; bestDepth = depth; bestOrder = order; best = card;
-                    }
+                    if (z > bestZ || (z === bestZ && depth > bestDepth)) { bestZ = z; bestDepth = depth; best = card; }
                 }
                 return best;
             },
@@ -12292,8 +12215,9 @@ this.updateImageCounters();
             onTouchStart(event) {
                 if (this.elements.root.hidden || event.touches.length !== 2) return;
                 event.preventDefault();
+                this.dragging = false; this.pointerId = null; this.elements.scene.classList.remove('dragging');
                 this.clearCardTap();
-                this.clearPointerState();
+                this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
                 const [a, b] = event.touches;
                 this.pinchStartDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
                 this.pinchStartScale = this.sphereScale;
