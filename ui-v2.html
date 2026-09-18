@@ -590,6 +590,8 @@
         }
         .grid-item::before { content: ""; display: block; padding-top: 100%; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
+        .grid-item.current { box-shadow: 0 0 0 4px #f59e0b; }
+        .grid-item.current.selected { box-shadow: 0 0 0 4px #3b82f6, 0 0 0 7px #f59e0b; }
         .grid-item.dragging {
             box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.6);
             opacity: 0.9;
@@ -1918,7 +1920,7 @@
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false, origin: null, filterTag: null,
-                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, dragReorderApplied: false, entryFileId: null, orderChanged: false, closing: false,
+                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, entryFileId: null, orderChanged: false, closing: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
             folderMoveMode: { active: false, files: [] },
@@ -7966,7 +7968,6 @@ this.updateImageCounters();
             open(stack, options = {}) {
                 const { origin = null, filesOverride = null, filterTag = null } = options || {};
                 this.clearDragState();
-                Utils.elements.gridContainer?.querySelectorAll('.dragging, .drop-target').forEach(item => item.classList.remove('dragging', 'drop-target'));
                 Utils.showModal('grid-modal');
                 Utils.elements.gridTitle.textContent = filterTag ? `${TableTagTargets.display(filterTag)} · ${STACK_NAMES[stack] || stack}` : (STACK_NAMES[stack] || stack);
                 state.grid.stack = stack;
@@ -7974,7 +7975,6 @@ this.updateImageCounters();
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
-                state.grid.dragReorderApplied = false;
                 state.grid.orderChanged = false;
                 state.grid.closing = false;
                 state.grid.dragSession = createDefaultGridDragSession();
@@ -8009,15 +8009,12 @@ this.updateImageCounters();
                 ModeCenterTap.reset();
                 try {
                     let reordered = false;
-                    if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
+                    if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
                     const fallbackStack = state.stacks[gridStack] || [];
-                    const orderChanged = state.grid.orderChanged || reordered;
-                    let resolved = orderChanged
-                        ? CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
-                        : CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false });
-                    resolved ||= CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
                         || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
@@ -8061,7 +8058,6 @@ this.updateImageCounters();
                 state.grid.origin = null;
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
-                state.grid.dragReorderApplied = false;
                 state.grid.entryFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
@@ -8106,12 +8102,17 @@ this.updateImageCounters();
                 }
 
                 const selectedIds = new Set(state.grid.selected);
+                const currentId = CurrentImage.current()?.id;
                 const fragment = document.createDocumentFragment();
                 const newImages = [];
                 filesToRender.forEach(file => {
                     const div = document.createElement('div');
                     div.className = 'grid-item'; div.dataset.fileId = file.id;
                     if (selectedIds.has(file.id)) { div.classList.add('selected'); }
+                    if (currentId != null && String(file.id) === String(currentId)) {
+                        div.classList.add('current');
+                        div.setAttribute('aria-current', 'true');
+                    }
                     const img = document.createElement('img');
                     img.className = 'grid-image'; img.alt = file.name || 'Image';
                     img.loading = 'lazy';
@@ -8155,6 +8156,7 @@ this.updateImageCounters();
                 const stackName = state.grid.stack;
                 const resolved = CurrentImage.set(fileId, stackName, { allowCrossStack: false });
                 if (!resolved) return false;
+                this.updateCurrentTile();
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const referrer = origin?.surface === 'focus'
                     ? (origin.focusReferrer || { surface: origin.focusOrigin || 'sort', stackName, fileId: resolved.file.id })
@@ -8165,6 +8167,16 @@ this.updateImageCounters();
                 ModeCenterTap.reset();
                 this.resetAfterClose();
                 return CanonicalInspection.enter(resolved.file.id, { ...referrer, stackName, fileId: resolved.file.id });
+            },
+
+            updateCurrentTile() {
+                const currentId = CurrentImage.current()?.id;
+                Utils.elements.gridContainer.querySelectorAll('.grid-item').forEach(tile => {
+                    const isCurrent = currentId != null && String(tile.dataset.fileId) === String(currentId);
+                    tile.classList.toggle('current', isCurrent);
+                    if (isCurrent) tile.setAttribute('aria-current', 'true');
+                    else tile.removeAttribute('aria-current');
+                });
             },
 
             createDragHandle(gridItem, fileId) {
@@ -8218,7 +8230,6 @@ this.updateImageCounters();
                     ...createDefaultGridDragSession(),
                     active: true,
                     pointerId: event.pointerId ?? null,
-                    initiatorId: fileId,
                     selectedIds,
                     dragElements: draggedElements
                 };
@@ -8278,19 +8289,17 @@ this.updateImageCounters();
                 let targetIndex = allFiles.findIndex(file => file.id === dropTargetId);
                 if (targetIndex === -1) { targetIndex = allFiles.length; }
 
-                const selectedIds = [...session.selectedIds];
-                const initiatorId = session.initiatorId;
-                this.clearDragState();
-
                 try {
-                    await this.applyReorder(selectedIds, targetIndex, initiatorId);
+                    await this.applyReorder(session.selectedIds, targetIndex);
                 } catch (error) {
                     console.error('Error reordering grid items:', error);
                     Utils.showToast(`Error reordering items: ${error.message}`, 'error', true);
-                } finally { this.clearDragState(); }
+                } finally {
+                    this.clearDragState();
+                }
             },
 
-            async applyReorder(selectedIds, targetIndex, initiatorId = selectedIds?.[0]) {
+            async applyReorder(selectedIds, targetIndex) {
                 if (!Array.isArray(selectedIds) || selectedIds.length === 0) { return; }
                 const stackName = state.grid.stack;
                 if (!stackName) { return; }
@@ -8307,13 +8316,9 @@ this.updateImageCounters();
                 const movingItems = [];
                 const remainingItems = [];
 
-                const visibleSelected = allFiles.filter(file => selectedSet.has(file.id));
-                const initiator = visibleSelected.find(file => String(file.id) === String(initiatorId));
-                if (initiator) movingItems.push(initiator);
-                visibleSelected.forEach(file => { if (file !== initiator) movingItems.push(file); });
                 stackArray.forEach(file => {
-                    if (!selectedSet.has(file.id)) remainingItems.push(file);
-                    else if (!movingItems.some(item => String(item.id) === String(file.id))) movingItems.push(file);
+                    if (selectedSet.has(file.id)) { movingItems.push(file); }
+                    else { remainingItems.push(file); }
                 });
 
                 if (movingItems.length === 0) { return; }
@@ -8373,7 +8378,6 @@ this.updateImageCounters();
                 state.grid.selected = [...selectedIds];
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
-                state.grid.dragReorderApplied = true;
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStackOrder[0]?.id || null;
 
@@ -8440,8 +8444,6 @@ this.updateImageCounters();
             },
 
             clearDragState() {
-                this.detachDragListeners();
-                if (document.activeElement?.closest?.('#grid-container .grid-drag-handle')) document.activeElement.blur();
                 const session = state.grid.dragSession || {};
                 if (session.dropTarget) {
                     session.dropTarget.classList.remove('drop-target');
@@ -8450,7 +8452,6 @@ this.updateImageCounters();
                     session.dragElements.forEach(el => el.classList.remove('dragging'));
                 }
                 document.body.style.userSelect = '';
-                Utils.elements.gridContainer?.querySelectorAll('.dragging, .drop-target').forEach(item => item.classList.remove('dragging', 'drop-target'));
                 this.resetDragSession();
             },
 
@@ -8460,18 +8461,13 @@ this.updateImageCounters();
                 state.grid.isDragging = false;
             },
 
-            markReorderDirty() {
-                state.grid.isDirty = true;
-                state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
-                state.grid.dragReorderApplied = false;
-            },
-
             toggleSelection(e, fileId) {
                 const gridItem = e.currentTarget;
                 const index = state.grid.selected.indexOf(fileId);
                 if (index === -1) { state.grid.selected.push(fileId); gridItem.classList.add('selected');
                 } else { state.grid.selected.splice(index, 1); gridItem.classList.remove('selected'); }
-                this.markReorderDirty();
+                state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
                 this.updateSelectionUI();
             },
 
@@ -8489,7 +8485,8 @@ this.updateImageCounters();
                 document.querySelectorAll('#grid-container .grid-item').forEach(item => {
                     item.classList.add('selected');
                 });
-                this.markReorderDirty();
+                state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
                 this.updateSelectionUI();
             },
 
@@ -8521,7 +8518,8 @@ this.updateImageCounters();
                 Utils.elements.gridContainer.innerHTML = '';
                 this.initializeLazyLoad(state.grid.stack, results);
                 this.updateSelectionUI();
-                this.markReorderDirty();
+                state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
             },
 
             resetSearch() {
@@ -8603,7 +8601,8 @@ this.updateImageCounters();
                 Utils.elements.gridContainer.innerHTML = '';
                 this.initializeLazyLoad(stackName, activeFiles);
                 this.updateSelectionUI();
-                this.markReorderDirty();
+                state.grid.isDirty = true;
+                state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
             },
 
             syncSelectionWithFocus() {
@@ -8733,7 +8732,8 @@ this.updateImageCounters();
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStack[0]?.id || null;
                 if (state.grid.stack === state.currentStack) {
-                    CurrentImage.set(newStack[0]?.id, state.grid.stack, { allowCrossStack: false });
+                    CurrentImage.set(state.currentFileId, state.grid.stack, { allowCrossStack: false })
+                        || CurrentImage.set(newStack[0]?.id, state.grid.stack, { allowCrossStack: false });
                 }
                 Utils.showToast('Stack order updated', 'success');
                 return true;
@@ -11894,8 +11894,6 @@ this.updateImageCounters();
                 card.style.filter = 'none';
                 card.addEventListener('click', event => {
                     if (card.dataset.moved === 'true' || event.detail !== 0) return;
-                    const sincePointerActivation = Date.now() - Number(card.dataset.pointerActivatedAt || 0);
-                    if (sincePointerActivation >= 0 && sincePointerActivation < 800) return;
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
@@ -12166,15 +12164,17 @@ this.updateImageCounters();
                 if (event.pointerId !== this.pointerId) return;
                 this.orthonormalizeOrient();
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
+                const pressedCard = this.pressedCard;
+                const pressedFileId = this.pressedFileId;
                 const tapSlop = this.tapSlop(this.pressedPointerType || event.pointerType);
-                const moved = this.maxPointerDistance > tapSlop || this.pressedCard?.dataset.moved === 'true';
-                const pressedCard = this.pressedCard, pressedFileId = this.pressedFileId;
+                const moved = this.maxPointerDistance > tapSlop || pressedCard?.dataset.moved === 'true';
                 this.dragging = false; this.dragIntent = false; this.pointerId = null;
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
                 this.elements.scene.classList.remove('dragging');
-                if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop && pressedCard && pressedFileId) {
-                    pressedCard.dataset.pointerActivatedAt = String(Date.now());
-                    this.activateFileId(pressedFileId, pressedCard);
+                if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
+                    const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
+                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
+                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
                 }
                 this.requestFrame();
             },
