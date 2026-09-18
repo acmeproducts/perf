@@ -590,8 +590,6 @@
         }
         .grid-item::before { content: ""; display: block; padding-top: 100%; }
         .grid-item.selected { box-shadow: 0 0 0 4px #3b82f6; }
-        .grid-item.current { box-shadow: 0 0 0 4px #f59e0b; }
-        .grid-item.current.selected { box-shadow: 0 0 0 4px #3b82f6, 0 0 0 7px #f59e0b; }
         .grid-item.dragging {
             box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.6);
             opacity: 0.9;
@@ -1092,7 +1090,6 @@
         }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
         .spatial-gallery__card.far { box-shadow: none; }
-        .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
         .spatial-gallery__chrome { position: absolute; z-index: 2000; display: flex; align-items: center; gap: 10px; }
         .spatial-gallery__header { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); z-index: 2100; display: grid; grid-template-columns: minmax(0,1fr) 46px minmax(0,1fr); align-items: start; pointer-events: none; isolation: isolate; }
@@ -7731,7 +7728,7 @@
                     state.currentScale = 1;
                     state.panOffset = { x: 0, y: 0 };
                     this.applyTransform();
-                    Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
+                    const presentation = Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
                     this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
                     this.prefetchStackHeads();
                     if (CanonicalInspection.active()) {
@@ -7746,6 +7743,7 @@
                             }
                         }, { priority: 'background', timeout: 300 });
                     }
+                    return presentation;
 
                 } catch (error) {
                      Utils.showToast(`Error loading image: ${error.message}`, 'error', true);
@@ -7994,10 +7992,7 @@ this.updateImageCounters();
                 const value = Utils.elements.gridSize.value;
                 Utils.elements.gridContainer.style.gridTemplateColumns = `repeat(${value}, 1fr)`;
                 const sourceFiles = Array.isArray(filesOverride) ? [...filesOverride] : [...(state.stacks[stack] || [])];
-                const preferredIndex = origin?.fileId == null ? -1 : sourceFiles.findIndex(file => String(file.id) === String(origin.fileId));
-                const orderedFiles = preferredIndex > 0
-                    ? [sourceFiles[preferredIndex], ...sourceFiles.slice(0, preferredIndex), ...sourceFiles.slice(preferredIndex + 1)]
-                    : sourceFiles;
+                const orderedFiles = sourceFiles;
                 state.grid.entryFileId = orderedFiles[0]?.id || null;
                 state.grid.selected = [];
                 state.grid.filtered = Array.isArray(filesOverride) ? [...orderedFiles] : [];
@@ -8537,11 +8532,7 @@ this.updateImageCounters();
                 Utils.elements.clearSearchBtn.style.display = 'none';
                 Utils.elements.gridEmptyState.classList.add('hidden');
                 const sourceFiles = state.grid.filterTag ? TableTagTargets.taggedFiles(state.grid.filterTag, state.grid.stack) : [...(state.stacks[state.grid.stack] || [])];
-                const currentId = CurrentImage.current()?.id;
-                const currentIndex = sourceFiles.findIndex(file => String(file.id) === String(currentId));
-                const orderedFiles = currentIndex > 0
-                    ? [sourceFiles[currentIndex], ...sourceFiles.slice(0, currentIndex), ...sourceFiles.slice(currentIndex + 1)]
-                    : sourceFiles;
+                const orderedFiles = sourceFiles;
                 state.grid.entryFileId = orderedFiles[0]?.id || null;
                 state.grid.filtered = state.grid.filterTag ? [...orderedFiles] : [];
                 Utils.elements.gridContainer.innerHTML = '';
@@ -8604,8 +8595,6 @@ this.updateImageCounters();
                 }
 
                 state.grid.entryFileId = state.grid.selected[0] || activeFiles[0]?.id || null;
-                const entryIndex = activeFiles.findIndex(file => String(file.id) === String(state.grid.entryFileId));
-                if (entryIndex > 0) activeFiles = [activeFiles[entryIndex], ...activeFiles.slice(0, entryIndex), ...activeFiles.slice(entryIndex + 1)];
                 if (state.grid.filtered.length > 0) state.grid.filtered = [...activeFiles];
 
                 Utils.elements.gridContainer.innerHTML = '';
@@ -10087,18 +10076,20 @@ this.updateImageCounters();
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
                 CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (CanonicalInspection.active()) CanonicalInspection.syncCurrent();
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
-                if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
+                if (CanonicalInspection.active()) App.persistViewContext();
             },
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
                 state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
                 CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (CanonicalInspection.active()) CanonicalInspection.syncCurrent();
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
-                if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
+                if (CanonicalInspection.active()) App.persistViewContext();
             },
             async deleteCurrentImage() {
                 await Core.deleteCurrentImage({ exitFocusIfEmpty: true, source: 'gesture:shortcut' });
@@ -11180,6 +11171,12 @@ this.updateImageCounters();
             isOpen() { return Boolean(this.elements.root && !this.elements.root.hidden); },
             workingFiles(stackName = this.stackName) { return (state.stacks[stackName] || []).filter(file => TableTagTargets.isEligible(file)); },
             displayLimit(total) { return Math.min(this.imageLimit, total); },
+            populationFor(files, fileId = this.currentFileId) {
+                const count = this.displayLimit(files.length);
+                const index = files.findIndex(file => String(file.id) === String(fileId));
+                const start = index >= count ? Math.min(index, files.length - count) : 0;
+                return files.slice(start, start + count);
+            },
             updateControlLabels() {
                 if (this.elements.scale) this.elements.scale.textContent = `${Math.round(this.imageScale * 100)}%`;
                 if (this.elements.limit) this.elements.limit.textContent = String(this.imageLimit);
@@ -11220,11 +11217,10 @@ this.updateImageCounters();
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
-                    const start = Math.max(0, files.findIndex(file => String(file.id) === String(this.currentFileId)));
-                    const ordered = files.slice(start).concat(files.slice(0, start));
-                    const limit = this.displayLimit(ordered.length);
-                    this.build(ordered.slice(0, limit));
-                    this.deck = ordered.slice(limit).map(file => file.id);
+                    const population = this.populationFor(files);
+                    this.build(population);
+                    const displayed = new Set(population.map(file => String(file.id)));
+                    this.deck = files.filter(file => !displayed.has(String(file.id))).map(file => file.id);
                 }
             },
             resolveEligible(fileId, stackName = this.stackName) {
@@ -11255,13 +11251,12 @@ this.updateImageCounters();
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, stackName, { allowCrossStack: false });
                 const eligible = this.workingFiles(stackName);
-                const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
-                const ordered = eligible.slice(start).concat(eligible.slice(0, start));
-                const limit = this.displayLimit(ordered.length);
-                this.deck = ordered.slice(limit).map(file => file.id);
+                const population = this.populationFor(eligible, selected?.id);
+                const displayed = new Set(population.map(file => String(file.id)));
+                this.deck = eligible.filter(file => !displayed.has(String(file.id))).map(file => file.id);
                 this.elements.root.hidden = false;
                 document.body.style.overflow = 'hidden';
-                this.build(ordered.slice(0, limit));
+                this.build(population);
                 TableTagTargets.render();
                 this.updateCount();
                 state.inspection = { surface: 'table', origin: null, fileId: this.currentFileId };
@@ -11300,18 +11295,18 @@ this.updateImageCounters();
                 const selected = this.resolveEligible(preferredFileId, this.stackName);
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, this.stackName, { allowCrossStack: false });
-                const valid = new Set(eligible.map(file => String(file.id)));
+                const population = this.populationFor(eligible, selected?.id);
+                const valid = new Set(population.map(file => String(file.id)));
                 if (this.pointer && !valid.has(String(this.pointer.photo.fileId))) this.cancelPointer();
                 this.photos.filter(photo => !valid.has(String(photo.fileId))).forEach(photo => photo.element.remove());
                 this.photos = this.photos.filter(photo => valid.has(String(photo.fileId)));
-                const mounted = new Set(this.photos.map(photo => String(photo.fileId)));
-                if (selected && !mounted.has(String(selected.id))) this.spawn(selected, this.photos.length);
-                const limit = this.displayLimit(eligible.length);
-                for (const file of eligible) {
-                    if (this.photos.length >= limit) break;
+                for (const file of population) {
                     if (!this.photos.some(photo => String(photo.fileId) === String(file.id))) this.spawn(file, this.photos.length);
                 }
-                this.deck = eligible.filter(file => !this.photos.some(photo => String(photo.fileId) === String(file.id))).map(file => file.id);
+                const mounted = new Map(this.photos.map(photo => [String(photo.fileId), photo]));
+                this.photos = population.map(file => mounted.get(String(file.id))).filter(Boolean);
+                this.photos.forEach(photo => this.elements.surface.appendChild(photo.element));
+                this.deck = eligible.filter(file => !valid.has(String(file.id))).map(file => file.id);
                 this.updateCount();
             },
             paint(photo) { photo.element.style.zIndex = photo.zIndex; photo.element.style.transform = `translate3d(${photo.x}px,${photo.y}px,0) rotate(${photo.rotation}deg) scale(${photo.scale})`; },
@@ -11702,10 +11697,9 @@ this.updateImageCounters();
 
             populationFor(stack, fileId) {
                 const count = Math.min(this.imageLimit, stack.length);
-                const population = stack.slice(0, count);
-                if (!fileId || population.some(file => String(file.id) === String(fileId))) return population;
-                const exact = stack.find(file => String(file.id) === String(fileId));
-                return exact && population.length ? [exact, ...population.slice(0, Math.max(0, count - 1))] : population;
+                const index = stack.findIndex(file => String(file.id) === String(fileId));
+                const start = index >= count ? Math.min(index, stack.length - count) : 0;
+                return stack.slice(start, start + count);
             },
 
             syncPopulation(fileId = state.currentFileId) {
@@ -12134,13 +12128,11 @@ this.updateImageCounters();
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const directCard = event.composedPath?.().find(node => node?.classList?.contains?.('spatial-gallery__card'))
-                    || event.target?.closest?.('.spatial-gallery__card') || null;
+                const directCard = event.target?.closest?.('.spatial-gallery__card') || null;
                 const hit = directCard ? this.cards.find(item => item.element === directCard) : this.cardAtPoint(event.clientX, event.clientY);
-                const card = directCard || hit?.element || null;
+                const card = hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
                 this.pressedCard = card; this.pressedFileId = card?.dataset.fileId ? String(card.dataset.fileId) : null;
-                this.pressedCardWasDirect = Boolean(directCard);
                 this.pressedPointerType = event.pointerType || 'mouse';
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
@@ -12174,17 +12166,13 @@ this.updateImageCounters();
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const pressedCard = this.pressedCard;
                 const pressedFileId = this.pressedFileId;
-                const pressedCardWasDirect = this.pressedCardWasDirect;
                 const tapSlop = this.tapSlop(this.pressedPointerType || event.pointerType);
                 const moved = this.maxPointerDistance > tapSlop || pressedCard?.dataset.moved === 'true';
                 this.dragging = false; this.dragIntent = false; this.pointerId = null;
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
-                this.pressedCardWasDirect = false;
                 this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
-                    const releaseCard = pressedCardWasDirect ? null : this.cardAtPoint(event.clientX, event.clientY);
-                    const stillOnPressedCard = pressedCard && (pressedCardWasDirect || releaseCard?.element === pressedCard);
-                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
+                    if (pressedCard && pressedFileId) this.activateFileId(pressedFileId, pressedCard);
                 }
                 this.requestFrame();
             },
@@ -12583,7 +12571,8 @@ this.updateImageCounters();
                     stackName: resolved.stackName,
                     fileId: resolved.file.id
                 });
-                state.inspection = { surface: 'focus', origin: this.origin, referrer: { ...activeReferrer }, fileId: resolved.file.id };
+                const requestedId = String(resolved.file.id);
+                state.inspection = { surface: 'focus', origin: this.origin, referrer: { ...activeReferrer }, requestedFileId: requestedId, fileId: resolved.file.id };
                 if (activeReferrer.surface === 'explore') {
                     SpatialGallery.suspendForFocus(resolved.file.id);
                 } else if (activeReferrer.surface === 'table') {
@@ -12591,6 +12580,20 @@ this.updateImageCounters();
                     PhotoTable.currentFileId = resolved.file.id;
                     PhotoTable.suspend();
                 }
+                await Core.displayCurrentImage({ immediateSrc: immediateResource || immediateSrc });
+                if (token !== this.transitionToken) return false;
+                const canonical = CanonicalStackOrder.get(resolved.stackName);
+                const canonicalPosition = canonical.findIndex(file => String(file.id) === requestedId);
+                const image = Utils.elements.centerImage;
+                const binding = SharedImageResources.bindings.get(image);
+                const atomic = canonicalPosition >= 0
+                    && state.currentStackPosition === canonicalPosition
+                    && String(state.currentFileId) === requestedId
+                    && String(state.inspection.requestedFileId) === requestedId
+                    && String(state.inspection.fileId) === requestedId
+                    && String(image.dataset.fileId) === requestedId
+                    && String(binding?.fileId) === requestedId;
+                if (!atomic || token !== this.transitionToken) return false;
                 state.isFocusMode = true;
                 const exitButton = document.getElementById('focus-origin-close');
                 if (exitButton) exitButton.disabled = false;
@@ -12599,8 +12602,6 @@ this.updateImageCounters();
                 this.syncExitControl();
                 ModeNavigation.show('focus');
                 Gestures.updateGestureOverlayMode();
-                await Core.displayCurrentImage({ immediateSrc: immediateResource || immediateSrc });
-                if (token !== this.transitionToken) return false;
                 Core.updateImageCounters();
                 Core.updateFavoriteButton();
                 if (!restoring) App.persistViewContext();
@@ -12633,35 +12634,23 @@ this.updateImageCounters();
                     if (persist) App.persistViewContext();
                     return current || false;
                 }
-                if (!current || !(state.stacks[state.currentStack] || []).length) {
-                    SpatialGallery.close({ restoreFocus: false });
-                    PhotoTable.close({ restoreFocus: false });
-                    ModeNavigation.hide();
-                    Core.showEmptyState();
+                requestAnimationFrame(() => Utils.defer(() => {
+                    if (!current || !(state.stacks[state.currentStack] || []).length) {
+                        SpatialGallery.close({ restoreFocus: false }); PhotoTable.close({ restoreFocus: false });
+                        ModeNavigation.hide(); Core.showEmptyState();
+                    } else if (referrer.surface === 'explore') {
+                        SpatialGallery.transitionMoving = true;
+                        SpatialGallery.resumeFromFocus(current.id);
+                        SpatialGallery.transitionMoving = false;
+                    } else if (referrer.surface === 'table') {
+                        const canResume = PhotoTable.folderId === state.currentFolder?.id && PhotoTable.folderGeneration === state.folderSessionGeneration
+                            && PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0;
+                        if (canResume) PhotoTable.resume(current.id);
+                        else PhotoTable.open({ stackName: state.currentStack, fileId: current.id });
+                    } else returnSpatialModeToSort({ stackName: state.currentStack, fileId: current.id, source: 'focus-referrer' });
                     if (persist) App.persistViewContext();
-                    return false;
-                }
-                if (referrer.surface === 'explore') {
-                    SpatialGallery.transitionMoving = true;
-                    SpatialGallery.resumeFromFocus(current.id);
-                    SpatialGallery.transitionMoving = false;
-                    // The X stays disabled until the next Focus enter re-enables it; a queued or
-                    // repeated tap on a stale button must never fire a second exit to Sort.
-                } else if (referrer.surface === 'table') {
-                    const canResume = PhotoTable.folderId === state.currentFolder?.id && PhotoTable.folderGeneration === state.folderSessionGeneration
-                        && PhotoTable.stackName === state.currentStack && PhotoTable.photos.length > 0
-                        && (state.stacks[state.currentStack] || []).some(file => String(file.id) === String(current.id));
-                    if (canResume) PhotoTable.resume(current.id);
-                    else PhotoTable.open({ stackName: state.currentStack, fileId: current.id });
-                } else {
-                    const result = returnSpatialModeToSort({ stackName: state.currentStack, fileId: current.id, source: 'focus-referrer' });
-                    if (persist) Promise.resolve(result).then(() => App.persistViewContext());
-                    return result;
-                }
-                if (persist) App.persistViewContext();
-                const returned = CurrentImage.current();
-                if (returned && String(returned.id) === String(current.id)) return CurrentImage.assert(current.id, `${referrer.surface} return`);
-                return returned || false;
+                }, { priority: 'high', timeout: 0 }));
+                return current || false;
             },
 
             async switchStack(stackName) {
@@ -12678,7 +12667,7 @@ this.updateImageCounters();
                 }
                 if (referrer.surface === 'table') { PhotoTable.stackName = stackName; PhotoTable.currentFileId = stack[0].id; }
                 const nextReferrer = this.setReferrer({ surface: referrer.surface, stackName, fileId: stack[0].id });
-                state.inspection = { surface: 'focus', origin: this.origin, referrer: { ...nextReferrer }, fileId: stack[0].id };
+                state.inspection = { surface: 'focus', origin: this.origin, referrer: { ...nextReferrer }, requestedFileId: String(stack[0].id), fileId: stack[0].id };
                 await Core.displayCurrentImage();
                 this.syncCurrent(); App.persistViewContext();
                 return CurrentImage.assert(stack[0].id, `${referrer.surface} stack switch`);
@@ -12688,6 +12677,7 @@ this.updateImageCounters();
                 if (!this.active()) return null;
                 const current = CurrentImage.current();
                 if (!current) return null;
+                state.inspection.requestedFileId = String(current.id);
                 state.inspection.fileId = current.id;
                 this.referrer.stackName = state.currentStack;
                 this.referrer.fileId = current.id;
