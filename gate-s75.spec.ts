@@ -76,3 +76,28 @@ test('§75d explore-origin close keeps its anchor routing (unchanged)', async ({
   expect(out.sphereVisible).toBe(true);
   expect(out.currentId).toBe('q3');
 });
+
+test('a selection edit after drag re-enables reorder on close', async ({ page }) => {
+  await boot(page);
+  const out = await page.evaluate(async () => {
+    const state = (window as any).__orbitalAppState;
+    const grid = (window as any).Grid;
+    grid.open('in', {});
+    await new Promise(r => setTimeout(r, 150));
+
+    // Model a completed drag, then make a later reorder-producing selection edit.
+    state.grid.dragReorderApplied = true;
+    state.grid.skipReorderOnClose = true;
+    state.grid.isDirty = false;
+    const tile = document.querySelector('#grid-container .grid-item') as HTMLElement;
+    grid.toggleSelection({ currentTarget: tile }, tile.dataset.fileId);
+
+    let closeReorders = 0;
+    grid.reorderStackOnClose = async () => { closeReorders += 1; return true; };
+    const guardAfterEdit = state.grid.dragReorderApplied;
+    await grid.close();
+    return { guardAfterEdit, closeReorders };
+  });
+  expect(out.guardAfterEdit).toBe(false);
+  expect(out.closeReorders).toBe(1);
+});
