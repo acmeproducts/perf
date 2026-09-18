@@ -1944,9 +1944,20 @@
             },
             inspection: { surface: null, origin: null, fileId: null },
         };
+        const CanonicalStackOrder = {
+            get(stackName = state.currentStack) {
+                return Array.isArray(state.stacks[stackName]) ? state.stacks[stackName] : [];
+            },
+            replace(stackName, files) {
+                const currentFileId = state.currentStack === stackName ? state.currentFileId : null;
+                state.stacks[stackName] = files;
+                if (currentFileId != null) CurrentImage.set(currentFileId, stackName, { allowCrossStack: false });
+                return state.stacks[stackName];
+            }
+        };
         const CurrentImage = {
             stack(stackName = state.currentStack) {
-                return Array.isArray(state.stacks[stackName]) ? state.stacks[stackName] : [];
+                return CanonicalStackOrder.get(stackName);
             },
             locate(fileId, preferredStack = state.currentStack) {
                 if (fileId == null) return null;
@@ -8365,7 +8376,7 @@ this.updateImageCounters();
                     file.stackSequence = newSequence;
                 });
 
-                state.stacks[stackName] = newStackOrder;
+                CanonicalStackOrder.replace(stackName, newStackOrder);
 
                 if (state.grid.filtered.length > 0) {
                     const filteredIds = new Set(state.grid.filtered.map(file => file.id));
@@ -8389,7 +8400,6 @@ this.updateImageCounters();
                 Core.updateStackCounts();
 
                 if (stackName === state.currentStack) {
-                    CurrentImage.set(state.currentFileId, stackName, { allowCrossStack: false });
                     await Core.displayCurrentImage();
                     Core.updateImageCounters();
                 }
@@ -8728,13 +8738,9 @@ this.updateImageCounters();
                 });
                 state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
 
-                state.stacks[state.grid.stack] = newStack;
+                CanonicalStackOrder.replace(state.grid.stack, newStack);
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStack[0]?.id || null;
-                if (state.grid.stack === state.currentStack) {
-                    CurrentImage.set(state.currentFileId, state.grid.stack, { allowCrossStack: false })
-                        || CurrentImage.set(newStack[0]?.id, state.grid.stack, { allowCrossStack: false });
-                }
                 Utils.showToast('Stack order updated', 'success');
                 return true;
             }
@@ -12128,11 +12134,13 @@ this.updateImageCounters();
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const hit = this.cardAtPoint(event.clientX, event.clientY);
-                const card = hit?.element || null;
+                const directCard = event.composedPath?.().find(node => node?.classList?.contains?.('spatial-gallery__card'))
+                    || event.target?.closest?.('.spatial-gallery__card') || null;
+                const hit = directCard ? this.cards.find(item => item.element === directCard) : this.cardAtPoint(event.clientX, event.clientY);
+                const card = directCard || hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
-                // Coordinate-based picking: the visually frontmost card at the down point is authoritative.
-                this.pressedCard = card; this.pressedFileId = hit ? String(hit.fileId || '') : null;
+                this.pressedCard = card; this.pressedFileId = card?.dataset.fileId ? String(card.dataset.fileId) : null;
+                this.pressedCardWasDirect = Boolean(directCard);
                 this.pressedPointerType = event.pointerType || 'mouse';
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
@@ -12166,14 +12174,16 @@ this.updateImageCounters();
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const pressedCard = this.pressedCard;
                 const pressedFileId = this.pressedFileId;
+                const pressedCardWasDirect = this.pressedCardWasDirect;
                 const tapSlop = this.tapSlop(this.pressedPointerType || event.pointerType);
                 const moved = this.maxPointerDistance > tapSlop || pressedCard?.dataset.moved === 'true';
                 this.dragging = false; this.dragIntent = false; this.pointerId = null;
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
+                this.pressedCardWasDirect = false;
                 this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
-                    const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
-                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
+                    const releaseCard = pressedCardWasDirect ? null : this.cardAtPoint(event.clientX, event.clientY);
+                    const stillOnPressedCard = pressedCard && (pressedCardWasDirect || releaseCard?.element === pressedCard);
                     if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
                 }
                 this.requestFrame();
