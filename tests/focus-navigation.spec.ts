@@ -838,9 +838,9 @@ test.describe('Explorer pointer hit targeting', () => {
         card.element.style.cssText = `position: fixed; left: ${positions[index]}px; top: 180px; width: 160px; height: 120px; margin: 0; transform: none !important; z-index: ${index + 1};`;
       });
 
-      const activations: Array<{ fileId: string, cardFileId: string }> = [];
-      gallery.activateFileId = (fileId: string, element: HTMLElement) => {
-        activations.push({ fileId, cardFileId: gallery.cards.find((card: any) => card.element === element)?.fileId });
+      const activations: Array<{ fileId: string, cardFileId: string, isCardRecord: boolean }> = [];
+      gallery.activateFileId = (fileId: string, record: any) => {
+        activations.push({ fileId, cardFileId: record?.fileId, isCardRecord: gallery.cards.includes(record) });
         return true;
       };
 
@@ -864,9 +864,9 @@ test.describe('Explorer pointer hit targeting', () => {
     });
 
     expect(result).toEqual([
-      { fileId: 'file-x', cardFileId: 'file-x' },
-      { fileId: 'file-y', cardFileId: 'file-y' },
-      { fileId: 'file-z', cardFileId: 'file-z' }
+      // Changing the element identity after pointerdown invalidates the touch release.
+      { fileId: 'file-y', cardFileId: 'file-y', isCardRecord: true },
+      { fileId: 'file-z', cardFileId: 'file-z', isCardRecord: true }
     ]);
   });
 
