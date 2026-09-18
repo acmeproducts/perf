@@ -11565,6 +11565,7 @@ this.updateImageCounters();
             visibilityAnimationSuspended: false, focusSuspension: null, warmResumeMetrics: null,
             pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null,
             stackName: '', folderId: null, transitionMoving: false, exitPointerGuard: null, populationPending: new Set(),
+            lastHandledPointerTapAt: 0,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11893,7 +11894,7 @@ this.updateImageCounters();
                 card.appendChild(img);
                 card.style.filter = 'none';
                 card.addEventListener('click', event => {
-                    if (card.dataset.moved === 'true' || event.detail !== 0) return;
+                    if (!this.shouldHandleCardClick(event, card)) return;
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
@@ -12121,6 +12122,30 @@ this.updateImageCounters();
                 return pointerType === 'touch' ? 12 : pointerType === 'pen' ? 8 : 3;
             },
 
+            cardFromPointerEvent(event) {
+                const scene = this.elements.scene;
+                const target = event?.target;
+                const exactCard = typeof target?.closest === 'function' ? target.closest('.spatial-gallery__card') : null;
+                if (exactCard && scene?.contains(exactCard)) {
+                    return this.cards.find(card => card.element === exactCard)
+                        || { element: exactCard, fileId: exactCard.dataset.fileId };
+                }
+                // Geometry is only a compatibility fallback when the event is genuinely unable to
+                // identify a target, or the user started on the scene background. A non-card child
+                // must not be replaced by a different, overlapping card's axis-aligned rectangle.
+                if (!target || typeof target.closest !== 'function' || target === scene) {
+                    return this.cardAtPoint(event.clientX, event.clientY);
+                }
+                return null;
+            },
+
+            shouldHandleCardClick(event, card) {
+                if (card.dataset.moved === 'true' || event.detail !== 0) return false;
+                // Keyboard activation has detail 0. Preserve it except for the compatibility click
+                // some touch browsers emit immediately after the pointer tap was already handled.
+                return !this.lastHandledPointerTapAt || performance.now() - this.lastHandledPointerTapAt >= 700;
+            },
+
             onPointerDown(event) {
                 if (event.button !== undefined && event.button !== 0) return;
                 this.dragging = true; this.pointerId = event.pointerId; this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = performance.now();
@@ -12128,10 +12153,9 @@ this.updateImageCounters();
                 this.startX = event.clientX; this.startY = event.clientY;
                 this.maxPointerDistance = 0;
                 this.dragIntent = false;
-                const hit = this.cardAtPoint(event.clientX, event.clientY);
+                const hit = this.cardFromPointerEvent(event);
                 const card = hit?.element || null;
                 card?.setAttribute('data-moved', 'false');
-                // Coordinate-based picking: the visually frontmost card at the down point is authoritative.
                 this.pressedCard = card; this.pressedFileId = hit ? String(hit.fileId || '') : null;
                 this.pressedPointerType = event.pointerType || 'mouse';
                 this.elements.scene.setPointerCapture?.(event.pointerId);
@@ -12172,9 +12196,10 @@ this.updateImageCounters();
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
                 this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
-                    const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
-                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
-                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
+                    if (pressedCard && pressedFileId) {
+                        this.lastHandledPointerTapAt = performance.now();
+                        this.activateFileId(pressedFileId, pressedCard);
+                    }
                 }
                 this.requestFrame();
             },
@@ -12702,6 +12727,45 @@ this.updateImageCounters();
             }
         };
 
+        const R3Regression = {
+            explorePointerTapIdentity() {
+                const scene = document.createElement('div');
+                const exact = document.createElement('button');
+                const adjacent = document.createElement('button');
+                const image = document.createElement('img');
+                exact.className = adjacent.className = 'spatial-gallery__card';
+                exact.dataset.fileId = 'qa-exact'; adjacent.dataset.fileId = 'qa-adjacent';
+                exact.appendChild(image); scene.append(exact, adjacent);
+                const canonicalEnterCalls = [];
+                const harness = {
+                    elements: { scene }, cards: [
+                        { element: exact, fileId: 'qa-exact' },
+                        { element: adjacent, fileId: 'qa-adjacent' }
+                    ],
+                    dragging: false, pointerId: null, maxPointerDistance: 0,
+                    lastHandledPointerTapAt: 0,
+                    cardAtPoint: () => harness.cards[1], // Deliberately wrong overlapping AABB hit.
+                    cardFromPointerEvent: SpatialGallery.cardFromPointerEvent,
+                    shouldHandleCardClick: SpatialGallery.shouldHandleCardClick,
+                    tapSlop: SpatialGallery.tapSlop,
+                    clearCardTap() {}, requestFrame() {}, orthonormalizeOrient() {},
+                    // activateFileId's production path calls CanonicalInspection.enter once; this
+                    // spy records that boundary without changing application navigation state.
+                    activateFileId(fileId, card) { canonicalEnterCalls.push({ fileId, card }); }
+                };
+                const down = { button: 0, pointerId: 9, pointerType: 'touch', clientX: 10, clientY: 10, target: image };
+                SpatialGallery.onPointerDown.call(harness, down);
+                // Six pixels is movement, but deliberately remains inside the 12px touch tap slop.
+                SpatialGallery.onPointerMove.call(harness, { ...down, clientX: 16 });
+                SpatialGallery.onPointerUp.call(harness, { ...down, type: 'pointerup', clientX: 16 });
+                const compatibilityClickSuppressed = !harness.shouldHandleCardClick({ detail: 0 }, exact);
+                harness.lastHandledPointerTapAt -= 701;
+                const laterKeyboardClickAllowed = harness.shouldHandleCardClick({ detail: 0 }, exact);
+                return canonicalEnterCalls.length === 1 && canonicalEnterCalls[0].fileId === 'qa-exact'
+                    && canonicalEnterCalls[0].card === exact && compatibilityClickSuppressed && laterKeyboardClickAllowed;
+            }
+        };
+
         const R3EngineeringGate = {
             snapshot() {
                 const uniqueIds = ['center-image', 'details-button', 'focus-stack-name', 'focus-image-count', 'focus-favorite-btn', 'focus-delete-btn'];
@@ -12717,13 +12781,14 @@ this.updateImageCounters();
                     canonicalControlUniqueness: Object.values(canonicalControls).every(count => count === 1),
                     sphereBrowseOnly: [...(sphere?.children || [])].every(child => child.id === 'spatial-gallery-scene' || child.classList.contains('spatial-gallery__header') || child.classList.contains('spatial-gallery__controls')),
                     exactCardIdentity: [...(sphere?.querySelectorAll('.spatial-gallery__card') || [])].every(card => Boolean(card.dataset.fileId) && String(card.querySelector('img')?.dataset.fileId) === String(card.dataset.fileId)),
+                    explorePointerTapIdentity: R3Regression.explorePointerTapIdentity(),
                     sharedResources: resources,
                     movementChurnFree: resources.sourceReplacementsDuringMovement === 0 && resources.elementRecreationsDuringMovement === 0,
                     hierarchyValid: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level') && document.querySelectorAll('#focus-origin-close').length === 1,
                     canonicalReferrerValid: !CanonicalInspection.active() || (['sort', 'explore', 'table'].includes(CanonicalInspection.referrer?.surface) && String(CanonicalInspection.referrer?.fileId) === String(CurrentImage.current()?.id)),
                     exploreChromeIsolated: Number.parseInt(getComputedStyle(document.getElementById('spatial-gallery-scene')).zIndex, 10) < Number.parseInt(getComputedStyle(document.querySelector('.spatial-gallery__header')).zIndex, 10)
                 };
-                result.pass = result.canonicalControlUniqueness && result.sphereBrowseOnly && result.exactCardIdentity && result.movementChurnFree && result.hierarchyValid && result.canonicalReferrerValid && result.exploreChromeIsolated;
+                result.pass = result.canonicalControlUniqueness && result.sphereBrowseOnly && result.exactCardIdentity && result.explorePointerTapIdentity && result.movementChurnFree && result.hierarchyValid && result.canonicalReferrerValid && result.exploreChromeIsolated;
                 return result;
             },
             assert() {
