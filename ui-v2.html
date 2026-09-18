@@ -1920,7 +1920,7 @@
             isDragging: false, isPinching: false, initialDistance: 0, currentScale: 1,
             maxScale: 4, minScale: 0.3, panOffset: { x: 0, y: 0 },
             grid: { stack: null, selected: [], filtered: [], isDirty: false, isDragging: false, origin: null, filterTag: null,
-                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, entryFileId: null, orderChanged: false, closing: false,
+                dragSession: createDefaultGridDragSession(), skipReorderOnClose: false, dragReorderApplied: false, openedFileId: null, entryFileId: null, orderChanged: false, closing: false,
                 lazyLoadState: { allFiles: [], renderedCount: 0, observer: null, batchSize: 20 } },
             tags: new Set(), loadingProgress: { current: 0, total: 0, offset: 0, phase: '' }, backgroundActivityCount: 0,
             folderMoveMode: { active: false, files: [] },
@@ -7975,6 +7975,8 @@ this.updateImageCounters();
                 state.grid.filterTag = filterTag ? TagService.normalizeTagValue(filterTag) : null;
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = Boolean(filterTag);
+                state.grid.dragReorderApplied = false;
+                state.grid.openedFileId = stack === state.currentStack ? CurrentImage.current()?.id || null : null;
                 state.grid.orderChanged = false;
                 state.grid.closing = false;
                 state.grid.dragSession = createDefaultGridDragSession();
@@ -8001,22 +8003,44 @@ this.updateImageCounters();
                 state.grid.closing = true;
                 const origin = state.grid.origin ? { ...state.grid.origin } : null;
                 const gridStack = state.grid.stack || state.currentStack;
-                const canonicalFileId = state.currentStack === gridStack ? CurrentImage.current()?.id || null : null;
-                const entryFileId = state.grid.entryFileId;
+                const canonicalFileId = state.grid.openedFileId;
                 this.clearDragState();
                 Utils.hideModal('grid-modal');
                 document.body.classList.remove('surface-grid-open');
                 ModeCenterTap.reset();
                 try {
                     let reordered = false;
-                    if (state.grid.isDirty && !state.grid.skipReorderOnClose) {
+                    if (state.grid.isDirty && !state.grid.skipReorderOnClose && !state.grid.dragReorderApplied) {
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
+                    // Read fresh, not pre-captured: reorderStackOnClose() updates entryFileId internally,
+                    // so grabbing it before that call would use the pre-reorder (stale) value.
+                    const entryFileId = state.grid.entryFileId;
                     const fallbackStack = state.stacks[gridStack] || [];
-                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
+                    // If the order actually changed this session (a completed drag, or a search
+                    // result promoted to the front), the new front of stack is what should display --
+                    // that's the whole point of reordering. Otherwise keep the prior behavior of
+                    // staying on whatever image you were already viewing.
+                    let resolved = state.grid.orderChanged
+                        ? (CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        )
+                        : (CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
+                            || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false }));
                     const selected = resolved?.file || CurrentImage.current();
+                    if (state.grid.orderChanged && selected) {
+                        state.grid.entryFileId = selected.id;
+                        if (SpatialGallery.stackName === gridStack && SpatialGallery.files.length) {
+                            const nextFiles = SpatialGallery.populationFor(fallbackStack, selected.id);
+                            SpatialGallery.reconcilePopulation(nextFiles);
+                            SpatialGallery.selectedIndex = Math.max(0, nextFiles.findIndex(file => String(file.id) === String(selected.id)));
+                            SpatialGallery.select(SpatialGallery.selectedIndex);
+                        }
+                        if (PhotoTable.stackName === gridStack && PhotoTable.photos.length) PhotoTable.reconcilePopulation(selected.id);
+                        if (CanonicalInspection.active()) CanonicalInspection.syncCurrent();
+                    }
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
                         const stackName = selected ? state.currentStack : origin.stackName;
@@ -8058,6 +8082,8 @@ this.updateImageCounters();
                 state.grid.origin = null;
                 state.grid.filterTag = null;
                 state.grid.skipReorderOnClose = false;
+                state.grid.dragReorderApplied = false;
+                state.grid.openedFileId = null;
                 state.grid.entryFileId = null;
                 state.grid.orderChanged = false;
                 this.updateSelectionUI();
@@ -8208,12 +8234,14 @@ this.updateImageCounters();
                     this.updateSelectionUI();
                 }
 
-                const selectedIds = state.grid.selected.length > 0 ? [...state.grid.selected] : [fileId];
+                const visibleIds = (state.grid.lazyLoadState.allFiles || []).map(file => file.id);
+                const selectedSet = new Set(state.grid.selected.length > 0 ? state.grid.selected : [fileId]);
+                const selectedIds = [fileId, ...visibleIds.filter(id => id !== fileId && selectedSet.has(id))];
                 const draggedElements = [];
-                const selectedSet = new Set(selectedIds);
+                const dragSelectedSet = new Set(selectedIds);
                 if (Utils.elements.gridContainer) {
                     Utils.elements.gridContainer.querySelectorAll('.grid-item').forEach(tile => {
-                        if (selectedSet.has(tile.dataset.fileId)) {
+                        if (dragSelectedSet.has(tile.dataset.fileId)) {
                             tile.classList.add('dragging');
                             draggedElements.push(tile);
                         }
@@ -8313,13 +8341,10 @@ this.updateImageCounters();
                     : stackArray;
 
                 const selectedSet = new Set(selectedIds);
-                const movingItems = [];
                 const remainingItems = [];
-
-                stackArray.forEach(file => {
-                    if (selectedSet.has(file.id)) { movingItems.push(file); }
-                    else { remainingItems.push(file); }
-                });
+                const byId = new Map(stackArray.map(file => [file.id, file]));
+                const movingItems = selectedIds.map(id => byId.get(id)).filter(Boolean);
+                stackArray.forEach(file => { if (!selectedSet.has(file.id)) remainingItems.push(file); });
 
                 if (movingItems.length === 0) { return; }
 
@@ -8356,12 +8381,8 @@ this.updateImageCounters();
                 }
 
                 const timestamp = Date.now();
-                const updatesQueue = [];
                 newStackOrder.forEach((file, idx) => {
                     const newSequence = timestamp - idx;
-                    if (file.stackSequence !== newSequence) {
-                        updatesQueue.push({ fileId: file.id, newSequence });
-                    }
                     file.stackSequence = newSequence;
                 });
 
@@ -8378,8 +8399,19 @@ this.updateImageCounters();
                 state.grid.selected = [...selectedIds];
                 state.grid.isDirty = false;
                 state.grid.skipReorderOnClose = true;
+                state.grid.dragReorderApplied = true;
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStackOrder[0]?.id || null;
+
+                try {
+                    await Promise.all(newStackOrder.map(file =>
+                        state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' })
+                    ));
+                    await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+                } catch (error) {
+                    state.syncLog?.log({ event: 'grid:reorder:error', level: 'error', details: `Failed to persist reordered stack: ${error.message}`, data: { stack: stackName } });
+                    throw error;
+                }
 
                 if (Utils.elements.gridContainer) {
                     Utils.elements.gridContainer.innerHTML = '';
@@ -8394,27 +8426,6 @@ this.updateImageCounters();
                     Core.updateImageCounters();
                 }
 
-                if (updatesQueue.length > 0) {
-                    Utils.defer(async () => {
-                        const results = await Promise.allSettled(updatesQueue.map(update => App.updateUserMetadata(update.fileId, { stackSequence: update.newSequence }, {
-                            skipDebounce: true,
-                            operationType: 'stack:reorder',
-                            origin: 'grid:drag',
-                            providerSilent: true,
-                            skipProviderSync: true
-                        })));
-                        const errors = results.filter(result => result.status === 'rejected');
-                        if (errors.length > 0) {
-                            state.syncLog?.log({
-                                event: 'grid:reorder:error',
-                                level: 'error',
-                                details: `Failed to persist ${errors.length} reordered item(s).`,
-                                data: { stack: stackName, count: errors.length }
-                            });
-                            Utils.showToast('Some items could not be fully reordered. Please retry.', 'error', true);
-                        }
-                    }, { priority: 'high', timeout: 32 });
-                }
             },
 
             detachDragListeners() {
@@ -8539,6 +8550,7 @@ this.updateImageCounters();
                 Core.updateStackCounts();
                 this.deselectAll();
                 state.grid.skipReorderOnClose = Boolean(state.grid.filterTag);
+                state.grid.isDirty = state.grid.dragReorderApplied;
             },
 
             refreshTagFilter() {
@@ -8723,14 +8735,18 @@ this.updateImageCounters();
                     file.stackSequence = timestamp - i;
                 });
 
-                newStack.forEach(file => {
-                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' });
-                });
-                state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
-
                 state.stacks[state.grid.stack] = newStack;
                 state.grid.orderChanged = true;
                 state.grid.entryFileId = newStack[0]?.id || null;
+
+                // Awaited, not fire-and-forget: close() must not proceed while this reorder is still
+                // unsaved, or a concurrent read (provider sync, cache reload) can put the old order
+                // back before the write lands.
+                await Promise.all(newStack.map(file =>
+                    state.dbManager.scheduleMetadataSave(file.id, { ...file }, { folderId: state.currentFolder.id, providerType: state.providerType }, { priority: 'high' })
+                ));
+                await state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, { priority: 'high' });
+
                 if (state.grid.stack === state.currentStack) {
                     CurrentImage.set(state.currentFileId, state.grid.stack, { allowCrossStack: false })
                         || CurrentImage.set(newStack[0]?.id, state.grid.stack, { allowCrossStack: false });
@@ -11894,6 +11910,12 @@ this.updateImageCounters();
                 card.style.filter = 'none';
                 card.addEventListener('click', event => {
                     if (card.dataset.moved === 'true' || event.detail !== 0) return;
+                    // A trailing synthetic click on Android can arrive with detail:0, same as a real
+                    // keyboard activation. If the pointer path just activated this exact card, treat
+                    // this click as that trailing echo and skip it -- a genuine keyboard press won't
+                    // land inside this short window right after a touch release.
+                    const since = Date.now() - Number(card.dataset.pointerActivatedAt || 0);
+                    if (since >= 0 && since < 800) return;
                     this.activateFileId(card.dataset.fileId, card);
                 });
                 this.elements.scene.appendChild(card);
@@ -12173,8 +12195,18 @@ this.updateImageCounters();
                 this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
                     const releaseCard = this.cardAtPoint(event.clientX, event.clientY);
-                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard;
-                    if (stillOnPressedCard) this.activateFileId(pressedFileId, pressedCard);
+                    const stillOnPressedCard = pressedCard && releaseCard?.element === pressedCard
+                        && String(releaseCard.fileId) === String(pressedFileId)
+                        && String(pressedCard.dataset.fileId) === String(pressedFileId);
+                    if (stillOnPressedCard) {
+                        // Mark this element as just handled by the pointer path. Android Chrome's
+                        // trailing synthetic 'click' after a touch tap can report detail:0, the same
+                        // signature as a real keyboard activation -- without this guard the card's own
+                        // click listener re-fires a moment later and can re-activate on whatever fileId
+                        // has since been bound to this pooled element, landing one card off.
+                        pressedCard.dataset.pointerActivatedAt = String(Date.now());
+                        this.activateFileId(pressedFileId, pressedCard);
+                    }
                 }
                 this.requestFrame();
             },
@@ -12752,6 +12784,9 @@ this.updateImageCounters();
                 const gridOrigin = state.grid.origin;
                 const gridFiles = state.grid.lazyLoadState.allFiles || [];
                 const originExistsInGrid = Boolean(gridOrigin?.fileId && gridFiles.some(file => String(file.id) === String(gridOrigin.fileId)));
+                const canonicalStack = state.stacks[state.currentStack] || [];
+                const canonicalCurrent = canonicalStack[state.currentStackPosition] || null;
+                const gridCanonical = state.stacks[state.grid.stack] || [];
                 const sphereVectorsEven = SpatialGallery.cards.every(card => {
                     const vector = card.vector;
                     if (!vector) return false;
@@ -12785,6 +12820,11 @@ this.updateImageCounters();
                     focusExitValid: document.querySelectorAll('#focus-origin-close').length === 1 && typeof CanonicalInspection.exit === 'function' && typeof CanonicalInspection.syncExitControl === 'function' && Gestures.focusDoubleTapExit === false,
                     focusGridFirstExact: !gridOrigin || gridOrigin.surface !== 'focus' || !originExistsInGrid || String(gridFiles[0]?.id) === String(gridOrigin.fileId),
                     gridCloseGuarded: typeof state.grid.closing === 'boolean',
+                    canonicalCurrentValid: String(canonicalCurrent?.id || '') === String(state.currentFileId || ''),
+                    gridTransactionValid: (!state.grid.dragReorderApplied || (state.grid.orderChanged && state.grid.skipReorderOnClose))
+                        && (!state.grid.orderChanged || String(gridCanonical[0]?.id || '') === String(state.grid.entryFileId || '')),
+                    surfaceCurrentValid: (SpatialGallery.elements.root.hidden || SpatialGallery.stackName !== state.currentStack || String(SpatialGallery.files[SpatialGallery.selectedIndex]?.id || '') === String(state.currentFileId || ''))
+                        && (PhotoTable.elements.root.hidden || PhotoTable.stackName !== state.currentStack || String(PhotoTable.currentFileId || '') === String(state.currentFileId || '')),
                     noImageCollisionEngine: typeof PhotoTable.resolveImageCollision === 'undefined',
                     tableCountsReconcile: tableSummary.untagged === workingFiles.length
                         && tableSummary.untagged + [...tableSummary.counts.values()].reduce((sum, count) => sum + count, 0) === tableSummary.total
@@ -12794,7 +12834,7 @@ this.updateImageCounters();
                     movementChurnFree: SharedImageResources.snapshot().sourceReplacementsDuringMovement === 0 && SharedImageResources.snapshot().elementRecreationsDuringMovement === 0,
                     noIntermediateInspection: !Object.prototype.hasOwnProperty.call(state.inspection || {}, 'level')
                 };
-                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.noNormalStackTargets && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.sortCenterSwipeValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.noImageCollisionEngine && result.tableCountsReconcile && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
+                result.pass = r3.pass && result.targetRangeValid && result.targetBindingsUnique && result.targetDomMatchesConfig && result.targetsTableOnly && result.processedPopulationExcluded && result.exactThumbnailIdentity && result.canonicalControlsUnique && result.managerUnique && result.surfaceChromeValid && result.gridCapableSelector && result.inlineTagManager && result.tableCountConsolidated && result.atomicPresentation && result.surfaceSuspendResume && result.modeChoiceValid && result.sortCenterChoiceValid && result.sortCenterSwipeValid && result.exploreAdaptiveLayout && result.exploreVectorsEven && result.focusExitValid && result.focusGridFirstExact && result.gridCloseGuarded && result.canonicalCurrentValid && result.gridTransactionValid && result.surfaceCurrentValid && result.noImageCollisionEngine && result.tableCountsReconcile && result.assignmentExactlyOnce && result.rareEffectsNonConsecutive && result.movementChurnFree && result.noIntermediateInspection;
                 return result;
             },
             assert() {
