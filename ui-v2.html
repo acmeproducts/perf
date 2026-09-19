@@ -850,6 +850,10 @@
         }
 
 
+        .app-container.focus-mode #focus-delete-btn,
+        .app-container.focus-mode #focus-favorite-btn,
+        .app-container.focus-mode #focus-image-count { bottom: max(20px, calc(var(--app-footer-height, 0px) + 8px)); }
+
         /* Focus Mode state toggling */
         .app-container.focus-mode #back-button,
         .app-container.focus-mode #normal-image-count,
@@ -1022,8 +1026,8 @@
         body.surface-grid-open #action-modal, body.surface-grid-open #details-modal { z-index: 17200; }
         .focus-origin-close { position: fixed; z-index: 13020; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: 46px; height: 46px; border: 1px solid rgba(255,255,255,.38); border-radius: 999px; color: #fff; background: rgba(15,23,42,.82); box-shadow: 0 10px 32px rgba(0,0,0,.38); font: 700 28px/1 system-ui; cursor: pointer; }
         .app-container:not(.focus-mode) .focus-origin-close { display: none !important; }
-        /* Focus is opaque: retain the warm Explore DOM and resources without painting it. */
-        body.origin-focus #spatial-gallery { display: none !important; }
+        /* Keep the suspended globe laid out beneath the opaque Focus layer. */
+        body.origin-focus #spatial-gallery { pointer-events: none; }
         body.origin-focus #photo-table { display: none !important; }
         body.origin-focus #back-button, body.origin-focus #normal-image-count, body.origin-focus #center-trash-btn, body.origin-focus .pill-counter { display: none !important; }
         body.origin-focus .app-container { z-index: 13000; }
@@ -9378,6 +9382,51 @@ this.updateImageCounters();
             }
         };
 
+        // Own the entire pointer gesture, including compatibility mouse events after a view changes.
+        const SurfaceTap = {
+            consumed: null,
+            init() {
+                if (this.initialized) return;
+                this.initialized = true;
+                document.addEventListener('pointerdown', () => { this.consumed = null; }, true);
+                document.addEventListener('pointercancel', () => { this.consumed = null; }, true);
+                for (const type of ['mousedown', 'mouseup', 'click']) document.addEventListener(type, event => {
+                    if (!this.consumed || (type === 'click' && event.detail === 0 && !event.pointerType)) return;
+                    event.preventDefault(); event.stopImmediatePropagation();
+                    if (type === 'click') this.consumed = null;
+                }, true);
+            },
+            consume(event) {
+                this.consumed = { pointerId: event.pointerId };
+                event.preventDefault(); event.stopPropagation();
+            },
+            bind(button, action) {
+                this.init();
+                let press = null;
+                button?.addEventListener('pointerdown', event => {
+                    if (event.button !== 0 || !event.isPrimary) return;
+                    event.preventDefault(); event.stopPropagation();
+                    press = { id: event.pointerId, x: event.clientX, y: event.clientY, distance: 0 };
+                    button.setPointerCapture?.(event.pointerId);
+                });
+                button?.addEventListener('pointermove', event => {
+                    if (press?.id === event.pointerId) press.distance = Math.max(press.distance, Math.hypot(event.clientX - press.x, event.clientY - press.y));
+                });
+                button?.addEventListener('pointercancel', () => { press = null; });
+                button?.addEventListener('pointerup', event => {
+                    const tap = press; press = null;
+                    if (!tap || tap.id !== event.pointerId) return;
+                    this.consume(event);
+                    if (Math.max(tap.distance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y)) <= 24) action();
+                });
+                button?.addEventListener('click', event => {
+                    // Keyboard and assistive activation has no preceding pointer gesture.
+                    if (event.detail !== 0) return;
+                    event.preventDefault(); event.stopPropagation(); action();
+                });
+            }
+        };
+
         const ModeCenterTap = {
             interval: 360, distance: 28, movement: 8, pending: null, pointer: null,
             reset() { this.pending = null; this.pointer = null; },
@@ -9481,11 +9530,13 @@ this.updateImageCounters();
             entry: null,
             switcherOpen: false,
             footerTrigger: null,
-            transitionGuard: null,
 
             init() {
                 const root = Utils.elements.submodeFooter;
                 this.footerTrigger = Utils.elements.appContainer?.querySelector('.app-footer') || null;
+                if (this.footerTrigger) new ResizeObserver(() => {
+                    Utils.elements.appContainer.style.setProperty('--app-footer-height', this.footerTrigger.getBoundingClientRect().height + 'px');
+                }).observe(this.footerTrigger);
 
                 root?.addEventListener('click', event => {
                     event.stopPropagation();
@@ -9521,12 +9572,6 @@ this.updateImageCounters();
                         this.closeSwitcher();
                     }
                 });
-
-                document.addEventListener('click', event => {
-                    if (!this.transitionGuard || event.target.closest?.('#focus-origin-close')) return;
-                    event.preventDefault();
-                    event.stopImmediatePropagation();
-                }, true);
 
                 this.syncButtons();
             },
@@ -11152,7 +11197,7 @@ this.updateImageCounters();
             imageScale: 1, imageLimit: 24, photoPressTimer: null,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             visibilityAnimationSuspended: false,
-            folderId: null, folderGeneration: 0, exitPointerGuard: null,
+            folderId: null, folderGeneration: 0,
             shotStats: { attempts: 0, captures: 0, misses: 0 },
             init() {
                 this.elements.root = document.getElementById('photo-table');
@@ -11176,7 +11221,7 @@ this.updateImageCounters();
                 ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(type => {
                     this.elements.controls?.addEventListener(type, event => event.stopPropagation(), { passive: type.startsWith('touch') });
                 });
-                document.getElementById('photo-table-close')?.addEventListener('click', event => { event.stopPropagation(); if (!this.exitPointerGuard) this.exit(); });
+                SurfaceTap.bind(document.getElementById('photo-table-close'), () => this.exit());
                 this.elements.surface.addEventListener('pointerdown', event => { this.down(event); this.emptyLongPressDown(event); });
                 this.elements.surface.addEventListener('pointermove', event => { this.move(event); this.emptyLongPressMove(event); });
                 this.elements.surface.addEventListener('pointerup', event => { this.up(event); this.emptyLongPressEnd(event); });
@@ -11328,7 +11373,9 @@ this.updateImageCounters();
             findElement(event) { const element = event.target.closest?.('.photo-table__print'); return this.photos.find(photo => photo.element === element); },
             down(event) {
                 if (event.button !== undefined && event.button !== 0) return;
-                const photo = this.findElement(event); if (!photo || photo.state === 'capturing') return;
+                const painted = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.photo-table__print');
+                const photo = this.photos.find(item => item.element === painted); if (!photo || photo.state === 'capturing') return;
+                event.preventDefault();
                 CurrentImage.set(photo.fileId, this.stackName, { allowCrossStack: false });
                 this.currentFileId = CurrentImage.current()?.id || photo.fileId;
                 this.updateCount();
@@ -11367,7 +11414,7 @@ this.updateImageCounters();
                 const hit = TableTagTargets.highlight(photo);
                 TableTagTargets.clearHighlight();
                 if (pointer.longPressed) { photo.state = 'resting'; this.paint(photo); return; }
-                if (distance < 10 && duration < 300) { photo.state = 'resting'; this.paint(photo); this.handleTap(photo); return; }
+                if (distance < 10 && duration < 300) { SurfaceTap.consume(event); photo.state = 'resting'; this.paint(photo); this.handleTap(photo); return; }
                 const sample = pointer.samples[Math.max(0, pointer.samples.length - 4)] || pointer.samples[0];
                 const dt = Math.max(16, performance.now() - sample.t);
                 const velocityX = (event.clientX - sample.x) / dt * 16, velocityY = (event.clientY - sample.y) / dt * 16;
@@ -11580,7 +11627,7 @@ this.updateImageCounters();
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
             visibilityAnimationSuspended: false, focusSuspension: null, warmResumeMetrics: null,
             pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null,
-            stackName: '', folderId: null, transitionMoving: false, exitPointerGuard: null, populationPending: new Set(),
+            stackName: '', folderId: null, transitionMoving: false, populationPending: new Set(),
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11595,27 +11642,7 @@ this.updateImageCounters();
                 this.elements.controlsToggle = document.getElementById('spatial-gallery-controls-toggle');
                 this.elements.stack?.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('explore'); });
                 const closeButton = document.getElementById('spatial-gallery-close');
-                closeButton?.addEventListener('pointerdown', event => {
-                    if (event.button !== undefined && event.button !== 0) return;
-                    this.closeTap = { id: event.pointerId, x: event.clientX, y: event.clientY };
-                });
-                closeButton?.addEventListener('pointerup', event => {
-                    const tap = this.closeTap; this.closeTap = null;
-                    if (!tap || event.pointerId !== tap.id || this.exitPointerGuard) return;
-                    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 24) return;
-                    // Exit on pointer-up: Safari can delay or drop the synthetic click after a tap on a
-                    // busy scene, which made the Explore X feel dead. The click handler below stays as a
-                    // keyboard/AT fallback and is suppressed briefly after a pointer exit.
-                    this.closeTapExitedAt = performance.now();
-                    ModeNavigation.exit();
-                });
-                closeButton?.addEventListener('pointercancel', () => { this.closeTap = null; });
-                closeButton?.addEventListener('click', event => {
-                    event.stopPropagation();
-                    if (this.exitPointerGuard) return;
-                    if (this.closeTapExitedAt && performance.now() - this.closeTapExitedAt < 700) return;
-                    ModeNavigation.exit();
-                });
+                SurfaceTap.bind(closeButton, () => ModeNavigation.exit());
                 this.elements.controlsToggle?.addEventListener('click', event => { event.stopPropagation(); this.toggleControls(); });
                 this.elements.controls?.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
                     event.stopPropagation(); this.adjustControl(button.closest('.spatial-gallery__stepper').dataset.control, Number(button.dataset.delta));
@@ -11639,7 +11666,7 @@ this.updateImageCounters();
                 this.elements.root?.addEventListener('touchmove', event => this.onTouchMove(event), { passive: false });
                 this.elements.root?.addEventListener('touchend', event => this.onTouchEnd(event), { passive: true });
                 this.elements.root?.addEventListener('touchcancel', event => this.onTouchEnd(event), { passive: true });
-                addEventListener('resize', () => { if (!this.elements.root.hidden) { this.rebalanceLayout('resize', { persist: false }); this.requestFrame(); } });
+                addEventListener('resize', () => { if (!this.elements.root.hidden) { this.rebalanceLayout('resize', { persist: false }); if (this.focusSuspension) this.focusSuspension.needsRender = true; this.requestFrame(); } });
                 this.elements.root?.addEventListener('keydown', event => {
                     if (event.key === 'Escape') { event.preventDefault(); ModeNavigation.exit(); }
                 });
@@ -11723,7 +11750,7 @@ this.updateImageCounters();
                 const unchanged = next.length === this.files.length && next.every((file, index) => String(file.id) === String(this.files[index]?.id));
                 this.files = next;
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
-                this.rebalanceLayout('population', { persist: false, log: false });
+                if (!this.focusSuspension) this.rebalanceLayout('population', { persist: false, log: false });
                 if (!unchanged) { this.reconcilePopulation(next); }
                 else { this.select(this.selectedIndex); SharedImageResources.pinExplorer(this.files); }
                 this.updateChrome();
@@ -11742,9 +11769,9 @@ this.updateImageCounters();
                     populationIds: this.files.map(file => String(file.id)), layout: this.focusLayoutSignature(),
                     renderedIds: this.cards.map(card => String(card.fileId)),
                     populationComplete: this.cards.length === this.files.length,
-                    wasAnimating: Boolean(this.frameId) || this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015
+                    wasAnimating: this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015
                 };
-                this.elements.root.hidden = true;
+                // Freeze the painted scene under Focus instead of tearing down its layout.
                 this.elements.root.inert = true;
                 this.elements.root.setAttribute('aria-hidden', 'true');
                 this.elements.root.style.pointerEvents = 'none';
@@ -11752,7 +11779,15 @@ this.updateImageCounters();
                 this.frameId = null;
                 clearTimeout(this.pageTimer);
                 this.cancelPopulationLoading();
+                this.adoptPopulationOrder(this.populationFor(state.stacks[this.stackName] || [], fileId));
                 return true;
+            },
+
+            canResumeFromFocus() {
+                const saved = this.focusSuspension;
+                return Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
+                    && saved.folderGeneration === state.folderSessionGeneration && saved.stackName === state.currentStack
+                    && saved.layout === this.focusLayoutSignature();
             },
 
             resumeFromFocus(fileId = state.currentFileId) {
@@ -11762,11 +11797,9 @@ this.updateImageCounters();
                 const stack = state.stacks[state.currentStack] || [];
                 const nextFiles = this.populationFor(stack, fileId);
                 const saved = this.focusSuspension;
-                const sameContext = Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
-                    && saved.folderGeneration === state.folderSessionGeneration && saved.stackName === state.currentStack
-                    && saved.layout === this.focusLayoutSignature();
-                const unchanged = sameContext && nextFiles.length === saved.populationIds.length
-                    && nextFiles.every((file, index) => String(file.id) === saved.populationIds[index]);
+                const sameContext = this.canResumeFromFocus();
+                const unchanged = sameContext && nextFiles.length === this.files.length
+                    && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
                 if (!sameContext || !nextFiles.length) {
                     this.focusSuspension = null;
                     return this.open({ stackName: state.currentStack, fileId, preserveGeometry: true, suppressPersist: true });
@@ -11775,13 +11808,13 @@ this.updateImageCounters();
                     // Membership or order changed while in Focus (delete, move, writeback). Apply the
                     // delta to the retained scene — reuse every surviving card element — so the globe
                     // pops back immediately instead of rebuilding and re-fetching the whole sphere.
-                    this.reconcilePopulation(nextFiles);
+                    if (!this.adoptPopulationOrder(nextFiles)) this.reconcilePopulation(nextFiles, { preserveGeometry: true });
                     SharedImageResources.pinExplorer(nextFiles);
                 }
                 this.selectedIndex = Math.max(0, this.files.findIndex(file => String(file.id) === String(fileId)));
                 CurrentImage.set(this.files[this.selectedIndex].id, this.stackName, { allowCrossStack: false });
                 state.inspection = { surface: 'explore', origin: null, fileId: this.files[this.selectedIndex].id };
-                this.select(this.selectedIndex);
+                this.select(this.selectedIndex, { render: false });
                 this.updateChrome();
                 const populationIncomplete = !saved.populationComplete || this.cards.length < this.files.length;
                 if (populationIncomplete) {
@@ -11796,12 +11829,12 @@ this.updateImageCounters();
                     this.cancelPopulationLoading();
                 }
                 const wasAnimating = saved.wasAnimating;
+                const needsRender = saved.needsRender;
                 this.focusSuspension = null;
                 if (this.frameId) cancelAnimationFrame(this.frameId);
                 this.frameId = null;
-                this.render(performance.now());
-                // Keep Explore hidden through the complete synchronous restoration. Remove
-                // the Focus paint layer before making Explore interactive or revealable.
+                this.lastFrameTime = performance.now();
+                // Reuse the last painted transforms. Only actual motion needs another render.
                 state.isFocusMode = false;
                 Utils.elements.appContainer.classList.remove('focus-mode');
                 document.body.classList.remove('origin-focus');
@@ -11810,9 +11843,10 @@ this.updateImageCounters();
                 this.elements.root.removeAttribute('aria-hidden');
                 this.elements.root.style.pointerEvents = '';
                 this.elements.root.hidden = false;
-                this.cards[this.selectedIndex]?.element.focus();
+                this.cards[this.selectedIndex]?.element.focus({ preventScroll: true });
                 if (populationIncomplete) this.scheduleNextPage(this.loadGeneration);
-                if (wasAnimating) this.requestFrame();
+                if (needsRender) this.render(performance.now());
+                else if (wasAnimating) this.requestFrame();
                 const metrics = this.warmResumeMetrics = {
                     focusCloseAt: startedAt, firstExplorePaintMs: null, interactiveExploreMs: null,
                     cardRecreationCount: this.cards.filter(card => !cardsBefore.has(card.element)).length,
@@ -11834,6 +11868,10 @@ this.updateImageCounters();
 
             close({ restoreFocus = true, force = false } = {}) {
                 if (this.elements.root.hidden && !force) return;
+                this.focusSuspension = null;
+                this.elements.root.inert = false;
+                this.elements.root.removeAttribute('aria-hidden');
+                this.elements.root.style.pointerEvents = '';
                 this.elements.root.hidden = true;
                 this.loadGeneration++;
                 document.body.style.overflow = '';
@@ -11926,7 +11964,7 @@ this.updateImageCounters();
             },
 
             populationPaused() {
-                return this.dragging || Boolean(this.pinchStartDistance) || this.transitionMoving
+                return Boolean(this.focusSuspension) || this.dragging || Boolean(this.pinchStartDistance) || this.transitionMoving
                     || Boolean(this.focusTransitionFileId) || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015;
             },
 
@@ -11945,12 +11983,15 @@ this.updateImageCounters();
                 this.updatePopulationLoading(generation);
             },
 
-            reconcilePopulation(nextFiles) {
+            reconcilePopulation(nextFiles, { preserveGeometry = Boolean(this.focusSuspension) } = {}) {
+                if (this.focusSuspension) this.focusSuspension.needsRender = true;
                 this.loadGeneration++;
                 const generation = this.loadGeneration;
                 this.beginPopulationLoading();
                 if (this.dragging) SharedImageResources.instrumentation.elementRecreationsDuringMovement += 1;
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
+                const nextIds = new Set(nextFiles.map(file => String(file.id)));
+                const spareVectors = preserveGeometry ? this.cards.filter(card => !nextIds.has(String(card.fileId))).map(card => card.vector) : [];
                 const renderedCount = Math.min(nextFiles.length, Math.max(this.cards.length, Math.min(this.pageSize, nextFiles.length)));
                 const nextCards = [];
                 this.files = nextFiles;
@@ -11958,6 +11999,7 @@ this.updateImageCounters();
                     const file = nextFiles[index];
                     const retained = existing.get(String(file.id));
                     const card = retained || this.createCard(file, index, generation);
+                    if (!retained && preserveGeometry && spareVectors.length) card.vector = spareVectors.pop();
                     card.element.classList.toggle('selected', index === this.selectedIndex);
                     card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
                     this.elements.scene.appendChild(card.element);
@@ -11966,7 +12008,7 @@ this.updateImageCounters();
                 }
                 existing.forEach(card => card.element.remove());
                 this.cards = nextCards;
-                this.updateVectors();
+                this.updateVectors(preserveGeometry);
                 this.requestFrame();
                 this.scheduleNextPage(generation);
                 this.updatePopulationLoading(generation);
@@ -11974,20 +12016,23 @@ this.updateImageCounters();
 
             adoptPopulationOrder(nextFiles) {
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
-                const canAdopt = nextFiles.length === this.files.length && nextFiles.every(file => existing.has(String(file.id)));
-                if (!canAdopt) {
-                    this.reconcilePopulation(nextFiles);
-                    return false;
+                if (nextFiles.length !== this.cards.length || !nextFiles.every(file => existing.has(String(file.id)))) return false;
+                const nextCards = nextFiles.map(file => existing.get(String(file.id)));
+                const scene = this.elements.scene;
+                const shift = this.cards.indexOf(nextCards[0]);
+                const rotated = shift >= 0 && nextCards.every((card, index) => card === this.cards[(index + shift) % this.cards.length]);
+                if (rotated && shift <= this.cards.length / 2) {
+                    this.cards.slice(0, shift).forEach(card => scene.appendChild(card.element));
+                } else {
+                    let cursor = scene.firstElementChild;
+                    nextCards.forEach(card => {
+                        if (card.element === cursor) cursor = cursor.nextElementSibling;
+                        else scene.insertBefore(card.element, cursor);
+                    });
                 }
                 this.files = nextFiles;
-                this.cards = nextFiles.map(file => existing.get(String(file.id)));
-                this.cards.forEach((card, index) => {
-                    card.element.classList.toggle('selected', index === this.selectedIndex);
-                    card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
-                });
-                this.updateVectors();
-                SharedImageResources.pinExplorer(nextFiles);
-                this.requestFrame();
+                this.cards = nextCards;
+                this.selectedIndex = Math.max(0, nextFiles.findIndex(file => String(file.id) === String(state.currentFileId)));
                 return true;
             },
 
@@ -12002,10 +12047,11 @@ this.updateImageCounters();
                 }, 16);
             },
 
-            updateVectors() {
+            updateVectors(preserveExisting = false) {
                 const count = Math.max(1, this.files.length);
                 const goldenAngle = Math.PI * (3 - Math.sqrt(5));
                 this.cards.forEach((card, index) => {
+                    if (preserveExisting && card.vector) return;
                     const y = 1 - (2 * (index + 0.5) / count);
                     const radius = Math.sqrt(Math.max(0, 1 - y * y));
                     const theta = goldenAngle * index;
@@ -12119,13 +12165,13 @@ this.updateImageCounters();
                 return this.activateFileId(fileId, cardElement);
             },
 
-            select(index) {
+            select(index, { render = true } = {}) {
                 this.selectedIndex = index;
                 this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });
                 this.updateChrome();
                 const file = this.files[index];
                 if (file) CurrentImage.set(file.id, state.currentStack, { allowCrossStack: false });
-                this.requestFrame();
+                if (render) this.requestFrame();
             },
 
             clearCardTap() {
@@ -12191,7 +12237,7 @@ this.updateImageCounters();
                 this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null;
                 this.elements.scene.classList.remove('dragging');
                 if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= tapSlop) {
-                    if (pressedCard && pressedFileId) this.activateFileId(pressedFileId, pressedCard);
+                    if (pressedCard && pressedFileId) { SurfaceTap.consume(event); this.activateFileId(pressedFileId, pressedCard); }
                 }
                 this.requestFrame();
             },
@@ -12398,7 +12444,7 @@ this.updateImageCounters();
             },
 
             requestFrame() {
-                if (!this.frameId && !this.elements.root.hidden && document.visibilityState !== 'hidden') this.frameId = requestAnimationFrame(time => this.render(time));
+                if (!this.frameId && !this.focusSuspension && !this.elements.root.hidden && document.visibilityState !== 'hidden') this.frameId = requestAnimationFrame(time => this.render(time));
             },
 
             suspendForVisibility() {
@@ -12445,9 +12491,8 @@ this.updateImageCounters();
                     card.depth = depth;
                     const style = card.element.style;
                     const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
-                    // Keep decoded cards mounted and visible across the hemisphere boundary.
-                    // A hard visibility cutoff makes spinning cards blink out and back in.
-                    const hidden = false;
+                    // Preserve the baseline compositor budget: only the rear cap is culled.
+                    const hidden = depth < 0.22 && index !== this.selectedIndex;
                     if (hidden !== cache.hidden) { cache.hidden = hidden; style.visibility = hidden ? 'hidden' : ''; }
                     if (!hidden) {
                         // Only write styles that actually changed: redundant writes on hundreds of
@@ -12477,7 +12522,6 @@ this.updateImageCounters();
             origin: null,
             referrer: null,
             transitionToken: 0,
-            exitPointerGuard: null,
 
             active() {
                 return state.inspection?.surface === 'focus' && ['sort', 'explore', 'table'].includes(this.referrer?.surface);
@@ -12511,57 +12555,7 @@ this.updateImageCounters();
 
             init() {
                 const exitButton = document.getElementById('focus-origin-close');
-                const isolate = event => event.stopPropagation();
-                [exitButton].forEach(button => {
-                    button?.addEventListener('pointerdown', isolate);
-                    button?.addEventListener('mousedown', isolate);
-                    button?.addEventListener('touchstart', isolate, { passive: true });
-                });
-                exitButton?.addEventListener('pointerdown', event => {
-                    if (!this.active() || this.exitPointerGuard) return;
-                    // Capture the release decision NOW: after the exit click runs, the referrer is cleared
-                    // and can no longer tell us whether this exit returns to Sort (graveyard G16).
-                    const referrerSurface = this.referrer?.surface || null;
-                    this.exitPointerGuard = { pointerId: event.pointerId, returnsToSort: referrerSurface !== 'explore' && referrerSurface !== 'table' };
-                    ModeNavigation.transitionGuard = this.exitPointerGuard;
-                    SpatialGallery.exitPointerGuard = this.exitPointerGuard;
-                    PhotoTable.exitPointerGuard = this.exitPointerGuard;
-                });
-                const releaseExitGuard = event => {
-                    const guard = this.exitPointerGuard;
-                    if (!guard || (event.pointerId != null && event.pointerId !== guard.pointerId)) return;
-                    const clear = () => {
-                        if (this.exitPointerGuard !== guard) return;
-                        if (!SpatialGallery.elements.root.hidden || !PhotoTable.elements.root.hidden || guard.returnsToSort) {
-                            this.exitPointerGuard = null;
-                            ModeNavigation.transitionGuard = null;
-                            SpatialGallery.exitPointerGuard = null;
-                            PhotoTable.exitPointerGuard = null;
-                        }
-                    };
-                    setTimeout(clear, 0);
-                };
-                addEventListener('pointerup', releaseExitGuard, true);
-                addEventListener('pointercancel', releaseExitGuard, true);
-                exitButton?.addEventListener('pointerup', event => {
-                    if (exitButton.disabled) return;
-                    if (event.button !== undefined && event.button !== 0) return;
-                    // Exit at finger-lift: Safari's synthetic click can lag behind the tap on a
-                    // busy page, which made the Focus X feel slow.
-                    exitButton.disabled = true;
-                    this.exitTapHandledAt = performance.now();
-                    this.exit();
-                });
-                exitButton?.addEventListener('click', event => {
-                    event.stopPropagation();
-                    if (exitButton.disabled) return;
-                    // The same tap's trailing click arrives after the exit path may have re-enabled
-                    // the button; without this window it fired a second exit that fell through to
-                    // Sort instead of the resumed sphere.
-                    if (this.exitTapHandledAt && performance.now() - this.exitTapHandledAt < 700) return;
-                    exitButton.disabled = true;
-                    this.exit();
-                });
+                SurfaceTap.bind(exitButton, () => { if (this.active()) this.exit(); });
             },
 
             syncExitControl() {
@@ -12660,7 +12654,14 @@ this.updateImageCounters();
                     if (persist) App.persistViewContext();
                     return current || false;
                 }
-                // Reveal the retained scene in the input-release task; reconcile after its first paint.
+                if (referrer.surface === 'explore' && SpatialGallery.canResumeFromFocus()) {
+                    SpatialGallery.resumeFromFocus(current?.id);
+                    if (persist) requestAnimationFrame(() => Utils.defer(() => {
+                        if (exitToken === this.transitionToken) App.persistViewContext();
+                    }));
+                    return current || false;
+                }
+                // Cold contexts and Table restoration may require deferred reconciliation.
                 const retainedRoot = referrer.surface === 'explore' ? SpatialGallery.elements.root
                     : referrer.surface === 'table' ? PhotoTable.elements.root : null;
                 if (retainedRoot) {
@@ -12728,6 +12729,7 @@ this.updateImageCounters();
                 this.referrer.fileId = current.id;
                 state.inspection.referrer = { ...this.referrer };
                 if (this.referrer.surface === 'explore') {
+                    if (SpatialGallery.focusSuspension) SpatialGallery.adoptPopulationOrder(SpatialGallery.populationFor(state.stacks[state.currentStack] || [], current.id));
                     const index = SpatialGallery.files.findIndex(file => String(file.id) === String(current.id));
                     if (index >= 0) SpatialGallery.selectedIndex = index;
                 } else if (this.referrer.surface === 'table') PhotoTable.currentFileId = current.id;
