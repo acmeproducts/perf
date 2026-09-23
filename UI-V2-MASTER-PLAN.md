@@ -2583,3 +2583,18 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Owner device check.** Globe tight and not sparse at 500; taps exact on mobile and desktop; no small→large flip; Table and floating controls. Everything after Aug 17 remains in git history for reference only.
 
 ---
+
+## §127 · BASE 6383573 + GLOBE→FOCUS TAP: THREE GOVERNORS REMOVED (2026-09-23)
+
+**Owner choice.** After side-by-side testing, `6383573` (owner snapshot 2026-08-25, R4.10 blob `fa9c0fb`) is the base. Its one defect to fix first: a globe thumbnail tap opens Focus on the stack neighbour (±1) of the tapped image.
+
+**Proven by instrumenting every image-changing call during a single tap (Pixel 7 + desktop Chrome emulation):**
+1. **Globe picker.** `onPointerUp` preferred `cardAtPoint` (nearest card *centre* among overlapping cards) over the card the browser hit-tested under the finger → a neighbouring card. Desktop and mobile.
+2. **Phone-only compatibility mouse events.** After a finger tap Chrome fires mousedown/mouseup a moment later; Focus has already opened under the finger, so `Gestures.handleEnd → handleTap` treats it as a Focus tap: left half = `prevImage` (−1), right half = `nextImage` (+1). This is the owner's "sometimes back one, sometimes forward one".
+3. **Chrome touch adjustment.** On touch, `event.target` at pointerdown can be retargeted to a nearby card (target p3 while p16 was painted under the finger).
+
+**Fix (three small changes to the globe only; Focus navigation untouched).** Pressed card = `document.elementFromPoint` under the finger (not the retargeted `event.target`); on release the pressed card wins, `cardAtPoint` is fallback only; touch/pen `pointerdown` is `preventDefault`ed so compatibility mouse events are not generated.
+
+**Gate.** `gate-globe-tap.spec.ts`, 20 taps per device: unpatched `6383573` 2/20 (Pixel 7) and 1/20 (desktop); patched 20/20 and 20/20. Deliberate Focus right/left taps still go forward/back one. **Owner device check required.** Next: stack order aligned across Grid, Sort and Focus.
+
+---
