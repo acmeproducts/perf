@@ -2571,3 +2571,15 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Next, one at a time, each confirmed on the phone:** the open items in `UI-V2-OWNER-ACCEPTANCE.md`.
 
 ---
+
+## §126 · LAST KNOWN GOOD: v1.9.1 (36e2b9c / owner snapshot 2d1c980), 2026-08-17 (2026-09-23)
+
+**Owner device report on §125.** Tapping still sometimes showed a small image that flipped to a large one *and changed to a different image*; leaving Explore while the globe was building stopped the build. Owner ruling: abandon this lineage and go back to the last known good, however far back.
+
+**Evidence.** The two-step small→large Focus paint (`firstFrame` inside `SharedImageResources`) first appears in `fe6c8e5` (R4.1, 2026-08-19); `SharedImageResources` itself first appears one commit earlier (`c25b241`, R4 Table). Every build from Aug 19 on carries it; no build before does. The last build the owner saved personally before that point is the Aug 17 snapshot `2d1c980`, blob `53d5b64` = `36e2b9c` "Deploy Orbital8 UI v1.9.1 continuity". It has the draggable, position-remembering floating Explore controls the owner remembers.
+
+**Shipped.** `ui-v2.html` = blob `53d5b64`, byte-for-byte, zero changes. Known and left as-is (identical in every Aug 11–17 build, so it is part of what the owner used): a boot-time `ReferenceError: FlingFX is not defined` in the `orbital8-v15-triage-table-script` add-on, so that add-on never ran. Owner-saved fallback if this one fails: `18bde15` v1.8 (snapshot `60bb757`, 2026-08-13).
+
+**Owner device check.** Globe tight and not sparse at 500; taps exact on mobile and desktop; no small→large flip; Table and floating controls. Everything after Aug 17 remains in git history for reference only.
+
+---
