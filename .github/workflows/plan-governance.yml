@@ -1,0 +1,74 @@
+name: Plan governance gate
+
+# Enforces the rule UI-V2-MASTER-PLAN.md already claims but nothing checked:
+# no change to ui-v2.html ships without the same commit/PR updating the plan
+# (or the graveyard, for a rollback/burial entry). 108 commits landed on
+# ui-v2.html between the plan's last entry and this workflow's creation with
+# no technical check requiring either — this closes that gap.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  require-plan-update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check ui-v2.html changes are accompanied by a plan/graveyard update
+        run: |
+          set -e
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+            # First push of a new branch, or force-push with no prior sha: nothing to diff against.
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              echo "No base commit to diff (new branch or force-push) — skipping."
+              exit 0
+            fi
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          if ! echo "$CHANGED" | grep -q '^ui-v2\.html$'; then
+            echo "ui-v2.html not touched — governance gate does not apply."
+            exit 0
+          fi
+
+          if echo "$CHANGED" | grep -qE '^UI-V2-MASTER-PLAN\.md$|^UI-V2-GRAVEYARD\.md$'; then
+            echo "ui-v2.html changed alongside a plan/graveyard update — OK."
+            exit 0
+          fi
+
+          # Narrow, explicit escape hatch for genuinely non-functional edits
+          # (whitespace, comments, version-string bump only) — requires a
+          # human to say so in the commit/PR title, not a silent default.
+          TITLE="${{ github.event.pull_request.title }}${{ github.event.head_commit.message }}"
+          if echo "$TITLE" | grep -qi '\[plan-exempt\]'; then
+            echo "Marked [plan-exempt] — OK, but this should be rare."
+            exit 0
+          fi
+
+          echo ""
+          echo "FAIL: ui-v2.html changed without a matching UI-V2-MASTER-PLAN.md or"
+          echo "UI-V2-GRAVEYARD.md update in the same commit/PR."
+          echo ""
+          echo "Every change to ui-v2.html is required (by the plan's own §0, §41-44"
+          echo "and the Failure Protocol) to be recorded as it happens: a Definition"
+          echo "before implementation, or a graveyard entry on rejection. This gate"
+          echo "makes that mechanical instead of optional."
+          echo ""
+          echo "If this really is non-functional (typo, whitespace, version-string"
+          echo "bump), add [plan-exempt] to the commit message or PR title."
+          exit 1

@@ -2542,3 +2542,20 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Status: no code changes made in this section. This is the RCA + review deliverable requested. Implementation waits for owner review of this section.**
 
 ---
+
+## §124 · GOVERNANCE GAP FOUND AND CLOSED (2026-09-23)
+
+**Fact, verified against `git log`.** 40 commits touched `ui-v2.html` between this document's previous entry (§123, 2026-09-13, which explicitly stated implementation was waiting on owner review) and today (2026-09-23) — 9 days, three commit authors (`acmeproducts`, `Confi`, `Confi (via Claude)`), zero corresponding entries in this document or in `UI-V2-GRAVEYARD.md`. The commits include the same pattern this document exists to stop: multiple `ROLLBACK`/`Revert` commits, several `OWNER APPROVED BASELINE` markers recorded only in commit messages, and two more full restore cycles (`round #2`, `round #3`, `round #4` in the commit log). The discipline this plan describes — Definition before implementation, a graveyard entry on rejection, one document of record — was still being *practiced* (the commit messages themselves state root causes and rollback reasons in the same style as this document) but relocated into git history, disconnected from the file that is supposed to be authoritative. A close reading of this document alone, without `git log`, would have missed all 40 commits and understated the current state of the code by 9 days and 570 changed lines.
+
+**Root cause of the gap.** Nothing enforced it. §0, §41–§44, and the Failure Protocol state the rule; nothing in the repository checked it. A rule that depends on every future session (this one included) remembering to update a document, with no technical consequence for skipping it, will drift — and did, immediately after the one moment (§123's "implementation waits for owner review") when the next step was paused rather than mechanically continued.
+
+**Fix, shipped in this commit.** `.github/workflows/plan-governance.yml`: any push or PR to `main` that changes `ui-v2.html` must, in the same commit/PR, also change `UI-V2-MASTER-PLAN.md` or `UI-V2-GRAVEYARD.md` — or the check fails. A narrow, explicit `[plan-exempt]` tag in the commit/PR title is the only override, for genuinely non-functional edits (whitespace, a version-string bump), so an exemption is always a visible human decision, never a silent default. This is the same structural principle §63 and §70 already proved works in the application code itself (remove the second, ungoverned path; don't add a guard that polices it) — applied here to the process instead of the code.
+
+**Current actual state, established by reading the repository rather than assuming this document was current:**
+- Current `main` HEAD: `a0dea4a` ("Restore baseline globe rendering and enforce stable stack transitions").
+- Most recent explicit owner-approved-baseline marker found in commit history (not in this document): `d4144fb` ("R4.28: fix Explorer wrong-image tap (zIndex tie-break); lift Explorer floating controls into Table"). `a0dea4a` descends from it with 570 lines of undocumented net change to `ui-v2.html` since.
+- The `Frozen reconstruction baseline commit` recorded in §2 of this document (`a6de049f...`) is stale and no longer describes what's on `main`; it is superseded by the above until a new baseline is explicitly declared here.
+
+**What this section does not do.** It does not re-litigate or individually document the 40 undocumented commits after the fact — that would be manufacturing paper trail for changes already shipped, not governance. It stops the gap from here forward and states plainly where the code actually is. Any defect investigation from this point forward should treat `a0dea4a` as the actual current state, not `p25` or any earlier reference point named in §98–§109 — those sections predate 9 days of unlogged change and can no longer be assumed to describe the live file. (See note below: the owner reports the table-tap wrong-image defect §98–§102 chased is no longer occurring in later versions — treat §98–§109 as possibly moot, not as an open defect to resume.)
+
+---
