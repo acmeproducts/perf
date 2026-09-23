@@ -2559,3 +2559,15 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **What this section does not do.** It does not re-litigate or individually document the 40 undocumented commits after the fact — that would be manufacturing paper trail for changes already shipped, not governance. It stops the gap from here forward and states plainly where the code actually is. Any defect investigation from this point forward should treat `a0dea4a` as the actual current state, not `p25` or any earlier reference point named in §98–§109 — those sections predate 9 days of unlogged change and can no longer be assumed to describe the live file. (See note below: the owner reports the table-tap wrong-image defect §98–§102 chased is no longer occurring in later versions — treat §98–§109 as possibly moot, not as an open defect to resume.)
 
 ---
+
+## §125 · NEW BASELINE: 3c8471d + ANDROID TRAILING-CLICK GUARD (2026-09-23)
+
+**Owner decision.** `ui-v2.html` restored byte-for-byte to `3c8471d` (the build the owner confirmed "taps faithful, sphere not sparse" on 2026-09-13), plus one change: the Android trailing-click guard from `91e3033`, ported verbatim (15 lines, globe tap handling only). `3c8471d` was tested on desktop Chrome; on mobile Chrome it still landed ±1.
+
+**Why ±1 kept coming back.** Two independent causes, and no earlier build had both fixes: (1) the Sort gesture screen stayed live under Explore/Table and bumped the stack after the tap (fixed in `3c8471d`, §70); (2) Android Chrome fires a trailing synthetic `click` with `detail: 0` after a touch tap, which re-activated the pooled card after it had been rebound to a neighbour (fixed only on the `d4144fb` line in `91e3033`). The builds after `3c8471d` (Sept 13–22) are superseded; they remain in git history.
+
+**Gate.** New `gate-android-echo.spec.ts` (Pixel 7 emulation, real touch tap, then an echo click on the rebound card): fails on unpatched `3c8471d` (activates twice), passes with the guard. Existing tap suites: identical 8 pass / 3 fail on both builds (inherited, A/B verified). **Owner device check still required:** 10+ globe taps on the phone, each opening exactly the tapped image.
+
+**Next, one at a time, each confirmed on the phone:** the open items in `UI-V2-OWNER-ACCEPTANCE.md`.
+
+---
