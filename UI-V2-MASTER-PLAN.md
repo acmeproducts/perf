@@ -2598,3 +2598,18 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Gate.** `gate-globe-tap.spec.ts`, 20 taps per device: unpatched `6383573` 2/20 (Pixel 7) and 1/20 (desktop); patched 20/20 and 20/20. Deliberate Focus right/left taps still go forward/back one. **Owner device check required.** Next: stack order aligned across Grid, Sort and Focus.
 
 ---
+
+## §128 · GLOBE: NOT SPARSE AT SCALE, SNAPPY FOCUS X, NO REBUILD ON STACK RETURN (2026-09-23)
+
+**Owner report on §127 build (taps confirmed correct).** (1) Focus X back to the globe lags; (2) returning to a stack whose globe was already built still rebuilds; (3) a 214-image globe goes sparse when spun (thumbnails that were showing disappear and redraw); 44 images is fine.
+
+**Causes, measured (Pixel 7 emulation, 4x CPU slowdown, 214 + 120 image stacks):**
+- Sparse: globe cards fetched the 800px thumbnail for a ~112px card, and the shared cache also kept every decoded preload `Image` alive — two full decodes per card. Past the browser's decoded-image budget, Chrome discards and re-decodes as cards rotate into view. Same mechanism as graveyard G17 (device-proven earlier on the R4.23 line).
+- X lag: Focus set the globe to `display:none`; returning re-laid-out, re-rasterised and re-decoded every card. The app's own JS on X is ~17ms.
+- Stack return: `close()` destroyed every card; reopening rebuilt all of them and refetched every thumbnail.
+
+**Changes.** (a) New `sphere` rendition for globe cards only (Drive `sz=w300`; other providers `thumbnails.small`), per G17 spec. (b) `ensure()` releases `entry.preload` once settled. (c) While Focus is open from the globe, the globe stays drawn under Focus's opaque layer (`body.origin-focus` z 13000) and inert; the rule is scoped to `body.origin-focus`, so any path that leaves Focus without returning to the globe falls back to hidden automatically. (d) `close()` stashes the built globe per folder+stack (3 most recent); `open()` re-attaches it and reconciles only the difference by file id. Cache cleared on folder change.
+
+**Measured before → after.** Globe thumbnails 800px → 300px. Switch back to a built 214 stack: full rebuild (214 cards created, 214 refetches, ~1.1s) → 0 created, 0 fetched, ~160ms. X press to globe frame: 114–356ms (erratic) → 137–155ms. Tap accuracy re-run (`gate-globe-tap.spec.ts`): still 20/20 phone and desktop; Focus forward/back unchanged. Emulation cannot model the phone GPU; **owner device check required** (214+ globe spin, X, stack switch and back).
+
+---

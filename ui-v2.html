@@ -1061,6 +1061,9 @@
         .spatial-gallery[hidden] { display: none; }
         .spatial-gallery__scene { position: absolute; inset: 0; z-index: 1; overflow: hidden; cursor: grab; perspective: 900px; isolation: isolate; }
         .spatial-gallery__scene.dragging { cursor: grabbing; }
+        /* Under Focus the globe stays drawn (covered by Focus's opaque layer, body.origin-focus z 13000) and
+           inert, so X just uncovers it instead of re-laying-out, re-rasterising and re-decoding every card. */
+        body.origin-focus .spatial-gallery[hidden].spatial-gallery--suspended { display: block; pointer-events: none; }
         .spatial-gallery__card {
             position: absolute; left: 50%; top: 50%; width: 112px; height: 148px; margin: -74px 0 0 -56px;
             padding: 5px; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92);
@@ -2357,6 +2360,7 @@
 
             clearImageObjectCache() {
                 SharedImageResources.clear();
+                if (typeof SpatialGallery !== 'undefined') SpatialGallery.globeCache?.clear();
             },
 
             setImageSrc(img, file, options = {}) {
@@ -2469,6 +2473,19 @@
             source(file, rendition = 'thumb') {
                 this.instrumentation.providerResolutionCount++;
                 if (!file) return '';
+                if (rendition === 'sphere') {
+                    // Globe cards paint at ~112x148 CSS px: fetch a thumbnail sized to that (G17), not the
+                    // 800px one, so a few hundred cards stay inside the browser's decoded-image budget.
+                    if (state.providerType === 'googledrive') {
+                        const resolved = DriveLinkHelper.resolveFileUrls(file);
+                        const url = resolved.fileId ? DriveLinkHelper.buildThumbnailUrl(resolved.fileId, 300, resolved.resourceKey) : '';
+                        if (url) return url;
+                    } else {
+                        const small = file.thumbnails?.small?.url;
+                        if (small) return small;
+                    }
+                    return this.source(file, 'thumb');
+                }
                 if (state.providerType === 'googledrive') {
                     const urls = DriveLinkHelper.resolveAssetUrls(file);
                     return rendition === 'display'
@@ -2515,7 +2532,10 @@
                             try { await preload.decode(); } catch (_) {}
                         }
                         entry.readyState = loaded ? 'loaded' : 'error';
-                        if (!loaded) { entry.ready = null; entry.preload = null; }
+                        // The on-screen <img> and the HTTP cache carry the pixels; holding the decoded
+                        // preload too doubled memory per image (G17).
+                        entry.preload = null;
+                        if (!loaded) entry.ready = null;
                         resolve(entry);
                     };
                     preload.addEventListener('load', () => settle(true), { once: true });
@@ -2640,10 +2660,10 @@
                 this.touch(null);
             },
             pinExplorer(files = []) {
-                const next = new Set(files.map(file => this.key(file, 'thumb')));
+                const next = new Set(files.map(file => this.key(file, 'sphere')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                this.warm(files, 'thumb', { pin: true });
+                this.warm(files, 'sphere', { pin: true });
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -11257,7 +11277,11 @@ this.updateImageCounters();
                     Utils.showToast('Add images to the current stack before opening Explore.', 'info');
                     return;
                 }
+                this.elements.root.classList.remove('spatial-gallery--suspended');
+                this.elements.root.inert = false;
                 const canResume = preserveGeometry && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
+                const cached = canResume ? null : this.takeCachedGlobe(stackName);
+                this.openStackName = stackName;
                 this.files = nextFiles;
                 this.focusTransitionFileId = null;
                 this.rebalanceLayout('open', { persist: false, log: false });
@@ -11277,6 +11301,14 @@ this.updateImageCounters();
                     this.elements.root.hidden = false;
                     SharedImageResources.pinExplorer(this.files);
                     this.select(this.selectedIndex);
+                } else if (cached) {
+                    // A globe already built for this stack: re-attach its cards and only add/remove the
+                    // difference, instead of rebuilding every card and refetching every thumbnail.
+                    this.cards = cached.cards;
+                    this.elements.scene.replaceChildren(...cached.cards.map(card => card.element));
+                    this.reconcilePopulation(nextFiles);
+                    SharedImageResources.pinExplorer(this.files);
+                    this.elements.root.hidden = false;
                 } else {
                     this.elements.root.hidden = true;
                     this.buildCards();
@@ -11327,6 +11359,9 @@ this.updateImageCounters();
                 this.frameId = null;
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
+                this.elements.root.classList.remove('spatial-gallery--suspended');
+                this.elements.root.inert = false;
+                this.stashGlobe();
                 this.elements.scene.replaceChildren();
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
@@ -11336,6 +11371,27 @@ this.updateImageCounters();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
                 if (restoreFocus) this.previousFocus?.focus?.();
+            },
+
+            globeCacheKey(stackName) {
+                return `${state.currentFolder?.id || ''}:${stackName}`;
+            },
+
+            stashGlobe() {
+                if (!this.cards.length || !this.openStackName) return;
+                this.globeCache = this.globeCache || new Map();
+                const key = this.globeCacheKey(this.openStackName);
+                this.globeCache.delete(key);
+                this.globeCache.set(key, { cards: this.cards });
+                // Keep the three most recently used stacks' globes.
+                while (this.globeCache.size > 3) this.globeCache.delete(this.globeCache.keys().next().value);
+            },
+
+            takeCachedGlobe(stackName) {
+                const key = this.globeCacheKey(stackName);
+                const cached = this.globeCache?.get(key) || null;
+                if (cached) this.globeCache.delete(key);
+                return cached;
             },
 
             buildCards() {
@@ -11366,7 +11422,7 @@ this.updateImageCounters();
                 });
                 this.elements.scene.appendChild(card);
                 const generation = this.loadGeneration;
-                SharedImageResources.attach(img, file, 'thumb', { surface: 'explore', visible: index < 18, generation });
+                SharedImageResources.attach(img, file, 'sphere', { surface: 'explore', visible: index < 18, generation });
                 return { element: card, vector: null, fileId: file.id };
             },
 
@@ -11865,6 +11921,8 @@ this.updateImageCounters();
                 if (activeReferrer.surface === 'explore') {
                     const selectedIndex = SpatialGallery.files.findIndex(file => String(file.id) === String(resolved.file.id));
                     if (selectedIndex >= 0) SpatialGallery.selectedIndex = selectedIndex;
+                    SpatialGallery.elements.root.classList.add('spatial-gallery--suspended');
+                    SpatialGallery.elements.root.inert = true;
                     SpatialGallery.elements.root.hidden = true;
                     if (SpatialGallery.frameId) cancelAnimationFrame(SpatialGallery.frameId);
                     SpatialGallery.frameId = null;
