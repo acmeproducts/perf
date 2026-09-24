@@ -18,7 +18,7 @@ const sizes = { small: [300, 375, 60], medium: [600, 750, 120], large: [1000, 12
 let hits = {};
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
-  if (u.pathname.startsWith('/ui/')) { const f = '' + (process.env.VARIANTS_DIR || new URL('./variants/', import.meta.url).pathname) + '' + u.pathname.slice(4); if (!fs.existsSync(f)) { res.writeHead(404); res.end(); return; } res.writeHead(200, { 'content-type': 'text/html' }); fs.createReadStream(f).pipe(res); return; }
+  if (u.pathname.startsWith('/ui/')) { const f = '' + (process.env.VARIANTS_DIR || new URL('./variants/', import.meta.url).pathname) + '' + u.pathname.slice(4); if (!fs.existsSync(f)) { res.writeHead(404); res.end(); return; } res.writeHead(200, { 'content-type': f.endsWith('.js') ? 'text/javascript' : 'text/html' }); fs.createReadStream(f).pipe(res); return; }
   const m = u.pathname.match(/^\/img\/(small|medium|large)\/(\d+)$/);
   if (m) { hits[m[1]] = (hits[m[1]] || 0) + 1; const [w, h, delay] = sizes[m[1]]; const body = png(w, h, +m[2], null);
     setTimeout(() => { res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600', 'access-control-allow-origin': '*' }); res.end(body); }, delay + Math.random() * delay * 0.5); return; }

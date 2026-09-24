@@ -220,6 +220,17 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const lt = await ev<number[]>(`window.__lt`);
   check('C17', 'No freeze over 200ms (lab draws on CPU; phone uses GPU)', lt.every(d => d <= 200), `longtasks=${lt.length} worst=${Math.round(Math.max(0, ...lt))}ms :: ${(await ev<string[]>(`window.__ltAt`)).join('; ')}`);
   check('C18', 'No page errors', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none');
+  // C24 Thumbnails are kept on the device: the stack's thumbnails are in the store, and loading them again
+  // (as the globe, Grid and Table do) makes no network request.
+  await guard('C24', 'Thumbnails stored on the device and reused without the network', async () => {
+    const t0 = Date.now(); let stored = 0;
+    while (Date.now() - t0 < 30000) { stored = await ev<number>(`caches.open('orbital8-thumbs-v1').then(c => c.keys()).then(k => k.length).catch(() => 0)`); if (stored >= 500) break; await page.waitForTimeout(500); }
+    // Requests the service worker itself sends to the network (a store miss).
+    let network = 0; const onReq = (r: any) => { if (r.serviceWorker() && /\/img\/small\//.test(r.url())) network++; }; ctx.on('request', onReq);
+    const loaded = await ev<number>(`Promise.all(state.stacks.in.slice(0, 60).map(f => new Promise(r => { const i = new Image(); i.onload = () => r(1); i.onerror = () => r(0); i.src = f.thumbnails.small.url; }))).then(a => a.reduce((x, y) => x + y, 0))`);
+    await page.waitForTimeout(300); ctx.off('request', onReq);
+    check('C24', 'Thumbnails stored on the device and reused without the network', stored >= 500 && loaded === 60 && network === 0, `stored=${stored} reloaded=${loaded}/60 fetched from network=${network}`);
+  });
   } catch (e) { await check('ABORT', 'Run stopped at an error', false, String((e as Error).message || e).split('\n')[0].slice(0, 200)).catch(() => {}); }
   finally { report(); }
 

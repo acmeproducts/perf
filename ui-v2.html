@@ -2658,16 +2658,13 @@
                 if (!file) return '';
                 if (state.providerType === 'googledrive') {
                     const urls = DriveLinkHelper.resolveAssetUrls(file);
-                    // Sphere cards paint at ~112x148 CSS px; an 800px thumbnail per card decodes to
-                    // ~2.5MB, and hundreds of them exhaust the browser's memory budget.
-                    // 300px covers 2x DPR with headroom. (As in 3c8471d.)
-                    if (rendition === 'sphere') {
-                        return (urls.fileId ? DriveLinkHelper.buildThumbnailUrl(urls.fileId, 300, urls.resourceKey) : null)
+                    // Globe, Grid and Table share one 320px thumbnail per image, so one download (kept on the
+                    // device by thumb-cache-sw.js) serves all three. 800px per card exhausts memory on the globe.
+                    if (rendition !== 'display') {
+                        return (urls.fileId ? DriveLinkHelper.buildThumbnailUrl(urls.fileId, 320, urls.resourceKey) : null)
                             || urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '';
                     }
-                    return rendition === 'display'
-                        ? (urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '')
-                        : (urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '');
+                    return urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '';
                 }
                 const thumbnails = file.thumbnails || {};
                 if (rendition === 'sphere') return (thumbnails.small?.url || thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
@@ -2736,6 +2733,9 @@
                             entry.loadFailures = (entry.loadFailures || 0) + 1;
                             this.instrumentation.imageErrorCount++;
                             if (typeof PerfBeacon !== 'undefined') { try { PerfBeacon.record('imgError', { rendition, host: new URL(entry.src, location.href).host, attempt: entry.loadFailures }); } catch (_) {} }
+                            // A stored copy that won't decode (e.g. an expired-login page) must not be served again.
+                            try { navigator.serviceWorker?.controller?.postMessage({ type: 'evict', url: entry.src }); } catch (_) {}
+                            this.stored?.delete(entry.src);
                             entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
                             entry.ready = null; entry.preload = null;
                         }
@@ -2902,6 +2902,28 @@
                     }
                 });
                 this.touch(null);
+            },
+            // Background fill of the on-device thumbnail store: fetch each thumbnail once (4 at a time,
+            // lowest priority) so the globe, Grid and Table later read it from the phone, not Drive.
+            storeLocally(files = [], limit = 500) {
+                if (!navigator.serviceWorker?.controller) return;
+                this.stored = this.stored || new Set();
+                this.storeQueue = this.storeQueue || [];
+                files.slice(0, limit).forEach(file => {
+                    const src = file && this.source(file, 'sphere');
+                    if (src && !this.stored.has(src)) { this.stored.add(src); this.storeQueue.push(src); }
+                });
+                this.storeActive = this.storeActive || 0;
+                const pump = () => {
+                    while (this.storeActive < 4 && this.storeQueue.length) {
+                        const src = this.storeQueue.shift();
+                        this.storeActive++;
+                        fetch(src, { mode: 'no-cors', credentials: 'include', priority: 'low' })
+                            .then(res => res.arrayBuffer()).catch(() => this.stored.delete(src))
+                            .finally(() => { this.storeActive--; Utils.defer(pump, { priority: 'background', timeout: 500 }); });
+                    }
+                };
+                pump();
             },
             pinExplorer(files = []) {
                 const next = new Set(files.map(file => this.key(file, 'sphere')));
@@ -7840,6 +7862,7 @@
                     Utils.setImageSrc(Utils.elements.centerImage, currentFile, { immediateSrc });
                     this.prefetchNeighborImages(currentStackArray, state.currentStackPosition);
                     this.prefetchStackHeads();
+                    SharedImageResources.storeLocally(currentStackArray);
                     if (CanonicalInspection.active()) {
                         state.inspection.fileId = currentFile.id;
                     }
@@ -13649,6 +13672,10 @@ this.updateImageCounters();
             }
         }
         document.addEventListener('DOMContentLoaded', initApp);
+        // On-device thumbnail store (see thumb-cache-sw.js).
+        if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+            navigator.serviceWorker.register('thumb-cache-sw.js', { scope: './' }).catch(error => console.warn('Thumbnail store unavailable:', error));
+        }
     </script>
 </body>
 </html>

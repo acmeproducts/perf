@@ -2761,3 +2761,11 @@ Owner on §140: globe still sparse when spinning; footer wraps and covers the bo
 Owner on §141: still sparse when spinning; Focus still stutters. Neither reproduces in the lab (spin keeps 500/500 cards with images; Focus steps 0–11ms), so the difference is the real device/Drive. The owner asked for logs written to the repo so they can be read without the owner relaying anything; that uploader (§135) was lost in the §137 revert. Restored onto the baseline PerfBeacon (`?debug=1`): globe fps/worst frame and cards-with-image while moving (DOM globe), Focus time-to-image (cached or not), taps, long tasks, stalls, thumbnail loads, and every image error with rendition and host (e.g. drive.google.com vs googleusercontent) — counts/timings only, no names or ids. Uploads every 45s and on page hide to `device-logs/<date>/<session>.json` on the `device-logs` branch using the GitHub token repolist.html already stores (or long-press the `log` button once). e2e unchanged.
 
 ---
+
+## §143 · THUMBNAILS KEPT ON THE DEVICE, ONE THUMBNAIL FOR GLOBE, GRID AND TABLE (2026-09-24)
+
+Owner: thumbnails should be stored locally when the globe builds, because Grid, Table and Explore all need them, instead of re-reading from Google Drive. Before: the globe fetched a 300px Drive thumbnail and Grid/Table an 800px one (two downloads per image), and Drive thumbnail links redirect to short-lived signed URLs, so the browser cache rarely reused them across visits.
+- `thumb-cache-sw.js` (service worker, repo root, registered by `ui-v2.html`): thumbnail requests only (drive.google.com/thumbnail, googleusercontent, Graph thumbnails, lab `/img/`) are answered from an on-device store (Cache Storage), keyed by the stable request address; first load saves them. Up to 1500 kept. A stored copy that fails to decode is evicted.
+- Drive: globe, Grid and Table use one 320px thumbnail per image (was 300 and 800). Focus's full image unchanged.
+- When a stack opens, its first 500 thumbnails are filled into the store in the background (4 at a time, low priority).
+- e2e C24 added: store holds the stack's thumbnails; loading them again makes no network request. e2e 23/24 both devices, C24 pass (stored=633, 0 network); C17 lab-only (baseline also 175–215ms). Globe taps 20/20 both. Owner device check: second open of a stack/Grid/Table should fill with no Drive wait.
