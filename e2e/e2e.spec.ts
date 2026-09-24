@@ -141,6 +141,31 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   }
   check('C14', 'Table tap opens the tapped image', t14 === 3, t14s.join(' '));
   await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} state.currentStack = 'in'; state.currentStackPosition = 0; state.currentFileId = state.stacks.in[0].id; return Core.displayCurrentImage(); })()`); await page.waitForTimeout(500);
+  // C20 Table floating controls: count has no cap, size changes print size, both persist; panel drags and stays.
+  await ev(`PhotoTable.open({ stackName: 'in', fileId: state.currentFileId })`); await page.waitForTimeout(600);
+  const t20a = await ev<{ n: number; w: number }>(`({ n: PhotoTable.photos.length, w: PhotoTable.photos[0].element.getBoundingClientRect().width })`);
+  await page.click('#photo-table-controls-toggle'); await page.waitForTimeout(200);
+  for (let i = 0; i < 5; i++) await page.click('#photo-table-controls [data-control="limit"] .spatial-gallery__adjust[data-delta="8"]');
+  await page.click('#photo-table-controls [data-control="scale"] .spatial-gallery__adjust[data-delta="10"]'); await page.waitForTimeout(400);
+  const t20b = await ev<{ n: number; w: number }>(`({ n: PhotoTable.photos.length, w: PhotoTable.photos[0].element.getBoundingClientRect().width })`);
+  const box = await page.locator('#photo-table-controls').boundingBox();
+  if (box) { await page.mouse.move(box.x + 6, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(60, 200, { steps: 5 }); await page.mouse.up(); }
+  const pos1 = await page.locator('#photo-table-controls').boundingBox();
+  await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { PhotoTable.stackName = null; PhotoTable.photos = []; })()`);
+  await ev(`PhotoTable.open({ stackName: 'in', fileId: state.currentFileId })`); await page.waitForTimeout(600);
+  const t20c = await ev<{ n: number; open: boolean }>(`({ n: PhotoTable.photos.length, open: !document.getElementById('photo-table-controls').hidden })`);
+  const pos2 = await page.locator('#photo-table-controls').boundingBox();
+  check('C20', 'Table floating controls: count uncapped, size works, values/open/position persist, panel drags', t20b.n === t20a.n + 40 && t20b.w > t20a.w * 1.05 && t20c.n === t20b.n && t20c.open && !!pos1 && !!pos2 && Math.abs(pos1.x - pos2.x) < 2 && Math.abs(pos1.y - pos2.y) < 2 && pos1.x < 120,
+    `prints ${t20a.n}->${t20b.n} reopen ${t20c.n}; width ${Math.round(t20a.w)}->${Math.round(t20b.w)}; open after reopen=${t20c.open}; panel ${pos1 ? Math.round(pos1.x) + ',' + Math.round(pos1.y) : '-'} -> ${pos2 ? Math.round(pos2.x) + ',' + Math.round(pos2.y) : '-'}`);
+  await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} return Core.displayCurrentImage(); })()`); await page.waitForTimeout(300);
+  // C21 Leaving the globe while it is still building: on return it finishes, it does not restart.
+  await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.globeCache?.clear(); SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id }); })()`); await page.waitForTimeout(150);
+  const partial = await ev<number>(`SpatialGallery.cards.length`);
+  await ev(`SpatialGallery.close({ restoreFocus: false })`); await page.waitForTimeout(300);
+  await ev(`window.__cc = 0`); await ev(`SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id })`); await page.waitForTimeout(3500);
+  const full21 = await ev<number>(`SpatialGallery.cards.length`), made21 = await ev<number>(`window.__cc`);
+  check('C21', 'Leaving the globe mid-build: on return it completes without rebuilding what was built', full21 === 500 && made21 <= 500 - partial, `built before leaving=${partial} after return=${full21} newly created=${made21}`);
+  await ev(`SpatialGallery.close({ restoreFocus: false })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} state.currentStack = 'in'; return Core.displayCurrentImage(); })()`); await page.waitForTimeout(300);
   // C15 Sort move: current image goes to the top of the target stack; Sort shows the next image.
   const moving = await ev<string>(`T.cur()`), following = await ev<string>(`String(state.stacks.in[1].id)`);
   await ev(`Core.moveToStack('priority', { source: 'e2e' })`); await page.waitForTimeout(700);

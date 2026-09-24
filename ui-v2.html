@@ -974,10 +974,12 @@
         .photo-table[hidden] { display: none; }
         .photo-table::before { content: ''; position: absolute; inset: 0; opacity: .18; pointer-events: none; background-image: repeating-linear-gradient(117deg, transparent 0 7px, rgba(255,255,255,.035) 8px, transparent 9px 15px); }
         .photo-table__surface { position: absolute; inset: 0; }
-        .photo-table__print { position: absolute; width: clamp(86px, 16vw, 150px); height: clamp(112px, 21vw, 190px); padding: 7px 7px 19px; border: 0; border-radius: 2px; background: #eee9dd; box-shadow: 0 7px 15px rgba(0,0,0,.55); transform-origin: center; transition: filter 160ms, box-shadow 160ms, opacity 160ms; touch-action: none; cursor: grab; }
+        .photo-table__print { position: absolute; width: calc(clamp(86px, 16vw, 150px) * var(--print-scale, 1)); height: calc(clamp(112px, 21vw, 190px) * var(--print-scale, 1)); padding: 7px 7px 19px; border: 0; border-radius: 2px; background: #eee9dd; box-shadow: 0 7px 15px rgba(0,0,0,.55); transform-origin: center; transition: filter 160ms, box-shadow 160ms, opacity 160ms; touch-action: none; cursor: grab; }
         .photo-table__print img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
         .photo-table__print.held { cursor: grabbing; box-shadow: 0 18px 34px rgba(0,0,0,.72); }
         .photo-table__print.capturing { pointer-events: none; }
+        .photo-table__controls-toggle { position: absolute; z-index: 1110; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); }
+        .photo-table .photo-table__controls { position: absolute; z-index: 1120; }
         .photo-table__control { position: absolute; z-index: 1010; min-height: 44px; padding: 9px 13px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; background: rgba(15,23,42,.76); backdrop-filter: blur(10px); }
         #photo-table-folder { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); }
         .surface-close { position: absolute; z-index: 1110; top: max(12px, env(safe-area-inset-top)); left: 50%; translate: -50% 0; width: 46px; height: 46px; padding: 0; border: 1px solid rgba(255,255,255,.34); border-radius: 999px; color: #fff; background: rgba(15,23,42,.82); box-shadow: 0 10px 32px rgba(0,0,0,.38); font: 700 28px/1 system-ui; cursor: pointer; }
@@ -1067,9 +1069,10 @@
         .spatial-gallery__card {
             position: absolute; left: 50%; top: 50%; width: 112px; height: 148px; margin: -74px 0 0 -56px;
             padding: 5px; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92);
-            box-shadow: 0 12px 32px rgba(0,0,0,.38); transform-origin: center; will-change: transform, opacity;
+            box-shadow: 0 12px 32px rgba(0,0,0,.38); transform-origin: center; will-change: transform;
             transition: border-color 160ms ease, box-shadow 160ms ease; overflow: hidden;
         }
+        .spatial-gallery__card.far { box-shadow: none; }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
@@ -1335,6 +1338,13 @@
         <div id="photo-table-targets" class="photo-table__targets" aria-label="Table tag targets"></div>
         <button id="photo-table-folder" class="photo-table__control" type="button" aria-haspopup="true" aria-expanded="false"></button>
         <button id="photo-table-close" class="surface-close" type="button" aria-label="Exit Table to Sort">×</button>
+        <button id="photo-table-controls-toggle" class="spatial-gallery__button spatial-gallery__controls-toggle photo-table__controls-toggle" type="button" aria-expanded="false" aria-controls="photo-table-controls" aria-label="Show Table controls">⌄</button>
+        <div id="photo-table-controls" class="spatial-gallery__chrome spatial-gallery__controls photo-table__controls" aria-label="Table controls" hidden>
+            <span class="spatial-gallery__control-label">Size</span>
+            <span class="spatial-gallery__stepper" data-control="scale"><button class="spatial-gallery__adjust" data-delta="10" type="button">+</button><button id="photo-table-scale" class="spatial-gallery__value" type="button" aria-live="polite">100%</button><button class="spatial-gallery__adjust" data-delta="-10" type="button">−</button></span>
+            <span class="spatial-gallery__control-label">Images</span>
+            <span class="spatial-gallery__stepper" data-control="limit"><button class="spatial-gallery__adjust" data-delta="8" type="button">+</button><button id="photo-table-limit" class="spatial-gallery__value" type="button" aria-live="polite">24</button><button class="spatial-gallery__adjust" data-delta="-8" type="button">−</button></span>
+        </div>
     </section>
 
     <div id="table-tag-manager" class="table-tag-manager" hidden>
@@ -1953,7 +1963,8 @@
                     const topSequence = Number(files[0]?.stackSequence) || 0;
                     file.stackSequence = Math.max(Date.now(), topSequence + 1);
                     files.unshift(file);
-                    App.updateUserMetadata(file.id, { stackSequence: file.stackSequence }, { operationType: 'stack:view' });
+                    // The file's own row is saved at once; the whole-folder snapshot waits until paging pauses.
+                    App.updateUserMetadata(file.id, { stackSequence: file.stackSequence }, { operationType: 'stack:view', folderCacheDelay: 3000 });
                 }
                 return this.set(fileId, stackName, { allowCrossStack: false });
             },
@@ -3662,7 +3673,7 @@
             }
             queueFolderCacheFlush(options = {}) {
                 if (this.folderCacheFlushTimer) return;
-                const delay = options.priority === 'high' ? 0 : 140;
+                const delay = options.priority === 'high' ? 0 : (Number.isFinite(options.delay) ? options.delay : 140);
                 this.folderCacheFlushTimer = setTimeout(() => {
                     this.folderCacheFlushTimer = null;
                     this.flushPendingFolderCacheWrites().catch(error => console.warn('Failed to flush folder cache writes:', error));
@@ -7318,7 +7329,7 @@
                         providerType: state.providerType
                     }, { priority: skipDebounce ? 'high' : 'normal' });
                     const folderCacheSave = state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, {
-                        priority: skipDebounce ? 'high' : 'normal'
+                        priority: skipDebounce ? 'high' : 'normal', delay: options.folderCacheDelay
                     });
 
                     if (awaitLocalPersistence) {
@@ -11028,6 +11039,48 @@ this.updateImageCounters();
             }
         };
 
+        const FloatingControls = {
+            bind({ panel, toggle, key, label, onAdjust }) {
+                if (!panel || !toggle) return null;
+                const storeKey = `${APP_IDENTITY.storagePrefix}:${key}_controls`;
+                const read = () => { try { return JSON.parse(localStorage.getItem(storeKey) || '{}'); } catch (_) { return {}; } };
+                const write = patch => { try { localStorage.setItem(storeKey, JSON.stringify({ ...read(), ...patch })); } catch (_) {} };
+                const setOpen = open => { panel.hidden = !open; toggle.setAttribute('aria-expanded', String(open)); toggle.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} ${label} controls`); };
+                const place = () => {
+                    const { x, y } = read();
+                    if (typeof x !== 'number' || typeof y !== 'number' || panel.hidden) return;
+                    panel.style.left = `${Math.max(8, Math.min(innerWidth - panel.offsetWidth - 8, x))}px`;
+                    panel.style.top = `${Math.max(8, Math.min(innerHeight - panel.offsetHeight - 8, y))}px`;
+                    panel.style.right = 'auto'; panel.style.bottom = 'auto'; panel.style.transform = 'none';
+                };
+                toggle.addEventListener('click', event => { event.stopPropagation(); const open = panel.hidden; setOpen(open); write({ open }); place(); });
+                panel.addEventListener('click', event => event.stopPropagation());
+                panel.querySelectorAll('.spatial-gallery__adjust').forEach(button => button.addEventListener('click', event => {
+                    event.stopPropagation();
+                    onAdjust(button.closest('[data-control]')?.dataset.control, Number(button.dataset.delta) || 0);
+                }));
+                let drag = null;
+                panel.addEventListener('pointerdown', event => {
+                    event.stopPropagation();
+                    if (event.target.closest('button')) return;
+                    const rect = panel.getBoundingClientRect();
+                    drag = { id: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+                    panel.classList.add('dragging'); panel.setPointerCapture?.(event.pointerId); event.preventDefault();
+                });
+                panel.addEventListener('pointermove', event => {
+                    if (!drag || event.pointerId !== drag.id) return;
+                    const x = Math.max(8, Math.min(innerWidth - panel.offsetWidth - 8, event.clientX - drag.dx));
+                    const y = Math.max(8, Math.min(innerHeight - panel.offsetHeight - 8, event.clientY - drag.dy));
+                    panel.style.left = `${x}px`; panel.style.top = `${y}px`; panel.style.right = 'auto'; panel.style.bottom = 'auto'; panel.style.transform = 'none';
+                    event.preventDefault(); event.stopPropagation();
+                });
+                const end = event => { if (!drag || event.pointerId !== drag.id) return; drag = null; panel.classList.remove('dragging'); write({ x: panel.offsetLeft, y: panel.offsetTop }); event.stopPropagation(); };
+                panel.addEventListener('pointerup', end); panel.addEventListener('pointercancel', end);
+                // Restore the saved open state and position whenever the surface is shown.
+                return { restore() { setOpen(Boolean(read().open)); place(); } };
+            }
+        };
+
         const PhotoTable = {
             elements: {}, photos: [], deck: [], currentFileId: null, stackName: null, pointer: null,
             frameId: null, z: 1, reducedMotion: false, previousFocus: null, emptyPress: null, emptyPressTimer: null,
@@ -11037,6 +11090,8 @@ this.updateImageCounters();
                 this.elements.surface = document.getElementById('photo-table-surface');
                 this.elements.folder = document.getElementById('photo-table-folder');
                 this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+                this.loadSettings();
+                this.controls = FloatingControls.bind({ panel: document.getElementById('photo-table-controls'), toggle: document.getElementById('photo-table-controls-toggle'), key: 'table', label: 'Table', onAdjust: (control, delta) => this.adjustControl(control, delta) });
                 this.elements.folder.addEventListener('click', event => { event.stopPropagation(); SurfaceStackSelector.open('table'); });
                 document.getElementById('photo-table-close')?.addEventListener('click', event => { event.stopPropagation(); this.exit(); });
                 this.elements.surface.addEventListener('pointerdown', event => { this.down(event); this.emptyLongPressDown(event); });
@@ -11048,7 +11103,29 @@ this.updateImageCounters();
             },
             isOpen() { return Boolean(this.elements.root && !this.elements.root.hidden); },
             workingFiles(stackName = this.stackName) { return (state.stacks[stackName] || []).filter(file => TableTagTargets.isEligible(file)); },
-            displayLimit(total) { return Math.min(32, innerWidth < 700 ? 16 : 24, total); },
+            imageScale: 1, imageLimit: null,
+            displayLimit(total) { return Math.min(this.imageLimit ?? (innerWidth < 700 ? 16 : 24), total); },
+            loadSettings() {
+                try {
+                    const saved = JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:table_settings`) || '{}');
+                    if (Number.isFinite(saved.scale) && saved.scale > 0) this.imageScale = saved.scale;
+                    if (Number.isFinite(saved.limit) && saved.limit > 0) this.imageLimit = saved.limit;
+                } catch (_) {}
+            },
+            adjustControl(control, delta) {
+                const total = this.workingFiles().length;
+                if (control === 'scale') this.imageScale = Math.max(0.5, Math.round((this.imageScale + delta / 100) * 100) / 100);
+                else this.imageLimit = Math.max(4, Math.min(Math.max(4, total), (this.imageLimit ?? this.displayLimit(total)) + delta));
+                try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:table_settings`, JSON.stringify({ scale: this.imageScale, limit: this.imageLimit })); } catch (_) {}
+                this.updateControlLabels();
+                if (this.isOpen()) this.reconcilePopulation(this.currentFileId);
+            },
+            updateControlLabels() {
+                this.elements.root?.style.setProperty('--print-scale', String(this.imageScale));
+                const scale = document.getElementById('photo-table-scale'), limit = document.getElementById('photo-table-limit');
+                if (scale) scale.textContent = `${Math.round(this.imageScale * 100)}%`;
+                if (limit) limit.textContent = String(this.displayLimit(this.workingFiles().length || Infinity));
+            },
             resolveEligible(fileId, stackName = this.stackName) {
                 const full = state.stacks[stackName] || [];
                 const eligible = this.workingFiles(stackName);
@@ -11084,6 +11161,7 @@ this.updateImageCounters();
                 this.build(ordered.slice(0, limit));
                 TableTagTargets.render();
                 this.updateCount();
+                this.updateControlLabels(); this.controls?.restore();
                 state.inspection = { surface: 'table', origin: null, fileId: this.currentFileId };
                 ModeNavigation.show('table');
                 App.persistViewContext();
@@ -11093,7 +11171,7 @@ this.updateImageCounters();
             hash(id) { let h = 2166136261; for (const c of String(id)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; },
             spawn(file, index = this.photos.length) {
                 if (!file || this.photos.some(photo => String(photo.fileId) === String(file.id))) return null;
-                const width = Math.max(86, Math.min(142, innerWidth * .145));
+                const width = Math.max(86, Math.min(142, innerWidth * .145)) * this.imageScale;
                 const height = width * 1.27;
                 const cols = Math.max(2, Math.floor((innerWidth - 26) / (width + 12)));
                 const col = index % cols, row = Math.floor(index / cols), seed = this.hash(file.id);
@@ -11324,6 +11402,7 @@ this.updateImageCounters();
                 document.body.style.overflow = 'hidden';
                 TableTagTargets.render();
                 this.updateCount();
+                this.updateControlLabels(); this.controls?.restore();
                 ModeNavigation.show('table');
                 const selectedPhoto = this.photos.find(photo => String(photo.fileId) === String(selected.id));
                 if (selectedPhoto) { selectedPhoto.zIndex = ++this.z; this.paint(selectedPhoto); selectedPhoto.element.focus(); }
@@ -11446,6 +11525,8 @@ this.updateImageCounters();
                 this.updateControlLabels();
                 this.updateChrome();
                 ModeNavigation.show('explore');
+                try { if (localStorage.getItem(`${APP_IDENTITY.storagePrefix}:explore_controls_open`) === 'true') this.toggleControls(true); } catch (_) {}
+                try { this.restoreControlsPosition(); } catch (_) {}
                 Gestures.updateGestureOverlayMode();
                 if (this.cards[this.selectedIndex]) {
                     this.center(this.selectedIndex);
@@ -11750,6 +11831,7 @@ this.updateImageCounters();
             cardAtPoint(x, y) {
                 let best = null, bestDistance = Infinity;
                 this.cards.forEach(card => {
+                    if (card.renderCache?.hidden) return;
                     const rect = card.element.getBoundingClientRect();
                     if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
                     const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
@@ -11888,6 +11970,7 @@ this.updateImageCounters();
                 if (!this.elements.controls) return;
                 const open = typeof force === 'boolean' ? force : this.elements.controls.hidden;
                 this.elements.controls.hidden = !open;
+                if (typeof force !== 'boolean') { try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:explore_controls_open`, String(open)); } catch (_) {} }
                 this.elements.controlsToggle?.setAttribute('aria-expanded', String(open));
                 this.elements.controlsToggle?.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} Explore controls`);
             },
@@ -11960,6 +12043,7 @@ this.updateImageCounters();
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
                 const sphereRadius = this.sphereRadius();
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
+                const cullDepth = 0.22;
                 this.cards.forEach((card, index) => {
                     const v = card.vector;
                     const x1 = v.x * cosX + v.z * sinX;
@@ -11970,10 +12054,22 @@ this.updateImageCounters();
                     const scale = perspective * 1.18 * this.cardScale;
                     const x = x1 * sphereRadius * perspective;
                     const y = y2 * sphereRadius * perspective;
-                    card.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
-                    card.element.style.opacity = String(Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)));
-                    card.element.style.zIndex = String(Math.round(depth * 1000));
+                    const style = card.element.style;
+                    const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
+                    // Back-hemisphere cards are barely visible but each costs a compositor layer: hide them.
+                    const hidden = depth < cullDepth && index !== this.selectedIndex;
+                    if (hidden !== cache.hidden) { cache.hidden = hidden; style.visibility = hidden ? 'hidden' : ''; }
+                    if (hidden) return;
+                    // Write only what changed: redundant style writes on hundreds of cards per frame are the cost.
+                    const transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
+                    if (transform !== cache.transform) { cache.transform = transform; style.transform = transform; }
+                    const opacity = Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)).toFixed(2);
+                    if (opacity !== cache.opacity) { cache.opacity = opacity; style.opacity = opacity; }
+                    const zIndex = String(Math.round(depth * 1000));
+                    if (zIndex !== cache.zIndex) { cache.zIndex = zIndex; style.zIndex = zIndex; }
+                    const far = depth < 0.45;
+                    if (far !== cache.far) { cache.far = far; card.element.classList.toggle('far', far); }
                     const centerDistance = Math.hypot(x, y);
                     if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                 });

@@ -2676,3 +2676,13 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Suite (`e2e/`, updated to the rule, 19 checks):** C3 viewed image becomes top; C4 back/next never bounce; C5 last viewed is Sort centre and Grid top-left; C19 after globe → Focus → X, last viewed is top/Grid top-left/Sort centre. Result: phone 18/19, desktop 18/19 — only C17 (lab CPU drawing, ~210ms).
 
 ---
+
+## §134 · GLOBE RENDER, TABLE CONTROLS, CONTROL PERSISTENCE, CHEAPER VIEW SAVES (2026-09-24)
+
+- Globe render: back-hemisphere cards culled (visibility hidden below depth 0.22), styles written only when changed, far cards drop their box-shadow, `will-change: transform` only (was transform+opacity). Picker fallback skips culled cards.
+- Table floating controls (same look as Explore): Size (no max) and Images (no cap beyond the stack), chevron toggle, panel drags anywhere; values, open state and position persist. Print size via `--print-scale`.
+- Explore controls: open state persists and position is restored on open.
+- `view()` saves the file's own row at once; the whole-folder snapshot is deferred (3s) instead of cloning every file into IndexedDB on each Focus step.
+- e2e: C20 Table controls, C21 leaving the globe mid-build then returning completes without rebuilding. Result phone 20/21, desktop 20/21 (C17 lab CPU drawing only). Globe tap gate 20/20 phone and desktop.
+
+---
