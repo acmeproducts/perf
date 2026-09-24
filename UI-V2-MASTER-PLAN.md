@@ -2769,3 +2769,11 @@ Owner: thumbnails should be stored locally when the globe builds, because Grid, 
 - Drive: globe, Grid and Table use one 320px thumbnail per image (was 300 and 800). Focus's full image unchanged.
 - When a stack opens, its first 500 thumbnails are filled into the store in the background (4 at a time, low priority).
 - e2e C24 added: store holds the stack's thumbnails; loading them again makes no network request. e2e 23/24 both devices, C24 pass (stored=633, 0 network); C17 lab-only (baseline also 175–215ms). Globe taps 20/20 both. Owner device check: second open of a stack/Grid/Table should fill with no Drive wait.
+
+## §144 · GLOBE SPARSE ON PHONE, FOCUS FLICKER AND DELAY (2026-09-24)
+
+Owner on §143: still sparse on second open; delay before Focus shows; flicker on Focus back/forward.
+- Globe sparse (phone only): every card is its own GPU layer. The card's drop shadow (12px offset, 32px blur) roughly tripled each layer's size, and cards past the back threshold toggled a class that removed the shadow, so each card crossing it was redrawn mid-spin. 500 cards × ~0.8MB exceeded the phone's GPU tile budget; dropped tiles show as holes. Desktop and the lab have no such budget, which is why neither reproduced it. Card shadow removed (selected/focused glow kept) and the per-frame class toggle removed; ~0.27MB per card. No culling: every card is still drawn and tappable.
+- Focus flicker: each step hid the picture until the next was loaded. On Drive the full image comes through a redirect (and now the device store), so even a preloaded image arrives a frame or more later, which showed as a blank flash. Paging now keeps the current picture until the next one is ready and switches in one frame. Only a picture left from before the globe/Grid/Table is hidden (no flash of the previous image on entry).
+- Focus delay: the device store (§143) now also keeps Focus's full image for the first 150 of the open stack, filled in the background after the thumbnails.
+- e2e C25 added (quick next/back: blank frames 0 of 84). e2e 25/25 phone; desktop 25/25 on 8 of 9 runs (one C23 miss that didn't reproduce, detail now logs the tap point). Globe taps 20/20 both.

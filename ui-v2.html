@@ -1090,11 +1090,10 @@
         .spatial-gallery__card {
             position: absolute; left: 50%; top: 50%; width: 112px; height: 148px; margin: -74px 0 0 -56px;
             padding: 5px; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92);
-            box-shadow: 0 12px 32px rgba(0,0,0,.38); transform-origin: center; will-change: transform;
+            transform-origin: center; will-change: transform;
             transition: border-color 160ms ease, box-shadow 160ms ease; overflow: hidden;
         }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
-        .spatial-gallery__card.far { box-shadow: none; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
         .spatial-gallery__chrome { position: absolute; z-index: 2000; display: flex; align-items: center; gap: 10px; }
@@ -2838,6 +2837,12 @@
                 else Utils.defer(() => apply(entry.src), { priority: 'background', timeout: 180 });
                 return entry;
             },
+            // Another surface (globe, Grid, Table) covered the Focus/Sort image: its current picture is out of
+            // date, so the next present hides it rather than showing it while the new one loads.
+            markFocusStale() {
+                const img = Utils.elements?.centerImage;
+                if (img) img.dataset.stale = '1';
+            },
             present(img, file, options = {}) {
                 // One step, like ui-v3: Focus shows the full image only. If it is already loaded it is
                 // painted now; otherwise nothing is shown (never another file, never a small version)
@@ -2853,25 +2858,29 @@
                 img.alt = file.name || 'Image';
                 this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
                 const shownFrom = performance.now();
+                // Paging (Focus/Sort next/back): the picture on screen stays until the next one is ready, then
+                // the switch happens in one frame - no blank frame. Only a stale picture (left from before the
+                // globe/Grid/Table) is hidden, so it never flashes.
+                const stale = img.dataset.stale === '1' || !img.getAttribute('src');
+                const reveal = src => {
+                    if (token !== this.presentationToken || img.getAttribute('src') !== src) return;
+                    img.style.opacity = '1';
+                    delete img.dataset.stale;
+                    if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) PerfBeacon.focusShown(performance.now() - shownFrom, performance.now() - shownFrom < 5);
+                };
                 const show = src => {
                     if (token !== this.presentationToken || !img.isConnected) return;
-                    const reveal = () => {
-                        if (token !== this.presentationToken || img.getAttribute('src') !== src) return;
-                        img.style.opacity = '1';
-                        if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) PerfBeacon.focusShown(performance.now() - shownFrom, performance.now() - shownFrom < 5);
-                    };
                     if (img.getAttribute('src') !== src) {
-                        // Hide first: until the new picture is decoded the element would keep painting the old one.
-                        img.style.opacity = '0';
+                        if (stale) img.style.opacity = '0';
                         img.src = src;
                         this.instrumentation.providerRequestCount++;
                     }
-                    if (img.complete && img.naturalWidth > 0) reveal();
-                    else img.addEventListener('load', reveal, { once: true });
+                    if (img.complete && img.naturalWidth > 0) reveal(src);
+                    else img.addEventListener('load', () => reveal(src), { once: true });
                 };
-                if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; return { token, fileId, displayEntry }; }
+                if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; delete img.dataset.stale; return { token, fileId, displayEntry }; }
                 if (displayEntry?.readyState === 'loaded') { show(displayEntry.src); return { token, fileId, displayEntry }; }
-                img.style.opacity = '0';
+                if (stale) img.style.opacity = '0';
                 let recovered = false;
                 img.onerror = async () => {
                     if (recovered || token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
@@ -2909,10 +2918,10 @@
                 if (!navigator.serviceWorker?.controller) return;
                 this.stored = this.stored || new Set();
                 this.storeQueue = this.storeQueue || [];
-                files.slice(0, limit).forEach(file => {
-                    const src = file && this.source(file, 'sphere');
-                    if (src && !this.stored.has(src)) { this.stored.add(src); this.storeQueue.push(src); }
-                });
+                const add = src => { if (src && !this.stored.has(src)) { this.stored.add(src); this.storeQueue.push(src); } };
+                files.slice(0, limit).forEach(file => file && add(this.source(file, 'sphere')));
+                // Focus's full image for the first 150, so opening one from the globe is read from the device.
+                files.slice(0, 150).forEach(file => file && add(this.source(file, 'display')));
                 this.storeActive = this.storeActive || 0;
                 const pump = () => {
                     while (this.storeActive < 4 && this.storeQueue.length) {
@@ -8106,6 +8115,7 @@ this.updateImageCounters();
         };
         const Grid = {
             open(stack, options = {}) {
+                SharedImageResources.markFocusStale();
                 const { origin = null, filesOverride = null, filterTag = null } = options || {};
                 this.clearDragState();
                 Utils.showModal('grid-modal');
@@ -11394,6 +11404,7 @@ this.updateImageCounters();
                 return eligible[0];
             },
             open({ stackName = state.currentStack, fileId = state.currentFileId } = {}) {
+                SharedImageResources.markFocusStale();
                 const full = state.stacks[stackName] || [];
                 if (!full.length) { Utils.showToast('No images in that stack.', 'info'); return false; }
                 if (this.folderId === state.currentFolder?.id && this.folderGeneration === state.folderSessionGeneration && this.stackName === stackName && this.photos.length && this.elements.root.hidden) return this.resume(fileId);
@@ -11809,6 +11820,7 @@ this.updateImageCounters();
             },
 
             open({ stackName = state.currentStack, fileId, preserveGeometry = false, suppressPersist = false } = {}) {
+                SharedImageResources.markFocusStale();
                 this.elements.root.inert = false;
                 this.elements.root.removeAttribute('aria-hidden');
                 this.elements.root.style.pointerEvents = '';
@@ -12682,8 +12694,6 @@ this.updateImageCounters();
                         if (opacity !== cache.opacity) { cache.opacity = opacity; style.opacity = opacity; }
                         const zIndex = String(Math.round(depth * 1000));
                         if (zIndex !== cache.zIndex) { cache.zIndex = zIndex; style.zIndex = zIndex; }
-                        const far = depth < 0.45;
-                        if (far !== cache.far) { cache.far = far; card.element.classList.toggle('far', far); }
                         const centerDistance = Math.hypot(x, y);
                         if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                     }
@@ -12806,6 +12816,8 @@ this.updateImageCounters();
                 const { restoring = false, immediateResource = null, immediateSrc = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
                 CurrentImage.beginTraversal(fileId, requestedReferrer.stackName);
+                // Entering from the globe, Grid or Table: the picture behind them is out of date.
+                if (requestedReferrer.surface !== 'sort') SharedImageResources.markFocusStale();
                 const resolved = CurrentImage.view(fileId, requestedReferrer.stackName);
                 if (!resolved) {
                     Utils.showToast('That image is no longer available in this stack.', 'info');

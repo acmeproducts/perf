@@ -80,6 +80,14 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const walk4: string[] = [];
   for (const [fn, want] of [['nextImage', 'f5'], ['nextImage', 'f6'], ['prevImage', 'f5'], ['prevImage', 'f4']] as const) { await page.waitForTimeout(300); await ev(`Gestures.${fn}()`); await ev(`T.waitPaint('${want}')`); walk4.push(await ev<string>(`T.cur()`)); }
   check('C4', 'Focus back/next never bounce (back twice, next, next, back, back)', c4 !== null && eq(walk4, ['f5', 'f6', 'f5', 'f4']), `after back x2=${c4 !== null ? 'f4' : 'miss'} then ${walk4.join(',')}`);
+  // C25 Quick Focus next/back never shows a blank frame (the picture on screen stays until the next is ready).
+  await guard('C25', 'Quick Focus next/back: no blank frame', async () => {
+    await ev(`(() => { const img = document.querySelector('#center-image'); window.__blank = 0; window.__frames = 0; window.__sampling = true;
+      const tick = () => { if (!window.__sampling) return; window.__frames++; if (getComputedStyle(img).opacity === '0' || !(img.complete && img.naturalWidth > 0)) window.__blank++; requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
+    for (const fn of ['nextImage', 'nextImage', 'nextImage', 'prevImage', 'prevImage', 'prevImage']) { await ev(`Gestures.${fn}()`); await page.waitForTimeout(120); }
+    await page.waitForTimeout(600); const blank = await ev<number>(`(window.__sampling = false, window.__blank)`), frames = await ev<number>(`window.__frames`);
+    check('C25', 'Quick Focus next/back: no blank frame', blank === 0, `blank frames=${blank} of ${frames}`);
+  });
   // Leave Focus to Sort.
   await ev(`CanonicalInspection.exit()`); await page.waitForTimeout(500);
   // C5 Last viewed (f4) is the top: centre of Sort, top-left of Grid; Grid tiles are the stack order.
@@ -148,9 +156,10 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; SpatialGallery.sphereScale = 3.2; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(400);
   const back = await ev<{ id: string; x: number; y: number; depth: number } | null>(`T.globeBackCard()`);
   let backShown = 'none';
+  const backAt = back ? await ev<string>(`(() => { const e = document.elementFromPoint(${back?.x ?? 0}, ${back?.y ?? 0}); const h = SpatialGallery.cardAtPoint(${back?.x ?? 0}, ${back?.y ?? 0}); return (e ? (e.id || e.className || e.tagName) : 'none') + ' hit=' + (h && h.fileId) + ' ft=' + SpatialGallery.focusTransitionFileId + ' top=' + (e && e.closest('.spatial-gallery__card')?.dataset.fileId); })()`) : '';
   if (back) { if (DEV === 'Pixel 7') await page.touchscreen.tap(back.x, back.y); else await page.mouse.click(back.x, back.y); await ev(`T.waitPaint('${back.id}', 5000)`); backShown = await ev<string>(`T.cur()`); await ev(`CanonicalInspection.exit()`); await page.waitForTimeout(500); }
   await ev(`(() => { SpatialGallery.sphereScale = 1; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(300);
-  check('C23', 'Zoomed in: a card on the back of the globe can be tapped and opens that image', !!back && backShown === back.id, back ? `back card ${back.id} (depth ${back.depth}) -> opened ${backShown}` : 'no back-side card visible');
+  check('C23', 'Zoomed in: a card on the back of the globe can be tapped and opens that image', !!back && backShown === back.id, back ? `back card ${back.id} (depth ${back.depth}) at ${back.x},${back.y} [${backAt}] -> opened ${backShown}` : 'no back-side card visible');
   // C12 Explore stack switch and back: no rebuild on return.
   await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'priority', fileId: state.stacks.priority[0].id }); })()`); await page.waitForTimeout(1200);
   await ev(`window.__cc = 0`); await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id }); })()`); await page.waitForTimeout(800);
