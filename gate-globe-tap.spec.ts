@@ -24,7 +24,7 @@ for (const dev of ['Pixel 7', 'Desktop Chrome'] as const) test(`${dev}: globe ta
   await page.evaluate(() => {
     const w = window as any, G = w.Gestures, SG = w.SpatialGallery; w.__log = [];
     const log = (m: string) => w.__log.push(m);
-    document.addEventListener('pointerdown', e => { const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.spatial-gallery__card') as HTMLElement|null; log('down:' + (el?.dataset.fileId ?? '-') + '/target:' + ((e.target as HTMLElement).closest?.('.spatial-gallery__card') as HTMLElement|null)?.dataset.fileId); }, true);
+    document.addEventListener('pointerdown', e => { log('down:' + (SG.cardIdAt(e.clientX, e.clientY) ?? '-')); }, true);
     for (const t of ['mousedown','mouseup','click']) document.addEventListener(t, (e: any) => log(t + (t==='click' ? '(d' + e.detail + ')' : '') + '@' + ((e.target as HTMLElement).id || (e.target as HTMLElement).className?.toString().split(' ')[0])), true);
     const wrap = (o: any, k: string, name: string) => { const f = o[k].bind(o); o[k] = (...a: any[]) => { log(name + '(' + (a[0] && typeof a[0] !== 'object' ? a[0] : '') + ')'); return f(...a); }; };
     wrap(SG, 'activateFileId', 'globeActivate'); wrap(G, 'nextImage', 'NEXT'); wrap(G, 'prevImage', 'PREV'); wrap(G, 'handleTap', 'sortFocusTap'); wrap(G, 'toggleFocusMode', 'toggleFocus');
@@ -37,8 +37,8 @@ for (const dev of ['Pixel 7', 'Desktop Chrome'] as const) test(`${dev}: globe ta
       const g = (window as any).SpatialGallery; g.velocityX = 0; g.velocityY = 0; (window as any).__log = [];
       const cx = innerWidth / 2 + (trial % 2 ? 40 : -40), cy = innerHeight / 2 + (trial % 3 - 1) * 30;
       // What the browser itself says is on top at that point:
-      const el = document.elementFromPoint(cx, cy)?.closest('.spatial-gallery__card') as HTMLElement | null;
-      return el ? { id: el.dataset.fileId, x: cx, y: cy } : null;
+      const id = (window as any).SpatialGallery.cardIdAt(cx, cy);
+      return id ? { id, x: cx, y: cy } : null;
     }, trial);
     if (!t) { results.push('no-card'); continue; }
     if (dev === 'Pixel 7') await page.touchscreen.tap(t.x, t.y); else await page.mouse.click(t.x, t.y);
@@ -51,7 +51,7 @@ for (const dev of ['Pixel 7', 'Desktop Chrome'] as const) test(`${dev}: globe ta
     await page.waitForTimeout(700);
   }
   // Deliberate taps inside Focus must still navigate: open Focus on a card, then tap right half, then left half.
-  const fx = await page.evaluate(() => { const g = (window as any).SpatialGallery; g.velocityX = 0; g.velocityY = 0; const el = document.elementFromPoint(innerWidth/2, innerHeight/2)?.closest('.spatial-gallery__card') as HTMLElement; return el?.dataset.fileId; });
+  const fx = await page.evaluate(() => { const g = (window as any).SpatialGallery; g.velocityX = 0; g.velocityY = 0; return g.cardIdAt(innerWidth/2, innerHeight/2); });
   const vw = page.viewportSize()!.width, vh = page.viewportSize()!.height;
   const tapAt = (x: number, y: number) => dev === 'Pixel 7' ? page.touchscreen.tap(x, y) : page.mouse.click(x, y);
   await tapAt(vw/2, vh/2); await page.waitForTimeout(1200);

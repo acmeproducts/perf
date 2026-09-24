@@ -1073,6 +1073,7 @@
             transition: border-color 160ms ease, box-shadow 160ms ease; overflow: hidden;
         }
         .spatial-gallery__card.far { box-shadow: none; }
+        .spatial-gallery__canvas { position: absolute; inset: 0; display: block; touch-action: none; }
         .spatial-gallery__card img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; pointer-events: none; }
         .spatial-gallery__card.selected { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.35), 0 18px 42px rgba(0,0,0,.5); }
         .spatial-gallery__card.focused { border-color: #f8fafc; box-shadow: 0 0 0 5px rgba(96,165,250,.5), 0 0 34px rgba(147,197,253,.8); }
@@ -1577,31 +1578,95 @@
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
         const PerfBeacon = {
-            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [],
+            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [], focusMs: [], globe: null, globeFps: [],
             enabled: /[?&]debug=1/.test(location.search),
+            // Device log: timings and counts only (no file names or ids). Uploaded to the repo's device-logs branch.
+            log: [], sessionId: new Date().toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 7),
+            logRepo: 'acmeproducts/perf', logBranch: 'device-logs', logSha: null, uploading: false, lastUpload: null,
+            record(type, data = {}) {
+                if (!this.enabled) return;
+                this.log.push({ t: Math.round(performance.now()), type, ...data });
+                if (this.log.length > 3000) this.log.splice(0, this.log.length - 3000);
+            },
+            token() {
+                try { return localStorage.getItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`) || localStorage.getItem('repolist:pat') || ''; } catch (_) { return ''; }
+            },
+            async upload(reason = 'interval') {
+                if (!this.enabled || this.uploading || !this.log.length) return;
+                const token = this.token();
+                if (!token) { this.lastUpload = 'no GitHub token (tap log button)'; return; }
+                this.uploading = true;
+                try {
+                    const body = {
+                        build: APP_BUILD.id, reason, sessionId: this.sessionId, savedAt: new Date().toISOString(),
+                        device: { ua: navigator.userAgent, viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, memoryGB: navigator.deviceMemory || null, cores: navigator.hardwareConcurrency || null },
+                        state: { stackSizes: Object.fromEntries(Object.entries(state.stacks || {}).map(([k, v]) => [k, v.length])), surface: state.inspection?.surface || null, focus: Boolean(state.isFocusMode), globeCards: SpatialGallery.cards?.length || 0, globeReady: (SpatialGallery.cards || []).filter(c => c.state === 'ready').length },
+                        resources: SharedImageResources.instrumentation,
+                        events: this.log
+                    };
+                    const path = `device-logs/${this.sessionId.slice(0, 10)}/${this.sessionId}.json`;
+                    const url = `https://api.github.com/repos/${this.logRepo}/contents/${path}`;
+                    const put = sha => fetch(url, { method: 'PUT', keepalive: reason === 'pagehide', headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: `device log ${this.sessionId} (${reason})`, branch: this.logBranch, content: btoa(unescape(encodeURIComponent(JSON.stringify(body)))), ...(sha ? { sha } : {}) }) });
+                    let res = await put(this.logSha);
+                    if (res.status === 409 || res.status === 422) {
+                        const current = await fetch(`${url}?ref=${this.logBranch}`, { headers: { Authorization: `Bearer ${token}` } });
+                        if (current.ok) { this.logSha = (await current.json()).sha; res = await put(this.logSha); }
+                    }
+                    if (res.ok) { this.logSha = (await res.json()).content?.sha || this.logSha; this.lastUpload = `uploaded ${new Date().toLocaleTimeString()} (${this.log.length} events)`; }
+                    else this.lastUpload = `upload failed ${res.status}`;
+                } catch (error) { this.lastUpload = `upload error ${error.message}`; }
+                finally { this.uploading = false; this.render(); }
+            },
+            focusShown(ms, cached) { if (!this.enabled) return; this.focusMs.push(Math.round(ms)); if (this.focusMs.length > 8) this.focusMs.shift(); this.record('focus', { ms: Math.round(ms), cached }); },
+            globeFrame(dtMs, drawn, ready, moving) {
+                if (!this.enabled) return;
+                const g = this.globe || (this.globe = { frames: 0, worst: 0, sum: 0, drawn: 0, ready: 0, since: performance.now() });
+                if (moving) { g.frames++; g.sum += dtMs; g.worst = Math.max(g.worst, dtMs); }
+                g.drawn = drawn; g.ready = ready;
+                if (performance.now() - g.since >= 2000) {
+                    if (g.frames) {
+                        const fps = Math.round(1000 / (g.sum / g.frames));
+                        this.globeFps.push(fps); if (this.globeFps.length > 6) this.globeFps.shift();
+                        this.record('globe', { fps, worstFrameMs: Math.round(g.worst), frames: g.frames, drawn, ready });
+                    }
+                    this.globe = { frames: 0, worst: 0, sum: 0, drawn, ready, since: performance.now() };
+                }
+            },
             init() {
                 if (!this.enabled || this.el) return;
+                const button = document.createElement('button');
+                button.type = 'button'; button.textContent = 'log';
+                button.setAttribute('aria-label', 'Upload device log now (long-press to set GitHub token)');
+                button.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:100000;width:40px;height:28px;border-radius:8px;border:1px solid #7fffd4;background:#000c;color:#7fffd4;font:10px ui-monospace,monospace;';
+                let pressTimer = null;
+                button.addEventListener('pointerdown', () => { pressTimer = setTimeout(() => { pressTimer = null; const t = prompt('GitHub token for device logs (stored on this device only):', this.token()); if (t != null) { try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`, t.trim()); } catch (_) {} this.upload('token-set'); } }, 700); });
+                button.addEventListener('pointerup', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; if (!this.token()) { const t = prompt('GitHub token for device logs (stored on this device only):', ''); if (t) { try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`, t.trim()); } catch (_) {} } } this.upload('manual'); } });
+                document.body.appendChild(button);
+                setInterval(() => this.upload('interval'), 45000);
+                document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.upload('pagehide'); });
+                addEventListener('pagehide', () => this.upload('pagehide'));
                 const el = document.createElement('div');
                 el.id = 'perf-beacon';
-                el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
+                el.style.cssText = 'position:fixed;left:8px;bottom:40px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
                 document.body.appendChild(el); this.el = el;
                 try {
                     new PerformanceObserver(list => {
-                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); });
+                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); this.record('longtask', { ms: Math.round(entry.duration), surface: state.inspection?.surface || (state.isFocusMode ? 'focus' : 'sort') }); });
                     }).observe({ entryTypes: ['longtask'] });
                 } catch (error) { /* longtask unsupported (Safari): heartbeat below covers it */ }
                 let last = performance.now();
                 setInterval(() => {
                     const now = performance.now(); const drift = Math.round(now - last - 400); last = now;
-                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); }
+                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); this.record('stall', { ms: drift }); }
                     this.render();
                 }, 400);
                 document.addEventListener('pointerup', () => {
                     const at = performance.now();
-                    requestAnimationFrame(() => { this.taps.push(Math.round(performance.now() - at)); if (this.taps.length > 5) this.taps.shift(); });
+                    requestAnimationFrame(() => { const ms = Math.round(performance.now() - at); this.taps.push(ms); if (this.taps.length > 5) this.taps.shift(); this.record('tap', { ms, surface: state.inspection?.surface || (state.isFocusMode ? 'focus' : 'sort') }); });
                 }, true);
             },
-            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); } },
+            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); this.record('thumb', { ms: Math.round(ms) }); } },
             render() {
                 if (!this.el) return;
                 const i = SharedImageResources.instrumentation;
@@ -1612,7 +1677,10 @@
                     'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
                     'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
                     'img errors: ' + (i.imageErrorCount ?? '-') + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
-                    'image requests: ' + i.providerRequestCount
+                    'image requests: ' + i.providerRequestCount,
+                    'focus image ms: ' + (this.focusMs.join(',') || '-'),
+                    'globe fps: ' + (this.globeFps.join(',') || '-') + '  cards ' + ((SpatialGallery.cards || []).filter(c => c.state === 'ready').length) + '/' + (SpatialGallery.cards?.length || 0),
+                    'log: ' + (this.lastUpload || 'not uploaded yet')
                 ].join('\n');
             }
         };
@@ -2729,10 +2797,12 @@
                 img.dataset.sharedResourceKey = displayEntry?.key || '';
                 img.alt = file.name || 'Image';
                 this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
+                const shownFrom = performance.now();
                 const show = src => {
                     if (token !== this.presentationToken || !img.isConnected) return;
                     if (img.getAttribute('src') !== src) { img.src = src; this.instrumentation.providerRequestCount++; }
                     img.style.opacity = '1';
+                    if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) { const cached = performance.now() - shownFrom < 5; if (img.complete) PerfBeacon.focusShown(performance.now() - shownFrom, cached); else img.addEventListener('load', () => PerfBeacon.focusShown(performance.now() - shownFrom, cached), { once: true }); }
                 };
                 if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; return { token, fileId, displayEntry }; }
                 if (displayEntry?.readyState === 'loaded') { show(displayEntry.src); return { token, fileId, displayEntry }; }
@@ -11426,8 +11496,8 @@ this.updateImageCounters();
             dragging: false, pointerId: null, lastX: 0, lastY: 0, lastTime: 0, startX: 0, startY: 0,
             pressedCard: null, pressedFileId: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
-            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 30,
-            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null,
+            frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 500,
+            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null, canvas: null, ctx: null, drawList: [], loadQueue: [], loadsInFlight: 0, moved: false,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11511,7 +11581,7 @@ this.updateImageCounters();
                     // A globe already built for this stack: re-attach its cards and only add/remove the
                     // difference, instead of rebuilding every card and refetching every thumbnail.
                     this.cards = cached.cards;
-                    this.elements.scene.replaceChildren(...cached.cards.map(card => card.element));
+                    this.cards.forEach(card => { if (card.state === 'idle') this.queueCardImage(card); });
                     if (cached.sameMembership) { this.select(this.selectedIndex); this.requestFrame(); }
                     else this.reconcilePopulation(nextFiles);
                     SharedImageResources.pinExplorer(this.files);
@@ -11530,9 +11600,6 @@ this.updateImageCounters();
                 Gestures.updateGestureOverlayMode();
                 if (this.cards[this.selectedIndex]) {
                     this.center(this.selectedIndex);
-                    // Keyboard focus after the globe has painted: focusing forces a layout of every card.
-                    const focusCard = this.cards[this.selectedIndex].element;
-                    requestAnimationFrame(() => setTimeout(() => { if (!this.elements.root.hidden) focusCard.focus({ preventScroll: true }); }, 0));
                 }
                 this.lastFrameTime = performance.now();
                 this.requestFrame();
@@ -11573,7 +11640,8 @@ this.updateImageCounters();
                 this.elements.root.classList.remove('spatial-gallery--suspended');
                 this.elements.root.inert = false;
                 this.stashGlobe();
-                this.elements.scene.replaceChildren();
+                if (this.ctx && this.canvas) { this.ctx.setTransform(1, 0, 0, 1, 0, 0); this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
+                this.drawList = [];
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
                 SharedImageResources.pinExplorer([]);
@@ -11606,86 +11674,93 @@ this.updateImageCounters();
             },
 
             buildCards() {
-                if (this.dragging && this.cards.length) SharedImageResources.instrumentation.elementRecreationsDuringMovement += this.cards.length;
-                this.elements.scene.replaceChildren();
-                SharedImageResources.pinExplorer(this.files);
+                this.cards.forEach(card => { card.dead = true; });
+                this.loadQueue = [];
                 this.cards = [];
                 this.appendPage();
             },
 
+            // A card is data, not an element: the whole globe is drawn on one canvas (render), so there is no
+            // per-card compositor layer for the browser to drop, and taps are hit-tested against what was drawn.
             createCard(file, index) {
-                const card = document.createElement('button');
-                card.type = 'button';
-                card.className = `spatial-gallery__card${index === this.selectedIndex ? ' selected' : ''}`;
-                card.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
-                card.setAttribute('aria-label', `Select ${file.name || `image ${index + 1}`}`);
-                card.dataset.fileId = file.id;
-                const img = document.createElement('img');
-                img.alt = file.name || '';
-                img.loading = index < 18 ? 'eager' : 'lazy';
+                const card = { fileId: file.id, file, vector: null, image: null, iw: 0, ih: 0, state: 'idle', attempts: 0, geom: null, dead: false };
+                this.queueCardImage(card);
+                return card;
+            },
+
+            queueCardImage(card) {
+                (this.loadQueue || (this.loadQueue = [])).push(card);
+                this.pumpCardImages();
+            },
+
+            pumpCardImages() {
+                this.loadsInFlight = this.loadsInFlight || 0;
+                if (!this.loadQueue?.length || this.loadsInFlight >= 8) return;
+                // Front of the globe first.
+                this.loadQueue.sort((a, b) => (b.geom?.depth ?? -1) - (a.geom?.depth ?? -1));
+                while (this.loadsInFlight < 8 && this.loadQueue.length) {
+                    const card = this.loadQueue.shift();
+                    if (card.dead || card.state !== 'idle') continue;
+                    this.loadCardImage(card);
+                }
+            },
+
+            loadCardImage(card) {
+                card.state = 'loading';
+                this.loadsInFlight++;
+                const src = SharedImageResources.source(card.file, 'sphere');
+                const img = new Image();
                 img.decoding = 'async';
-                img.draggable = false;
-                card.appendChild(img);
-                card.style.filter = 'none';
-                card.addEventListener('click', event => {
-                    if (card.dataset.moved === 'true' || event.detail !== 0) return;
-                    this.activateFileId(card.dataset.fileId, card);
-                });
-                this.elements.scene.appendChild(card);
-                const generation = this.loadGeneration;
-                SharedImageResources.attach(img, file, 'sphere', { surface: 'explore', visible: index < 18, generation });
-                return { element: card, vector: null, fileId: file.id };
+                const finish = () => { this.loadsInFlight = Math.max(0, this.loadsInFlight - 1); this.pumpCardImages(); };
+                img.onload = async () => {
+                    let image = img;
+                    // Keep one small decoded bitmap per card: it stays drawable for as long as the card exists.
+                    if (typeof createImageBitmap === 'function') {
+                        try { image = await createImageBitmap(img, { resizeWidth: Math.min(256, img.naturalWidth || 256), resizeQuality: 'medium' }); } catch (_) { image = img; }
+                    }
+                    card.image = image; card.iw = image.width; card.ih = image.height; card.state = 'ready';
+                    finish();
+                    this.requestFrame();
+                };
+                img.onerror = () => {
+                    card.attempts++;
+                    card.state = card.attempts <= 2 ? 'idle' : 'error';
+                    finish();
+                    if (card.state === 'idle' && !card.dead) setTimeout(() => { if (!card.dead) this.queueCardImage(card); }, 1500 * card.attempts);
+                };
+                img.src = src;
             },
 
             appendPage() {
                 const start = this.cards.length, end = Math.min(this.files.length, start + this.pageSize);
-                for (let index = start; index < end; index++) {
-                    const file = this.files[index];
-                    this.cards.push(this.createCard(file, index));
-                }
+                for (let index = start; index < end; index++) this.cards.push(this.createCard(this.files[index], index));
                 this.updateVectors();
                 this.requestFrame();
                 this.scheduleNextPage();
             },
 
             reconcilePopulation(nextFiles) {
-                if (this.dragging) SharedImageResources.instrumentation.elementRecreationsDuringMovement += 1;
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
-                const renderedCount = Math.min(nextFiles.length, Math.max(this.cards.length, Math.min(this.pageSize, nextFiles.length)));
-                const nextCards = [];
                 this.files = nextFiles;
-                for (let index = 0; index < renderedCount; index++) {
-                    const file = nextFiles[index];
+                const nextCards = nextFiles.map((file, index) => {
                     const retained = existing.get(String(file.id));
-                    const card = retained || this.createCard(file, index);
-                    card.element.classList.toggle('selected', index === this.selectedIndex);
-                    card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
-                    this.elements.scene.appendChild(card.element);
-                    nextCards.push(card);
                     existing.delete(String(file.id));
-                }
-                existing.forEach(card => card.element.remove());
+                    if (retained) { retained.file = file; return retained; }
+                    return this.createCard(file, index);
+                });
+                existing.forEach(card => { card.dead = true; });
                 this.cards = nextCards;
                 this.updateVectors();
                 this.requestFrame();
-                this.scheduleNextPage();
             },
 
             adoptPopulationOrder(nextFiles) {
                 const existing = new Map(this.cards.map(card => [String(card.fileId), card]));
                 const canAdopt = nextFiles.length === this.files.length && nextFiles.every(file => existing.has(String(file.id)));
-                if (!canAdopt) {
-                    this.reconcilePopulation(nextFiles);
-                    return false;
-                }
+                if (!canAdopt) { this.reconcilePopulation(nextFiles); return false; }
                 this.files = nextFiles;
                 this.cards = nextFiles.map(file => existing.get(String(file.id)));
-                this.cards.forEach((card, index) => {
-                    card.element.classList.toggle('selected', index === this.selectedIndex);
-                    card.element.setAttribute('aria-pressed', index === this.selectedIndex ? 'true' : 'false');
-                });
                 this.updateVectors();
-                SharedImageResources.pinExplorer(nextFiles);
                 this.requestFrame();
                 return true;
             },
@@ -11715,22 +11790,17 @@ this.updateImageCounters();
                 const z = Math.hypot(vector.x, vector.z);
                 this.rotationY = Math.atan2(vector.y, z);
                 this.select(index);
-                if (!this.elements.root.hidden) {
-                    if (this.frameId) cancelAnimationFrame(this.frameId);
-                    this.frameId = null;
-                    this.render(performance.now());
-                }
+                this.requestFrame();
             },
 
-            activateFileId(fileId, cardElement = null) {
+            activateFileId(fileId) {
                 const requestedId = String(fileId || '');
                 if (!requestedId || this.focusTransitionFileId) return false;
                 const index = this.files.findIndex(file => String(file.id) === requestedId);
                 const card = this.cards.find(item => String(item.fileId) === requestedId);
-                if (index < 0 || !card || (cardElement && card.element !== cardElement)) return false;
+                if (index < 0 || !card) return false;
                 const file = this.files[index];
-                const img = card.element.querySelector('img');
-                const immediateSrc = String(img?.dataset.fileId) === requestedId ? (img.currentSrc || img.src || '') : '';
+                const immediateSrc = '';
                 // Explore selection is a view anchor only. It must never mutate normal-stack order or stackSequence.
                 this.select(index);
                 if (!CurrentImage.assert(file.id, 'Explore thumbnail activation')) return false;
@@ -11749,15 +11819,14 @@ this.updateImageCounters();
                 });
             },
 
-            handleCardTap(fileId, cardElement = null) {
+            handleCardTap(fileId) {
                 clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
-                return this.activateFileId(fileId, cardElement);
+                return this.activateFileId(fileId);
             },
 
             select(index) {
                 this.selectedIndex = index;
-                this.cards.forEach((card, cardIndex) => { card.element.classList.toggle('selected', cardIndex === index); card.element.setAttribute('aria-pressed', cardIndex === index ? 'true' : 'false'); });
                 this.updateChrome();
                 const file = this.files[index];
                 if (file) CurrentImage.set(file.id, state.currentStack, { allowCrossStack: false });
@@ -11772,22 +11841,16 @@ this.updateImageCounters();
                 if (event.button !== undefined && event.button !== 0) return;
                 this.dragging = true; this.pointerId = event.pointerId; this.lastX = event.clientX; this.lastY = event.clientY; this.lastTime = performance.now();
                 this.elements.scene.classList.add('dragging');
-                event.target.closest('.spatial-gallery__card')?.setAttribute('data-moved', 'false');
                 this.startX = event.clientX; this.startY = event.clientY;
-                this.maxPointerDistance = 0;
-                // Chrome's touch adjustment can retarget a finger press onto a neighbouring card, so
-                // event.target is not trusted: the card actually painted under the finger's coordinates is.
-                const card = document.elementFromPoint(event.clientX, event.clientY)?.closest('.spatial-gallery__card')
-                    || event.target.closest('.spatial-gallery__card');
-                this.pressedCard = card; this.pressedFileId = card?.dataset.fileId || null;
+                this.maxPointerDistance = 0; this.moved = false;
+                // The card under the finger is the one drawn on top at that point in the last frame.
+                const card = this.hitTest(event.clientX, event.clientY);
+                this.pressedCard = card; this.pressedFileId = card ? String(card.fileId) : null;
                 // Head start: begin loading the full image for Focus while the finger is still down.
-                const pressedFile = this.pressedFileId ? this.files.find(file => String(file.id) === String(this.pressedFileId)) : null;
-                if (pressedFile) SharedImageResources.ensure(pressedFile, 'display');
-                // A finger tap also fires compatibility mouse events a moment later. By then Focus has
-                // opened under the finger, and Sort/Focus reads that mouse tap as prev/next (left/right
-                // half) -- the phone-only +/-1. Cancelling pointerdown suppresses those mouse events.
+                if (card) SharedImageResources.ensure(card.file, 'display');
+                // A finger tap also fires compatibility mouse events a moment later; by then Focus has opened
+                // under the finger and would read them as back/forward. Cancelling pointerdown suppresses them.
                 if (event.pointerType === 'touch' || event.pointerType === 'pen') event.preventDefault();
-                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), true));
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
             },
@@ -11798,9 +11861,8 @@ this.updateImageCounters();
                 const dx = event.clientX - this.lastX, dy = event.clientY - this.lastY;
                 const totalDx = event.clientX - this.startX, totalDy = event.clientY - this.startY;
                 this.maxPointerDistance = Math.max(this.maxPointerDistance, Math.hypot(totalDx, totalDy));
-                if (this.maxPointerDistance > 3 && this.pressedCard?.dataset.moved !== 'true') {
-                    this.pressedCard?.setAttribute('data-moved', 'true'); this.clearCardTap();
-                }
+                const slop = event.pointerType === 'mouse' ? 3 : 8;
+                if (this.maxPointerDistance > slop && !this.moved) { this.moved = true; this.clearCardTap(); }
                 const elapsed = Math.max(8, now - this.lastTime);
                 this.rotationX += dx * 0.006; this.rotationY = Math.max(-1.35, Math.min(1.35, this.rotationY - dy * 0.006));
                 this.velocityX = dx * 0.006 / elapsed * 16; this.velocityY = -dy * 0.006 / elapsed * 16;
@@ -11812,32 +11874,36 @@ this.updateImageCounters();
                 if (event.pointerId !== this.pointerId) return;
                 const dx = event.clientX - this.startX, dy = event.clientY - this.startY;
                 const pressedCard = this.pressedCard;
-                const pressedFileId = this.pressedFileId;
-                const moved = this.maxPointerDistance > 3 || this.pressedCard?.dataset.moved === 'true';
+                const moved = this.moved;
                 this.dragging = false; this.pointerId = null;
-                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 this.elements.scene.classList.remove('dragging');
-                if (!moved && Math.hypot(dx, dy) <= 8) {
-                    // The card the browser itself hit-tested under the finger at pointerdown is the truth.
-                    // The nearest-centre geometry picker is only a fallback when the press missed every card.
-                    const pressedHit = pressedFileId ? this.cards.find(card => String(card.fileId) === String(pressedFileId) && card.element === pressedCard) : null;
-                    const hit = pressedHit || this.cardAtPoint(event.clientX, event.clientY);
-                    if (hit) this.handleCardTap(hit.fileId, hit.element);
+                if (event.type !== 'pointercancel' && !moved && Math.hypot(dx, dy) <= 8) {
+                    const hit = pressedCard && !pressedCard.dead ? pressedCard : this.hitTest(event.clientX, event.clientY);
+                    if (hit) this.handleCardTap(hit.fileId);
                 }
                 this.requestFrame();
             },
 
+            // Front-most drawn card containing the point (the drawList is back-to-front).
+            hitTest(clientX, clientY) {
+                const vp = this.viewportSize();
+                const px = clientX - vp.w / 2, py = clientY - vp.h / 2;
+                for (let i = this.drawList.length - 1; i >= 0; i--) {
+                    const card = this.drawList[i], g = card.geom;
+                    if (!g || card.dead) continue;
+                    if (Math.abs(px - g.x) <= g.w / 2 && Math.abs(py - g.y) <= g.h / 2) return card;
+                }
+                return null;
+            },
+
+            cardIdAt(clientX, clientY) {
+                const card = this.hitTest(clientX, clientY);
+                return card ? String(card.fileId) : null;
+            },
+
             cardAtPoint(x, y) {
-                let best = null, bestDistance = Infinity;
-                this.cards.forEach(card => {
-                    if (card.renderCache?.hidden) return;
-                    const rect = card.element.getBoundingClientRect();
-                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
-                    const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
-                    if (distance < bestDistance) { best = card; bestDistance = distance; }
-                });
-                return best;
+                return this.hitTest(x, y);
             },
 
             onWheel(event) {
@@ -11854,7 +11920,6 @@ this.updateImageCounters();
                 event.preventDefault();
                 this.dragging = false; this.pointerId = null; this.elements.scene.classList.remove('dragging');
                 this.clearCardTap();
-                this.cards.forEach(item => SharedImageResources.markMovement(item.element.querySelector('img'), false));
                 this.pressedCard = null; this.pressedFileId = null;
                 const [a, b] = event.touches;
                 this.pinchStartDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -11943,14 +12008,28 @@ this.updateImageCounters();
                 }, 220);
             },
 
-            sphereRadius() {
-                // Viewport size is cached (updated on resize) so reading it inside a render never forces a
-                // synchronous layout of every card.
+            viewportSize() {
                 if (!this.viewport) {
                     this.viewport = { w: innerWidth, h: innerHeight };
                     addEventListener('resize', () => { this.viewport = { w: innerWidth, h: innerHeight }; this.requestFrame(); });
                 }
-                return Math.min(this.viewport.w, this.viewport.h) * .34 * this.density * this.sphereScale;
+                return this.viewport;
+            },
+
+            sphereRadius() {
+                const vp = this.viewportSize();
+                return Math.min(vp.w, vp.h) * .34 * this.density * this.sphereScale;
+            },
+
+            ensureCanvas() {
+                if (this.canvas) return this.canvas;
+                const canvas = document.createElement('canvas');
+                canvas.className = 'spatial-gallery__canvas';
+                canvas.setAttribute('aria-hidden', 'true');
+                this.elements.scene.appendChild(canvas);
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                return canvas;
             },
 
             updateControlLabels() {
@@ -12039,44 +12118,66 @@ this.updateImageCounters();
                     const damping = Math.pow(0.94, dt / 16);
                     this.velocityX *= damping; this.velocityY *= damping;
                 }
+                const canvas = this.ensureCanvas(), ctx = this.ctx, vp = this.viewportSize();
+                const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+                const cw = Math.round(vp.w * dpr), ch = Math.round(vp.h * dpr);
+                if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; canvas.style.width = `${vp.w}px`; canvas.style.height = `${vp.h}px`; }
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.clearRect(0, 0, cw, ch);
+                ctx.setTransform(dpr, 0, 0, dpr, vp.w / 2 * dpr, vp.h / 2 * dpr);
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
                 const sphereRadius = this.sphereRadius();
+                const baseW = vp.w <= 640 ? 82 : 112, baseH = vp.w <= 640 ? 108 : 148;
                 let nearestIndex = -1, nearestDistance = Infinity, nearestDepth = -Infinity;
-                const cullDepth = 0.22;
+                const list = this.drawList; list.length = 0;
                 this.cards.forEach((card, index) => {
-                    const v = card.vector;
+                    const v = card.vector; if (!v) return;
                     const x1 = v.x * cosX + v.z * sinX;
                     const z1 = -v.x * sinX + v.z * cosX;
                     const y2 = v.y * cosY - z1 * sinY;
                     const z2 = v.y * sinY + z1 * cosY;
                     const perspective = 1 / (1.8 - z2 * 0.45);
                     const scale = perspective * 1.18 * this.cardScale;
-                    const x = x1 * sphereRadius * perspective;
-                    const y = y2 * sphereRadius * perspective;
+                    const x = x1 * sphereRadius * perspective, y = y2 * sphereRadius * perspective;
                     const depth = Math.max(0, Math.min(1, (z2 + 1) / 2));
-                    const style = card.element.style;
-                    const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
-                    // Back-hemisphere cards are barely visible but each costs a compositor layer: hide them.
-                    const hidden = depth < cullDepth && index !== this.selectedIndex;
-                    if (hidden !== cache.hidden) { cache.hidden = hidden; style.visibility = hidden ? 'hidden' : ''; }
-                    if (hidden) return;
-                    // Write only what changed: redundant style writes on hundreds of cards per frame are the cost.
-                    const transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${scale.toFixed(3)})`;
-                    if (transform !== cache.transform) { cache.transform = transform; style.transform = transform; }
-                    const opacity = Math.max(0.16, Math.min(1, 0.22 + depth * 0.78)).toFixed(2);
-                    if (opacity !== cache.opacity) { cache.opacity = opacity; style.opacity = opacity; }
-                    const zIndex = String(Math.round(depth * 1000));
-                    if (zIndex !== cache.zIndex) { cache.zIndex = zIndex; style.zIndex = zIndex; }
-                    const far = depth < 0.45;
-                    if (far !== cache.far) { cache.far = far; card.element.classList.toggle('far', far); }
+                    card.geom = { x, y, w: baseW * scale, h: baseH * scale, depth, index };
+                    list.push(card);
                     const centerDistance = Math.hypot(x, y);
                     if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                 });
-                if (nearestIndex !== this.focusedIndex) {
-                    this.focusedIndex = nearestIndex;
-                    this.cards.forEach((card, index) => card.element.classList.toggle('focused', index === nearestIndex));
+                this.focusedIndex = nearestIndex;
+                list.sort((a, b) => a.geom.depth - b.geom.depth);
+                const round = (x, y, w, h, r) => { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); };
+                for (const card of list) {
+                    const g = card.geom;
+                    const left = g.x - g.w / 2, top = g.y - g.h / 2;
+                    const s = g.w / baseW, pad = 5 * s;
+                    ctx.globalAlpha = Math.max(0.16, Math.min(1, 0.22 + g.depth * 0.78));
+                    ctx.fillStyle = 'rgba(255,255,255,.92)';
+                    round(left, top, g.w, g.h, 13 * s); ctx.fill();
+                    const iw = g.w - pad * 2, ih = g.h - pad * 2;
+                    if (card.state === 'ready' && card.image) {
+                        // object-fit: cover
+                        const targetRatio = iw / ih, imageRatio = card.iw / card.ih;
+                        let sx = 0, sy = 0, sw = card.iw, sh = card.ih;
+                        if (imageRatio > targetRatio) { sw = card.ih * targetRatio; sx = (card.iw - sw) / 2; } else { sh = card.iw / targetRatio; sy = (card.ih - sh) / 2; }
+                        ctx.drawImage(card.image, sx, sy, sw, sh, left + pad, top + pad, iw, ih);
+                    } else {
+                        ctx.fillStyle = 'rgba(100,116,139,.45)';
+                        ctx.fillRect(left + pad, top + pad, iw, ih);
+                    }
+                    const selected = g.index === this.selectedIndex, focused = g.index === nearestIndex;
+                    if (selected || focused) {
+                        ctx.globalAlpha = 1;
+                        ctx.lineWidth = selected ? 3 : 2.5;
+                        ctx.strokeStyle = selected ? '#60a5fa' : '#f8fafc';
+                        round(left, top, g.w, g.h, 13 * s); ctx.stroke();
+                    }
                 }
+                ctx.globalAlpha = 1;
+                if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) { let ready = 0; for (const card of list) if (card.state === 'ready') ready++; PerfBeacon.globeFrame(dt, list.length, ready, this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015); }
+                if (this.loadQueue?.length) this.pumpCardImages();
                 if (this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015) this.requestFrame();
             }
         };

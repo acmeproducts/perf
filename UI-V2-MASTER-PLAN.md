@@ -2686,3 +2686,15 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 - e2e: C20 Table controls, C21 leaving the globe mid-build then returning completes without rebuilding. Result phone 20/21, desktop 20/21 (C17 lab CPU drawing only). Globe tap gate 20/20 phone and desktop.
 
 ---
+
+## §135 · GLOBE REBUILT ON ONE CANVAS; DEVICE LOGS WRITE TO THE REPO (2026-09-24)
+
+**Owner.** Still total dropouts; no culling or other tricks — 500-image globes have worked where you could zoom in far enough to see and tap the back side. Rip out and build what it is supposed to do. Stop using the owner as a test monkey: logs go to the repo.
+
+**Globe.** The DOM globe (one composited element per card; the browser drops layers under GPU pressure) is replaced by one `<canvas>`: each card is data (vector, decoded 256px ImageBitmap); every frame draws all cards back-to-front with depth alpha — no culling; images load 8 at a time, front of the globe first, retried on error, and stay drawable for the card's lifetime; taps hit-test against the geometry just drawn, front-most first, so back-side cards are tappable wherever they show (e.g. zoomed in). Module interface unchanged (open/close/resume/stack cache/stack order/Focus hand-off). Frame cost: 13ms for 500 cards at 1x with CPU-only drawing (lab), GPU on phones.
+
+**Device logs.** `?debug=1` PerfBeacon now records globe fps/worst frame/cards drawn+ready while moving, Focus image time (cached or not), taps, long tasks, stalls, thumbnail loads — timings and counts only, no names or ids — and PUTs them every 45s and on page hide to `device-logs/<date>/<session>.json` on the `device-logs` branch, using the GitHub token already stored by repolist.html (or one set by long-pressing the `log` button).
+
+**Suite (23 checks, adds C22 no dropouts over a hard spin, C23 zoomed back-side tap):** phone 23/23, desktop 23/23. Globe tap gate 20/20 both.
+
+---

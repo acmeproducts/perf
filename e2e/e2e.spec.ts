@@ -96,7 +96,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const taps: string[] = []; let tapOk = 0, nextOk = 0; let lastViewed = '';
   for (let k = 0; k < 4; k++) {
     await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; })()`); await page.waitForTimeout(300);
-    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const el = document.elementFromPoint(x, y)?.closest('.spatial-gallery__card'); return el ? { id: el.dataset.fileId, x, y } : null; })()`);
+    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const id = SpatialGallery.cardIdAt(x, y); return id ? { id, x, y } : null; })()`);
     if (!tgt) { taps.push('none'); continue; }
     const idx = await ev<number>(`state.stacks.in.findIndex(f => String(f.id) === '${tgt.id}')`); const nextId = await ev<string>(`String(state.stacks.in[${idx} + 1]?.id)`);
     if (DEV === 'Pixel 7') await page.touchscreen.tap(tgt.x, tgt.y); else await page.mouse.click(tgt.x, tgt.y);
@@ -120,6 +120,17 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const sort19 = await ev<string>(`T.cur()`);
   check('C19', 'After globe -> Focus -> X: last viewed is top of stack, Grid top-left and Sort centre', top19 === lastViewed && grid19 === lastViewed && sort19 === lastViewed, `lastViewed=${lastViewed} stackTop=${top19} gridTopLeft=${grid19} sort=${sort19}`);
   await ev(`SpatialGallery.open({ stackName: 'in', fileId: state.currentFileId, preserveGeometry: true })`); await page.waitForTimeout(800);
+  // C22 No dropouts: all cards loaded and drawn; spin hard for 2s and every frame draws every card with its image.
+  await page.waitForFunction(`SpatialGallery.cards.length === 500 && SpatialGallery.cards.every(c => c.state === 'ready')`, null, { timeout: 60000 }).catch(() => {});
+  const spin = await ev<{ frames: number; worstDrawn: number; worstReady: number; cards: number }>(`new Promise(r => { const g = SpatialGallery; let frames = 0, worstDrawn = 1e9, worstReady = 1e9; g.velocityX = 0.35; g.velocityY = 0.12; g.requestFrame(); const t0 = performance.now(); const tick = () => { frames++; worstDrawn = Math.min(worstDrawn, g.drawList.length); worstReady = Math.min(worstReady, g.drawList.filter(c => c.state === 'ready').length); if (performance.now() - t0 < 2000) { g.velocityX = Math.max(g.velocityX, 0.2); requestAnimationFrame(tick); } else { g.velocityX = 0; g.velocityY = 0; r({ frames, worstDrawn, worstReady, cards: g.cards.length }); } }; requestAnimationFrame(tick); })`);
+  check('C22', 'No dropouts: 500 cards drawn with images on every frame of a hard spin', spin.cards === 500 && spin.worstDrawn === 500 && spin.worstReady === 500, `frames=${spin.frames} fewest drawn=${spin.worstDrawn} fewest with image=${spin.worstReady} of ${spin.cards}`);
+  // C23 Zoom in until the back of the globe shows through; tapping a back-side card opens exactly that image.
+  await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; SpatialGallery.sphereScale = 3.2; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(400);
+  const back = await ev<{ id: string; x: number; y: number; depth: number } | null>(`(() => { const g = SpatialGallery; const vp = g.viewportSize(); for (let yy = 80; yy < innerHeight - 80; yy += 6) for (let xx = 20; xx < innerWidth - 20; xx += 6) { const c = g.hitTest(xx, yy); if (c && c.geom.depth < 0.45 && c.state === 'ready') return { id: String(c.fileId), x: xx, y: yy, depth: +c.geom.depth.toFixed(2) }; } return null; })()`);
+  let backShown = 'none';
+  if (back) { if (DEV === 'Pixel 7') await page.touchscreen.tap(back.x, back.y); else await page.mouse.click(back.x, back.y); await ev(`T.waitPaint('${back.id}', 5000)`); backShown = await ev<string>(`T.cur()`); await ev(`CanonicalInspection.exit()`); await page.waitForTimeout(500); }
+  await ev(`(() => { SpatialGallery.sphereScale = 1; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(300);
+  check('C23', 'Zoomed in: a card on the back of the globe can be tapped and opens that image', !!back && backShown === back.id, back ? `back card ${back.id} (depth ${back.depth}) -> opened ${backShown}` : 'no back-side card visible');
   // C12 Explore stack switch and back: no rebuild on return.
   await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'priority', fileId: state.stacks.priority[0].id }); })()`); await page.waitForTimeout(1200);
   await ev(`window.__cc = 0`); await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id }); })()`); await page.waitForTimeout(800);
