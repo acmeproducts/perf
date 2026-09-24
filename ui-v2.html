@@ -1971,6 +1971,44 @@
                 state.focusTraversalIndex = resolved.index;
                 return resolved;
             },
+            // THE CORE RULE: the image being viewed is the top of its stack. Sort's centre image and Grid's
+            // top-left tile both read position 0, so viewing an image anywhere (Focus, a Grid/Explore/Table
+            // tap) moves it to position 0 and persists that order (stackSequence).
+            view(fileId, stackName = state.currentStack) {
+                const files = this.stack(stackName);
+                const index = files.findIndex(file => String(file.id) === String(fileId));
+                if (index < 0) return null;
+                if (index > 0) {
+                    const [file] = files.splice(index, 1);
+                    const topSequence = Number(files[0]?.stackSequence) || 0;
+                    file.stackSequence = Math.max(Date.now(), topSequence + 1);
+                    files.unshift(file);
+                    // The file's own row is saved at once; the whole-folder snapshot waits until paging pauses.
+                    App.updateUserMetadata(file.id, { stackSequence: file.stackSequence }, { operationType: 'stack:view', folderCacheDelay: 3000 });
+                }
+                return this.set(fileId, stackName, { allowCrossStack: false });
+            },
+            // Focus pages through the stack as it was when Focus was entered; each image landed on is viewed
+            // (moved to the top), so the traversal never bounces back to the image just left.
+            beginTraversal(fileId, stackName = state.currentStack) {
+                const ids = this.stack(stackName).map(file => String(file.id));
+                const index = Math.max(0, ids.indexOf(String(fileId)));
+                state.focusTraversal = { stackName, ids, index };
+                return state.focusTraversal;
+            },
+            traversalStep(delta) {
+                const stackName = state.currentStack;
+                let traversal = state.focusTraversal;
+                const currentId = String(state.currentFileId);
+                if (!traversal || traversal.stackName !== stackName || traversal.ids[traversal.index] !== currentId) traversal = this.beginTraversal(currentId, stackName);
+                const live = new Set(this.stack(stackName).map(file => String(file.id)));
+                const n = traversal.ids.length;
+                for (let step = 1; step <= n; step++) {
+                    const index = ((traversal.index + delta * step) % n + n) % n;
+                    if (live.has(traversal.ids[index])) { traversal.index = index; return this.view(traversal.ids[index], stackName); }
+                }
+                return null;
+            },
             syncFromIndex() {
                 const files = this.stack();
                 if (!files.length) {
@@ -1991,6 +2029,12 @@
             fallback(previousOrder = [], removedFileId = null, stackName = state.currentStack) {
                 const files = this.stack(stackName);
                 if (!files.length) return null;
+                const traversal = state.focusTraversal;
+                if (state.isFocusMode && traversal?.stackName === stackName && traversal.ids.includes(String(removedFileId))) {
+                    traversal.index = traversal.ids.indexOf(String(removedFileId));
+                    const next = this.traversalStep(1);
+                    if (next) return next;
+                }
                 const surviving = new Map(files.map((file, index) => [String(file.id), { file, index }]));
                 const removedIndex = Math.max(0, previousOrder.findIndex(id => String(id) === String(removedFileId)));
                 for (let index = removedIndex + 1; index < previousOrder.length; index++) {
@@ -2554,9 +2598,8 @@
                     : (thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
             },
             touch(entry) {
+                // Called on every lookup: keep it O(1). Counts are computed in snapshot().
                 if (entry) entry.usedAt = performance.now();
-                this.instrumentation.residentCount = this.entries.size;
-                this.instrumentation.pinnedCount = [...this.entries.values()].filter(item => item.pinned).length;
                 return entry;
             },
             resolve(file, rendition = 'thumb', options = {}) {
@@ -2592,6 +2635,8 @@
                 entry.ready = new Promise(resolve => {
                     const preload = new Image();
                     preload.decoding = 'async';
+                    // Focus's full image goes ahead of any thumbnail traffic (a globe can have hundreds queued).
+                    if ('fetchPriority' in preload) preload.fetchPriority = rendition === 'display' ? 'high' : 'low';
                     entry.preload = preload;
                     const settle = async loaded => {
                         if (loaded && typeof preload.decode === 'function') {
@@ -2704,84 +2749,41 @@
                 return entry;
             },
             present(img, file, options = {}) {
+                // One step, like ui-v3: Focus shows the full image only. If it is already loaded it is
+                // painted now; otherwise nothing is shown (never another file, never a small version)
+                // until the full image has loaded, then it is painted once. The thumbnail is used only
+                // if the full image fails.
                 if (!img || !file?.id) return null;
                 const { surface = 'focus' } = options;
-                const immediateResource = options.immediateResource || options.immediateSrc || null;
                 const token = ++this.presentationToken;
                 const fileId = String(file.id);
                 const displayEntry = this.resolve(file, 'display');
-                const thumbEntry = this.resolve(file, 'thumb');
-                const immediateEntry = immediateResource?.key ? this.entries.get(immediateResource.key) : null;
-                const firstEntry = immediateEntry && String(immediateResource.fileId) === fileId
-                    && String(immediateEntry.fileId) === fileId && immediateResource.key === immediateEntry.key
-                    && immediateResource.loadedKey === immediateEntry.key ? immediateEntry
-                    : (thumbEntry?.readyState === 'loaded' ? thumbEntry : null);
-                const firstFrame = firstEntry?.src || '';
-                const binding = { key: firstEntry?.key || displayEntry?.key || '', fileId, surface, movement: false, loadedKey: firstEntry?.key || null, token };
-                const isCurrent = (entry, expectedKey = binding.key) => token === this.presentationToken
-                    && String(state.currentFileId) === fileId
-                    && (!state.inspection?.fileId || String(state.inspection.fileId) === fileId)
-                    && img.isConnected
-                    && this.bindings.get(img) === binding && binding.fileId === fileId
-                    && String(entry?.fileId) === fileId && entry?.key === expectedKey
-                    && binding.key === expectedKey && img.dataset.sharedResourceKey === expectedKey;
                 img.dataset.fileId = fileId;
-                img.dataset.sharedResourceKey = binding.key;
+                img.dataset.sharedResourceKey = displayEntry?.key || '';
                 img.alt = file.name || 'Image';
-                this.bindings.set(img, binding);
-                if (firstFrame && img.getAttribute('src') !== firstFrame) {
-                    img.src = firstFrame;
-                    this.instrumentation.providerRequestCount++;
-                }
-                img.style.opacity = firstFrame ? '1' : '0';
-                if (!firstFrame) {
-                    // No cached frame: show the thumb the moment it loads instead of holding the
-                    // screen blank until the full display rendition finishes downloading.
-                    const initialKey = binding.key;
-                    this.ensure(file, 'thumb').then(entry => {
-                        if (!entry?.src || entry.readyState !== 'loaded') return;
-                        if (token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
-                        const activeBinding = this.bindings.get(img);
-                        if (activeBinding !== binding || binding.key !== initialKey || binding.loadedKey) return;
-                        if (String(entry.fileId) !== fileId) return;
-                        binding.key = entry.key;
-                        binding.loadedKey = entry.key;
-                        img.dataset.sharedResourceKey = entry.key;
-                        if (img.getAttribute('src') !== entry.src) {
-                            img.src = entry.src;
-                            this.instrumentation.providerRequestCount++;
-                        }
-                        img.style.opacity = '1';
-                    });
-                }
+                this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
+                const show = src => {
+                    if (token !== this.presentationToken || !img.isConnected) return;
+                    if (img.getAttribute('src') !== src) { img.src = src; this.instrumentation.providerRequestCount++; }
+                    img.style.opacity = '1';
+                };
+                if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; return { token, fileId, displayEntry }; }
+                if (displayEntry?.readyState === 'loaded') { show(displayEntry.src); return { token, fileId, displayEntry }; }
+                img.style.opacity = '0';
                 let recovered = false;
                 img.onerror = async () => {
-                    const activeEntry = this.entries.get(binding.key);
-                    if (recovered || !isCurrent(activeEntry)) return;
+                    if (recovered || token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
                     recovered = true;
                     const fresh = await this.refreshFile(fileId);
-                    if (fresh && token === this.presentationToken && String(state.currentFileId) === fileId) this.present(img, fresh, { surface });
+                    if (fresh && token === this.presentationToken) this.present(img, fresh, { surface });
                 };
                 this.ensure(file, 'display').then(entry => {
-                    if (!entry?.src || entry.readyState !== 'loaded') return;
-                    const priorKey = binding.key;
-                    const priorEntry = this.entries.get(priorKey);
-                    if (!isCurrent(priorEntry, priorKey) || String(entry.fileId) !== fileId || entry.key !== displayEntry?.key) return;
-                    binding.key = entry.key;
-                    binding.loadedKey = null;
-                    img.dataset.sharedResourceKey = entry.key;
-                    const commitDisplay = () => {
-                        if (!isCurrent(entry, entry.key)) return;
-                        binding.loadedKey = entry.key;
-                        img.style.opacity = '1';
-                    };
-                    img.addEventListener('load', commitDisplay, { once: true });
-                    if (img.getAttribute('src') !== entry.src) {
-                        img.src = entry.src;
-                        this.instrumentation.providerRequestCount++;
-                    } else if (img.complete && img.naturalWidth > 0) commitDisplay();
+                    if (token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
+                    if (entry?.src && entry.readyState === 'loaded') return show(entry.src);
+                    const thumb = this.resolve(file, 'thumb');
+                    if (thumb?.src) show(thumb.src);
                 });
-                return { token, fileId, firstFrame, displayEntry };
+                return { token, fileId, displayEntry };
             },
             markMovement(img, active) {
                 const binding = this.bindings.get(img);
@@ -2816,7 +2818,8 @@
                 this.touch(null);
             },
             snapshot() {
-                this.touch(null);
+                this.instrumentation.residentCount = this.entries.size;
+                this.instrumentation.pinnedCount = [...this.entries.values()].filter(item => item.pinned).length;
                 return { ...this.instrumentation, activePinnedCount: this.activeExplorerKeys.size };
             }
         };
@@ -3703,7 +3706,7 @@
             }
             queueFolderCacheFlush(options = {}) {
                 if (this.folderCacheFlushTimer) return;
-                const delay = options.priority === 'high' ? 0 : 140;
+                const delay = options.priority === 'high' ? 0 : (Number.isFinite(options.delay) ? options.delay : 140);
                 this.folderCacheFlushTimer = setTimeout(() => {
                     this.folderCacheFlushTimer = null;
                     this.flushPendingFolderCacheWrites().catch(error => console.warn('Failed to flush folder cache writes:', error));
@@ -7364,7 +7367,7 @@
                         providerType: state.providerType
                     }, { priority: skipDebounce ? 'high' : 'normal' });
                     const folderCacheSave = state.dbManager.scheduleFolderCacheSave(state.currentFolder.id, state.imageFiles, {
-                        priority: skipDebounce ? 'high' : 'normal'
+                        priority: skipDebounce ? 'high' : 'normal', delay: options.folderCacheDelay
                     });
 
                     if (awaitLocalPersistence) {
@@ -7621,6 +7624,16 @@
 
             prefetchNeighborImages(stack, index, windowSize = 3) {
                 if (!Array.isArray(stack) || stack.length === 0) return;
+                // Viewed images move to the top, so the upcoming images are the Focus traversal's neighbours.
+                const traversal = state.focusTraversal;
+                if (traversal?.stackName === state.currentStack && traversal.ids[traversal.index] === String(state.currentFileId)) {
+                    const byId = new Map(stack.map(file => [String(file.id), file]));
+                    const at = offset => byId.get(traversal.ids[((traversal.index + offset) % traversal.ids.length + traversal.ids.length) % traversal.ids.length]);
+                    const ahead = [1, -1, 2, 3, -2, -3].map(at).filter(Boolean);
+                    ahead.slice(0, 2).forEach(file => SharedImageResources.ensure(file, 'display'));
+                    Utils.prefetchImages(ahead);
+                    return;
+                }
                 const start = Math.max(0, index - windowSize);
                 const end = Math.min(stack.length, index + windowSize + 1);
                 const neighbors = stack.slice(start, end);
@@ -8014,9 +8027,11 @@ this.updateImageCounters();
                         reordered = Boolean(await this.reorderStackOnClose());
                     }
                     const fallbackStack = state.stacks[gridStack] || [];
-                    let resolved = CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false })
-                        || CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false });
+                    // The top of the stack is what shows: the last viewed image, or whatever the grid put on top
+                    // (search results, a drag reorder).
+                    let resolved = CurrentImage.set(fallbackStack[0]?.id, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(canonicalFileId, gridStack, { allowCrossStack: false })
+                        || CurrentImage.set(entryFileId, gridStack, { allowCrossStack: false });
                     const selected = resolved?.file || CurrentImage.current();
                     this.resetAfterClose();
                     if (origin?.surface === 'table') {
@@ -10085,8 +10100,7 @@ this.updateImageCounters();
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (!CurrentImage.traversalStep(1)) return;
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -10094,8 +10108,7 @@ this.updateImageCounters();
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (!CurrentImage.traversalStep(-1)) return;
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -11184,9 +11197,16 @@ this.updateImageCounters();
                 if (this.elements.scale) this.elements.scale.textContent = `${Math.round(this.imageScale * 100)}%`;
                 if (this.elements.limit) this.elements.limit.textContent = String(this.imageLimit);
             },
+            saveSettings(patch) {
+                try {
+                    const key = `${APP_IDENTITY.storagePrefix}:table_settings`;
+                    localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), ...patch }));
+                } catch (_) {}
+            },
             toggleControls(force) {
                 const open = typeof force === 'boolean' ? force : this.elements.controls.hidden;
                 this.elements.controls.hidden = !open;
+                if (typeof force !== 'boolean') this.saveSettings({ open });
                 this.elements.controlsToggle?.setAttribute('aria-expanded', String(open));
                 this.elements.controlsToggle?.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} Table controls`);
             },
@@ -11215,11 +11235,13 @@ this.updateImageCounters();
                 event.preventDefault(); event.stopPropagation();
             },
             adjustControl(control, delta) {
-                if (control === 'scale') this.imageScale = Math.max(.5, Math.min(1.8, this.imageScale + delta / 100));
+                // No cap on size (owner); count is bounded only by the stack.
+                if (control === 'scale') this.imageScale = Math.max(.5, this.imageScale + delta / 100);
                 else {
                     const maxLimit = Math.max(5, this.workingFiles().length);
                     this.imageLimit = Math.max(5, Math.min(maxLimit, this.imageLimit + delta));
                 }
+                this.saveSettings({ scale: this.imageScale, limit: this.imageLimit });
                 this.updateControlLabels();
                 if (this.isOpen()) {
                     const files = this.workingFiles();
@@ -11258,7 +11280,22 @@ this.updateImageCounters();
                 this.currentFileId = selected?.id || null;
                 if (selected) CurrentImage.set(selected.id, stackName, { allowCrossStack: false });
                 const eligible = this.workingFiles(stackName);
-                this.imageLimit = Math.max(5, Math.min(50, eligible.length));
+                // Size, count and the panel's open state/position are the owner's settings: kept between visits.
+                let saved = {};
+                try { saved = JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:table_settings`) || '{}'); } catch (_) {}
+                if (Number.isFinite(saved.scale) && saved.scale > 0) this.imageScale = saved.scale;
+                this.imageLimit = Math.max(5, Math.min(Number.isFinite(saved.limit) ? saved.limit : 50, eligible.length));
+                this.updateControlLabels();
+                this.toggleControls(Boolean(saved.open));
+                try {
+                    const position = JSON.parse(localStorage.getItem(`${APP_IDENTITY.storagePrefix}:table_controls_position`) || 'null');
+                    const controls = this.elements.controls;
+                    if (position && Number.isFinite(position.x) && Number.isFinite(position.y) && !controls.hidden) {
+                        controls.style.left = `${Math.max(8, Math.min(innerWidth - controls.offsetWidth - 8, position.x))}px`;
+                        controls.style.top = `${Math.max(8, Math.min(innerHeight - controls.offsetHeight - 8, position.y))}px`;
+                        controls.style.right = 'auto'; controls.style.bottom = 'auto'; controls.style.transform = 'none';
+                    }
+                } catch (_) {}
                 const start = selected ? Math.max(0, eligible.findIndex(file => String(file.id) === String(selected.id))) : 0;
                 const ordered = eligible.slice(start).concat(eligible.slice(0, start));
                 const limit = this.displayLimit(ordered.length);
@@ -11277,7 +11314,7 @@ this.updateImageCounters();
             hash(id) { let h = 2166136261; for (const c of String(id)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; },
             spawn(file, index = this.photos.length) {
                 if (!file || this.photos.some(photo => String(photo.fileId) === String(file.id))) return null;
-                const width = Math.max(62, Math.min(160, innerWidth * .145 * this.imageScale));
+                const width = Math.max(62, Math.min(160, innerWidth * .145) * this.imageScale);
                 const height = width * 1.27, seed = this.hash(file.id);
                 const usableX = Math.max(1, innerWidth - width - 20);
                 const usableY = Math.max(1, innerHeight - height - 150);
@@ -11319,10 +11356,15 @@ this.updateImageCounters();
                 this.updateCount();
             },
             paint(photo) { photo.element.style.zIndex = photo.zIndex; photo.element.style.transform = `translate3d(${photo.x}px,${photo.y}px,0) rotate(${photo.rotation}deg) scale(${photo.scale})`; },
-            findElement(event) { const element = event.target.closest?.('.photo-table__print'); return this.photos.find(photo => photo.element === element); },
+            findElement(event) {
+                // What is painted under the finger, not Chrome's touch-adjusted target.
+                const element = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.photo-table__print') || event.target.closest?.('.photo-table__print');
+                return this.photos.find(photo => photo.element === element);
+            },
             down(event) {
                 if (event.button !== undefined && event.button !== 0) return;
                 const photo = this.findElement(event); if (!photo || photo.state === 'capturing') return;
+                if (event.pointerType === 'touch' || event.pointerType === 'pen') event.preventDefault();
                 CurrentImage.set(photo.fileId, this.stackName, { allowCrossStack: false });
                 this.currentFileId = CurrentImage.current()?.id || photo.fileId;
                 this.updateCount();
@@ -11654,6 +11696,12 @@ this.updateImageCounters();
                 const sameSession = this.stackName === stackName && String(this.folderId) === String(state.currentFolder?.id);
                 const canResume = preserveGeometry && sameSession && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
                 if (!sameSession || !canResume) this.loadGeneration++;
+                const cached = !canResume && !(sameSession && this.cards.length) ? this.takeCachedGlobe(stackName) : null;
+                if (cached) {
+                    const ids = new Set(cached.files.map(file => String(file.id)));
+                    cached.sameMembership = cached.files.length === nextFiles.length && nextFiles.every(file => ids.has(String(file.id)));
+                    if (cached.sameMembership) nextFiles.splice(0, nextFiles.length, ...cached.files);
+                }
                 this.stackName = stackName;
                 this.folderId = state.currentFolder?.id ?? null;
                 this.folderGeneration = state.folderSessionGeneration;
@@ -11676,6 +11724,14 @@ this.updateImageCounters();
                     this.elements.root.hidden = false;
                     SharedImageResources.pinExplorer(this.files);
                     this.select(this.selectedIndex);
+                } else if (cached) {
+                    this.cards = cached.cards;
+                    this.elements.scene.replaceChildren(...cached.cards.map(card => card.element));
+                    if (!cached.sameMembership) this.reconcilePopulation(nextFiles);
+                    else this.updateVectors();
+                    if (cached.orient) { this.orient = cached.orient; this.rotationX = cached.rotationX; this.rotationY = cached.rotationY; }
+                    SharedImageResources.pinExplorer(this.files);
+                    this.elements.root.hidden = false;
                 } else if (sameSession && this.cards.length) {
                     // Focus and Sort may change the population while Explore is suspended.
                     // Reconcile by stable ID so already painted thumbnails and their decoded
@@ -11694,9 +11750,10 @@ this.updateImageCounters();
                 ModeNavigation.show('explore');
                 Gestures.updateGestureOverlayMode();
                 if (this.cards[this.selectedIndex]) {
-                    if (canResume) this.render(performance.now());
+                    if (canResume || cached) this.render(performance.now());
                     else this.center(this.selectedIndex);
-                    this.cards[this.selectedIndex].element.focus();
+                    const focusCard = this.cards[this.selectedIndex].element;
+                    requestAnimationFrame(() => setTimeout(() => { if (!this.elements.root.hidden) focusCard.focus({ preventScroll: true }); }, 0));
                 }
                 this.lastFrameTime = performance.now();
                 this.requestFrame();
@@ -11760,8 +11817,11 @@ this.updateImageCounters();
                 const sameContext = Boolean(saved) && String(saved.folderId) === String(state.currentFolder?.id)
                     && saved.folderGeneration === state.folderSessionGeneration && saved.stackName === state.currentStack
                     && saved.layout === this.focusLayoutSignature();
+                // Viewing moves the viewed image to the top of the stack, so the same images in a new order are
+                // "unchanged" for the globe: it keeps its cards where they are. Membership changes reconcile.
+                const savedIds = new Set(saved?.populationIds || []);
                 const unchanged = sameContext && nextFiles.length === saved.populationIds.length
-                    && nextFiles.every((file, index) => String(file.id) === saved.populationIds[index]);
+                    && nextFiles.every(file => savedIds.has(String(file.id)));
                 if (!sameContext || !nextFiles.length) {
                     this.focusSuspension = null;
                     return this.open({ stackName: state.currentStack, fileId, preserveGeometry: true, suppressPersist: true });
@@ -11805,7 +11865,9 @@ this.updateImageCounters();
                 this.elements.root.removeAttribute('aria-hidden');
                 this.elements.root.style.pointerEvents = '';
                 this.elements.root.hidden = false;
-                this.cards[this.selectedIndex]?.element.focus();
+                // Keyboard focus after the globe has painted: focusing forces a layout of every card.
+                const focusCard = this.cards[this.selectedIndex]?.element;
+                requestAnimationFrame(() => setTimeout(() => { if (!this.elements.root.hidden) focusCard?.focus({ preventScroll: true }); }, 0));
                 if (populationIncomplete) this.scheduleNextPage(this.loadGeneration);
                 if (wasAnimating) this.requestFrame();
                 const metrics = this.warmResumeMetrics = {
@@ -11837,6 +11899,7 @@ this.updateImageCounters();
                 clearTimeout(this.pageTimer); clearTimeout(this.tapTimer);
                 this.lastTapIndex = -1; this.lastTapTime = 0;
                 this.cancelPopulationLoading();
+                this.stashGlobe();
                 this.elements.scene.replaceChildren();
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pressedPointerType = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null; this.stackName = ''; this.folderId = null;
@@ -11846,6 +11909,23 @@ this.updateImageCounters();
                 if (this.elements.controls) this.elements.controls.hidden = true;
                 this.elements.controlsToggle?.setAttribute('aria-expanded', 'false');
                 if (restoreFocus) this.previousFocus?.focus?.();
+            },
+
+            // Built globes are kept for the two most recent stacks, so leaving a stack (or leaving while it is
+            // still building) and coming back re-attaches the same cards instead of rebuilding them.
+            stashGlobe() {
+                if (!this.cards.length || !this.stackName) return;
+                this.globeCache = this.globeCache || new Map();
+                const key = `${this.folderId ?? ''}:${this.stackName}`;
+                this.globeCache.delete(key);
+                this.globeCache.set(key, { cards: this.cards, files: this.files, orient: this.orient ? [...this.orient] : null, rotationX: this.rotationX, rotationY: this.rotationY });
+                while (this.globeCache.size > 2) this.globeCache.delete(this.globeCache.keys().next().value);
+            },
+            takeCachedGlobe(stackName) {
+                const key = `${state.currentFolder?.id ?? ''}:${stackName}`;
+                const cached = this.globeCache?.get(key) || null;
+                if (cached) this.globeCache.delete(key);
+                return cached;
             },
 
             beginPopulationLoading() {
@@ -12150,6 +12230,9 @@ this.updateImageCounters();
                 // Coordinate-based picking: the visually frontmost card at the down point is authoritative.
                 this.pressedCard = card; this.pressedFileId = hit ? String(hit.fileId || '') : null;
                 this.pressedPointerType = event.pointerType || 'mouse';
+                // A finger tap also fires compatibility mouse events a moment later; by then Focus has opened
+                // under the finger and reads them as back/forward (the phone-only +/-1). Cancel them here.
+                if (event.pointerType === 'touch' || event.pointerType === 'pen') event.preventDefault();
                 this.elements.scene.setPointerCapture?.(event.pointerId);
                 this.requestFrame();
             },
@@ -12330,7 +12413,12 @@ this.updateImageCounters();
             },
 
             sphereRadius() {
-                return Math.min(innerWidth, innerHeight) * .34 * this.density * this.sphereScale;
+                // Viewport size cached (updated on resize): reading it inside a render must not force a layout.
+                if (!this.viewport) {
+                    this.viewport = { w: innerWidth, h: innerHeight };
+                    addEventListener('resize', () => { this.viewport = { w: innerWidth, h: innerHeight }; this.requestFrame(); });
+                }
+                return Math.min(this.viewport.w, this.viewport.h) * .34 * this.density * this.sphereScale;
             },
 
             updateControlLabels() {
@@ -12453,9 +12541,9 @@ this.updateImageCounters();
                     card.depth = depth;
                     const style = card.element.style;
                     const cache = card.renderCache || (card.renderCache = { transform: '', opacity: '', zIndex: '', hidden: null, far: null });
-                    // Far-hemisphere cards are barely visible but each costs a full compositor
-                    // layer; hiding them halves GPU layer pressure on tablets.
-                    const hidden = depth < cullDepth && index !== this.selectedIndex;
+                    // Every card is drawn, back hemisphere included (owner: no culling; zoomed in, the back
+                    // side must be visible and tappable).
+                    const hidden = false;
                     if (hidden !== cache.hidden) { cache.hidden = hidden; style.visibility = hidden ? 'hidden' : ''; }
                     if (!hidden) {
                         // Only write styles that actually changed: redundant writes on hundreds of
@@ -12586,7 +12674,8 @@ this.updateImageCounters();
             async enter(fileId, referrer = 'sort', options = {}) {
                 const { restoring = false, immediateResource = null, immediateSrc = null } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
-                const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
+                CurrentImage.beginTraversal(fileId, requestedReferrer.stackName);
+                const resolved = CurrentImage.view(fileId, requestedReferrer.stackName);
                 if (!resolved) {
                     Utils.showToast('That image is no longer available in this stack.', 'info');
                     return false;

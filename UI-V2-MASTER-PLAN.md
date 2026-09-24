@@ -2722,3 +2722,17 @@ Owner: no images on the globe thumbnails; the canvas/WebGL globe (§135–§136)
 **Baseline against the e2e acceptance suite:** phone 10/23, desktop 12/23. Failing, i.e. the scope of the one definitive fix: last-viewed-on-top and Grid search/reorder → Sort (C3, C5, C6, C7, C19); phone taps land on a neighbour (globe C10, Table C14, back-side C23); globe hides ~110 back cards (C22 — the culling the owner rejected); rebuild on stack return / after leaving mid-build and slow X (C11, C12, C21); no Table floating controls (C20).
 
 ---
+
+## §139 · THE DEFINITIVE FIX ON BASELINE 91e3033 (2026-09-24)
+
+One change on the owner-approved baseline (§138), scoped exactly by the baseline's e2e failures. No architecture change: same DOM globe, same Focus, same Grid, same Table.
+
+1. **Stack order (owner core rule).** Viewing an image makes it the top of its stack and persists it; Focus next/back walk the stack as it was on entry (never bounce); delete/move in Focus continue forward; Grid exit shows the top of the stack (last viewed, or search results / drag reorder); prefetch follows the Focus path; the whole-folder save is deferred while paging.
+2. **Phone taps.** Globe and Table cancel the finger's trailing compatibility mouse events (they landed on Focus as back/forward); Table uses the element painted under the finger.
+3. **Globe.** No culling: every card is drawn, back hemisphere included (back-side cards tappable when zoomed). Returning from Focus with the same images in a new order keeps the globe as built; card focus deferred after paint; viewport size cached; built globes kept for the two most recent stacks (switching back, or leaving mid-build, re-attaches instead of rebuilding). Shared cache bookkeeping O(1).
+4. **Focus.** One paint with the full image (no small-then-large); Focus's full-image downloads are high priority, thumbnails low, so the tapped image is not queued behind hundreds of globe thumbnails.
+5. **Table.** Size has no cap; size, count, panel open state and position persist between visits.
+
+**Result.** e2e: phone 22/23, desktop 22/23 — the only failure is C17 (200–290ms freezes while the lab, which has no GPU, draws a 500-card DOM globe). Globe tap gate 20/20 phone and desktop. A/B check: with the baseline's two-step Focus paint instead of (4), the phone passes 23/23 but Focus shows small-then-large — rejected by the owner.
+
+---

@@ -108,14 +108,16 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const ex = await ev<string[]>(`T.exploreIds()`), s9 = await ev<string[]>(`T.ids('in')`);
   check('C9', 'Explore shows the stack in order (first 500)', eq(ex, s9) && (await ev<number>(`SpatialGallery.files.length`)) === Math.min(500, await ev<number>(`state.stacks.in.length`)), `explore=${ex.slice(0, 5).join(',')}.. stack=${s9.slice(0, 5).join(',')}.. n=${await ev(`SpatialGallery.files.length`)}`);
   // C10 Explore tap opens exactly the tapped image (real input), Focus next goes to the next in stack order.
-  const taps: string[] = []; let tapOk = 0, nextOk = 0; let lastViewed = '';
+  const taps: string[] = []; let tapOk = 0, nextOk = 0; let lastViewed = ''; let twoStep10 = 0;
   for (let k = 0; k < 4; k++) {
     await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; })()`); await page.waitForTimeout(300);
-    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const id = T.globeIdAt(x, y); return id ? { id, x, y } : null; })()`);
+    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; for (let r = 0; r <= 24; r += 4) for (const [ox, oy] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]]) { const id = T.globeIdAt(x + ox, y + oy); if (id) return { id, x: x + ox, y: y + oy }; } return null; })()`);
     if (!tgt) { taps.push('none'); continue; }
     const idx = await ev<number>(`state.stacks.in.findIndex(f => String(f.id) === '${tgt.id}')`); const nextId = await ev<string>(`String(state.stacks.in[${idx} + 1]?.id)`);
+    await ev(`window.__paints = []`);
     if (DEV === 'Pixel 7') await page.touchscreen.tap(tgt.x, tgt.y); else await page.mouse.click(tgt.x, tgt.y);
     const p = await ev<number | null>(`T.waitPaint('${tgt.id}', 5000)`); if (p !== null) tapOk++;
+    await page.waitForTimeout(300); if ((await ev<string[]>(`window.__paints`)).length > 1) twoStep10++;
     await page.waitForTimeout(300); await ev(`Gestures.nextImage()`); if ((await ev<number | null>(`T.waitPaint('${nextId}', 5000)`)) !== null) nextOk++;
     taps.push(`${tgt.id}->${await ev(`T.cur()`)}`); lastViewed = await ev<string>(`T.cur()`);
     // C11 measured on each: Focus X back to the globe.
@@ -126,7 +128,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
     const rebuilt = await ev<number>(`window.__cc`); (globalThis as any).__x = [...((globalThis as any).__x || []), `${xt.app}ms(full ${xt.full})/${rebuilt}rebuilt`]; void built;
     await page.waitForTimeout(400);
   }
-  check('C10', 'Explore tap opens the tapped image; Focus next is the next in stack order', tapOk === 4 && nextOk === 4, `taps ${taps.join(' ')} tapOk=${tapOk}/4 nextOk=${nextOk}/4`);
+  check('C10', 'Explore tap opens the tapped image in one paint (no small-then-large); Focus next is the next in stack order', tapOk === 4 && nextOk === 4 && twoStep10 === 0, `taps ${taps.join(' ')} tapOk=${tapOk}/4 nextOk=${nextOk}/4 twoStep=${twoStep10}`);
   const xs: string[] = (globalThis as any).__x || [];
   check('C11', 'Focus X returns to the globe: app work <= 60ms, no rebuild', xs.length === 4 && xs.every(x => parseInt(x) <= 60 && x.endsWith('/0rebuilt')), xs.join(' '));
   // C19 After globe -> Focus -> X, the last viewed image is the top: Grid top-left and Sort centre.
@@ -172,8 +174,11 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   await ev(`PhotoTable.open({ stackName: 'in', fileId: state.currentFileId })`); await page.waitForTimeout(600);
   const t20a = await ev<{ n: number; w: number }>(`({ n: PhotoTable.photos.length, w: PhotoTable.photos[0].element.getBoundingClientRect().width })`);
   await page.click('#photo-table-controls-toggle'); await page.waitForTimeout(200);
-  for (let i = 0; i < 5; i++) await page.click('#photo-table-controls [data-control="limit"] .spatial-gallery__adjust[data-delta="8"]');
-  await page.click('#photo-table-controls [data-control="scale"] .spatial-gallery__adjust[data-delta="10"]'); await page.waitForTimeout(400);
+  const plus = '#photo-table-controls [data-control="limit"] .spatial-gallery__adjust:first-child';
+  const step = Number(await page.getAttribute(plus, 'data-delta')) || 0;
+  for (let i = 0; i < 5; i++) await page.click(plus);
+  for (let i = 0; i < 10; i++) await page.click('#photo-table-controls [data-control="scale"] .spatial-gallery__adjust:first-child');
+  await page.waitForTimeout(400);
   const t20b = await ev<{ n: number; w: number }>(`({ n: PhotoTable.photos.length, w: PhotoTable.photos[0].element.getBoundingClientRect().width })`);
   const box = await page.locator('#photo-table-controls').boundingBox();
   if (box) { await page.mouse.move(box.x + 6, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(60, 200, { steps: 5 }); await page.mouse.up(); }
@@ -182,7 +187,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   await ev(`PhotoTable.open({ stackName: 'in', fileId: state.currentFileId })`); await page.waitForTimeout(600);
   const t20c = await ev<{ n: number; open: boolean }>(`({ n: PhotoTable.photos.length, open: !document.getElementById('photo-table-controls').hidden })`);
   const pos2 = await page.locator('#photo-table-controls').boundingBox();
-  check('C20', 'Table floating controls: count uncapped, size works, values/open/position persist, panel drags', t20b.n === t20a.n + 40 && t20b.w > t20a.w * 1.05 && t20c.n === t20b.n && t20c.open && !!pos1 && !!pos2 && Math.abs(pos1.x - pos2.x) < 2 && Math.abs(pos1.y - pos2.y) < 2 && pos1.x < 120,
+  check('C20', 'Table floating controls: count uncapped, size works, values/open/position persist, panel drags', t20b.n === t20a.n + 5 * step && t20b.w > t20a.w * 1.9 && t20c.n === t20b.n && t20c.open && !!pos1 && !!pos2 && Math.abs(pos1.x - pos2.x) < 2 && Math.abs(pos1.y - pos2.y) < 2 && pos1.x < 120,
     `prints ${t20a.n}->${t20b.n} reopen ${t20c.n}; width ${Math.round(t20a.w)}->${Math.round(t20b.w)}; open after reopen=${t20c.open}; panel ${pos1 ? Math.round(pos1.x) + ',' + Math.round(pos1.y) : '-'} -> ${pos2 ? Math.round(pos2.x) + ',' + Math.round(pos2.y) : '-'}`);
   await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} return Core.displayCurrentImage(); })()`); await page.waitForTimeout(300);
   });
