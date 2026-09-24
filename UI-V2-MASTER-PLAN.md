@@ -2627,3 +2627,15 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **After.** Every Focus transition paints exactly once (Sort→Focus: zero repaints, image already showing; next/back ~10ms; Explore→Focus one paint of the full image). Globe tap accuracy still 20/20 phone and desktop; Focus forward/back unchanged. **Owner device check required**, especially Sort→Focus and Focus next/back lag, which the lab could not reproduce.
 
 ---
+
+## §130 · CORE SPEED: LAB CANNOT REPRODUCE IT — ON-DEVICE RECORDER ADDED (2026-09-24)
+
+**Owner direction.** Sort + Focus + Grid are the core; it must be as fast as it once was (`ui.html` is far snappier than `ui-v3.html`, and v2 is slow). Stop thrashing; bound the problem and solve it systematically.
+
+**Look-and-see findings.** Metadata reading is identical in `ui.html` and `ui-v2.html` (64KB range fetch, parsed in a Web Worker, 5 at a time, batched DB saves). `ui-v3.html` differs: it awaits an IndexedDB write per file. v2 differs from `ui.html` in (a) Focus paint path (fixed §129 to match), (b) extra per-step work (CurrentImage/CanonicalInspection sync, view-context localStorage write on every step — 19 call sites vs 3), (c) `initializeStacks` on folder load/sync wipes the entire shared image cache (Focus + Grid + Explore + Table thumbnails) where `ui.html` clears only its 24 Focus images.
+
+**Lab benchmark (`bench/`).** 500 PNGs with metadata, realistic delays, Pixel 7 emulation, 4x CPU, background metadata extraction. Result: `ui.html` and current v2 are the same — Focus next/back 0–1ms, rapid nexts ~130ms, Grid first 12 thumbnails 11–17ms, no main-thread freezes. The lab does not reproduce the owner's device slowness (consistent with G22: the lab has repeatedly mispredicted the device). Guessing further from the lab would be more thrashing.
+
+**Instrument the device instead.** A passive recorder, active only with `?perf=1`, added to `ui-v2.html` and to `ui-v10.html` (= `ui.html` byte-for-byte + the recorder; ui-v10 is a registered redirect URI). It records tap→Focus-image latency, paints per tap (two-step), main-thread freezes >50ms, stack rebuilds, image-cache and shared-cache clears, folder syncs/refreshes and metadata batches; ⏱ button copies the report. Same one-minute use on both builds gives a side-by-side, data-backed diff of what the slow build does that the fast one doesn't.
+
+---

@@ -12789,5 +12789,67 @@ this.updateImageCounters();
         }
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
+<!-- perf-recorder: passive on-device timing, active only with ?perf=1 -->
+<script id="perf-recorder">
+(() => {
+    if (!/[?&]perf=1\b/.test(location.search)) return;
+    const t0 = performance.now(), now = () => Math.round(performance.now() - t0);
+    const rec = { build: document.title + ' | ' + location.pathname, ua: navigator.userAgent, inputs: [], paints: [], longtasks: [], events: [] };
+    let lastInput = null;
+    ['pointerdown', 'keydown'].forEach(type => document.addEventListener(type, e => {
+        lastInput = { t: now(), type, target: (e.target?.id || e.target?.className?.toString?.() || e.target?.tagName || '').slice(0, 40) };
+        rec.inputs.push(lastInput); if (rec.inputs.length > 400) rec.inputs.shift();
+    }, true));
+    try { new PerformanceObserver(list => list.getEntries().forEach(e => { rec.longtasks.push({ t: Math.round(e.startTime - t0), d: Math.round(e.duration) }); if (rec.longtasks.length > 600) rec.longtasks.shift(); })).observe({ type: 'longtask', buffered: true }); } catch (_) {}
+    const img = document.getElementById('center-image');
+    img?.addEventListener('load', () => {
+        const src = (img.currentSrc || img.src || '');
+        rec.paints.push({ t: now(), sinceInput: lastInput ? now() - lastInput.t : null, inputAt: lastInput?.t ?? null,
+            focus: document.getElementById('app-container')?.classList.contains('focus-mode') || false,
+            size: img.naturalWidth + 'x' + img.naturalHeight, src: src.replace(/^https?:\/\/[^/]+/, '').slice(0, 60) });
+        if (rec.paints.length > 600) rec.paints.shift();
+    });
+    const mark = (name, extra) => { rec.events.push({ t: now(), name, ...(extra || {}) }); if (rec.events.length > 600) rec.events.shift(); };
+    const wrap = (obj, key, name, isAsync) => {
+        try { const f = obj?.[key]; if (typeof f !== 'function') return; obj[key] = function (...a) { const s = performance.now(); mark(name + ':start'); const r = f.apply(this, a);
+            if (r && typeof r.then === 'function') r.then(() => mark(name + ':end', { ms: Math.round(performance.now() - s) }), () => mark(name + ':fail')); else mark(name + ':end', { ms: Math.round(performance.now() - s) });
+            return r; }; } catch (_) {}
+    };
+    const g = name => { try { return eval(name); } catch (_) { return undefined; } };
+    wrap(g('Core'), 'initializeStacks', 'initializeStacks'); wrap(g('Utils'), 'clearImageObjectCache', 'clearImageCache');
+    wrap(g('SharedImageResources'), 'clear', 'sharedCacheClear'); wrap(g('App'), 'extractMetadataInBackground', 'metadataBatch');
+    wrap(g('App'), 'syncFolderFromCloud', 'folderSync'); wrap(g('App'), 'refreshFolderInBackground', 'folderRefresh'); wrap(g('App'), 'loadImages', 'loadImages');
+    wrap(g('Grid'), 'open', 'gridOpen'); wrap(g('Grid'), 'close', 'gridClose'); wrap(g('Gestures'), 'toggleFocusMode', 'focusToggle');
+    wrap(g('Gestures'), 'nextImage', 'next'); wrap(g('Gestures'), 'prevImage', 'prev');
+    const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : '-'; };
+    const summary = () => {
+        const focusPaints = rec.paints.filter(p => p.focus && p.sinceInput != null && p.sinceInput < 5000);
+        const byInput = new Map(); focusPaints.forEach(p => byInput.set(p.inputAt, (byInput.get(p.inputAt) || 0) + 1));
+        const firstPerInput = [...new Map(focusPaints.map(p => [p.inputAt, p])).values()];
+        const lt = rec.longtasks.map(l => l.d);
+        const count = n => rec.events.filter(e => e.name === n).length;
+        return [
+            `PERF REPORT  ${new Date().toISOString()}  ${rec.build}`,
+            `session ${Math.round(now() / 1000)}s  inputs ${rec.inputs.length}  centre-image loads ${rec.paints.length}`,
+            `focus tap->image: median ${pct(firstPerInput.map(p => p.sinceInput), .5)}ms  p90 ${pct(firstPerInput.map(p => p.sinceInput), .9)}ms  worst ${pct(firstPerInput.map(p => p.sinceInput), 1)}ms  (${firstPerInput.length} taps)`,
+            `taps with more than one image paint (two-step): ${[...byInput.values()].filter(n => n > 1).length}`,
+            `freezes (>50ms): ${lt.length}  total ${lt.reduce((a, b) => a + b, 0)}ms  worst ${lt.length ? Math.max(...lt) : 0}ms`,
+            `stack rebuilds ${count('initializeStacks:start')}  image-cache clears ${count('clearImageCache:start')}  shared-cache clears ${count('sharedCacheClear:start')}  folder syncs ${count('folderSync:start')}  refreshes ${count('folderRefresh:start')}  metadata batches ${count('metadataBatch:start')}`,
+            `mem ${performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) + 'MB' : 'n/a'}`,
+            'RAW ' + JSON.stringify({ paints: rec.paints.slice(-80), longtasks: rec.longtasks.slice(-80), events: rec.events.slice(-120), inputs: rec.inputs.slice(-80) })
+        ].join('\n');
+    };
+    const ui = () => {
+        const b = document.createElement('button'); b.textContent = '⏱'; b.setAttribute('aria-label', 'Performance report');
+        b.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;width:40px;height:40px;border-radius:20px;border:1px solid #93c5fd;background:#0f172acc;color:#fff;font-size:20px';
+        b.addEventListener('click', async e => { e.stopPropagation(); const text = summary();
+            try { await navigator.clipboard.writeText(text); b.textContent = '✓'; } catch (_) { const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;inset:10% 5%;z-index:2147483647;font:11px monospace'; document.body.appendChild(t); t.select(); t.addEventListener('blur', () => t.remove()); }
+            setTimeout(() => { b.textContent = '⏱'; }, 1500); });
+        document.body.appendChild(b);
+    };
+    if (document.body) ui(); else document.addEventListener('DOMContentLoaded', ui);
+    window.__perfSummary = summary;
+})();
+</script>
 </body>
 </html>
