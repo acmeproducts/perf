@@ -2656,3 +2656,9 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Logging.** The perf recorder now writes into the existing Sync Activity Log on every build (`perf:image` tap→image ms, `perf:freeze` ≥100ms, stack rebuilds, cache clears, syncs, metadata batches); Sync Log → Copy Log carries it. `?perf=1` only adds a quick-copy button.
 
 ---
+
+## §132 · SAME-FOLDER RE-SYNC NO LONGER WIPES LOADED IMAGES (2026-09-24)
+
+`Core.initializeStacks()` runs on every folder load and every cloud sync/refresh, and cleared the whole shared image cache each time — Focus full images, Grid, Explore and Table thumbnails (`ui.html` cleared only its 24 Focus images). Same failure class as G23 (background work clearing presentation caches → X lag, thumbnails vanishing and re-fetching). Now the cache is cleared only when the provider/folder changes (and on logout); cache keys include each file's version, so changed files still get fresh images. Suite after: phone 18/18, desktop 17/18 (C17: lab CPU drawing, 233ms).
+
+---
