@@ -2745,3 +2745,13 @@ Owner on §139: the correct image shows, but only after the previous image flash
 - e2e: desktop 23/23, phone 22/23 (C17 lab drawing only).
 
 ---
+
+## §141 · GLOBE THUMBNAILS SIZED AS IN 3c8471d; FOOTER ON ONE LINE; NO PREVIOUS-IMAGE FRAMES (2026-09-24)
+
+Owner on §140: globe still sparse when spinning; footer wraps and covers the bottom controls.
+- Globe: the baseline loads the 800px Drive thumbnail into each of up to 500 cards. Ported verbatim from `3c8471d` (the owner's "Explore works perfectly" build): `sphere` rendition — Drive `sz=w300`, other providers `thumbnails.small` — for globe cards and pinning, pinning without a duplicate warm, and thumbnails not keeping a second decoded copy once loaded. Focus full images keep a decoded copy for the 12 most recent only.
+- Footer: build label shortened to "Orbital8 UI" and held to one line (ellipsis); phone footer 38px → 27px.
+- Focus: when the next full image was already downloaded, the element could paint the previous picture for a frame or two while decoding; the image is now hidden before the switch and revealed when the new picture is ready (C10: 2 frames → 0).
+- e2e 22/23 phone and desktop (C17 lab drawing only, 209–218ms); globe taps 20/20 both.
+
+---

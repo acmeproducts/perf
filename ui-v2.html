@@ -706,6 +706,8 @@
         }
         .app-footer .footer-baseline {
             color: rgba(255, 255, 255, 0.6);
+            /* One line only: a long label must never wrap and push the footer over the bottom controls. */
+            min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         /* Quick view switcher: footer stays visually unchanged and only acts as the trigger. */
         .app-container > .app-footer {
@@ -1591,7 +1593,7 @@
         const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
-            label: `Orbital8 UI · OWNER APPROVED BASELINE · ${APP_BUILD_ID}`
+            label: 'Orbital8 UI'
         });
         function applyBuildIdentity() {
             document.documentElement.dataset.build = APP_BUILD.id;
@@ -2589,11 +2591,19 @@
                 if (!file) return '';
                 if (state.providerType === 'googledrive') {
                     const urls = DriveLinkHelper.resolveAssetUrls(file);
+                    // Sphere cards paint at ~112x148 CSS px; an 800px thumbnail per card decodes to
+                    // ~2.5MB, and hundreds of them exhaust the browser's memory budget.
+                    // 300px covers 2x DPR with headroom. (As in 3c8471d.)
+                    if (rendition === 'sphere') {
+                        return (urls.fileId ? DriveLinkHelper.buildThumbnailUrl(urls.fileId, 300, urls.resourceKey) : null)
+                            || urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '';
+                    }
                     return rendition === 'display'
                         ? (urls.thumbnailUrl || urls.imageUrl || file.downloadUrl || '')
                         : (urls.thumbnailUrlSmall || urls.thumbnailUrl || urls.imageUrl || file.thumbnailLink || file.downloadUrl || '');
                 }
                 const thumbnails = file.thumbnails || {};
+                if (rendition === 'sphere') return (thumbnails.small?.url || thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
                 return rendition === 'display'
                     ? (thumbnails.large?.url || file.downloadUrl || file.webContentLink || '')
                     : (thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
@@ -2644,7 +2654,17 @@
                             try { await preload.decode(); } catch (_) {}
                         }
                         entry.readyState = loaded ? 'loaded' : 'error';
-                        if (loaded) { entry.loadFailures = 0; entry.retryAfter = 0; }
+                        if (loaded) {
+                            entry.loadFailures = 0; entry.retryAfter = 0;
+                            // On-screen <img> elements hold their own pixels and re-attach hits the HTTP cache,
+                            // so thumbnails do not keep a decoded copy (3c8471d). Focus's full images are kept
+                            // decoded for the 12 most recent so paging paints instantly.
+                            if (rendition === 'display') {
+                                this.decodedDisplay = (this.decodedDisplay || []).filter(key => key !== entry.key);
+                                this.decodedDisplay.push(entry.key);
+                                while (this.decodedDisplay.length > 12) { const old = this.entries.get(this.decodedDisplay.shift()); if (old) old.preload = null; }
+                            } else entry.preload = null;
+                        }
                         else {
                             entry.loadFailures = (entry.loadFailures || 0) + 1;
                             this.instrumentation.imageErrorCount++;
@@ -2765,8 +2785,15 @@
                 this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
                 const show = src => {
                     if (token !== this.presentationToken || !img.isConnected) return;
-                    if (img.getAttribute('src') !== src) { img.src = src; this.instrumentation.providerRequestCount++; }
-                    img.style.opacity = '1';
+                    const reveal = () => { if (token === this.presentationToken && img.getAttribute('src') === src) img.style.opacity = '1'; };
+                    if (img.getAttribute('src') !== src) {
+                        // Hide first: until the new picture is decoded the element would keep painting the old one.
+                        img.style.opacity = '0';
+                        img.src = src;
+                        this.instrumentation.providerRequestCount++;
+                    }
+                    if (img.complete && img.naturalWidth > 0) reveal();
+                    else img.addEventListener('load', reveal, { once: true });
                 };
                 if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; return { token, fileId, displayEntry }; }
                 if (displayEntry?.readyState === 'loaded') { show(displayEntry.src); return { token, fileId, displayEntry }; }
@@ -2803,10 +2830,12 @@
                 this.touch(null);
             },
             pinExplorer(files = []) {
-                const next = new Set(files.map(file => this.key(file, 'thumb')));
+                const next = new Set(files.map(file => this.key(file, 'sphere')));
                 this.activeExplorerKeys.forEach(key => { if (!next.has(key) && this.entries.has(key)) this.entries.get(key).pinned = false; });
                 this.activeExplorerKeys = next;
-                this.warm(files, 'thumb', { pin: true });
+                // Pin without preloading: globe cards fetch their own images; a parallel warm of the same
+                // URLs doubles the requests. (As in 3c8471d.)
+                files.filter(Boolean).forEach(file => this.resolve(file, 'sphere', { pin: true }));
             },
             trim() {
                 if (this.entries.size <= this.maxResident) return;
@@ -11995,7 +12024,7 @@ this.updateImageCounters();
                 });
                 this.elements.scene.appendChild(card);
                 const settlePopulationImage = this.trackPopulationImage(img, file.id, generation);
-                SharedImageResources.attach(img, file, 'thumb', {
+                SharedImageResources.attach(img, file, 'sphere', {
                     surface: 'explore', visible: true, generation,
                     stackName: this.stackName, folderId: this.folderId
                 }).then(entry => { if (!entry?.src) settlePopulationImage(); });
