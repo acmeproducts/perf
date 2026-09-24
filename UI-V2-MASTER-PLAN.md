@@ -2639,3 +2639,20 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Instrument the device instead.** A passive recorder, active only with `?perf=1`, added to `ui-v2.html` and to `ui-v10.html` (= `ui.html` byte-for-byte + the recorder; ui-v10 is a registered redirect URI). It records tap→Focus-image latency, paints per tap (two-step), main-thread freezes >50ms, stack rebuilds, image-cache and shared-cache clears, folder syncs/refreshes and metadata batches; ⏱ button copies the report. Same one-minute use on both builds gives a side-by-side, data-backed diff of what the slow build does that the fast one doesn't.
 
 ---
+
+## §131 · END-TO-END ACCEPTANCE SUITE + FIXES FROM ITS FIRST RUN (2026-09-24)
+
+**Owner direction.** Not piecemeal: the whole thing must run end to end. Logging belongs in the existing debug surface (Sync Activity Log).
+
+**`e2e/e2e.spec.ts`.** One run walks the full workflow on 500 images — Sort → Focus next/back → Grid search → Grid reorder → Sort → stack reload → Explore → real taps → Focus → X → stack switch and back → Table → real taps → Sort move → Focus delete — on Pixel 7 and desktop emulation (4x CPU), checking after every step that Sort, Focus, Grid, Explore and Table agree on one stack order and one top image, plus speed budgets. Checks C1–C18 map to `UI-V2-OWNER-ACCEPTANCE.md`.
+
+**First run on current v2:** phone 15/18, desktop 17/18. Failures and fixes:
+- C14 Table tap (phone): opened the image one before the tapped one — same phone-only compatibility-mouse cause fixed for the globe in §127, never applied to Table. Fixed the same way (painted element under the finger; touch pointerdown cancels the trailing mouse events).
+- C11 Focus X: the X handler's own JS was ~190ms at 4x — a forced synchronous layout of all 500 cards (viewport read inside render, then `focus()` on the selected card) and an O(n) recount of the whole shared cache on every lookup (`touch()`, ~500k steps per globe open). Viewport size cached, card focus deferred until after paint, cache counts computed only in `snapshot()`. X handler now ~20ms.
+- C17 freezes: remaining 200–265ms long tasks are native rendering of 500 cards on the CPU (lab has no GPU); profiling shows app JS under 30ms in every such task. Left failing and reported, not loosened.
+
+**After:** phone 17/18, desktop 17/18 (C17 only). Tap accuracy on globe and Table exact; stack order agrees across every surface through search, reorder, reload, move and delete.
+
+**Logging.** The perf recorder now writes into the existing Sync Activity Log on every build (`perf:image` tap→image ms, `perf:freeze` ≥100ms, stack rebuilds, cache clears, syncs, metadata batches); Sync Log → Copy Log carries it. `?perf=1` only adds a quick-copy button.
+
+---

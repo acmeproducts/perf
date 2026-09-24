@@ -2498,9 +2498,8 @@
                     : (thumbnails.medium?.url || thumbnails.large?.url || file.thumbnailLink || file.downloadUrl || '');
             },
             touch(entry) {
+                // Called on every lookup: keep it O(1). Counts are computed in snapshot().
                 if (entry) entry.usedAt = performance.now();
-                this.instrumentation.residentCount = this.entries.size;
-                this.instrumentation.pinnedCount = [...this.entries.values()].filter(item => item.pinned).length;
                 return entry;
             },
             resolve(file, rendition = 'thumb', options = {}) {
@@ -2690,7 +2689,8 @@
                 this.touch(null);
             },
             snapshot() {
-                this.touch(null);
+                this.instrumentation.residentCount = this.entries.size;
+                this.instrumentation.pinnedCount = [...this.entries.values()].filter(item => item.pinned).length;
                 return { ...this.instrumentation, activePinnedCount: this.activeExplorerKeys.size };
             }
         };
@@ -11028,10 +11028,17 @@ this.updateImageCounters();
                 this.updateCount();
             },
             paint(photo) { photo.element.style.zIndex = photo.zIndex; photo.element.style.transform = `translate3d(${photo.x}px,${photo.y}px,0) rotate(${photo.rotation}deg) scale(${photo.scale})`; },
-            findElement(event) { const element = event.target.closest?.('.photo-table__print'); return this.photos.find(photo => photo.element === element); },
+            findElement(event) {
+                // Trust what is painted under the finger, not Chrome's touch-adjusted target (§127).
+                const element = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.photo-table__print') || event.target.closest?.('.photo-table__print');
+                return this.photos.find(photo => photo.element === element);
+            },
             down(event) {
                 if (event.button !== undefined && event.button !== 0) return;
                 const photo = this.findElement(event); if (!photo || photo.state === 'capturing') return;
+                // Cancel the finger's trailing compatibility mouse events: otherwise they land on the Focus
+                // image that this tap opens and Focus reads them as back/forward (the phone-only +/-1, §127).
+                if (event.pointerType === 'touch' || event.pointerType === 'pen') event.preventDefault();
                 CurrentImage.set(photo.fileId, this.stackName, { allowCrossStack: false });
                 this.currentFileId = CurrentImage.current()?.id || photo.fileId;
                 this.updateCount();
@@ -11336,7 +11343,9 @@ this.updateImageCounters();
                 Gestures.updateGestureOverlayMode();
                 if (this.cards[this.selectedIndex]) {
                     this.center(this.selectedIndex);
-                    this.cards[this.selectedIndex].element.focus();
+                    // Keyboard focus after the globe has painted: focusing forces a layout of every card.
+                    const focusCard = this.cards[this.selectedIndex].element;
+                    requestAnimationFrame(() => setTimeout(() => { if (!this.elements.root.hidden) focusCard.focus({ preventScroll: true }); }, 0));
                 }
                 this.lastFrameTime = performance.now();
                 this.requestFrame();
@@ -11747,7 +11756,13 @@ this.updateImageCounters();
             },
 
             sphereRadius() {
-                return Math.min(innerWidth, innerHeight) * .34 * this.density * this.sphereScale;
+                // Viewport size is cached (updated on resize) so reading it inside a render never forces a
+                // synchronous layout of every card.
+                if (!this.viewport) {
+                    this.viewport = { w: innerWidth, h: innerHeight };
+                    addEventListener('resize', () => { this.viewport = { w: innerWidth, h: innerHeight }; this.requestFrame(); });
+                }
+                return Math.min(this.viewport.w, this.viewport.h) * .34 * this.density * this.sphereScale;
             },
 
             updateControlLabels() {
@@ -12789,18 +12804,21 @@ this.updateImageCounters();
         }
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
-<!-- perf-recorder: passive on-device timing, active only with ?perf=1 -->
+<!-- perf-recorder: passive on-device timing, always on; entries go to the Sync Activity Log (Sync Log -> Copy Log). ?perf=1 adds a quick-copy button. -->
 <script id="perf-recorder">
 (() => {
-    if (!/[?&]perf=1\b/.test(location.search)) return;
+    const showButton = /[?&]perf=1\b/.test(location.search);
     const t0 = performance.now(), now = () => Math.round(performance.now() - t0);
+    const g = name => { try { return eval(name); } catch (_) { return undefined; } };
+    const toLog = (event, details, data) => { try { g('state')?.syncLog?.log?.({ event, level: 'info', details, data }); } catch (_) {} };
     const rec = { build: document.title + ' | ' + location.pathname, ua: navigator.userAgent, inputs: [], paints: [], longtasks: [], events: [] };
     let lastInput = null;
     ['pointerdown', 'keydown'].forEach(type => document.addEventListener(type, e => {
         lastInput = { t: now(), type, target: (e.target?.id || e.target?.className?.toString?.() || e.target?.tagName || '').slice(0, 40) };
         rec.inputs.push(lastInput); if (rec.inputs.length > 400) rec.inputs.shift();
     }, true));
-    try { new PerformanceObserver(list => list.getEntries().forEach(e => { rec.longtasks.push({ t: Math.round(e.startTime - t0), d: Math.round(e.duration) }); if (rec.longtasks.length > 600) rec.longtasks.shift(); })).observe({ type: 'longtask', buffered: true }); } catch (_) {}
+    try { new PerformanceObserver(list => list.getEntries().forEach(e => { rec.longtasks.push({ t: Math.round(e.startTime - t0), d: Math.round(e.duration) }); if (rec.longtasks.length > 600) rec.longtasks.shift();
+        if (e.duration >= 100) toLog('perf:freeze', `App froze ${Math.round(e.duration)}ms`, { ms: Math.round(e.duration), afterInputMs: lastInput ? now() - lastInput.t : null }); })).observe({ type: 'longtask', buffered: true }); } catch (_) {}
     const img = document.getElementById('center-image');
     img?.addEventListener('load', () => {
         const src = (img.currentSrc || img.src || '');
@@ -12808,14 +12826,16 @@ this.updateImageCounters();
             focus: document.getElementById('app-container')?.classList.contains('focus-mode') || false,
             size: img.naturalWidth + 'x' + img.naturalHeight, src: src.replace(/^https?:\/\/[^/]+/, '').slice(0, 60) });
         if (rec.paints.length > 600) rec.paints.shift();
+        const p = rec.paints[rec.paints.length - 1];
+        toLog('perf:image', `${p.focus ? 'Focus' : 'Sort'} image shown ${p.sinceInput ?? '?'}ms after tap (${p.size})`, { ms: p.sinceInput, size: p.size, focus: p.focus, src: p.src });
     });
-    const mark = (name, extra) => { rec.events.push({ t: now(), name, ...(extra || {}) }); if (rec.events.length > 600) rec.events.shift(); };
+    const mark = (name, extra) => { rec.events.push({ t: now(), name, ...(extra || {}) }); if (rec.events.length > 600) rec.events.shift();
+        if (/^(initializeStacks|clearImageCache|sharedCacheClear|folderSync|folderRefresh|metadataBatch|loadImages)/.test(name)) toLog('perf:' + name, `${name}${extra?.ms != null ? ' ' + extra.ms + 'ms' : ''}`, extra); };
     const wrap = (obj, key, name, isAsync) => {
         try { const f = obj?.[key]; if (typeof f !== 'function') return; obj[key] = function (...a) { const s = performance.now(); mark(name + ':start'); const r = f.apply(this, a);
             if (r && typeof r.then === 'function') r.then(() => mark(name + ':end', { ms: Math.round(performance.now() - s) }), () => mark(name + ':fail')); else mark(name + ':end', { ms: Math.round(performance.now() - s) });
             return r; }; } catch (_) {}
     };
-    const g = name => { try { return eval(name); } catch (_) { return undefined; } };
     wrap(g('Core'), 'initializeStacks', 'initializeStacks'); wrap(g('Utils'), 'clearImageObjectCache', 'clearImageCache');
     wrap(g('SharedImageResources'), 'clear', 'sharedCacheClear'); wrap(g('App'), 'extractMetadataInBackground', 'metadataBatch');
     wrap(g('App'), 'syncFolderFromCloud', 'folderSync'); wrap(g('App'), 'refreshFolderInBackground', 'folderRefresh'); wrap(g('App'), 'loadImages', 'loadImages');
@@ -12847,7 +12867,7 @@ this.updateImageCounters();
             setTimeout(() => { b.textContent = '⏱'; }, 1500); });
         document.body.appendChild(b);
     };
-    if (document.body) ui(); else document.addEventListener('DOMContentLoaded', ui);
+    if (showButton) { if (document.body) ui(); else document.addEventListener('DOMContentLoaded', ui); }
     window.__perfSummary = summary;
 })();
 </script>
