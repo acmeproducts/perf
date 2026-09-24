@@ -2736,3 +2736,12 @@ One change on the owner-approved baseline (§138), scoped exactly by the baselin
 **Result.** e2e: phone 22/23, desktop 22/23 — the only failure is C17 (200–290ms freezes while the lab, which has no GPU, draws a 500-card DOM globe). Globe tap gate 20/20 phone and desktop. A/B check: with the baseline's two-step Focus paint instead of (4), the phone passes 23/23 but Focus shows small-then-large — rejected by the owner.
 
 ---
+
+## §140 · FOCUS: NO FLASH OF THE PREVIOUS IMAGE; NEXT/BACK READY AHEAD (2026-09-24)
+
+Owner on §139: the correct image shows, but only after the previous image flashes; Focus back/forward is laggy.
+- Flash: `.center-image` faded opacity over 0.2s, so hiding the old image while the new one loaded kept it visible. Opacity fade removed (hide/show are instant). New e2e frame check (C10) counts frames where Focus shows a different image than the one tapped: previous build 56 frames over 4 taps, now 0.
+- Lag: measured JS per step 3–10ms; the wait was the network — only the ±1 full images were fetched ahead, so every other step (250–330ms paced, 535–690ms rapid) waited. Now the next 4 and previous 2 full images are fetched ahead along the Focus path (ui.html kept ±3). Shown: 3–11ms per step paced and 4–10ms rapid.
+- e2e: desktop 23/23, phone 22/23 (C17 lab drawing only).
+
+---
