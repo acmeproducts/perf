@@ -2755,3 +2755,9 @@ Owner on §140: globe still sparse when spinning; footer wraps and covers the bo
 - e2e 22/23 phone and desktop (C17 lab drawing only, 209–218ms); globe taps 20/20 both.
 
 ---
+
+## §142 · DEVICE LOGS TO THE REPO (debug=1) ON THE BASELINE (2026-09-24)
+
+Owner on §141: still sparse when spinning; Focus still stutters. Neither reproduces in the lab (spin keeps 500/500 cards with images; Focus steps 0–11ms), so the difference is the real device/Drive. The owner asked for logs written to the repo so they can be read without the owner relaying anything; that uploader (§135) was lost in the §137 revert. Restored onto the baseline PerfBeacon (`?debug=1`): globe fps/worst frame and cards-with-image while moving (DOM globe), Focus time-to-image (cached or not), taps, long tasks, stalls, thumbnail loads, and every image error with rendition and host (e.g. drive.google.com vs googleusercontent) — counts/timings only, no names or ids. Uploads every 45s and on page hide to `device-logs/<date>/<session>.json` on the `device-logs` branch using the GitHub token repolist.html already stores (or long-press the `log` button once). e2e unchanged.
+
+---

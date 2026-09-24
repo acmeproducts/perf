@@ -1600,31 +1600,95 @@
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
         const PerfBeacon = {
-            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [],
+            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [], focusMs: [], globe: null, globeFps: [],
             enabled: /[?&]debug=1/.test(location.search),
+            // Device log: timings and counts only (no file names or ids). Uploaded to the repo's device-logs branch.
+            log: [], sessionId: new Date().toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 7),
+            logRepo: 'acmeproducts/perf', logBranch: 'device-logs', logSha: null, uploading: false, lastUpload: null,
+            record(type, data = {}) {
+                if (!this.enabled) return;
+                this.log.push({ t: Math.round(performance.now()), type, ...data });
+                if (this.log.length > 3000) this.log.splice(0, this.log.length - 3000);
+            },
+            token() {
+                try { return localStorage.getItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`) || localStorage.getItem('repolist:pat') || ''; } catch (_) { return ''; }
+            },
+            async upload(reason = 'interval') {
+                if (!this.enabled || this.uploading || !this.log.length) return;
+                const token = this.token();
+                if (!token) { this.lastUpload = 'no GitHub token (tap log button)'; return; }
+                this.uploading = true;
+                try {
+                    const body = {
+                        build: APP_BUILD.id, reason, sessionId: this.sessionId, savedAt: new Date().toISOString(),
+                        device: { ua: navigator.userAgent, viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, memoryGB: navigator.deviceMemory || null, cores: navigator.hardwareConcurrency || null },
+                        state: { stackSizes: Object.fromEntries(Object.entries(state.stacks || {}).map(([k, v]) => [k, v.length])), surface: state.inspection?.surface || null, focus: Boolean(state.isFocusMode), globeCards: SpatialGallery.cards?.length || 0, globeReady: (SpatialGallery.cards || []).filter(c => { const i = c.image || c.element?.querySelector?.('img'); return i && i.complete && i.naturalWidth > 0; }).length },
+                        resources: SharedImageResources.instrumentation,
+                        events: this.log
+                    };
+                    const path = `device-logs/${this.sessionId.slice(0, 10)}/${this.sessionId}.json`;
+                    const url = `https://api.github.com/repos/${this.logRepo}/contents/${path}`;
+                    const put = sha => fetch(url, { method: 'PUT', keepalive: reason === 'pagehide', headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: `device log ${this.sessionId} (${reason})`, branch: this.logBranch, content: btoa(unescape(encodeURIComponent(JSON.stringify(body)))), ...(sha ? { sha } : {}) }) });
+                    let res = await put(this.logSha);
+                    if (res.status === 409 || res.status === 422) {
+                        const current = await fetch(`${url}?ref=${this.logBranch}`, { headers: { Authorization: `Bearer ${token}` } });
+                        if (current.ok) { this.logSha = (await current.json()).sha; res = await put(this.logSha); }
+                    }
+                    if (res.ok) { this.logSha = (await res.json()).content?.sha || this.logSha; this.lastUpload = `uploaded ${new Date().toLocaleTimeString()} (${this.log.length} events)`; }
+                    else this.lastUpload = `upload failed ${res.status}`;
+                } catch (error) { this.lastUpload = `upload error ${error.message}`; }
+                finally { this.uploading = false; this.render(); }
+            },
+            focusShown(ms, cached) { if (!this.enabled) return; this.focusMs.push(Math.round(ms)); if (this.focusMs.length > 8) this.focusMs.shift(); this.record('focus', { ms: Math.round(ms), cached }); },
+            globeFrame(dtMs, drawn, ready, moving) {
+                if (!this.enabled) return;
+                const g = this.globe || (this.globe = { frames: 0, worst: 0, sum: 0, drawn: 0, ready: 0, since: performance.now() });
+                if (moving) { g.frames++; g.sum += dtMs; g.worst = Math.max(g.worst, dtMs); }
+                g.drawn = drawn; g.ready = ready;
+                if (performance.now() - g.since >= 2000) {
+                    if (g.frames) {
+                        const fps = Math.round(1000 / (g.sum / g.frames));
+                        this.globeFps.push(fps); if (this.globeFps.length > 6) this.globeFps.shift();
+                        this.record('globe', { fps, worstFrameMs: Math.round(g.worst), frames: g.frames, drawn, ready });
+                    }
+                    this.globe = { frames: 0, worst: 0, sum: 0, drawn, ready, since: performance.now() };
+                }
+            },
             init() {
                 if (!this.enabled || this.el) return;
+                const button = document.createElement('button');
+                button.type = 'button'; button.textContent = 'log';
+                button.setAttribute('aria-label', 'Upload device log now (long-press to set GitHub token)');
+                button.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:100000;width:40px;height:28px;border-radius:8px;border:1px solid #7fffd4;background:#000c;color:#7fffd4;font:10px ui-monospace,monospace;';
+                let pressTimer = null;
+                button.addEventListener('pointerdown', () => { pressTimer = setTimeout(() => { pressTimer = null; const t = prompt('GitHub token for device logs (stored on this device only):', this.token()); if (t != null) { try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`, t.trim()); } catch (_) {} this.upload('token-set'); } }, 700); });
+                button.addEventListener('pointerup', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; if (!this.token()) { const t = prompt('GitHub token for device logs (stored on this device only):', ''); if (t) { try { localStorage.setItem(`${APP_IDENTITY.storagePrefix}:debug_log_pat`, t.trim()); } catch (_) {} } } this.upload('manual'); } });
+                document.body.appendChild(button);
+                setInterval(() => this.upload('interval'), 45000);
+                document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.upload('pagehide'); });
+                addEventListener('pagehide', () => this.upload('pagehide'));
                 const el = document.createElement('div');
                 el.id = 'perf-beacon';
-                el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
+                el.style.cssText = 'position:fixed;left:8px;bottom:40px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
                 document.body.appendChild(el); this.el = el;
                 try {
                     new PerformanceObserver(list => {
-                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); });
+                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); this.record('longtask', { ms: Math.round(entry.duration), surface: state.inspection?.surface || (state.isFocusMode ? 'focus' : 'sort') }); });
                     }).observe({ entryTypes: ['longtask'] });
                 } catch (error) { /* longtask unsupported (Safari): heartbeat below covers it */ }
                 let last = performance.now();
                 setInterval(() => {
                     const now = performance.now(); const drift = Math.round(now - last - 400); last = now;
-                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); }
+                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); this.record('stall', { ms: drift }); }
                     this.render();
                 }, 400);
                 document.addEventListener('pointerup', () => {
                     const at = performance.now();
-                    requestAnimationFrame(() => { this.taps.push(Math.round(performance.now() - at)); if (this.taps.length > 5) this.taps.shift(); });
+                    requestAnimationFrame(() => { const ms = Math.round(performance.now() - at); this.taps.push(ms); if (this.taps.length > 5) this.taps.shift(); this.record('tap', { ms, surface: state.inspection?.surface || (state.isFocusMode ? 'focus' : 'sort') }); });
                 }, true);
             },
-            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); } },
+            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); this.record('thumb', { ms: Math.round(ms) }); } },
             render() {
                 if (!this.el) return;
                 const i = SharedImageResources.instrumentation;
@@ -1634,8 +1698,11 @@
                     'longtasks ms: ' + (this.longTasks.join(',') || '-'),
                     'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
                     'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
-                    'img errors: ' + i.imageErrorCount + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
-                    'image requests: ' + i.providerRequestCount
+                    'img errors: ' + (i.imageErrorCount ?? '-') + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
+                    'image requests: ' + i.providerRequestCount,
+                    'focus image ms: ' + (this.focusMs.join(',') || '-'),
+                    'globe fps: ' + (this.globeFps.join(',') || '-') + '  cards with image ' + ((SpatialGallery.cards || []).filter(c => { const i = c.image || c.element?.querySelector?.('img'); return i && i.complete && i.naturalWidth > 0; }).length) + '/' + (SpatialGallery.cards?.length || 0),
+                    'log: ' + (this.lastUpload || 'not uploaded yet')
                 ].join('\n');
             }
         };
@@ -2668,6 +2735,7 @@
                         else {
                             entry.loadFailures = (entry.loadFailures || 0) + 1;
                             this.instrumentation.imageErrorCount++;
+                            if (typeof PerfBeacon !== 'undefined') { try { PerfBeacon.record('imgError', { rendition, host: new URL(entry.src, location.href).host, attempt: entry.loadFailures }); } catch (_) {} }
                             entry.retryAfter = performance.now() + Math.min(30000, 1000 * Math.pow(4, entry.loadFailures));
                             entry.ready = null; entry.preload = null;
                         }
@@ -2749,6 +2817,7 @@
                 };
                 let recovered = false;
                 img.onerror = async () => {
+                    if (typeof PerfBeacon !== 'undefined') { try { PerfBeacon.record('imgError', { rendition, surface, host: new URL(img.src, location.href).host, recovered }); } catch (_) {} }
                     if (recovered || !isCurrent()) return;
                     recovered = true;
                     const fresh = await this.refreshFile(file.id);
@@ -2783,9 +2852,14 @@
                 img.dataset.sharedResourceKey = displayEntry?.key || '';
                 img.alt = file.name || 'Image';
                 this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
+                const shownFrom = performance.now();
                 const show = src => {
                     if (token !== this.presentationToken || !img.isConnected) return;
-                    const reveal = () => { if (token === this.presentationToken && img.getAttribute('src') === src) img.style.opacity = '1'; };
+                    const reveal = () => {
+                        if (token !== this.presentationToken || img.getAttribute('src') !== src) return;
+                        img.style.opacity = '1';
+                        if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) PerfBeacon.focusShown(performance.now() - shownFrom, performance.now() - shownFrom < 5);
+                    };
                     if (img.getAttribute('src') !== src) {
                         // Hide first: until the new picture is decoded the element would keep painting the old one.
                         img.style.opacity = '0';
@@ -12591,6 +12665,10 @@ this.updateImageCounters();
                         if (centerDistance < nearestDistance || (Math.abs(centerDistance - nearestDistance) < 2 && z2 > nearestDepth)) { nearestDistance = centerDistance; nearestDepth = z2; nearestIndex = index; }
                     }
                 });
+                if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) {
+                    let ready = 0; for (const card of this.cards) { const i = card.image || card.element?.querySelector('img'); if (i && i.complete && i.naturalWidth > 0) ready++; }
+                    PerfBeacon.globeFrame(dt, this.cards.length, ready, this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015);
+                }
                 if (nearestIndex !== this.focusedIndex) {
                     this.focusedIndex = nearestIndex;
                     this.cards.forEach((card, index) => card.element.classList.toggle('focused', index === nearestIndex));
