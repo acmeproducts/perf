@@ -2777,3 +2777,10 @@ Owner on §143: still sparse on second open; delay before Focus shows; flicker o
 - Focus flicker: each step hid the picture until the next was loaded. On Drive the full image comes through a redirect (and now the device store), so even a preloaded image arrives a frame or more later, which showed as a blank flash. Paging now keeps the current picture until the next one is ready and switches in one frame. Only a picture left from before the globe/Grid/Table is hidden (no flash of the previous image on entry).
 - Focus delay: the device store (§143) now also keeps Focus's full image for the first 150 of the open stack, filled in the background after the thumbnails.
 - e2e C25 added (quick next/back: blank frames 0 of 84). e2e 25/25 phone; desktop 25/25 on 8 of 9 runs (one C23 miss that didn't reproduce, detail now logs the tap point). Globe taps 20/20 both.
+
+## §145 · FOCUS COUNTER; GRID ORANGE RING (2026-09-24)
+
+Owner: the Focus "Item # / #" does not stay current when Focus is opened from Sort, Grid, Table or Explore; Grid shows an orange border on one image.
+- Counter: under the core rule the viewed image moves to the top, so its stack position was always 1. Focus now counts by the order the stack had when Focus was entered (the order next/back walk): open item 12 of 214 → "Item 12 / 214", next → 13, back → 11. Sort's counter is unchanged.
+- Grid: the orange "current image" ring is removed (the current image is always top-left). Blue selection is unchanged (owner: search results outlined blue, then X, become the top of the stack; expected).
+- e2e C26 (counter during next ×6) and C27 (counter after globe tap) added. e2e 26/27 phone (C17 lab-only), 27/27 desktop.
