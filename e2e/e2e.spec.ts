@@ -57,17 +57,21 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const lat: (number | null)[] = []; let twoStep = 0; const walk: string[] = [];
   for (let i = 1; i <= 6; i++) { await page.waitForTimeout(350); await ev(`window.__paints = []`); await ev(`Gestures.nextImage()`); lat.push(await ev<number | null>(`T.waitPaint('f${i}')`)); walk.push(await ev<string>(`T.shownId()`)); if ((await ev<string[]>(`window.__paints`)).length > 1) twoStep++; }
   const lv = lat.filter((x): x is number => x !== null).sort((a, b) => a - b);
-  check('C3', 'Focus next follows stack order, one paint, fast (median <= 60ms)', eq(walk, ['f1', 'f2', 'f3', 'f4', 'f5', 'f6']) && twoStep === 0 && lv.length === 6 && lv[3] <= 60, `walk=${walk.join(',')} latency=${lat.join('/')}ms twoStep=${twoStep}`);
+  const top3 = await ev<string[]>(`T.ids('in', 3)`);
+  check('C3', 'Focus next follows stack order, one paint, fast; viewed image becomes top of stack', eq(walk, ['f1', 'f2', 'f3', 'f4', 'f5', 'f6']) && twoStep === 0 && lv.length === 6 && lv[3] <= 60 && top3[0] === 'f6', `walk=${walk.join(',')} latency=${lat.join('/')}ms twoStep=${twoStep} stackTop=${top3.join(',')}`);
   // C4 Focus back.
   for (let i = 0; i < 2; i++) { await page.waitForTimeout(350); await ev(`Gestures.prevImage()`); }
   const c4 = await ev<number | null>(`T.waitPaint('f4')`);
-  check('C4', 'Focus back follows stack order', c4 !== null, `shown=${await ev(`T.shownId()`)} paint=${c4}ms`);
+  const walk4: string[] = [];
+  for (const [fn, want] of [['nextImage', 'f5'], ['nextImage', 'f6'], ['prevImage', 'f5'], ['prevImage', 'f4']] as const) { await page.waitForTimeout(300); await ev(`Gestures.${fn}()`); await ev(`T.waitPaint('${want}')`); walk4.push(await ev<string>(`T.cur()`)); }
+  check('C4', 'Focus back/next never bounce (back twice, next, next, back, back)', c4 !== null && eq(walk4, ['f5', 'f6', 'f5', 'f4']), `after back x2=${c4 !== null ? 'f4' : 'miss'} then ${walk4.join(',')}`);
   // Leave Focus to Sort.
   await ev(`CanonicalInspection.exit()`); await page.waitForTimeout(500);
-  // C5 Grid shows the stack in order, top-left = top of stack.
+  // C5 Last viewed (f4) is the top: centre of Sort, top-left of Grid; Grid tiles are the stack order.
+  const sort5 = await ev<string>(`T.cur()`);
   await ev(`Grid.open(state.currentStack)`); await page.waitForTimeout(700);
   const g = await ev<string[]>(`T.gridIds()`), s = await ev<string[]>(`T.ids('in')`);
-  check('C5', 'Grid tiles are the stack order; top-left is the top of the stack', eq(g, s), `grid=${g.slice(0, 5).join(',')}.. stack=${s.slice(0, 5).join(',')}..`);
+  check('C5', 'Last viewed is Sort centre and Grid top-left; Grid tiles are the stack order', sort5 === 'f4' && g[0] === 'f4' && eq(g, s), `sort=${sort5} grid=${g.slice(0, 5).join(',')}.. stack=${s.slice(0, 5).join(',')}..`);
   // C6 Grid search: results go to the top of the stack, in order, and everything agrees.
   await ev(`(() => { Utils.elements.omniSearch.value = 'sunset'; Grid.performSearch(); })()`); await page.waitForTimeout(400);
   const hits = await ev<string[]>(`Grid.searchImages('sunset').map(f => String(f.id))`);
@@ -89,16 +93,16 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const ex = await ev<string[]>(`T.exploreIds()`), s9 = await ev<string[]>(`T.ids('in')`);
   check('C9', 'Explore shows the stack in order (first 500)', eq(ex, s9) && (await ev<number>(`SpatialGallery.files.length`)) === Math.min(500, await ev<number>(`state.stacks.in.length`)), `explore=${ex.slice(0, 5).join(',')}.. stack=${s9.slice(0, 5).join(',')}.. n=${await ev(`SpatialGallery.files.length`)}`);
   // C10 Explore tap opens exactly the tapped image (real input), Focus next goes to the next in stack order.
-  const taps: string[] = []; let tapOk = 0, nextOk = 0;
+  const taps: string[] = []; let tapOk = 0, nextOk = 0; let lastViewed = '';
   for (let k = 0; k < 4; k++) {
     await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; })()`); await page.waitForTimeout(300);
     const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const el = document.elementFromPoint(x, y)?.closest('.spatial-gallery__card'); return el ? { id: el.dataset.fileId, x, y } : null; })()`);
     if (!tgt) { taps.push('none'); continue; }
+    const idx = await ev<number>(`state.stacks.in.findIndex(f => String(f.id) === '${tgt.id}')`); const nextId = await ev<string>(`String(state.stacks.in[${idx} + 1]?.id)`);
     if (DEV === 'Pixel 7') await page.touchscreen.tap(tgt.x, tgt.y); else await page.mouse.click(tgt.x, tgt.y);
     const p = await ev<number | null>(`T.waitPaint('${tgt.id}', 5000)`); if (p !== null) tapOk++;
-    const idx = await ev<number>(`state.stacks.in.findIndex(f => String(f.id) === '${tgt.id}')`); const nextId = await ev<string>(`String(state.stacks.in[${idx} + 1]?.id)`);
     await page.waitForTimeout(300); await ev(`Gestures.nextImage()`); if ((await ev<number | null>(`T.waitPaint('${nextId}', 5000)`)) !== null) nextOk++;
-    taps.push(`${tgt.id}->${await ev(`T.cur()`)}`);
+    taps.push(`${tgt.id}->${await ev(`T.cur()`)}`); lastViewed = await ev<string>(`T.cur()`);
     // C11 measured on each: Focus X back to the globe.
     const built = await ev<number>(`(() => { window.__cc = 0; const f = SpatialGallery.createCard; SpatialGallery.__cc = SpatialGallery.__cc || f; SpatialGallery.createCard = function (...a) { window.__cc++; return SpatialGallery.__cc.apply(this, a); }; return 0; })()`);
     // App work = the X handler's own JavaScript; full = until that frame is drawn (the lab draws on the CPU,
@@ -110,6 +114,12 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   check('C10', 'Explore tap opens the tapped image; Focus next is the next in stack order', tapOk === 4 && nextOk === 4, `taps ${taps.join(' ')} tapOk=${tapOk}/4 nextOk=${nextOk}/4`);
   const xs: string[] = (globalThis as any).__x || [];
   check('C11', 'Focus X returns to the globe: app work <= 60ms, no rebuild', xs.length === 4 && xs.every(x => parseInt(x) <= 60 && x.endsWith('/0rebuilt')), xs.join(' '));
+  // C19 After globe -> Focus -> X, the last viewed image is the top: Grid top-left and Sort centre.
+  const top19 = await ev<string>(`String(state.stacks.in[0].id)`);
+  await ev(`Grid.open('in')`); await page.waitForTimeout(600); const grid19 = (await ev<string[]>(`T.gridIds(1)`))[0]; await ev(`Grid.close()`); await page.waitForTimeout(600);
+  const sort19 = await ev<string>(`T.cur()`);
+  check('C19', 'After globe -> Focus -> X: last viewed is top of stack, Grid top-left and Sort centre', top19 === lastViewed && grid19 === lastViewed && sort19 === lastViewed, `lastViewed=${lastViewed} stackTop=${top19} gridTopLeft=${grid19} sort=${sort19}`);
+  await ev(`SpatialGallery.open({ stackName: 'in', fileId: state.currentFileId, preserveGeometry: true })`); await page.waitForTimeout(800);
   // C12 Explore stack switch and back: no rebuild on return.
   await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'priority', fileId: state.stacks.priority[0].id }); })()`); await page.waitForTimeout(1200);
   await ev(`window.__cc = 0`); await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id }); })()`); await page.waitForTimeout(800);

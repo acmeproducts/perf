@@ -3,8 +3,10 @@
 Owner's own words, captured 2026-09-23. This is the pass/fail list for any `ui-v2.html` release.
 Every item must pass on **real mobile Chrome (Android)** and **desktop Chrome**, not just a desktop test run. A release that passes some items but breaks others is a failed release.
 
-## One rule underneath all of it
-There is one stack order. The image on top of the stack is the same image in Sort, Grid, Explore, Focus and Table. No surface keeps its own private idea of what is on top.
+## The core rule (owner, 2026-09-24)
+**The last viewed image is the top of the stack.** It is top-left in Grid and centre stage in Sort. Whatever is viewed or changed in Focus or Grid goes to the top of the stack order - including search results: search in Grid, 10 images come up, X out, and those 10 are the top of the stack.
+
+There is one stack order. Sort, Grid, Explore, Focus and Table all read it; no surface keeps its own private idea of what is on top. Focus next/back page through the stack as it was when Focus was entered, and each image landed on becomes the top (so next never bounces back).
 
 ## Globe (Explore)
 1. **Tight globe.** Spinning is smooth and responsive. Cards do not fade or drop in and out while spinning.

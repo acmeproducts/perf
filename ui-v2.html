@@ -1566,6 +1566,46 @@
             document.documentElement.dataset.build = APP_BUILD.id;
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
+        const PerfBeacon = {
+            el: null, longTasks: [], stalls: [], taps: [], imgLoads: [],
+            enabled: /[?&]debug=1/.test(location.search),
+            init() {
+                if (!this.enabled || this.el) return;
+                const el = document.createElement('div');
+                el.id = 'perf-beacon';
+                el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.8);color:#7fffd4;font:10px/1.6 ui-monospace,monospace;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:80vw;white-space:pre;';
+                document.body.appendChild(el); this.el = el;
+                try {
+                    new PerformanceObserver(list => {
+                        list.getEntries().forEach(entry => { this.longTasks.push(Math.round(entry.duration)); if (this.longTasks.length > 6) this.longTasks.shift(); });
+                    }).observe({ entryTypes: ['longtask'] });
+                } catch (error) { /* longtask unsupported (Safari): heartbeat below covers it */ }
+                let last = performance.now();
+                setInterval(() => {
+                    const now = performance.now(); const drift = Math.round(now - last - 400); last = now;
+                    if (drift > 150) { this.stalls.push(drift); if (this.stalls.length > 6) this.stalls.shift(); }
+                    this.render();
+                }, 400);
+                document.addEventListener('pointerup', () => {
+                    const at = performance.now();
+                    requestAnimationFrame(() => { this.taps.push(Math.round(performance.now() - at)); if (this.taps.length > 5) this.taps.shift(); });
+                }, true);
+            },
+            imgLoaded(ms) { if (this.enabled) { this.imgLoads.push(Math.round(ms)); if (this.imgLoads.length > 8) this.imgLoads.shift(); } },
+            render() {
+                if (!this.el) return;
+                const i = SharedImageResources.instrumentation;
+                this.el.textContent = [
+                    'build ' + APP_BUILD.id,
+                    'mainthread stalls ms: ' + (this.stalls.join(',') || '-'),
+                    'longtasks ms: ' + (this.longTasks.join(',') || '-'),
+                    'tap\u2192paint ms: ' + (this.taps.join(',') || '-'),
+                    'thumb load ms: ' + (this.imgLoads.join(',') || '-'),
+                    'img errors: ' + (i.imageErrorCount ?? '-') + '  recoveries: ' + i.recoveryAttempts + '/' + i.recoverySuccesses + ' ok',
+                    'image requests: ' + i.providerRequestCount
+                ].join('\n');
+            }
+        };
         const APP_STORAGE_KEYS = {
             lastFolder: `${APP_IDENTITY.storagePrefix}:last_folder`,
             onedriveRoot: `${APP_IDENTITY.storagePrefix}:onedrive_root`,
@@ -1901,6 +1941,43 @@
                 state.focusTraversalIndex = resolved.index;
                 return resolved;
             },
+            // THE CORE RULE: the image being viewed is the top of its stack. Sort's centre image and Grid's
+            // top-left tile both read position 0, so viewing an image anywhere (Focus, a Grid/Explore/Table
+            // tap) moves it to position 0 and persists that order (stackSequence).
+            view(fileId, stackName = state.currentStack) {
+                const files = this.stack(stackName);
+                const index = files.findIndex(file => String(file.id) === String(fileId));
+                if (index < 0) return null;
+                if (index > 0) {
+                    const [file] = files.splice(index, 1);
+                    const topSequence = Number(files[0]?.stackSequence) || 0;
+                    file.stackSequence = Math.max(Date.now(), topSequence + 1);
+                    files.unshift(file);
+                    App.updateUserMetadata(file.id, { stackSequence: file.stackSequence }, { operationType: 'stack:view' });
+                }
+                return this.set(fileId, stackName, { allowCrossStack: false });
+            },
+            // Focus pages through the stack as it was when Focus was entered; each image landed on is viewed
+            // (moved to the top), so the traversal never bounces back to the image just left.
+            beginTraversal(fileId, stackName = state.currentStack) {
+                const ids = this.stack(stackName).map(file => String(file.id));
+                const index = Math.max(0, ids.indexOf(String(fileId)));
+                state.focusTraversal = { stackName, ids, index };
+                return state.focusTraversal;
+            },
+            traversalStep(delta) {
+                const stackName = state.currentStack;
+                let traversal = state.focusTraversal;
+                const currentId = String(state.currentFileId);
+                if (!traversal || traversal.stackName !== stackName || traversal.ids[traversal.index] !== currentId) traversal = this.beginTraversal(currentId, stackName);
+                const live = new Set(this.stack(stackName).map(file => String(file.id)));
+                const n = traversal.ids.length;
+                for (let step = 1; step <= n; step++) {
+                    const index = ((traversal.index + delta * step) % n + n) % n;
+                    if (live.has(traversal.ids[index])) { traversal.index = index; return this.view(traversal.ids[index], stackName); }
+                }
+                return null;
+            },
             syncFromIndex() {
                 const files = this.stack();
                 if (!files.length) {
@@ -1921,6 +1998,12 @@
             fallback(previousOrder = [], removedFileId = null, stackName = state.currentStack) {
                 const files = this.stack(stackName);
                 if (!files.length) return null;
+                const traversal = state.focusTraversal;
+                if (state.isFocusMode && traversal?.stackName === stackName && traversal.ids.includes(String(removedFileId))) {
+                    traversal.index = traversal.ids.indexOf(String(removedFileId));
+                    const next = this.traversalStep(1);
+                    if (next) return next;
+                }
                 const surviving = new Map(files.map((file, index) => [String(file.id), { file, index }]));
                 const removedIndex = Math.max(0, previousOrder.findIndex(id => String(id) === String(removedFileId)));
                 for (let index = removedIndex + 1; index < previousOrder.length; index++) {
@@ -2610,7 +2693,9 @@
                     const refreshed = this.resolve(fresh, rendition);
                     if (refreshed?.src) apply(refreshed.src);
                 };
+                const attachStartedAt = performance.now();
                 img.addEventListener('load', () => {
+                    if (typeof PerfBeacon !== 'undefined') PerfBeacon.imgLoaded(performance.now() - attachStartedAt);
                     if (this.instrumentation.firstUsefulThumbnailPaintMs == null) this.instrumentation.firstUsefulThumbnailPaintMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'explore' && this.instrumentation.exploreVisibleFillMs == null) this.instrumentation.exploreVisibleFillMs = performance.now() - this.instrumentation.startedAt;
                     if (surface === 'table' && this.instrumentation.tableVisibleFillMs == null) this.instrumentation.tableVisibleFillMs = performance.now() - this.instrumentation.startedAt;
@@ -7477,6 +7562,18 @@
 
             prefetchNeighborImages(stack, index, windowSize = 3) {
                 if (!Array.isArray(stack) || stack.length === 0) return;
+                // Viewed images move to the top, so the upcoming images are the Focus traversal's neighbours,
+                // not the stack positions around the current image.
+                const traversal = state.focusTraversal;
+                if (traversal?.stackName === state.currentStack && traversal.ids[traversal.index] === String(state.currentFileId)) {
+                    const byId = new Map(stack.map(file => [String(file.id), file]));
+                    const at = offset => byId.get(traversal.ids[((traversal.index + offset) % traversal.ids.length + traversal.ids.length) % traversal.ids.length]);
+                    const ahead = [1, -1, 2, 3, -2, -3].map(at).filter(Boolean);
+                    ahead.slice(0, 2).forEach(file => SharedImageResources.ensure(file, 'display'));
+                    Utils.prefetchImages(ahead);
+                    SharedImageResources.warm(ahead, 'display');
+                    return;
+                }
                 const start = Math.max(0, index - windowSize);
                 const end = Math.min(stack.length, index + windowSize + 1);
                 const neighbors = stack.slice(start, end);
@@ -9878,8 +9975,7 @@ this.updateImageCounters();
             async nextImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition + 1) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (!CurrentImage.traversalStep(1)) return;
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -9887,8 +9983,7 @@ this.updateImageCounters();
             async prevImage() {
                 const stack = state.stacks[state.currentStack];
                 if (stack.length === 0) return;
-                state.currentStackPosition = (state.currentStackPosition - 1 + stack.length) % stack.length;
-                CurrentImage.set(stack[state.currentStackPosition].id, state.currentStack, { allowCrossStack: false });
+                if (!CurrentImage.traversalStep(-1)) return;
                 await Core.displayCurrentImage();
                 Grid.syncSelectionWithFocus();
                 if (CanonicalInspection.active()) { CanonicalInspection.syncCurrent(); App.persistViewContext(); }
@@ -11306,10 +11401,15 @@ this.updateImageCounters();
                 }
                 this.elements.root.classList.remove('spatial-gallery--suspended');
                 this.elements.root.inert = false;
-                const canResume = preserveGeometry && this.cards.length > 0 && nextFiles.length === this.files.length && nextFiles.every((file, index) => String(file.id) === String(this.files[index]?.id));
-                const cached = canResume ? null : this.takeCachedGlobe(stackName);
+                // Viewing reorders the stack (viewed image goes to the top), so returning to a globe with the same
+                // images in a new order keeps the globe as built - same cards, same places. It is laid out from
+                // the stack order the next time it is built.
+                const sameMembership = (a, b) => { if (a.length !== b.length) return false; const ids = new Set(a.map(file => String(file.id))); return b.every(file => ids.has(String(file.id))); };
+                const canResume = preserveGeometry && this.cards.length > 0 && sameMembership(this.files, nextFiles);
+                let cached = canResume ? null : this.takeCachedGlobe(stackName);
                 this.openStackName = stackName;
-                this.files = nextFiles;
+                if (cached?.files && sameMembership(cached.files, nextFiles)) { nextFiles.splice(0, nextFiles.length, ...cached.files); cached.sameMembership = true; }
+                this.files = canResume ? this.files : nextFiles;
                 this.focusTransitionFileId = null;
                 this.rebalanceLayout('open', { persist: false, log: false });
                 CanonicalInspection.transitionToken++;
@@ -11333,7 +11433,8 @@ this.updateImageCounters();
                     // difference, instead of rebuilding every card and refetching every thumbnail.
                     this.cards = cached.cards;
                     this.elements.scene.replaceChildren(...cached.cards.map(card => card.element));
-                    this.reconcilePopulation(nextFiles);
+                    if (cached.sameMembership) { this.select(this.selectedIndex); this.requestFrame(); }
+                    else this.reconcilePopulation(nextFiles);
                     SharedImageResources.pinExplorer(this.files);
                     this.elements.root.hidden = false;
                 } else {
@@ -11411,7 +11512,7 @@ this.updateImageCounters();
                 this.globeCache = this.globeCache || new Map();
                 const key = this.globeCacheKey(this.openStackName);
                 this.globeCache.delete(key);
-                this.globeCache.set(key, { cards: this.cards });
+                this.globeCache.set(key, { cards: this.cards, files: this.files });
                 // Keep the three most recently used stacks' globes.
                 while (this.globeCache.size > 3) this.globeCache.delete(this.globeCache.keys().next().value);
             },
@@ -11944,7 +12045,8 @@ this.updateImageCounters();
             async enter(fileId, referrer = 'sort', options = {}) {
                 const { restoring = false, immediateSrc = '' } = options;
                 const requestedReferrer = this.normalizeReferrer(referrer, fileId, state.currentStack);
-                const resolved = CurrentImage.set(fileId, requestedReferrer.stackName, { allowCrossStack: false });
+                CurrentImage.beginTraversal(fileId, requestedReferrer.stackName);
+                const resolved = CurrentImage.view(fileId, requestedReferrer.stackName);
                 if (!resolved) {
                     Utils.showToast('That image is no longer available in this stack.', 'info');
                     return false;
@@ -12730,6 +12832,7 @@ this.updateImageCounters();
             try {
                 Utils.init();
                 applyBuildIdentity();
+                PerfBeacon.init();
                 state.syncLog = new SyncActivityLogger();
                 state.syncLog.init();
                 state.visualCues = new VisualCueManager();
@@ -12810,72 +12913,5 @@ this.updateImageCounters();
         }
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
-<!-- perf-recorder: passive on-device timing, always on; entries go to the Sync Activity Log (Sync Log -> Copy Log). ?perf=1 adds a quick-copy button. -->
-<script id="perf-recorder">
-(() => {
-    const showButton = /[?&]perf=1\b/.test(location.search);
-    const t0 = performance.now(), now = () => Math.round(performance.now() - t0);
-    const g = name => { try { return eval(name); } catch (_) { return undefined; } };
-    const toLog = (event, details, data) => { try { g('state')?.syncLog?.log?.({ event, level: 'info', details, data }); } catch (_) {} };
-    const rec = { build: document.title + ' | ' + location.pathname, ua: navigator.userAgent, inputs: [], paints: [], longtasks: [], events: [] };
-    let lastInput = null;
-    ['pointerdown', 'keydown'].forEach(type => document.addEventListener(type, e => {
-        lastInput = { t: now(), type, target: (e.target?.id || e.target?.className?.toString?.() || e.target?.tagName || '').slice(0, 40) };
-        rec.inputs.push(lastInput); if (rec.inputs.length > 400) rec.inputs.shift();
-    }, true));
-    try { new PerformanceObserver(list => list.getEntries().forEach(e => { rec.longtasks.push({ t: Math.round(e.startTime - t0), d: Math.round(e.duration) }); if (rec.longtasks.length > 600) rec.longtasks.shift();
-        if (e.duration >= 100) toLog('perf:freeze', `App froze ${Math.round(e.duration)}ms`, { ms: Math.round(e.duration), afterInputMs: lastInput ? now() - lastInput.t : null }); })).observe({ type: 'longtask', buffered: true }); } catch (_) {}
-    const img = document.getElementById('center-image');
-    img?.addEventListener('load', () => {
-        const src = (img.currentSrc || img.src || '');
-        rec.paints.push({ t: now(), sinceInput: lastInput ? now() - lastInput.t : null, inputAt: lastInput?.t ?? null,
-            focus: document.getElementById('app-container')?.classList.contains('focus-mode') || false,
-            size: img.naturalWidth + 'x' + img.naturalHeight, src: src.replace(/^https?:\/\/[^/]+/, '').slice(0, 60) });
-        if (rec.paints.length > 600) rec.paints.shift();
-        const p = rec.paints[rec.paints.length - 1];
-        toLog('perf:image', `${p.focus ? 'Focus' : 'Sort'} image shown ${p.sinceInput ?? '?'}ms after tap (${p.size})`, { ms: p.sinceInput, size: p.size, focus: p.focus, src: p.src });
-    });
-    const mark = (name, extra) => { rec.events.push({ t: now(), name, ...(extra || {}) }); if (rec.events.length > 600) rec.events.shift();
-        if (/^(initializeStacks|clearImageCache|sharedCacheClear|folderSync|folderRefresh|metadataBatch|loadImages)/.test(name)) toLog('perf:' + name, `${name}${extra?.ms != null ? ' ' + extra.ms + 'ms' : ''}`, extra); };
-    const wrap = (obj, key, name, isAsync) => {
-        try { const f = obj?.[key]; if (typeof f !== 'function') return; obj[key] = function (...a) { const s = performance.now(); mark(name + ':start'); const r = f.apply(this, a);
-            if (r && typeof r.then === 'function') r.then(() => mark(name + ':end', { ms: Math.round(performance.now() - s) }), () => mark(name + ':fail')); else mark(name + ':end', { ms: Math.round(performance.now() - s) });
-            return r; }; } catch (_) {}
-    };
-    wrap(g('Core'), 'initializeStacks', 'initializeStacks'); wrap(g('Utils'), 'clearImageObjectCache', 'clearImageCache');
-    wrap(g('SharedImageResources'), 'clear', 'sharedCacheClear'); wrap(g('App'), 'extractMetadataInBackground', 'metadataBatch');
-    wrap(g('App'), 'syncFolderFromCloud', 'folderSync'); wrap(g('App'), 'refreshFolderInBackground', 'folderRefresh'); wrap(g('App'), 'loadImages', 'loadImages');
-    wrap(g('Grid'), 'open', 'gridOpen'); wrap(g('Grid'), 'close', 'gridClose'); wrap(g('Gestures'), 'toggleFocusMode', 'focusToggle');
-    wrap(g('Gestures'), 'nextImage', 'next'); wrap(g('Gestures'), 'prevImage', 'prev');
-    const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : '-'; };
-    const summary = () => {
-        const focusPaints = rec.paints.filter(p => p.focus && p.sinceInput != null && p.sinceInput < 5000);
-        const byInput = new Map(); focusPaints.forEach(p => byInput.set(p.inputAt, (byInput.get(p.inputAt) || 0) + 1));
-        const firstPerInput = [...new Map(focusPaints.map(p => [p.inputAt, p])).values()];
-        const lt = rec.longtasks.map(l => l.d);
-        const count = n => rec.events.filter(e => e.name === n).length;
-        return [
-            `PERF REPORT  ${new Date().toISOString()}  ${rec.build}`,
-            `session ${Math.round(now() / 1000)}s  inputs ${rec.inputs.length}  centre-image loads ${rec.paints.length}`,
-            `focus tap->image: median ${pct(firstPerInput.map(p => p.sinceInput), .5)}ms  p90 ${pct(firstPerInput.map(p => p.sinceInput), .9)}ms  worst ${pct(firstPerInput.map(p => p.sinceInput), 1)}ms  (${firstPerInput.length} taps)`,
-            `taps with more than one image paint (two-step): ${[...byInput.values()].filter(n => n > 1).length}`,
-            `freezes (>50ms): ${lt.length}  total ${lt.reduce((a, b) => a + b, 0)}ms  worst ${lt.length ? Math.max(...lt) : 0}ms`,
-            `stack rebuilds ${count('initializeStacks:start')}  image-cache clears ${count('clearImageCache:start')}  shared-cache clears ${count('sharedCacheClear:start')}  folder syncs ${count('folderSync:start')}  refreshes ${count('folderRefresh:start')}  metadata batches ${count('metadataBatch:start')}`,
-            `mem ${performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) + 'MB' : 'n/a'}`,
-            'RAW ' + JSON.stringify({ paints: rec.paints.slice(-80), longtasks: rec.longtasks.slice(-80), events: rec.events.slice(-120), inputs: rec.inputs.slice(-80) })
-        ].join('\n');
-    };
-    const ui = () => {
-        const b = document.createElement('button'); b.textContent = '⏱'; b.setAttribute('aria-label', 'Performance report');
-        b.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;width:40px;height:40px;border-radius:20px;border:1px solid #93c5fd;background:#0f172acc;color:#fff;font-size:20px';
-        b.addEventListener('click', async e => { e.stopPropagation(); const text = summary();
-            try { await navigator.clipboard.writeText(text); b.textContent = '✓'; } catch (_) { const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;inset:10% 5%;z-index:2147483647;font:11px monospace'; document.body.appendChild(t); t.select(); t.addEventListener('blur', () => t.remove()); }
-            setTimeout(() => { b.textContent = '⏱'; }, 1500); });
-        document.body.appendChild(b);
-    };
-    if (showButton) { if (document.body) ui(); else document.addEventListener('DOMContentLoaded', ui); }
-    window.__perfSummary = summary;
-})();
-</script>
 </body>
 </html>

@@ -2662,3 +2662,17 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 `Core.initializeStacks()` runs on every folder load and every cloud sync/refresh, and cleared the whole shared image cache each time — Focus full images, Grid, Explore and Table thumbnails (`ui.html` cleared only its 24 Focus images). Same failure class as G23 (background work clearing presentation caches → X lag, thumbnails vanishing and re-fetching). Now the cache is cleared only when the provider/folder changes (and on logout); cache keys include each file's version, so changed files still get fresh images. Suite after: phone 18/18, desktop 17/18 (C17: lab CPU drawing, 233ms).
 
 ---
+
+## §133 · THE CORE RULE: LAST VIEWED IS THE TOP OF THE STACK (2026-09-24)
+
+**Owner (verbatim intent).** The last viewed image is top-left in Grid and centre stage in Sort — the core of everything. Whatever changes in Focus or Grid goes to the top of the stack order, including search results (search, 10 results, X out → those 10 are the top). The debug log is `?debug=1`, not the Sync Log.
+
+**Previous attempts (53f4585, e379e4f, both reverted 2026-09-17)** promoted the viewed image to position 0 and then took "position + 1" for next — which after promotion is the image just left, so next bounced back and forth.
+
+**Implementation.** `CurrentImage.view(id)` moves the image to position 0 and persists `stackSequence` (above the current top) via `App.updateUserMetadata`. Entering Focus (from Sort, Grid, Explore, Table) starts a traversal: a snapshot of the stack order at entry with a cursor on the entered image; next/back move the cursor over the snapshot (skipping images no longer in the stack) and `view` each image landed on. Delete/move in Focus continue forward along the traversal. Neighbour prefetch follows the traversal. Grid search/reorder commit on close (unchanged; already correct). Explore returning from Focus keeps the globe as built when only the order changed (same images) — it is laid out from the stack order the next time it is built; the stack-switch cache keeps the globe's own order likewise.
+
+**Debug log.** Removed the §130/§131 recorder (and its Sync Log entries); restored `PerfBeacon` (`?debug=1`) verbatim from the later lineage, wired as before (init with the app, thumbnail load times). `ui-v10.html` restored to its previous content.
+
+**Suite (`e2e/`, updated to the rule, 19 checks):** C3 viewed image becomes top; C4 back/next never bounce; C5 last viewed is Sort centre and Grid top-left; C19 after globe → Focus → X, last viewed is top/Grid top-left/Sort centre. Result: phone 18/19, desktop 18/19 — only C17 (lab CPU drawing, ~210ms).
+
+---
