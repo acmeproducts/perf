@@ -2532,10 +2532,10 @@
                             try { await preload.decode(); } catch (_) {}
                         }
                         entry.readyState = loaded ? 'loaded' : 'error';
-                        // The on-screen <img> and the HTTP cache carry the pixels; holding the decoded
-                        // preload too doubled memory per image (G17).
-                        entry.preload = null;
-                        if (!loaded) entry.ready = null;
+                        if (!loaded) { entry.ready = null; entry.preload = null; }
+                        else if (rendition === 'display') this.retainDecodedDisplay(entry);
+                        // Thumbnails: the on-screen <img> and the HTTP cache carry the pixels (G17).
+                        else entry.preload = null;
                         resolve(entry);
                     };
                     preload.addEventListener('load', () => settle(true), { once: true });
@@ -2545,6 +2545,17 @@
                 });
                 return entry.ready;
             },
+            retainDecodedDisplay(entry) {
+                // Keep the decoded full image for the most recent Focus images (current +/- 3 plus
+                // recent history) so next/back paints instantly; release older ones.
+                this.decodedDisplay = (this.decodedDisplay || []).filter(key => key !== entry.key);
+                this.decodedDisplay.push(entry.key);
+                while (this.decodedDisplay.length > 12) {
+                    const old = this.entries.get(this.decodedDisplay.shift());
+                    if (old) old.preload = null;
+                }
+            },
+
             async refreshFile(fileId) {
                 this.instrumentation.recoveryAttempts++;
                 let fresh = null;
@@ -2610,22 +2621,27 @@
                 return entry;
             },
             present(img, file, options = {}) {
+                // One step, like ui-v3: Focus shows the full image only. If it is already loaded it is
+                // painted now; otherwise nothing is shown (never another file, never a small version)
+                // until the full image has loaded, then it is painted once. The thumbnail is used only
+                // if the full image fails.
                 if (!img || !file?.id) return null;
-                const { immediateSrc = '', surface = 'focus' } = options;
+                const { surface = 'focus' } = options;
                 const token = ++this.presentationToken;
                 const fileId = String(file.id);
                 const displayEntry = this.resolve(file, 'display');
-                const thumbEntry = this.resolve(file, 'thumb');
-                const firstFrame = immediateSrc || thumbEntry?.src || displayEntry?.src || '';
                 img.dataset.fileId = fileId;
                 img.dataset.sharedResourceKey = displayEntry?.key || '';
                 img.alt = file.name || 'Image';
-                if (firstFrame && img.getAttribute('src') !== firstFrame) {
-                    img.src = firstFrame;
-                    this.instrumentation.providerRequestCount++;
-                }
-                img.style.opacity = '1';
                 this.bindings.set(img, { key: displayEntry?.key || '', fileId, surface, movement: false });
+                const show = src => {
+                    if (token !== this.presentationToken || !img.isConnected) return;
+                    if (img.getAttribute('src') !== src) { img.src = src; this.instrumentation.providerRequestCount++; }
+                    img.style.opacity = '1';
+                };
+                if (displayEntry?.src && img.getAttribute('src') === displayEntry.src) { img.style.opacity = '1'; return { token, fileId, displayEntry }; }
+                if (displayEntry?.readyState === 'loaded') { show(displayEntry.src); return { token, fileId, displayEntry }; }
+                img.style.opacity = '0';
                 let recovered = false;
                 img.onerror = async () => {
                     if (recovered || token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
@@ -2634,14 +2650,12 @@
                     if (fresh && token === this.presentationToken) this.present(img, fresh, { surface });
                 };
                 this.ensure(file, 'display').then(entry => {
-                    if (!entry?.src || entry.readyState !== 'loaded') return;
-                    if (token !== this.presentationToken || String(state.currentFileId) !== fileId || !img.isConnected) return;
-                    if (img.getAttribute('src') !== entry.src) {
-                        img.src = entry.src;
-                        this.instrumentation.providerRequestCount++;
-                    }
+                    if (token !== this.presentationToken || String(state.currentFileId) !== fileId) return;
+                    if (entry?.src && entry.readyState === 'loaded') return show(entry.src);
+                    const thumb = this.resolve(file, 'thumb');
+                    if (thumb?.src) show(thumb.src);
                 });
-                return { token, fileId, firstFrame, displayEntry };
+                return { token, fileId, displayEntry };
             },
             markMovement(img, active) {
                 const binding = this.bindings.get(img);
@@ -7462,6 +7476,7 @@
                 const end = Math.min(stack.length, index + windowSize + 1);
                 const neighbors = stack.slice(start, end);
                 Utils.prefetchImages(neighbors);
+                [stack[index + 1], stack[index - 1]].filter(Boolean).forEach(file => SharedImageResources.ensure(file, 'display'));
                 SharedImageResources.warm(neighbors, 'display');
             },
 
@@ -11569,6 +11584,9 @@ this.updateImageCounters();
                 const card = document.elementFromPoint(event.clientX, event.clientY)?.closest('.spatial-gallery__card')
                     || event.target.closest('.spatial-gallery__card');
                 this.pressedCard = card; this.pressedFileId = card?.dataset.fileId || null;
+                // Head start: begin loading the full image for Focus while the finger is still down.
+                const pressedFile = this.pressedFileId ? this.files.find(file => String(file.id) === String(this.pressedFileId)) : null;
+                if (pressedFile) SharedImageResources.ensure(pressedFile, 'display');
                 // A finger tap also fires compatibility mouse events a moment later. By then Focus has
                 // opened under the finger, and Sort/Focus reads that mouse tap as prev/next (left/right
                 // half) -- the phone-only +/-1. Cancelling pointerdown suppresses those mouse events.

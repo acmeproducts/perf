@@ -2613,3 +2613,17 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 **Measured before → after.** Globe thumbnails 800px → 300px. Switch back to a built 214 stack: full rebuild (214 cards created, 214 refetches, ~1.1s) → 0 created, 0 fetched, ~160ms. X press to globe frame: 114–356ms (erratic) → 137–155ms. Tap accuracy re-run (`gate-globe-tap.spec.ts`): still 20/20 phone and desktop; Focus forward/back unchanged. Emulation cannot model the phone GPU; **owner device check required** (214+ globe spin, X, stack switch and back).
 
 ---
+
+## §129 · FOCUS: ONE-STEP PAINT (NO SMALL→LARGE), FULL IMAGES READY AHEAD (2026-09-24)
+
+**Owner report on §128.** Taps correct. Focus shows a small version then the larger one — the original design (small, then tap to enlarge) was dropped as redundant; Explore should simply call Focus. Focus lags off both Sort and Explore. Priority: Sort + Focus + Grid are the core engine; Explore/Table are downstream of it. Globe sparseness parked until the core is right (owner does not accept the memory explanation; has seen 500 cached and spinning cleanly on the phone).
+
+**Reference.** `ui-v3.html` (owner's reference for Focus/Grid): load the full image off-screen, swap it in once, keep a small decoded cache, prefetch ±3 neighbours' full images.
+
+**Measured (Pixel 7 emulation, 4x CPU, local server: full 400ms, thumb 60ms, cacheable).** Before: Explore→Focus painted the thumbnail at 19ms then the full image at 424ms (two-step); `present()` always painted the thumbnail first, even when the full image was ready or already on screen. Sort→Focus and Focus next/back were 11–25ms in emulation — the device lag the owner sees was **not reproduced** in the lab.
+
+**Changes.** `present()` is one step: full image painted immediately if loaded; otherwise nothing (opacity 0 — never another file, never a small version) until the full image loads, then painted once; thumbnail only if the full image fails. Decoded full images kept for the 12 most recent (reverts §128(b) for the `display` rendition only). ±1 neighbours' full images fetched immediately, ±2..3 in the background. Explore starts the full-image fetch on finger-down.
+
+**After.** Every Focus transition paints exactly once (Sort→Focus: zero repaints, image already showing; next/back ~10ms; Explore→Focus one paint of the full image). Globe tap accuracy still 20/20 phone and desktop; Focus forward/back unchanged. **Owner device check required**, especially Sort→Focus and Focus next/back lag, which the lab could not reproduce.
+
+---
