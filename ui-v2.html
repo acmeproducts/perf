@@ -11497,7 +11497,7 @@ this.updateImageCounters();
             pressedCard: null, pressedFileId: null, pinchStartDistance: 0, pinchStartScale: 1,
             controlsDragging: false, controlsPointerId: null, controlsOffsetX: 0, controlsOffsetY: 0,
             frameId: null, lastFrameTime: 0, previousFocus: null, focusedIndex: -1, pageSize: 500,
-            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null, canvas: null, ctx: null, drawList: [], loadQueue: [], loadsInFlight: 0, moved: false,
+            pageTimer: null, persistTimer: null, logTimer: null, tapTimer: null, lastTapIndex: -1, lastTapTime: 0, loadGeneration: 0, maxPointerDistance: 0, focusTransitionFileId: null, canvas: null, ctx: null, gl: undefined, glp: null, atlases: [], freeSlots: [], drawList: [], loadQueue: [], loadsInFlight: 0, moved: false,
 
             init() {
                 this.elements.root = document.getElementById('spatial-gallery');
@@ -11537,6 +11537,9 @@ this.updateImageCounters();
                 this.elements.root?.addEventListener('keydown', event => {
                     if (event.key === 'Escape') { event.preventDefault(); ModeNavigation.exit(); }
                 });
+                // Start the globe renderer (GPU context, shaders) while the app is idle, not on first open.
+                const warm = () => { try { this.ensureGL(); } catch (_) {} };
+                if ('requestIdleCallback' in window) requestIdleCallback(warm, { timeout: 4000 }); else setTimeout(warm, 1500);
             },
 
             open({ stackName = state.currentStack, fileId, preserveGeometry = false, suppressPersist = false } = {}) {
@@ -11640,7 +11643,8 @@ this.updateImageCounters();
                 this.elements.root.classList.remove('spatial-gallery--suspended');
                 this.elements.root.inert = false;
                 this.stashGlobe();
-                if (this.ctx && this.canvas) { this.ctx.setTransform(1, 0, 0, 1, 0, 0); this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
+                if (this.gl) { this.gl.clearColor(0, 0, 0, 0); this.gl.clear(this.gl.COLOR_BUFFER_BIT); }
+                else if (this.ctx && this.canvas) { this.ctx.setTransform(1, 0, 0, 1, 0, 0); this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
                 this.drawList = [];
                 this.cards = [];
                 this.files = []; this.dragging = false; this.pointerId = null; this.pressedCard = null; this.pressedFileId = null; this.pinchStartDistance = 0; this.focusTransitionFileId = null;
@@ -11662,8 +11666,12 @@ this.updateImageCounters();
                 const key = this.globeCacheKey(this.openStackName);
                 this.globeCache.delete(key);
                 this.globeCache.set(key, { cards: this.cards, files: this.files });
-                // Keep the three most recently used stacks' globes.
-                while (this.globeCache.size > 3) this.globeCache.delete(this.globeCache.keys().next().value);
+                // Keep the two most recently used stacks' globes; an evicted globe gives back its GPU memory.
+                while (this.globeCache.size > 2) {
+                    const oldest = this.globeCache.keys().next().value;
+                    this.globeCache.get(oldest)?.cards?.forEach(card => this.releaseCard(card));
+                    this.globeCache.delete(oldest);
+                }
             },
 
             takeCachedGlobe(stackName) {
@@ -11674,7 +11682,7 @@ this.updateImageCounters();
             },
 
             buildCards() {
-                this.cards.forEach(card => { card.dead = true; });
+                this.cards.forEach(card => this.releaseCard(card));
                 this.loadQueue = [];
                 this.cards = [];
                 this.appendPage();
@@ -11709,26 +11717,77 @@ this.updateImageCounters();
                 card.state = 'loading';
                 this.loadsInFlight++;
                 const src = SharedImageResources.source(card.file, 'sphere');
-                const img = new Image();
-                img.decoding = 'async';
                 const finish = () => { this.loadsInFlight = Math.max(0, this.loadsInFlight - 1); this.pumpCardImages(); };
-                img.onload = async () => {
-                    let image = img;
-                    // Keep one small decoded bitmap per card: it stays drawable for as long as the card exists.
-                    if (typeof createImageBitmap === 'function') {
-                        try { image = await createImageBitmap(img, { resizeWidth: Math.min(256, img.naturalWidth || 256), resizeQuality: 'medium' }); } catch (_) { image = img; }
-                    }
-                    card.image = image; card.iw = image.width; card.ih = image.height; card.state = 'ready';
-                    finish();
-                    this.requestFrame();
-                };
-                img.onerror = () => {
+                const fail = () => {
                     card.attempts++;
                     card.state = card.attempts <= 2 ? 'idle' : 'error';
                     finish();
                     if (card.state === 'idle' && !card.dead) setTimeout(() => { if (!card.dead) this.queueCardImage(card); }, 1500 * card.attempts);
                 };
-                img.src = src;
+                const place = bitmap => {
+                    if (card.dead) { bitmap?.close?.(); finish(); return; }
+                    const gl = this.ensureGL();
+                    if (gl) {
+                        const slot = this.allocSlot();
+                        if (!slot) { bitmap.close?.(); card.state = 'error'; finish(); return; }
+                        gl.bindTexture(gl.TEXTURE_2D, this.atlases[slot.atlas].tex);
+                        gl.texSubImage2D(gl.TEXTURE_2D, 0, slot.x, slot.y, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+                        bitmap.close?.();
+                        card.slot = slot; card.image = null;
+                    } else {
+                        card.image = bitmap; card.iw = bitmap.width; card.ih = bitmap.height;
+                    }
+                    card.state = 'ready';
+                    finish();
+                    this.requestFrame();
+                };
+                // Cover-crop to the card's image area and resize to the atlas slot.
+                const { SW, SH } = this.atlasSpec;
+                const cropFor = (nw, nh) => { const want = SW / SH; let sx = 0, sy = 0, sw = nw, sh = nh; if (nw / nh > want) { sw = nh * want; sx = (nw - sw) / 2; } else { sh = nw / want; sy = (nh - sh) / 2; } return [sx, sy, sw, sh]; };
+                const viaElement = () => {
+                    const img = new Image();
+                    img.decoding = 'async';
+                    img.onerror = fail;
+                    img.onload = async () => {
+                        if (card.dead) { finish(); return; }
+                        try { await img.decode?.(); } catch (_) {}
+                        try { place(await createImageBitmap(img, ...cropFor(img.naturalWidth || SW, img.naturalHeight || SH), { resizeWidth: SW, resizeHeight: SH, resizeQuality: 'medium' })); }
+                        catch (_) { fail(); }
+                    };
+                    img.src = src;
+                };
+                // Preferred: a worker downloads, decodes, crops and resizes - none of it on the main thread.
+                const workerJob = this.decodeInWorker(src, SW, SH);
+                if (!workerJob) { viaElement(); return; }
+                workerJob.then(bitmap => place(bitmap)).catch(() => { if (!card.dead) viaElement(); else finish(); });
+            },
+
+            decodeInWorker(src, SW, SH) {
+                if (this.decodeWorkers === null) return null;
+                if (!this.decodeWorkers) {
+                    try {
+                        const code = `self.onmessage = async e => {
+                            const { id, src, SW, SH } = e.data;
+                            try {
+                                const res = await fetch(src, { mode: 'cors', credentials: 'omit' });
+                                if (!res.ok) throw new Error(String(res.status));
+                                const full = await createImageBitmap(await res.blob());
+                                const want = SW / SH; let sx = 0, sy = 0, sw = full.width, sh = full.height;
+                                if (sw / sh > want) { sw = sh * want; sx = (full.width - sw) / 2; } else { sh = sw / want; sy = (full.height - sh) / 2; }
+                                const out = await createImageBitmap(full, sx, sy, sw, sh, { resizeWidth: SW, resizeHeight: SH, resizeQuality: 'medium' });
+                                full.close();
+                                self.postMessage({ id, bitmap: out }, [out]);
+                            } catch (error) { self.postMessage({ id, error: String(error && error.message || error) }); }
+                        };`;
+                        const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+                        this.decodeWorkers = [new Worker(url), new Worker(url)];
+                        this.decodeJobs = new Map(); this.decodeSeq = 0;
+                        this.decodeWorkers.forEach(worker => { worker.onmessage = e => { const job = this.decodeJobs.get(e.data.id); if (!job) return; this.decodeJobs.delete(e.data.id); if (e.data.bitmap) job.resolve(e.data.bitmap); else job.reject(new Error(e.data.error)); }; });
+                    } catch (_) { this.decodeWorkers = null; return null; }
+                }
+                const id = ++this.decodeSeq;
+                const worker = this.decodeWorkers[id % this.decodeWorkers.length];
+                return new Promise((resolve, reject) => { this.decodeJobs.set(id, { resolve, reject }); worker.postMessage({ id, src: new URL(src, location.href).href, SW, SH }); });
             },
 
             appendPage() {
@@ -11748,7 +11807,7 @@ this.updateImageCounters();
                     if (retained) { retained.file = file; return retained; }
                     return this.createCard(file, index);
                 });
-                existing.forEach(card => { card.dead = true; });
+                existing.forEach(card => this.releaseCard(card));
                 this.cards = nextCards;
                 this.updateVectors();
                 this.requestFrame();
@@ -12021,6 +12080,135 @@ this.updateImageCounters();
                 return Math.min(vp.w, vp.h) * .34 * this.density * this.sphereScale;
             },
 
+            releaseCard(card) {
+                if (!card || card.dead) return;
+                card.dead = true;
+                if (card.slot) { (this.freeSlots || (this.freeSlots = [])).push(card.slot); card.slot = null; }
+                card.image?.close?.(); card.image = null;
+            },
+
+            // Image slots of 192x260 (the card image area's aspect) packed into 2048px atlas textures.
+            atlasSpec: { SW: 192, SH: 260, SIZE: 1024 },
+            allocSlot() {
+                if (this.freeSlots?.length) return this.freeSlots.pop();
+                const { SW, SH, SIZE } = this.atlasSpec, gl = this.gl;
+                const cols = Math.floor(SIZE / SW), rows = Math.floor(SIZE / SH);
+                let atlas = this.atlases[this.atlases.length - 1];
+                if (!atlas || atlas.used >= cols * rows) {
+                    if (this.atlases.length >= 48) return null;
+                    const tex = gl.createTexture();
+                    gl.bindTexture(gl.TEXTURE_2D, tex);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SIZE, SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                    atlas = { tex, used: 0 };
+                    this.atlases.push(atlas);
+                }
+                const i = atlas.used++;
+                const x = (i % cols) * SW, y = Math.floor(i / cols) * SH;
+                return { atlas: this.atlases.length - 1, x, y, u0: (x + 0.5) / SIZE, v0: (y + 0.5) / SIZE, u1: (x + SW - 0.5) / SIZE, v1: (y + SH - 0.5) / SIZE };
+            },
+
+            ensureGL() {
+                if (this.gl !== undefined) return this.gl;
+                this.gl = null;
+                const canvas = this.ensureCanvas();
+                if (/[?&]globe=2d\b/.test(location.search)) return null;
+                const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: true, preserveDrawingBuffer: false });
+                if (!gl) return null;
+                const compile = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); return sh; };
+                try {
+                    const vs = compile(gl.VERTEX_SHADER, `
+                        attribute vec3 aPos; attribute vec2 aLocal; attribute vec4 aUV; attribute float aShade; attribute vec4 aFrame; attribute float aHasImage;
+                        uniform vec2 uHalf; varying vec2 vLocal; varying vec4 vUV; varying float vShade; varying vec4 vFrame; varying float vHasImage;
+                        void main() { vLocal = aLocal; vUV = aUV; vShade = aShade; vFrame = aFrame; vHasImage = aHasImage;
+                            gl_Position = vec4(aPos.x / uHalf.x, -aPos.y / uHalf.y, aPos.z, 1.0); }`);
+                    const fs = compile(gl.FRAGMENT_SHADER, `
+                        precision mediump float;
+                        uniform sampler2D uTex; uniform vec2 uCard; uniform float uPad; uniform float uRadius; uniform vec3 uBack;
+                        varying vec2 vLocal; varying vec4 vUV; varying float vShade; varying vec4 vFrame; varying float vHasImage;
+                        void main() {
+                            vec2 p = vLocal * uCard;
+                            vec2 q = abs(p - uCard * 0.5) - (uCard * 0.5 - vec2(uRadius));
+                            float d = length(max(q, 0.0)) - uRadius;
+                            if (d > 0.0) discard;
+                            vec3 color = vec3(0.94);
+                            vec2 inner = (p - vec2(uPad)) / (uCard - vec2(2.0 * uPad));
+                            if (inner.x >= 0.0 && inner.x <= 1.0 && inner.y >= 0.0 && inner.y <= 1.0) {
+                                color = vHasImage > 0.5 ? texture2D(uTex, mix(vUV.xy, vUV.zw, inner)).rgb : vec3(0.39, 0.45, 0.55);
+                            }
+                            if (vFrame.a > 0.0 && d > -vFrame.a) color = vFrame.rgb;
+                            gl_FragColor = vec4(mix(uBack, color, vShade), 1.0);
+                        }`);
+                    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+                    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+                    this.glp = { prog, buf: gl.createBuffer(), loc: {} };
+                    ['aPos', 'aLocal', 'aUV', 'aShade', 'aFrame', 'aHasImage'].forEach(n => { this.glp.loc[n] = gl.getAttribLocation(prog, n); });
+                    ['uHalf', 'uTex', 'uCard', 'uPad', 'uRadius', 'uBack'].forEach(n => { this.glp.loc[n] = gl.getUniformLocation(prog, n); });
+                    const blank = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, blank);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([100, 116, 139, 255]));
+                    this.glBlank = blank;
+                    this.atlases = []; this.freeSlots = [];
+                    canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.gl = null; this.atlases = []; this.freeSlots = []; this.cards.forEach(card => { if (card.slot) { card.slot = null; card.state = 'idle'; } }); });
+                    canvas.addEventListener('webglcontextrestored', () => { this.gl = undefined; this.ensureGL(); this.cards.forEach(card => { if (card.state === 'idle') this.queueCardImage(card); }); this.requestFrame(); });
+                    this.gl = gl;
+                } catch (error) {
+                    state.syncLog?.log?.({ event: 'explore:webgl-unavailable', level: 'warn', details: String(error?.message || error) });
+                    this.gl = null;
+                }
+                return this.gl;
+            },
+
+            drawGL(list, vp, dpr, baseW, baseH, nearestIndex) {
+                const gl = this.gl, P = this.glp, L = P.loc;
+                gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                gl.clearColor(0, 0, 0, 0); gl.clearDepth(1);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+                gl.useProgram(P.prog);
+                gl.uniform2f(L.uHalf, vp.w / 2, vp.h / 2);
+                gl.uniform2f(L.uCard, baseW, baseH); gl.uniform1f(L.uPad, 5); gl.uniform1f(L.uRadius, 13);
+                gl.uniform3f(L.uBack, 0.05, 0.08, 0.15);
+                gl.uniform1i(L.uTex, 0); gl.activeTexture(gl.TEXTURE0);
+                const STRIDE = 14; // pos3 local2 uv4 shade1 frame4
+                const groups = new Map();
+                for (const card of list) {
+                    const key = card.state === 'ready' && card.slot ? card.slot.atlas : -1;
+                    (groups.get(key) || groups.set(key, []).get(key)).push(card);
+                }
+                gl.bindBuffer(gl.ARRAY_BUFFER, P.buf);
+                const bind = (name, size, offset) => { const l = L[name]; if (l < 0) return; gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, size, gl.FLOAT, false, STRIDE * 4 + 4, offset * 4); };
+                for (const [atlas, cards] of groups) {
+                    const data = this.glData && this.glData.length >= cards.length * 6 * (STRIDE + 1) ? this.glData : (this.glData = new Float32Array(Math.max(cards.length, 64) * 6 * (STRIDE + 1) * 2));
+                    let o = 0;
+                    for (const card of cards) {
+                        const g = card.geom, hw = g.w / 2, hh = g.h / 2;
+                        const z = 0.5 - g.depth * 0.49;
+                        const shade = Math.max(0.16, Math.min(1, 0.22 + g.depth * 0.78));
+                        const s = card.slot;
+                        const selected = g.index === this.selectedIndex, focused = g.index === nearestIndex;
+                        const frame = selected ? [0.376, 0.647, 0.98, 3] : focused ? [0.973, 0.98, 0.988, 2.5] : [0, 0, 0, 0];
+                        const has = key => key;
+                        const corners = [[-hw, -hh, 0, 0], [hw, -hh, 1, 0], [hw, hh, 1, 1], [-hw, -hh, 0, 0], [hw, hh, 1, 1], [-hw, hh, 0, 1]];
+                        for (const [dx, dy, lx, ly] of corners) {
+                            data[o++] = g.x + dx; data[o++] = g.y + dy; data[o++] = z;
+                            data[o++] = lx; data[o++] = ly;
+                            data[o++] = s ? s.u0 : 0; data[o++] = s ? s.v0 : 0; data[o++] = s ? s.u1 : 1; data[o++] = s ? s.v1 : 1;
+                            data[o++] = shade;
+                            data[o++] = frame[0]; data[o++] = frame[1]; data[o++] = frame[2]; data[o++] = frame[3];
+                            data[o++] = atlas >= 0 ? 1 : 0;
+                        }
+                        void has;
+                    }
+                    gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, o), gl.DYNAMIC_DRAW);
+                    bind('aPos', 3, 0); bind('aLocal', 2, 3); bind('aUV', 4, 5); bind('aShade', 1, 9); bind('aFrame', 4, 10); bind('aHasImage', 1, 14);
+                    gl.bindTexture(gl.TEXTURE_2D, atlas >= 0 ? this.atlases[atlas].tex : this.glBlank);
+                    gl.drawArrays(gl.TRIANGLES, 0, cards.length * 6);
+                }
+            },
+
             ensureCanvas() {
                 if (this.canvas) return this.canvas;
                 const canvas = document.createElement('canvas');
@@ -12028,7 +12216,6 @@ this.updateImageCounters();
                 canvas.setAttribute('aria-hidden', 'true');
                 this.elements.scene.appendChild(canvas);
                 this.canvas = canvas;
-                this.ctx = canvas.getContext('2d');
                 return canvas;
             },
 
@@ -12118,13 +12305,17 @@ this.updateImageCounters();
                     const damping = Math.pow(0.94, dt / 16);
                     this.velocityX *= damping; this.velocityY *= damping;
                 }
-                const canvas = this.ensureCanvas(), ctx = this.ctx, vp = this.viewportSize();
-                const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+                const canvas = this.ensureCanvas(), vp = this.viewportSize();
+                const gl = this.ensureGL();
+                const ctx = gl ? null : (this.ctx || (this.ctx = canvas.getContext('2d')));
+                const dpr = Math.min(2, window.devicePixelRatio || 1);
                 const cw = Math.round(vp.w * dpr), ch = Math.round(vp.h * dpr);
                 if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; canvas.style.width = `${vp.w}px`; canvas.style.height = `${vp.h}px`; }
-                ctx.setTransform(1, 0, 0, 1, 0, 0);
-                ctx.clearRect(0, 0, cw, ch);
-                ctx.setTransform(dpr, 0, 0, dpr, vp.w / 2 * dpr, vp.h / 2 * dpr);
+                if (ctx) {
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.clearRect(0, 0, cw, ch);
+                    ctx.setTransform(dpr, 0, 0, dpr, vp.w / 2 * dpr, vp.h / 2 * dpr);
+                }
                 const sinX = Math.sin(this.rotationX), cosX = Math.cos(this.rotationX);
                 const sinY = Math.sin(this.rotationY), cosY = Math.cos(this.rotationY);
                 const sphereRadius = this.sphereRadius();
@@ -12148,6 +12339,13 @@ this.updateImageCounters();
                 });
                 this.focusedIndex = nearestIndex;
                 list.sort((a, b) => a.geom.depth - b.geom.depth);
+                if (gl) {
+                    this.drawGL(list, vp, dpr, baseW, baseH, nearestIndex);
+                    if (typeof PerfBeacon !== 'undefined' && PerfBeacon.enabled) { let ready = 0; for (const card of list) if (card.state === 'ready') ready++; PerfBeacon.globeFrame(dt, list.length, ready, this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015); }
+                    if (this.loadQueue?.length) this.pumpCardImages();
+                    if (this.dragging || Math.abs(this.velocityX) + Math.abs(this.velocityY) > 0.00015) this.requestFrame();
+                    return;
+                }
                 const round = (x, y, w, h, r) => { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); };
                 for (const card of list) {
                     const g = card.geom;
