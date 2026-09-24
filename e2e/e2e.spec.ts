@@ -38,13 +38,28 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
       tableIds: (n = 12) => (PhotoTable.photos || []).slice(0, n).map(p => String(p.fileId)),
       waitPaint: async (id, limit = 4000) => { const t0 = performance.now(); while (performance.now() - t0 < limit) { if (T.shownId() === id && T.painted()) return Math.round(performance.now() - t0); await new Promise(r => requestAnimationFrame(r)); } return null; },
       sleep: ms => new Promise(r => setTimeout(r, ms)),
+      globeIdAt: (x, y) => { if (typeof SpatialGallery.cardIdAt === 'function') return SpatialGallery.cardIdAt(x, y); const el = document.elementFromPoint(x, y)?.closest('.spatial-gallery__card'); return el ? String(el.dataset.fileId) : null; },
+      globeStats: () => { const cards = SpatialGallery.cards || [];
+        if (cards[0] && !cards[0].element) return { cards: cards.length, drawn: (SpatialGallery.drawList || []).length, withImage: (SpatialGallery.drawList || []).filter(c => c.state === 'ready').length };
+        const shown = cards.filter(c => { const st = getComputedStyle(c.element); return st.visibility !== 'hidden' && st.display !== 'none' && Number(st.opacity) > 0; });
+        return { cards: cards.length, drawn: shown.length, withImage: shown.filter(c => { const i = c.element.querySelector('img'); return i && i.complete && i.naturalWidth > 0; }).length }; },
+      globeBackCard: () => { const cards = SpatialGallery.cards || [];
+        for (let yy = 80; yy < innerHeight - 80; yy += 6) for (let xx = 20; xx < innerWidth - 20; xx += 6) {
+          const id = T.globeIdAt(xx, yy); if (!id) continue; const c = cards.find(k => String(k.fileId) === id);
+          const depth = c.geom ? c.geom.depth : Number(c.element.style.zIndex) / 1000;
+          if (depth < 0.45) return { id, x: xx, y: yy, depth: +depth.toFixed(2) }; }
+        return null; },
     };
   })()`);
   const results: { id: string; item: string; pass: boolean; detail: string }[] = []; (globalThis as any).__x = [];
   const check = (id: string, item: string, pass: boolean, detail: string) => { results.push({ id, item, pass, detail }); return page.evaluate(`window.__step = '${id}'`); };
   const ev = <R>(js: string) => page.evaluate(js) as Promise<R>;
+  page.setDefaultTimeout(4000);
+  const report = () => { const pass = results.filter(r => r.pass).length; console.log(`\nE2E ${FILE} [${DEV}] ${pass}/${results.length} passed`); for (const r of results) console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.id} ${r.item}\n        ${r.detail}`); };
+  const guard = async (id: string, item: string, fn: () => Promise<void>) => { try { await fn(); } catch (e) { await check(id, item, false, 'error: ' + String((e as Error).message || e).split('\n')[0].slice(0, 160)); } };
   const eq = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
+  try {
   // C1 Sort starts at the top of the stack.
   await ev(`Core.displayCurrentImage()`); const c1 = await ev<number | null>(`T.waitPaint('f0')`);
   check('C1', 'Sort shows the top of the stack', c1 !== null && (await ev<string>(`T.cur()`)) === 'f0', `current=${await ev(`T.cur()`)} paint=${c1}ms`);
@@ -96,7 +111,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const taps: string[] = []; let tapOk = 0, nextOk = 0; let lastViewed = '';
   for (let k = 0; k < 4; k++) {
     await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; })()`); await page.waitForTimeout(300);
-    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const id = SpatialGallery.cardIdAt(x, y); return id ? { id, x, y } : null; })()`);
+    const tgt = await ev<{ id: string; x: number; y: number } | null>(`(() => { const x = innerWidth / 2 + ${(k % 2 ? 30 : -30)}, y = innerHeight / 2 + ${(k - 1.5) * 20}; const id = T.globeIdAt(x, y); return id ? { id, x, y } : null; })()`);
     if (!tgt) { taps.push('none'); continue; }
     const idx = await ev<number>(`state.stacks.in.findIndex(f => String(f.id) === '${tgt.id}')`); const nextId = await ev<string>(`String(state.stacks.in[${idx} + 1]?.id)`);
     if (DEV === 'Pixel 7') await page.touchscreen.tap(tgt.x, tgt.y); else await page.mouse.click(tgt.x, tgt.y);
@@ -121,12 +136,12 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   check('C19', 'After globe -> Focus -> X: last viewed is top of stack, Grid top-left and Sort centre', top19 === lastViewed && grid19 === lastViewed && sort19 === lastViewed, `lastViewed=${lastViewed} stackTop=${top19} gridTopLeft=${grid19} sort=${sort19}`);
   await ev(`SpatialGallery.open({ stackName: 'in', fileId: state.currentFileId, preserveGeometry: true })`); await page.waitForTimeout(800);
   // C22 No dropouts: all cards loaded and drawn; spin hard for 2s and every frame draws every card with its image.
-  await page.waitForFunction(`SpatialGallery.cards.length === 500 && SpatialGallery.cards.every(c => c.state === 'ready')`, null, { timeout: 60000 }).catch(() => {});
-  const spin = await ev<{ frames: number; worstDrawn: number; worstReady: number; cards: number }>(`new Promise(r => { const g = SpatialGallery; let frames = 0, worstDrawn = 1e9, worstReady = 1e9; g.velocityX = 0.35; g.velocityY = 0.12; g.requestFrame(); const t0 = performance.now(); const tick = () => { frames++; worstDrawn = Math.min(worstDrawn, g.drawList.length); worstReady = Math.min(worstReady, g.drawList.filter(c => c.state === 'ready').length); if (performance.now() - t0 < 2000) { g.velocityX = Math.max(g.velocityX, 0.2); requestAnimationFrame(tick); } else { g.velocityX = 0; g.velocityY = 0; r({ frames, worstDrawn, worstReady, cards: g.cards.length }); } }; requestAnimationFrame(tick); })`);
+  await page.waitForFunction(`T.globeStats().cards === 500 && T.globeStats().withImage === 500`, null, { timeout: 60000 }).catch(() => {});
+  const spin = await ev<{ frames: number; worstDrawn: number; worstReady: number; cards: number }>(`new Promise(r => { const g = SpatialGallery; let frames = 0, worstDrawn = 1e9, worstReady = 1e9; g.velocityX = 0.35; g.velocityY = 0.12; g.requestFrame(); const t0 = performance.now(); const tick = () => { frames++; const st = T.globeStats(); worstDrawn = Math.min(worstDrawn, st.drawn); worstReady = Math.min(worstReady, st.withImage); if (performance.now() - t0 < 2000) { g.velocityX = Math.max(g.velocityX, 0.2); requestAnimationFrame(tick); } else { g.velocityX = 0; g.velocityY = 0; r({ frames, worstDrawn, worstReady, cards: g.cards.length }); } }; requestAnimationFrame(tick); })`);
   check('C22', 'No dropouts: 500 cards drawn with images on every frame of a hard spin', spin.cards === 500 && spin.worstDrawn === 500 && spin.worstReady === 500, `frames=${spin.frames} fewest drawn=${spin.worstDrawn} fewest with image=${spin.worstReady} of ${spin.cards}`);
   // C23 Zoom in until the back of the globe shows through; tapping a back-side card opens exactly that image.
   await ev(`(() => { SpatialGallery.velocityX = 0; SpatialGallery.velocityY = 0; SpatialGallery.sphereScale = 3.2; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(400);
-  const back = await ev<{ id: string; x: number; y: number; depth: number } | null>(`(() => { const g = SpatialGallery; const vp = g.viewportSize(); for (let yy = 80; yy < innerHeight - 80; yy += 6) for (let xx = 20; xx < innerWidth - 20; xx += 6) { const c = g.hitTest(xx, yy); if (c && c.geom.depth < 0.45 && c.state === 'ready') return { id: String(c.fileId), x: xx, y: yy, depth: +c.geom.depth.toFixed(2) }; } return null; })()`);
+  const back = await ev<{ id: string; x: number; y: number; depth: number } | null>(`T.globeBackCard()`);
   let backShown = 'none';
   if (back) { if (DEV === 'Pixel 7') await page.touchscreen.tap(back.x, back.y); else await page.mouse.click(back.x, back.y); await ev(`T.waitPaint('${back.id}', 5000)`); backShown = await ev<string>(`T.cur()`); await ev(`CanonicalInspection.exit()`); await page.waitForTimeout(500); }
   await ev(`(() => { SpatialGallery.sphereScale = 1; SpatialGallery.requestFrame(); })()`); await page.waitForTimeout(300);
@@ -152,6 +167,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   }
   check('C14', 'Table tap opens the tapped image', t14 === 3, t14s.join(' '));
   await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} state.currentStack = 'in'; state.currentStackPosition = 0; state.currentFileId = state.stacks.in[0].id; return Core.displayCurrentImage(); })()`); await page.waitForTimeout(500);
+  await guard('C20', 'Table floating controls: count uncapped, size works, values/open/position persist, panel drags', async () => {
   // C20 Table floating controls: count has no cap, size changes print size, both persist; panel drags and stays.
   await ev(`PhotoTable.open({ stackName: 'in', fileId: state.currentFileId })`); await page.waitForTimeout(600);
   const t20a = await ev<{ n: number; w: number }>(`({ n: PhotoTable.photos.length, w: PhotoTable.photos[0].element.getBoundingClientRect().width })`);
@@ -169,6 +185,9 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   check('C20', 'Table floating controls: count uncapped, size works, values/open/position persist, panel drags', t20b.n === t20a.n + 40 && t20b.w > t20a.w * 1.05 && t20c.n === t20b.n && t20c.open && !!pos1 && !!pos2 && Math.abs(pos1.x - pos2.x) < 2 && Math.abs(pos1.y - pos2.y) < 2 && pos1.x < 120,
     `prints ${t20a.n}->${t20b.n} reopen ${t20c.n}; width ${Math.round(t20a.w)}->${Math.round(t20b.w)}; open after reopen=${t20c.open}; panel ${pos1 ? Math.round(pos1.x) + ',' + Math.round(pos1.y) : '-'} -> ${pos2 ? Math.round(pos2.x) + ',' + Math.round(pos2.y) : '-'}`);
   await ev(`PhotoTable.close({ restoreFocus: false, force: true })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} return Core.displayCurrentImage(); })()`); await page.waitForTimeout(300);
+  });
+  await ev(`(() => { try { PhotoTable.close({ restoreFocus: false, force: true }); ModeNavigation.hide(); } catch (e) {} return Core.displayCurrentImage(); })()`).catch(() => {});
+  await guard('C21', 'Leaving the globe mid-build: on return it completes without rebuilding what was built', async () => {
   // C21 Leaving the globe while it is still building: on return it finishes, it does not restart.
   await ev(`(() => { SpatialGallery.close({ restoreFocus: false }); SpatialGallery.globeCache?.clear(); SpatialGallery.open({ stackName: 'in', fileId: state.stacks.in[0].id }); })()`); await page.waitForTimeout(150);
   const partial = await ev<number>(`SpatialGallery.cards.length`);
@@ -177,6 +196,7 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const full21 = await ev<number>(`SpatialGallery.cards.length`), made21 = await ev<number>(`window.__cc`);
   check('C21', 'Leaving the globe mid-build: on return it completes without rebuilding what was built', full21 === 500 && made21 <= 500 - partial, `built before leaving=${partial} after return=${full21} newly created=${made21}`);
   await ev(`SpatialGallery.close({ restoreFocus: false })`); await ev(`(() => { try { ModeNavigation.hide(); } catch (e) {} state.currentStack = 'in'; return Core.displayCurrentImage(); })()`); await page.waitForTimeout(300);
+  });
   // C15 Sort move: current image goes to the top of the target stack; Sort shows the next image.
   const moving = await ev<string>(`T.cur()`), following = await ev<string>(`String(state.stacks.in[1].id)`);
   await ev(`Core.moveToStack('priority', { source: 'e2e' })`); await page.waitForTimeout(700);
@@ -192,8 +212,8 @@ for (const DEV of (process.env.DEVICES || 'Pixel 7,Desktop Chrome').split(',')) 
   const lt = await ev<number[]>(`window.__lt`);
   check('C17', 'No freeze over 200ms (lab draws on CPU; phone uses GPU)', lt.every(d => d <= 200), `longtasks=${lt.length} worst=${Math.round(Math.max(0, ...lt))}ms :: ${(await ev<string[]>(`window.__ltAt`)).join('; ')}`);
   check('C18', 'No page errors', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none');
-  const pass = results.filter(r => r.pass).length;
-  console.log(`\nE2E ${FILE} [${DEV}] ${pass}/${results.length} passed`);
-  for (const r of results) console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.id} ${r.item}\n        ${r.detail}`);
+  } catch (e) { await check('ABORT', 'Run stopped at an error', false, String((e as Error).message || e).split('\n')[0].slice(0, 200)).catch(() => {}); }
+  finally { report(); }
+
   await ctx.close();
 });

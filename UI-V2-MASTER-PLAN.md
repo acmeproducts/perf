@@ -2710,3 +2710,15 @@ Owner: "so much lag" on the canvas globe; no device logs arrived. The 2D canvas 
 Owner: no images on the globe thumbnails; the canvas/WebGL globe (§135–§136) was an architecture change made without permission. Cause of the blank thumbnails: WebGL cannot upload cross-origin (Drive) images without CORS. `ui-v2.html` restored byte-for-byte to `168012d` (last-viewed-on-top core rule, DOM globe, no culling, debug=1 PerfBeacon). §134–§136 are withdrawn. Next: per-function known-good variants from the lineage, baseline, then one definitive fix.
 
 ---
+
+## §138 · BASELINE: 91e3033 (= owner-approved d4144fb + its two approved fixes) (2026-09-24)
+
+**Owner directive.** Find the variant that worked for each major function, baseline to known good, then one definitive fix. No architecture changes.
+
+**Per-function known good, from the owner's own record.** Globe stability, faithful taps, floating controls: `d4144fb` — owner commit `ce1a9a1` (2026-09-16) "it has globe stability tap faithful correct floating controls except that table is capped at 50 images. grid drag and drop/search stack restructure is broken needs to work like ui-v3 but NOT BREAK explore and table", then restored by the owner three more times (`2c04b19`, `9509e2f`, `b91c837`). Table 50-cap and Android one-ahead: fixed on that build in `91e3033`. Grid order: ui-v3 behaviour plus the owner's last-viewed-on-top rule (§133). Focus: `ui.html` single-step.
+
+**Baseline shipped.** `ui-v2.html` = `91e3033` byte-for-byte.
+
+**Baseline against the e2e acceptance suite:** phone 10/23, desktop 12/23. Failing, i.e. the scope of the one definitive fix: last-viewed-on-top and Grid search/reorder → Sort (C3, C5, C6, C7, C19); phone taps land on a neighbour (globe C10, Table C14, back-side C23); globe hides ~110 back cards (C22 — the culling the owner rejected); rebuild on stack return / after leaving mid-build and slow X (C11, C12, C21); no Table floating controls (C20).
+
+---
