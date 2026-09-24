@@ -2704,3 +2704,9 @@ Three rapid clicks fire three overlapping `present()` calls for three different 
 Owner: "so much lag" on the canvas globe; no device logs arrived. The 2D canvas cost 13ms/frame for 500 cards (CPU drawing) and thumbnail crop/resize (`createImageBitmap` on an image element) ran on the main thread (3.5s over 500 images). Now: WebGL renderer — thumbnails cover-cropped to 192x260 slots packed into 1024px atlas textures; each frame writes one vertex buffer and issues one draw per atlas; depth buffer instead of per-card compositing; rounded card, white frame, selected/focused borders and depth dimming in the fragment shader; 2D canvas kept as fallback (and `?globe=2d`). Thumbnails are fetched, decoded, cropped and resized in two Web Workers and transferred as ImageBitmaps; the main thread only uploads them (element-based decode as fallback when a host refuses CORS). GPU context and shaders warm at idle after app start. Measured (lab): frame JS 13ms → 0.4ms (1x) / 1.8ms (4x CPU). e2e 23/23 phone and desktop (including C17 no freeze >200ms); globe tap gate 20/20 both.
 
 ---
+
+## §137 · REVERT: GLOBE BACK TO THE DOM GLOBE OF 168012d (2026-09-24)
+
+Owner: no images on the globe thumbnails; the canvas/WebGL globe (§135–§136) was an architecture change made without permission. Cause of the blank thumbnails: WebGL cannot upload cross-origin (Drive) images without CORS. `ui-v2.html` restored byte-for-byte to `168012d` (last-viewed-on-top core rule, DOM globe, no culling, debug=1 PerfBeacon). §134–§136 are withdrawn. Next: per-function known-good variants from the lineage, baseline, then one definitive fix.
+
+---
