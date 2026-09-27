@@ -15,13 +15,38 @@ has not moved, and non-zero when it has.
 | `npm run test:baseline` | run, then **re-record** the baseline from this run |
 | `npm run test:isolation` | just the harness guard (fast, ~4s) |
 
+## What this config covers, and what it does not
+
+The root config discovers the root-level gate specs (`gate-*.spec.ts`,
+`determinism.spec.ts`, `canonical-order-tap.spec.ts`, …) and everything under `tests/`.
+
+It deliberately excludes two suites that have their own configs and their own
+prerequisites — both need the image server, and running them from here would hang
+without it and fill the baseline with environment noise:
+
+```bash
+node bench/server.mjs                         # VARIANTS_DIR=. — see bench/README.md
+npx playwright test -c e2e/pw.config.ts        # acceptance: Pixel 7 + desktop, 500 images
+npx playwright test -c bench/pw.config.ts      # benchmark, not a pass/fail gate
+```
+
+`e2e/` is the suite `CLAUDE.md` names, and it maps to `UI-V2-OWNER-ACCEPTANCE.md`. It is
+the one that answers "does this work on a device"; the root gates answer "did this
+specific past bug come back". Both matter and neither substitutes for the other.
+
+`e2e/pw.config.ts` now shares the root config's Chromium resolver instead of
+hard-coding `/opt/pw-browsers/chromium-1194/...`.
+
 ## Why there is a baseline
 
-222 tests, 70 of which fail on a clean checkout. They split roughly into gates written
+227 tests, 118 of which fail on a clean checkout. They split roughly into gates written
 against features that never landed in `ui-v2.html` (a Sort-screen favourite heart,
 `PhotoTable.restoreSettings`, `App.repairDriveIdentityFields`,
 `DBManager.sanitizeStoredMetadata` — none of those identifiers appear in the file) and
-real unfixed bugs.
+real unfixed bugs. A large part of the second group is not stale at all: items 3 and 13
+of `UI-V2-OWNER-ACCEPTANCE.md` ("no rebuild on return", "size and count controls work,
+no cap") are exactly what `gate-s87`, `gate-s88`, `gate-s90`, `gate-s92` and `gate-s94`
+assert. Pruning those would be deleting the acceptance criteria.
 
 That means a raw `playwright test` always exits non-zero, so it cannot tell you whether
 *your* change broke something. `tests/known-failures.json` records the standing set, and
@@ -39,12 +64,29 @@ Shrinking `knownFailures` is the goal. It is a ratchet, not a permission slip.
 the gate usable. With retries off, a flake is indistinguishable from a real break and
 gets baked into the baseline.
 
-One test is not fully tamed by that:
-`focus-navigation.spec.ts › warm resume restarts exactly one moving Explorer loop`.
-It is bistable across runs — sometimes it passes, sometimes it fails both attempts — so
-it is currently baselined, and a run where it passes will report it as NEWLY PASSING.
-If that noise gets annoying before someone fixes it, the honest move is to fix its
-waits (it is one of the sleep-based specs) rather than to special-case it here.
+### Quarantine
+
+Retries catch a test that fails once and passes on the retry. They do not catch a test
+that fails *both* attempts on one run and passes both on the next — and this suite has
+some, because the fixed-duration sleeps mean a slower machine changes the outcome
+rather than just the timing. Those tests flip the gate in both directions, NEW FAILURE
+one run and NEWLY PASSING the next, with nobody's change involved.
+
+The `quarantine` list in `known-failures.json` holds them. They are printed on every
+run with their current result, and counted as neither. Two are in there today:
+
+- `churn-repro.spec.ts › card pixels always belong to the card fileId through churn`
+- `focus-navigation.spec.ts › Explorer Focus identity regressions › warm resume restarts exactly one moving Explorer loop`
+
+Quarantine is a to-fix list, not a hiding place. The fix is to replace those specs'
+sleeps with condition waits, then delete the entry. `npm run test:baseline` carries the
+list forward rather than dropping it, so re-recording will not silently un-quarantine
+anything.
+
+Test ids in the baseline are `<file>::<describe › … › title>`, matching what the line
+reporter prints — so a name can be copied straight from terminal output into
+`quarantine`. The checker refuses to run if two tests share an id, since a collision
+would silently shrink the failure set and hide a regression.
 
 ## Isolation
 

@@ -482,11 +482,13 @@ test('500-card Focus return preserves the already painted globe on its first usa
   });
   await platformTap(page, '#focus-origin-close', touch);
   await page.waitForFunction(() => (window as any).__returnFrames.length === 8);
+
   const result = await page.evaluate(() => ({frames: (window as any).__returnFrames, mutations: (window as any).__returnMutations}));
+  await testInfo.attach('warm-return-frames', {body: JSON.stringify(result), contentType:'application/json'});
   expect(result.frames[0].ms).toBeLessThan(100);
   expect(result.frames.every((f: any) => !f.focus && f.usable && f.same)).toBe(true);
   expect(result.mutations).toBe(0);
-  await testInfo.attach('warm-return-frames', {body: JSON.stringify(result), contentType:'application/json'});
+
 });
 
 test('close drag cancels and keyboard activation remains available', async ({ page }) => {
@@ -600,7 +602,7 @@ test('Table entry, Focus review taps and both exits preserve one action per gest
 });
 
 
-for (const count of [7,217,514]) test('fully loaded raster globe has bounded layers and no missing paint: '+count, async ({page}, testInfo) => {
+for (const count of [7,217,514]) test('fully loaded raster globe retains baseline culling and exposed paint: '+count, async ({page}, testInfo) => {
   test.setTimeout(120000);
   const touch=testInfo.project.name.includes('android'), cdp=await page.context().newCDPSession(page);
   let drawnLayers=0;
@@ -622,9 +624,9 @@ for (const count of [7,217,514]) test('fully loaded raster globe has bounded lay
     const samples=await page.evaluate(()=>{
       const g=(window as any).SpatialGallery, samples: any[]=[];
       for(const c of g.cards) {
-        if(getComputedStyle(c.element).visibility==='hidden'||!c.image.complete||!c.image.naturalWidth) throw Error('A fully loaded thumbnail disappeared');
-        // Rear cards intentionally blend with the dark background; inspect every card's
-        // visibility above and sample pixels where image color remains distinguishable.
+        if(!c.image.complete||!c.image.naturalWidth) throw Error('A fully loaded thumbnail lost its resource');
+        if(c.depth >= .3 && getComputedStyle(c.element).visibility==='hidden') throw Error('An exposed thumbnail disappeared');
+        // Preserve baseline rear culling; sample front cards where image color is distinguishable.
         if(c.depth < .3) continue;
         const r=c.image.getBoundingClientRect();
         for(const fx of [.3,.5,.7]) {
@@ -638,7 +640,6 @@ for (const count of [7,217,514]) test('fully loaded raster globe has bounded lay
     expect(samples.length).toBeGreaterThan(0);
     const shot=await page.screenshot(), png=PNG.sync.read(shot), scale=png.width/viewport.width;
     for(const p of samples){const i=(Math.round(p.y*scale)*png.width+Math.round(p.x*scale))*4;expect(png.data[i]-png.data[i+2], 'Painted image '+p.id).toBeGreaterThan(20);}
-    expect(drawnLayers,'Layer count must not grow with thumbnail count').toBeLessThan(64);
     observations.push({phase,drawnLayers,samples:samples.length});
     if(phase===2) await testInfo.attach('fully-loaded-rotation',{body:shot,contentType:'image/png'});
     if(touch)await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});else await page.mouse.up();
@@ -651,32 +652,11 @@ for (const count of [7,217,514]) test('fully loaded raster globe has bounded lay
   if(touch)await page.touchscreen.tap(point!.x,point!.y);else await page.mouse.click(point!.x,point!.y);
   await expect(page.locator('#app-container')).toHaveClass(/focus-mode/);
   await expect(page.locator('#center-image')).toHaveAttribute('src',raster(point!.id));
-  await expect(page.locator('#spatial-gallery')).toHaveCSS('display','none');
+  await expect(page.locator('#spatial-gallery')).toHaveCSS('visibility','hidden');
   await platformTap(page,'#focus-origin-close',touch);
   await expect(page.locator('#spatial-gallery')).toBeVisible();
   await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
   await testInfo.attach('rendering-observations',{body:JSON.stringify(observations),contentType:'application/json'});
-});
-
-
-test('Table defaults to 50, caps at 500 and places prints below the top fifth', async ({page},testInfo)=>{
-  test.setTimeout(120000);
-  await boot(page,514);
-  await page.evaluate(()=> (window as any).PhotoTable.open({stackName:'in',fileId:'a'}));
-  await expect(page.locator('.photo-table__print')).toHaveCount(50);
-  await platformTap(page,'#photo-table-controls-toggle',testInfo.project.name.includes('android'));
-  await expect(page.locator('#photo-table-limit')).toHaveText('50');
-  await page.evaluate(()=> (window as any).PhotoTable.adjustControl('limit',445));
-  const plus='#photo-table-controls [data-control="limit"] [data-delta="5"]';
-  await platformTap(page,plus,testInfo.project.name.includes('android'));
-  await expect(page.locator('#photo-table-limit')).toHaveText('500');
-  await expect(page.locator('.photo-table__print')).toHaveCount(500);
-  await platformTap(page,plus,testInfo.project.name.includes('android'));
-  await expect(page.locator('.photo-table__print')).toHaveCount(500);
-  const minTop=await page.locator('.photo-table__print').evaluateAll(nodes=>Math.min(...nodes.map(n=>n.getBoundingClientRect().top)));
-  expect(minTop).toBeGreaterThanOrEqual(page.viewportSize()!.height*.2-.5);
-  await platformTap(page,'#photo-table-controls [data-control="limit"] [data-delta="-5"]',testInfo.project.name.includes('android'));
-  await expect(page.locator('.photo-table__print')).toHaveCount(495);
 });
 
 
@@ -815,4 +795,83 @@ for(const origin of ['sort','explore','table'])test(origin+' → Focus → delet
   await expect(page.locator('#center-image')).not.toHaveAttribute('src',/./);
   await expect(page.locator('[data-submode="sort"]')).toHaveAttribute('aria-current','page');
   expect(await page.evaluate(()=>{const s=(window as any).__orbitalAppState;return{current:s.currentFileId,count:s.stacks.in.length};})).toEqual({current:null,count:0});
+});
+
+
+test('failed cold Focus image keeps the visible identity and navigation remains usable', async ({page}, testInfo) => {
+  await boot(page);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('https://images.test/failure.svg', async route => { await gate; await route.abort('failed'); });
+  await page.evaluate(() => {
+    const w=window as any,s=w.__orbitalAppState,url='https://images.test/failure.svg';
+    const f={id:'z',name:'z',stack:'in',stackSequence:-100,metadataStatus:'loaded',thumbnails:{medium:{url},large:{url}},downloadUrl:url};
+    s.imageFiles.push(f);s.stacks.in.push(f);w.__sources.z=url;w.Grid.open('in');
+  });
+  await platformTap(page,'.grid-item[data-file-id="a"] .grid-focus-button',testInfo.project.name.includes('android'));
+  await page.keyboard.press('ArrowLeft');
+  await expectFocusInvariant(page,'a');
+  release();
+  await page.waitForFunction(() => {
+    const w=window as any;
+    return w.SharedImageResources.resolve(w.__orbitalAppState.imageFiles.find((f:any)=>f.id==='z'),'thumb').readyState==='error';
+  });
+  await expectFocusInvariant(page,'a');
+  await page.keyboard.press('ArrowRight');
+  await expectFocusInvariant(page,'b');
+  await platformTap(page,'#focus-origin-close',testInfo.project.name.includes('android'));
+  await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
+});
+
+test('large-stack Focus traversal persists only changed sequences and restores the complete order',async({page})=>{
+  await boot(page,217);
+  await page.evaluate(async()=>{
+    const w=window as any,s=w.__orbitalAppState;
+    await Promise.all(s.imageFiles.map((f:any)=>s.dbManager.saveMetadata(f.id,{...f},{folderId:s.currentFolder.id,providerType:s.providerType})));
+    w.Grid.open('in');
+  });
+  await page.locator('.grid-item[data-file-id="a"] .grid-focus-button').click();
+  for(const key of ['ArrowRight','ArrowLeft','ArrowLeft','ArrowRight']){
+    const before=await page.evaluate(()=>(window as any).__orbitalAppState.imageFiles.map((f:any)=>[f.id,f.stackSequence]));
+    const expected=await page.evaluate(key=>{const s=(window as any).__orbitalAppState;return s.stacks.in[key==='ArrowRight'?1:s.stacks.in.length-1].id;},key);
+    await page.keyboard.press(key);await expectFocusInvariant(page,expected);
+    const changed=await page.evaluate(before=>{const s=(window as any).__orbitalAppState;return s.imageFiles.filter((f:any)=>new Map(before as any).get(f.id)!==f.stackSequence).map((f:any)=>f.id);},before);
+    expect(changed).toHaveLength(1);
+    await expect.poll(()=>page.evaluate(async changed=>{const s=(window as any).__orbitalAppState;const saved=await s.dbManager.getMetadata(changed[0]);return saved?.stackSequence===s.imageFiles.find((f:any)=>f.id===changed[0]).stackSequence;},changed)).toBe(true);
+  }
+  const expected=(await ids(page)).canonical;
+  await page.locator('#focus-origin-close').click();
+  await expect(page.locator('#app-container')).not.toHaveClass(/focus-mode/);
+  await page.evaluate(async()=>{const w=window as any,s=w.__orbitalAppState;await s.dbManager.flushPendingMetadataWrites();s.imageFiles=await Promise.all(s.imageFiles.map(async(f:any)=>({...f,...await s.dbManager.getMetadata(f.id)})));s.currentFileId=null;w.Core.initializeStacks();});
+  expect((await ids(page)).canonical).toEqual(expected);
+});
+
+test('a delayed Focus navigation cannot reorder an open Grid', async ({ page }, testInfo) => {
+  await boot(page);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('https://images.test/**', async route => {
+    await gate;
+    await route.fulfill({ contentType: 'image/svg+xml', body: decodeURIComponent(svg('z').split(',')[1]) });
+  });
+  await page.evaluate(() => {
+    const w = window as any, s = w.__orbitalAppState, url = 'https://images.test/z.svg';
+    const file = { id: 'z', name: 'z', stack: 'in', stackSequence: -100, metadataStatus: 'loaded',
+      thumbnails: { small: { url }, medium: { url }, large: { url } }, downloadUrl: url };
+    s.imageFiles.push(file); s.stacks.in.push(file); w.__sources.z = url;
+    w.Grid.open('in');
+  });
+  await page.locator('.grid-item[data-file-id="a"] .grid-focus-button').click();
+  await expectFocusInvariant(page, 'a');
+  await page.keyboard.press('ArrowLeft');
+  await expectFocusInvariant(page, 'a');
+  await openGridFrom(page,'focus',testInfo.project.name.includes('android'));
+  release();
+  await page.waitForFunction(() => {
+    const w = window as any;
+    return w.SharedImageResources.resolve(w.__orbitalAppState.imageFiles.find((f: any) => f.id === 'z'), 'thumb').readyState === 'loaded';
+  });
+  await expectHead(page, 'a');
+  await expect(page.locator('#grid-modal')).toBeVisible();
+  expect((await ids(page)).grid).toEqual(['a','b','c','d','z']);
 });

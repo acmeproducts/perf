@@ -15,7 +15,7 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Override explicitly with CHROMIUM_PATH=/path/to/chrome when neither applies.
  */
-const resolveChromium = (): string | undefined => {
+export const resolveChromium = (): string | undefined => {
   if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
 
   const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
@@ -40,7 +40,16 @@ export default defineConfig({
   // Specs live both at the repo root (gate-*.spec.ts and friends) and under tests/.
   testDir: '.',
   testMatch: ['**/*.spec.ts'],
-  testIgnore: ['node_modules/**', 'test-results/**'],
+  // e2e/ and bench/ are separate suites with their own configs and their own
+  // prerequisites: both need the bench/ image server on 127.0.0.1:8766, e2e/ adds a
+  // Pixel 7 + desktop matrix with 4x CPU slowdown and a 300s timeout, and bench/ is a
+  // benchmark rather than a pass/fail gate. Running either from here would hang
+  // without that server and would pollute the known-failure baseline with
+  // environment noise. Run them deliberately:
+  //   node bench/server.mjs                        # VARIANTS_DIR=. (see bench/README.md)
+  //   npx playwright test -c e2e/pw.config.ts
+  //   npx playwright test -c bench/pw.config.ts
+  testIgnore: ['node_modules/**', 'test-results/**', 'e2e/**', 'bench/**'],
 
   // Serial by default. Every browser spec drives the same singleton app object graph
   // through window globals; parallel workers do not share state, but they do contend
