@@ -1595,6 +1595,13 @@
             if (!response.ok) throw new Error(`Could not read the key (${response.status})`);
             const secret = (await response.text()).trim();
             if (!secret) throw new Error('The key came back empty');
+            // Shape check only -- never the value. A Google client secret is GOCSPX- plus
+            // ~28 characters, so this catches the gist holding the client ID, the whole
+            // credentials JSON, or a stray wrapper, and says so instead of letting Google
+            // reject it with nothing to go on.
+            if (!/^GOCSPX-[A-Za-z0-9_-]{10,}$/.test(secret)) {
+                throw new Error(`The key does not look like a Google client secret: ${secret.length} characters starting "${secret.slice(0, 7)}". It should be GOCSPX- followed by about 28 more.`);
+            }
             return secret;
         }
         const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
@@ -5250,7 +5257,15 @@
                     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, code: code, grant_type: 'authorization_code', redirect_uri: this.redirectUri })
                 });
-                if (!response.ok) { throw new Error('Token exchange failed'); }
+                if (!response.ok) {
+                    // Google's body says which half is wrong (invalid_client = bad secret,
+                    // redirect_uri_mismatch = unregistered URI, invalid_grant = stale code).
+                    // Swallowing it left "Token exchange failed" as the only clue.
+                    const detail = await response.text().catch(() => '');
+                    let reason = '';
+                    try { const parsed = JSON.parse(detail); reason = [parsed.error, parsed.error_description].filter(Boolean).join(': '); } catch (_) { reason = detail.slice(0, 200); }
+                    throw new Error(`Token exchange failed (${response.status})${reason ? ' — ' + reason : ''}`);
+                }
                 const previousKey = this.activeFolderCacheKey;
                 const tokens = await response.json();
                 this.accessToken = tokens.access_token; this.refreshToken = tokens.refresh_token;
