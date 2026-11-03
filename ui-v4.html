@@ -1185,21 +1185,12 @@
                 </div>
             </div>
             <div id="provider-status" class="status info">Choose your preferred cloud storage</div>
-            <!-- Device key link: generated here (where copy works), tapped on the watch. -->
-            <div class="settings-section" id="device-key-section">
-                <button class="button" id="device-key-btn" style="margin-bottom: 0;">Make device link</button>
-                <div id="device-key-out" class="hidden" style="margin-top: 12px;">
-                    <input type="text" id="device-key-link" class="input" readonly style="margin-bottom: 8px; font-size: 11px;">
-                    <button class="button" id="device-key-copy" style="margin-bottom: 0;">Copy</button>
-                    <div id="device-key-status" class="status info" style="margin-top: 8px;"></div>
-                </div>
-            </div>
         </div>
         <div class="app-footer">
             <span class="footer-baseline">Orbital8 UI</span>
         </div>
     </div>
-
+    
     <!-- Unified Auth Screen -->
     <div class="screen hidden" id="auth-screen">
         <div class="card">
@@ -1590,12 +1581,23 @@
         // ===== ORBITAL8 UI - App Root =====
 
         const APP_IDENTITY = {
-            label: 'Orbital8 V4',
-            dbName: 'Orbital8-V4',
-            storagePrefix: 'orbital8_v4',
-            debugGlobal: '__orbitalV4',
-            syncLogWindowName: 'orbital8-v4-sync-log'
+            label: 'Orbital8 UI',
+            dbName: 'Orbital8-UI',
+            storagePrefix: 'orbital8_ui',
+            debugGlobal: '__orbitalUI',
+            syncLogWindowName: 'orbital8-ui-sync-log'
         };
+        // The Google client secret is fetched from here instead of being typed in, so a
+        // watch never has to take it. Paste the raw URL of the mykey gist/file below.
+        const MYKEY_URL = 'PASTE_MYKEY_RAW_URL_HERE';
+        async function fetchMyKey() {
+            if (MYKEY_URL === 'PASTE_MYKEY_RAW_URL_HERE') throw new Error('MYKEY_URL is not set in this file');
+            const response = await fetch(MYKEY_URL, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`Could not read the key (${response.status})`);
+            const secret = (await response.text()).trim();
+            if (!secret) throw new Error('The key is empty');
+            return secret;
+        }
         const APP_BUILD_ID = 'reconstruction-R4.22-neon-green-spinner-2026.09.04.5';
         const APP_BUILD = Object.freeze({
             id: APP_BUILD_ID,
@@ -1720,47 +1722,6 @@
             googleAccessToken: `${APP_IDENTITY.storagePrefix}:google_access_token`,
             googleRefreshToken: `${APP_IDENTITY.storagePrefix}:google_refresh_token`,
             googleClientSecret: `${APP_IDENTITY.storagePrefix}:google_client_secret`
-        };
-        // Device key link. A watch cannot type a Google client secret, so the key travels
-        // in a link: made on a device that is already signed in, tapped on the watch.
-        // It rides in the URL fragment, which no browser sends to a server.
-        const DeviceKey = {
-            PREFIX: '#key=',
-
-            // Live provider first: a token refreshed this session is the one that should
-            // travel. Falls back to this app's own storage so the link can be made from
-            // the provider screen before a provider is picked.
-            read() {
-                const p = state?.provider;
-                const at = p?.accessToken || localStorage.getItem(APP_STORAGE_KEYS.googleAccessToken);
-                const rt = p?.refreshToken || localStorage.getItem(APP_STORAGE_KEYS.googleRefreshToken);
-                const cs = p?.clientSecret || localStorage.getItem(APP_STORAGE_KEYS.googleClientSecret);
-                return at && rt && cs ? { at, rt, cs } : null;
-            },
-
-            link() {
-                const key = this.read();
-                if (!key) return null;
-                return `${location.origin}${location.pathname}${this.PREFIX}${btoa(JSON.stringify(key))}`;
-            },
-
-            // Runs before attemptAutoResume(), so loadStoredCredentials() finds the key
-            // and the normal resume flow takes over with no OAuth screen.
-            apply() {
-                if (!location.hash.startsWith(this.PREFIX)) return false;
-                try {
-                    const key = JSON.parse(atob(location.hash.slice(this.PREFIX.length)));
-                    if (!key?.at || !key?.rt || !key?.cs) return false;
-                    localStorage.setItem(APP_STORAGE_KEYS.googleAccessToken, key.at);
-                    localStorage.setItem(APP_STORAGE_KEYS.googleRefreshToken, key.rt);
-                    localStorage.setItem(APP_STORAGE_KEYS.googleClientSecret, key.cs);
-                    return true;
-                } catch (error) {
-                    // A truncated or mangled link must not take the app down with it.
-                    console.warn('Device key link could not be read:', error);
-                    return false;
-                }
-            }
         };
         const VIEW_CONTEXT_STORAGE_KEY = `${APP_IDENTITY.storagePrefix}:view_context`;
         const GOOGLE_DRIVE_FOLDER_CACHE_SCHEMA_VERSION = 1;
@@ -6574,9 +6535,10 @@
                 } else {
                     Utils.elements.authTitle.textContent = isGoogle ? 'Google Drive' : 'OneDrive';
                     Utils.elements.authSubtitle.textContent = `Connect to ${isGoogle ? 'Google Drive' : 'OneDrive'}`;
-                    Utils.elements.gdriveSecretContainer.classList.toggle('hidden', !isGoogle);
+                    // The secret comes from MYKEY_URL now, so there is nothing to type.
+                    Utils.elements.gdriveSecretContainer.classList.add('hidden');
                     Utils.elements.authButton.textContent = `Connect ${isGoogle ? 'Drive' : 'OneDrive'}`;
-                    Utils.elements.authStatus.textContent = isGoogle ? 'Enter your client secret to continue' : 'Click to sign in with your Microsoft account';
+                    Utils.elements.authStatus.textContent = isGoogle ? 'Click to sign in with your Google account' : 'Click to sign in with your Microsoft account';
                     Utils.elements.authStatus.className = 'status info';
                     Utils.showScreen('auth-screen');
                 }
@@ -6593,9 +6555,7 @@
                 try {
                     let success;
                     if (isGoogle) {
-                        const clientSecret = gdriveClientSecret.value.trim();
-                        if (!clientSecret) throw new Error('Please enter client secret');
-                        success = await provider.authenticate(clientSecret);
+                        success = await provider.authenticate(await fetchMyKey());
                     } else {
                         success = await provider.authenticate();
                     }
@@ -13277,39 +13237,6 @@ this.updateImageCounters();
             setupProviderSelection() {
                 Utils.elements.googleDriveBtn.addEventListener('click', () => App.selectProvider('googledrive'));
                 Utils.elements.onedriveBtn.addEventListener('click', () => App.selectProvider('onedrive'));
-                this.setupDeviceKey();
-            },
-            setupDeviceKey() {
-                const button = document.getElementById('device-key-btn');
-                const out = document.getElementById('device-key-out');
-                const field = document.getElementById('device-key-link');
-                const copy = document.getElementById('device-key-copy');
-                const status = document.getElementById('device-key-status');
-                if (!button || !out || !field) return;
-                button.addEventListener('click', () => {
-                    const link = DeviceKey.link();
-                    if (!link) {
-                        out.classList.remove('hidden');
-                        field.value = '';
-                        if (status) { status.textContent = 'Connect Google Drive on this device first.'; status.className = 'status error'; }
-                        return;
-                    }
-                    out.classList.remove('hidden');
-                    field.value = link;
-                    field.select();
-                    if (status) { status.textContent = 'Send this to the watch and tap it there.'; status.className = 'status info'; }
-                });
-                copy?.addEventListener('click', async () => {
-                    if (!field.value) return;
-                    field.select();
-                    try {
-                        await navigator.clipboard.writeText(field.value);
-                        if (status) { status.textContent = 'Copied.'; status.className = 'status success'; }
-                    } catch (error) {
-                        // Clipboard API needs a secure context; the selection above is the fallback.
-                        if (status) { status.textContent = 'Link is selected — copy it.'; status.className = 'status info'; }
-                    }
-                });
             },
             setupSettings() {
                 document.querySelectorAll('.intensity-btn').forEach(btn => {
@@ -13732,10 +13659,7 @@ this.updateImageCounters();
                 window.SharedImageResources = SharedImageResources;
                 state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
-                // Before auto-resume, which is what reads the stored credentials.
-                const keyedIn = DeviceKey.apply();
                 const didAutoResume = await App.attemptAutoResume();
-                if (keyedIn) Utils.showToast(didAutoResume ? 'Signed in from device link.' : 'Device link read. Pick a folder.', 'info', true);
                 if (!didAutoResume) {
                     Utils.showScreen('provider-screen');
                 }
