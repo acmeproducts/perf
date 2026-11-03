@@ -1613,6 +1613,33 @@
             document.documentElement.dataset.build = APP_BUILD.id;
             document.querySelectorAll('.footer-baseline').forEach(element => { element.textContent = APP_BUILD.label; });
         }
+        // What actually works on this browser, rather than what we assume. A watch browser
+        // may have no usable localStorage, no IndexedDB, or no popups, and each of those
+        // breaks a different part of sign-in. Reported in the ?debug=1 device log.
+        function probeStorage() {
+            const result = { localStorage: 'unknown', sessionStorage: 'unknown', indexedDB: 'unknown', popups: 'unknown' };
+            for (const name of ['localStorage', 'sessionStorage']) {
+                try {
+                    const store = window[name];
+                    const probe = `__probe_${Date.now()}`;
+                    store.setItem(probe, 'x');
+                    result[name] = store.getItem(probe) === 'x' ? 'works' : 'write-ignored';
+                    store.removeItem(probe);
+                } catch (error) { result[name] = `throws: ${error.name}`; }
+            }
+            result.indexedDB = typeof indexedDB === 'undefined' || !indexedDB ? 'absent' : 'present';
+            try {
+                // Cheap, non-visual: a blank popup tells us whether window.open works and
+                // whether the child can still see its opener, which is what OAuth needs.
+                const probe = window.open('', '_blank', 'width=100,height=100');
+                if (!probe) result.popups = 'blocked';
+                else {
+                    result.popups = probe.closed ? 'closed-immediately' : (probe.opener === window ? 'works' : 'no-opener');
+                    try { probe.close(); } catch (_) {}
+                }
+            } catch (error) { result.popups = `throws: ${error.name}`; }
+            return result;
+        }
         const PerfBeacon = {
             el: null, longTasks: [], stalls: [], taps: [], imgLoads: [], focusMs: [], globe: null, globeFps: [],
             enabled: /[?&]debug=1/.test(location.search),
@@ -1635,7 +1662,7 @@
                 try {
                     const body = {
                         build: APP_BUILD.id, reason, sessionId: this.sessionId, savedAt: new Date().toISOString(),
-                        device: { ua: navigator.userAgent, viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, memoryGB: navigator.deviceMemory || null, cores: navigator.hardwareConcurrency || null },
+                        device: { ua: navigator.userAgent, viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, memoryGB: navigator.deviceMemory || null, cores: navigator.hardwareConcurrency || null, storage: probeStorage() },
                         state: { stackSizes: Object.fromEntries(Object.entries(state.stacks || {}).map(([k, v]) => [k, v.length])), surface: state.inspection?.surface || null, focus: Boolean(state.isFocusMode), globeCards: SpatialGallery.cards?.length || 0, globeReady: (SpatialGallery.cards || []).filter(c => { const i = c.image || c.element?.querySelector?.('img'); return i && i.complete && i.naturalWidth > 0; }).length },
                         resources: SharedImageResources.instrumentation,
                         events: this.log
@@ -5233,8 +5260,18 @@
                 }
                 return new Promise((resolve, reject) => {
                     const authUrl = this.buildAuthUrl();
-                    const popup = window.open(authUrl, 'google-auth', 'width=500,height=600,scrollbars=yes,resizable=yes');
-                    if (!popup) { reject(new Error('Popup blocked by browser')); return; }
+                    // A watch browser has no usable popup: window.open either returns
+                    // nothing or opens its own task with a null opener, so the postMessage
+                    // below can never arrive. Navigate this window instead and pick the
+                    // code up on the way back in (see pendingRedirectAuth).
+                    const popup = (innerWidth <= 480 && innerHeight <= 640)
+                        ? null
+                        : window.open(authUrl, 'google-auth', 'width=500,height=600,scrollbars=yes,resizable=yes');
+                    if (!popup || popup.closed) {
+                        try { popup?.close(); } catch (_) {}
+                        window.location.href = authUrl;
+                        return;   // Page is leaving; this promise intentionally never settles.
+                    }
                     const checkClosed = setInterval(() => { if (popup.closed) { clearInterval(checkClosed); reject(new Error('Authentication cancelled')); } }, 1000);
                     const messageHandler = async (event) => {
                         if (event.origin !== window.location.origin) return;
@@ -6489,6 +6526,8 @@
                 URL.revokeObjectURL(url);
             }
         }
+        // Redirect-flow return, set by initApp once the code has been exchanged in place.
+        let pendingRedirectAuth = null;
         if (window.location.search.includes('code=') || window.location.search.includes('error=')) {
             const urlParams = new URLSearchParams(window.location.search);
             const code = urlParams.get('code'); const error = urlParams.get('error');
@@ -6496,6 +6535,15 @@
                 if (error) { window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: error }, window.location.origin);
                 } else if (code) { window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS', code: code }, window.location.origin); }
                 window.close();
+            } else {
+                // No opener: a watch browser gives the popup its own task, so the redirect
+                // lands here in the main window instead. Without this the code is dropped,
+                // the page boots back to Connect Drive, and the opener times out as
+                // "authorization failed" -- the loop.
+                pendingRedirectAuth = { code, error };
+                // Drop the query string now so a reload cannot replay a spent code, which
+                // Google rejects as invalid_grant.
+                try { history.replaceState(null, '', window.location.pathname); } catch (_) {}
             }
         }
 
@@ -13673,6 +13721,27 @@ this.updateImageCounters();
                 window.SharedImageResources = SharedImageResources;
                 state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
+                // Finish a redirect-flow sign-in before auto-resume, which is what reads
+                // the stored credentials.
+                if (pendingRedirectAuth) {
+                    const { code, error } = pendingRedirectAuth;
+                    pendingRedirectAuth = null;
+                    try {
+                        if (error) throw new Error(error);
+                        const provider = new GoogleDriveProvider();
+                        provider.clientSecret = await fetchMyKey();
+                        await provider.exchangeCodeForTokens(code);
+                        provider.isAuthenticated = true;
+                        state.provider = provider;
+                        state.providerType = 'googledrive';
+                        Utils.showToast('Connected to Google Drive.', 'success', true);
+                    } catch (authError) {
+                        // Say which half failed rather than dropping back to Connect Drive
+                        // with nothing on screen.
+                        Utils.showToast(`Google sign-in failed: ${authError.message}`, 'error', true);
+                        state.syncLog?.log({ event: 'auth:redirect-exchange-failed', level: 'error', details: authError.message });
+                    }
+                }
                 const didAutoResume = await App.attemptAutoResume();
                 if (!didAutoResume) {
                     Utils.showScreen('provider-screen');
