@@ -13830,9 +13830,43 @@ this.updateImageCounters();
                         state.syncLog?.log({ event: 'auth:redirect-exchange-failed', level: 'error', details: authError.message });
                     }
                 }
-                const didAutoResume = await App.attemptAutoResume();
-                if (!didAutoResume) {
+                // Auto-resume walks past the provider menu and does unbounded network work:
+                // a probe call, then the whole folder listing, neither with a deadline. On a
+                // watch that leaves you in an empty app instead of the menu, which is what
+                // "the menu stopped appearing" was. Time-box it so a stalled or failed
+                // resume ends up back on the menu with the reason, rather than somewhere
+                // that looks broken.
+                const RESUME_BUDGET_MS = 20000;
+                let resumeAbandoned = false;
+                const resumed = await Promise.race([
+                    App.attemptAutoResume().catch(error => {
+                        state.syncLog?.log({ event: 'startup:auto_resume:threw', level: 'warn', details: error?.message || String(error) });
+                        return false;
+                    }),
+                    new Promise(resolve => setTimeout(() => { resumeAbandoned = true; resolve(false); }, RESUME_BUDGET_MS))
+                ]);
+                // If the resume is still in flight it may finish later and switch screens on
+                // its own. That is fine and desirable -- the point is not to wait for it.
+                state.resumeAbandoned = resumeAbandoned;
+                // A resume can also "succeed" with nothing in it: the cached listing is
+                // empty and the cloud listing never returned, so switchToCommonUI() runs
+                // and leaves an empty app where the menu used to be. That is the exact
+                // watch symptom. Treat an empty resume as no resume.
+                const resumedWithNothing = resumed && !resumeAbandoned && (state.imageFiles || []).length === 0;
+                if (resumedWithNothing) {
+                    state.syncLog?.log({ event: 'startup:auto_resume:empty', level: 'warn', details: `Resumed ${state.lastPickedFolder?.folderName || 'last folder'} but it has no images yet.` });
+                }
+                if (!resumed || resumedWithNothing) {
                     Utils.showScreen('provider-screen');
+                    const status = document.getElementById('provider-status');
+                    const folderName = state.lastPickedFolder?.folderName || 'the last folder';
+                    if (status && resumeAbandoned) {
+                        status.textContent = `Could not reopen ${folderName} within ${RESUME_BUDGET_MS / 1000}s. Pick a provider to carry on.`;
+                        status.className = 'status info';
+                    } else if (status && resumedWithNothing) {
+                        status.textContent = `${folderName} opened with no images — the listing did not come back. Pick a provider to retry.`;
+                        status.className = 'status info';
+                    }
                 }
                 Events.init();
                 Gestures.init();
