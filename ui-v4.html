@@ -29,11 +29,16 @@
                 box.childNodes[2].textContent = navigator.userAgent + ' | ' + window.innerWidth + 'x' + window.innerHeight;
                 (document.body || document.documentElement).appendChild(box);
             }
+            // A failed subresource is remembered, not painted. MSAL is the only one, it is
+            // optional until OneDrive is picked, and painting a full overlay for it both
+            // hid a working app and consumed the one-shot above so the watchdog could
+            // never report. selectProvider() is what tells the user, when it matters.
+            var failedResources = [];
+            window.failedResources = failedResources;
             window.addEventListener('error', function (event) {
-                // A failed <script src> fires this with no message; name the file instead.
                 var target = event.target;
                 if (target && target !== window && target.tagName) {
-                    paint('Could not load a required file', String(target.src || target.href || target.tagName));
+                    failedResources.push(String(target.src || target.href || target.tagName));
                     return;
                 }
                 paint('Script error', (event.message || 'unknown') + (event.filename ? ' @ ' + event.filename + ':' + event.lineno : ''));
@@ -42,16 +47,27 @@
                 var reason = event.reason;
                 paint('Startup failed', (reason && (reason.message || reason)) + '');
             });
-            // Watchdog: if no screen is visible after 10s the page is stuck rather than
-            // broken, which looks identical from the outside. Say which.
+            // Watchdog. The first version of this only checked for a .screen without the
+            // hidden class, which #provider-screen never has at boot -- so it returned
+            // immediately and could never fire. Measure what is actually painted instead:
+            // an element that is laid out (offsetParent/offsetHeight) and has visible text.
             setTimeout(function () {
                 var screens = document.querySelectorAll('.screen');
+                var painted = 0, laidOut = 0;
                 for (var i = 0; i < screens.length; i++) {
-                    if (screens[i].className.indexOf('hidden') === -1) return;
+                    var el = screens[i];
+                    if (el.className.indexOf('hidden') !== -1) continue;
+                    if (el.offsetHeight > 0 && el.offsetWidth > 0) {
+                        laidOut++;
+                        if ((el.innerText || el.textContent || '').replace(/\s+/g, '').length > 0) painted++;
+                    }
                 }
-                paint('Still loading after 10s', screens.length
-                    ? 'The page parsed but no screen became visible. Most likely a network request has not returned.'
-                    : 'The page did not finish parsing. Most likely a blocking resource has not returned.');
+                if (painted > 0) return;
+                paint('Nothing drawn after 10s', 'screens=' + screens.length + ' laidOut=' + laidOut
+                    + ' painted=' + painted + '. ' + (screens.length
+                        ? 'Markup is present but nothing rendered, so this is layout or styling rather than a stalled request.'
+                        : 'The page did not finish parsing; a blocking resource has not returned.')
+                    + (failedResources.length ? ' Failed to load: ' + failedResources.join(', ') : ''));
             }, 10000);
         })();
     </script>
@@ -1642,8 +1658,15 @@
         // The Google client secret comes from this gist rather than being typed in, so a
         // watch never has to take it. One line of raw text.
         const MYKEY_URL = 'https://gist.githubusercontent.com/acmeproducts/fb9e1945f33014c33788f682c0676b53/raw/mykey.txt';
+        // A stalled request on a watch is the normal failure, not the exception, so every
+        // network call on the boot path gets a deadline. Falls back to no timeout rather
+        // than throwing on an engine without AbortSignal.timeout.
+        function deadline(ms) {
+            try { return AbortSignal.timeout(ms); } catch (_) { return undefined; }
+        }
         async function fetchMyKey() {
-            const response = await fetch(MYKEY_URL, { cache: 'no-store' });
+            const response = await fetch(MYKEY_URL, { cache: 'no-store', signal: deadline(15000) })
+                .catch(error => { throw new Error(error.name === 'TimeoutError' ? 'The key request timed out' : `Could not reach the key: ${error.message}`); });
             if (!response.ok) throw new Error(`Could not read the key (${response.status})`);
             const secret = (await response.text()).trim();
             if (!secret) throw new Error('The key came back empty');
@@ -1669,7 +1692,7 @@
         // may have no usable localStorage, no IndexedDB, or no popups, and each of those
         // breaks a different part of sign-in. Reported in the ?debug=1 device log.
         function probeStorage() {
-            const result = { localStorage: 'unknown', sessionStorage: 'unknown', indexedDB: 'unknown', popups: 'unknown' };
+            const result = { localStorage: 'unknown', sessionStorage: 'unknown', indexedDB: 'unknown', popups: 'not-probed' };
             for (const name of ['localStorage', 'sessionStorage']) {
                 try {
                     const store = window[name];
@@ -1680,16 +1703,10 @@
                 } catch (error) { result[name] = `throws: ${error.name}`; }
             }
             result.indexedDB = typeof indexedDB === 'undefined' || !indexedDB ? 'absent' : 'present';
-            try {
-                // Cheap, non-visual: a blank popup tells us whether window.open works and
-                // whether the child can still see its opener, which is what OAuth needs.
-                const probe = window.open('', '_blank', 'width=100,height=100');
-                if (!probe) result.popups = 'blocked';
-                else {
-                    result.popups = probe.closed ? 'closed-immediately' : (probe.opener === window ? 'works' : 'no-opener');
-                    try { probe.close(); } catch (_) {}
-                }
-            } catch (error) { result.popups = `throws: ${error.name}`; }
+            // Deliberately does not open a probe window. It used to, to report whether a
+            // popup keeps its opener -- which threw a blank window over the app on exactly
+            // the device we were trying to debug. Sign-in uses the redirect flow on small
+            // screens now, so the answer no longer changes anything.
             return result;
         }
         const PerfBeacon = {
@@ -5344,8 +5361,9 @@
             async exchangeCodeForTokens(code) {
                 const response = await fetch('https://oauth2.googleapis.com/token', {
                     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, code: code, grant_type: 'authorization_code', redirect_uri: this.redirectUri })
-                });
+                    body: new URLSearchParams({ client_id: this.clientId, client_secret: this.clientSecret, code: code, grant_type: 'authorization_code', redirect_uri: this.redirectUri }),
+                    signal: deadline(15000)
+                }).catch(error => { throw new Error(error.name === 'TimeoutError' ? 'Token exchange timed out' : `Token exchange could not reach Google: ${error.message}`); });
                 if (!response.ok) {
                     // Google's body says which half is wrong (invalid_client = bad secret,
                     // redirect_uri_mismatch = unregistered URI, invalid_grant = stale code).
@@ -13790,11 +13808,10 @@ this.updateImageCounters();
                 window.SharedImageResources = SharedImageResources;
                 state.syncManager.start();
                 state.metadataExtractor = new MetadataExtractor();
-                // Finish a redirect-flow sign-in before auto-resume, which is what reads
-                // the stored credentials.
                 if (pendingRedirectAuth) {
                     const { code, error } = pendingRedirectAuth;
                     pendingRedirectAuth = null;
+                    Utils.elements.providerStatus && (Utils.elements.providerStatus.textContent = 'Finishing sign-in…');
                     try {
                         if (error) throw new Error(error);
                         const provider = new GoogleDriveProvider();
@@ -13805,8 +13822,10 @@ this.updateImageCounters();
                         state.providerType = 'googledrive';
                         Utils.showToast('Connected to Google Drive.', 'success', true);
                     } catch (authError) {
-                        // Say which half failed rather than dropping back to Connect Drive
-                        // with nothing on screen.
+                        // Leave the reason on the provider screen the user is already
+                        // looking at, rather than failing invisibly.
+                        const status = document.getElementById('provider-status');
+                        if (status) { status.textContent = `Google sign-in failed: ${authError.message}`; status.className = 'status error'; }
                         Utils.showToast(`Google sign-in failed: ${authError.message}`, 'error', true);
                         state.syncLog?.log({ event: 'auth:redirect-exchange-failed', level: 'error', details: authError.message });
                     }
