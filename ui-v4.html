@@ -47,25 +47,30 @@
                 var reason = event.reason;
                 paint('Startup failed', (reason && (reason.message || reason)) + '');
             });
-            // Watchdog. The first version of this only checked for a .screen without the
-            // hidden class, which #provider-screen never has at boot -- so it returned
-            // immediately and could never fire. Measure what is actually painted instead:
-            // an element that is laid out (offsetParent/offsetHeight) and has visible text.
+            // Watchdog. Two earlier versions of this were wrong in opposite directions.
+            // The first only looked for a .screen without the hidden class, which
+            // #provider-screen never has at boot, so it could never fire. The second
+            // measured what was painted but queried only '.screen' -- and the main app is
+            // #app-container, whose class is 'app-container', not 'screen'. The moment
+            // showScreen('app-container') runs it marks all four .screen divs hidden, so
+            // every surface the watchdog could see was hidden and the counts were forced
+            // to zero: it blanketed a working app ten seconds in, every single session.
+            // Count the surfaces the app actually renders on, this one included.
             setTimeout(function () {
-                var screens = document.querySelectorAll('.screen');
+                var surfaces = document.querySelectorAll('.screen, #app-container');
                 var painted = 0, laidOut = 0;
-                for (var i = 0; i < screens.length; i++) {
-                    var el = screens[i];
-                    if (el.className.indexOf('hidden') !== -1) continue;
+                for (var i = 0; i < surfaces.length; i++) {
+                    var el = surfaces[i];
+                    if (el.classList.contains('hidden')) continue;
                     if (el.offsetHeight > 0 && el.offsetWidth > 0) {
                         laidOut++;
                         if ((el.innerText || el.textContent || '').replace(/\s+/g, '').length > 0) painted++;
                     }
                 }
                 if (painted > 0) return;
-                paint('Nothing drawn after 10s', 'screens=' + screens.length + ' laidOut=' + laidOut
-                    + ' painted=' + painted + '. ' + (screens.length
-                        ? 'Markup is present but nothing rendered, so this is layout or styling rather than a stalled request.'
+                paint('Nothing drawn after 10s', 'surfaces=' + surfaces.length + ' laidOut=' + laidOut
+                    + ' painted=' + painted + '. ' + (surfaces.length
+                        ? 'The markup is present but no surface is showing.'
                         : 'The page did not finish parsing; a blocking resource has not returned.')
                     + (failedResources.length ? ' Failed to load: ' + failedResources.join(', ') : ''));
             }, 10000);
